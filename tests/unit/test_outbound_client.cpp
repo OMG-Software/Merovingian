@@ -2,8 +2,8 @@
 
 #include "../support/mock_appservice.hpp"
 #include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>

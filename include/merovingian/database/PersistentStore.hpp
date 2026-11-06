@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
+#include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/MembershipStoreResult.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -54,6 +57,7 @@
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStateTransition.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
@@ -62,10 +66,10 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/RedactionState.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/TableLoadProfile.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/database/migration.hpp"
-#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/database/state_group_tables.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
@@ -89,22 +93,6 @@
 
 namespace merovingian::database
 {
-
-// ADR-0062 part 2 (0.12.13 audit, finding N1): which tables a store open
-// hydrates into memory. `full` is every process except the federation
-// worker. `federation_worker` hydrates ONLY the tables
-// federation_worker_table_allowlist names below — a fail-closed allowlist,
-// not a denylist, so a worker connecting with a least-privilege PostgreSQL
-// role (granted SELECT on exactly those tables) can still start, and a
-// worker connecting with ANY role never holds unlisted material resident
-// regardless of backend. Only open_postgresql_persistent_store honours this
-// today — see docs/database-persistence.md, "Federation worker
-// least-privilege role", for why the SQLite loader was left unchanged.
-enum class TableLoadProfile
-{
-    full,
-    federation_worker,
-};
 
 // The exact, minimal set of tables TableLoadProfile::federation_worker
 // allows a store open to hydrate. This is an ALLOWLIST, not a denylist: a
@@ -819,12 +807,6 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Brings `federation_transaction_index` in step with `federation_transactions`.
 auto rebuild_federation_transaction_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
-enum class MembershipStoreResult
-{
-    stored,
-    already_exists,
-    error,
-};
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 // Persists a room's directory visibility before updating its in-memory mirror.
@@ -1243,20 +1225,6 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
                                              std::string_view room_id, std::string_view event_type)
     -> std::optional<std::string>;
 
-// Outcome of store_global_account_data_within_cap and store_room_account_data_within_cap.
-enum class CappedAccountDataStore
-{
-    stored,
-    // The user already holds the cap's number of other types in the row's scope; nothing was
-    // written.
-    over_cap,
-    // The row's content is over `max_account_data_row_bytes`; nothing was written.
-    too_large,
-    // A row of the wrong scope (room_id set for a global store, empty for a room store), a
-    // missing user or type, or the write failed.
-    failed,
-};
-
 // Stores a global (room_id empty) account-data row unless it would give the user more than
 // `max_global_types` distinct global types (ADR-0173). A type the user already holds is always
 // updated. One pass over the in-memory rows both counts the user's types and finds the row to
@@ -1502,19 +1470,6 @@ auto sort_to_device_messages(PersistentStore& store) -> void;
 // cursor still pending (a stuck transaction).
 [[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
                                                 std::uint64_t delivered_stream_ordering) -> bool;
-// What upsert_deferred_pdu did.
-enum class DeferredPduUpsert : std::uint8_t
-{
-    inserted,
-    // The event was already retained: its attempts (and origin) were replaced,
-    // its received_at_ms and PDU JSON were kept.
-    updated,
-    // A new row would exceed a bound (max_deferred_pdus_per_room,
-    // max_deferred_pdus_total or max_deferred_pdu_json_bytes). Nothing was
-    // written. An update of a row already held never hits a bound.
-    refused_full,
-    persistence_failed,
-};
 
 // Retains `pdu`, or updates the row for its event_id. The row is committed to
 // the backend before the in-memory mirror changes.

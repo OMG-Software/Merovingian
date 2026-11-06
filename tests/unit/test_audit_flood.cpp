@@ -21,10 +21,10 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

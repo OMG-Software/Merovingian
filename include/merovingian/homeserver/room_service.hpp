@@ -15,6 +15,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/OutboundAnswerTrust.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/RemoteInviteResult.hpp"
 #include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
@@ -214,22 +215,6 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
                                      std::int64_t now_ms) -> void;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
-// What main can check an outbound federation answer against (F-43, ADR-0349). It decides the route:
-// the federation worker is the process most exposed to hostile traffic, so what it relays is input,
-// not a fact. An answer main uses without a signature check must be fetched over main's own
-// OutboundClient, or a compromised worker could speak as any remote server.
-enum class OutboundAnswerTrust : std::uint8_t
-{
-    // Main acts on the answer as given: its status, its fields or its choice of content. Direct
-    // route only. This includes an answer whose body is signed but whose status, or whose choice of
-    // which signed objects to send, main also acts on. A caller that cannot say it is
-    // signature_verified is this.
-    unverified,
-    // Every use main makes of a success body is a signature check on the whole of it (backfilled
-    // PDUs are verified one by one before they are stored), and a failure only means "no data".
-    // The worker may carry the call: the most it can do is withhold or replay what servers signed.
-    signature_verified,
-};
 
 // Synchronous outbound federation call — signs in-process then routes by `trust`: direct outbound
 // client, or, for a signature_verified answer with a federation proxy wired, the worker thread pool.

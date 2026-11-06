@@ -8,17 +8,19 @@
 #include "merovingian/trust_safety/EnforcementReason.hpp"
 #include "merovingian/trust_safety/FederationPolicyRequest.hpp"
 #include "merovingian/trust_safety/MediaPolicyRequest.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/RegistrationPolicyRequest.hpp"
 #include "merovingian/trust_safety/ReportingApiRoute.hpp"
 #include "merovingian/trust_safety/ReportingApiRouteMatch.hpp"
 #include "merovingian/trust_safety/ReviewRecord.hpp"
+#include "merovingian/trust_safety/ReviewTarget.hpp"
 #include "merovingian/trust_safety/RoomPolicyRequest.hpp"
 #include "merovingian/trust_safety/SafetyAuditEvent.hpp"
 #include "merovingian/trust_safety/SafetyReportRequest.hpp"
 #include "merovingian/trust_safety/UserReportRequest.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <string>
 #include <utility>

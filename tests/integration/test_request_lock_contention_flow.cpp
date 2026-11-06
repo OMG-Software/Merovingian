@@ -45,7 +45,7 @@
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

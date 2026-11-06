@@ -2,25 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/outbound_error.hpp"
+#include "merovingian/appservice/AppservicePingFailure.hpp"
+#include "merovingian/http/OutboundError.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace merovingian::appservice
 {
-
-// Why a ping did not succeed, as the client-server ping endpoint reports it
-// (Application Service API, "Pinging"): 400 M_URL_NOT_SET, 502 M_CONNECTION_FAILED,
-// 502 M_BAD_STATUS and 504 M_CONNECTION_TIMEOUT.
-enum class AppservicePingFailure : std::uint8_t
-{
-    none,
-    url_not_set,
-    connection_failed,
-    connection_timeout,
-    bad_status,
-};
 
 // Outcome of `POST /_matrix/app/v1/ping`. `duration_ms` is how long the request took from this
 // homeserver's point of view. For `bad_status`, `status` is the appservice's HTTP status and

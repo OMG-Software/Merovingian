@@ -5,6 +5,7 @@
 #include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpDispatchMode.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
@@ -26,13 +27,6 @@
 
 namespace merovingian::homeserver
 {
-
-enum class HttpDispatchMode
-{
-    client_server,
-    local_router,
-    federation,
-};
 
 [[nodiscard]] auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                HttpDispatchMode mode) -> LocalHttpResponse;

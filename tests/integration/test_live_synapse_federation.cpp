@@ -13,9 +13,9 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
-#include "merovingian/http/outbound_error.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_message.hpp>

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/http/ParsedOutboundUrl.hpp"
 #include "merovingian/http/SystemCaTrust.hpp"
-#include "merovingian/http/outbound_error.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -49,7 +49,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/HealthStatus.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

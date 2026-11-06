@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/observability/MetricLabel.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/MetricType.hpp"
 
 #include <cstdint>
 #include <string>

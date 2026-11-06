@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/observability/HealthCheckComponent.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/HealthStatus.hpp"
 
 #include <vector>
 

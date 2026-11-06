@@ -4,9 +4,9 @@
 
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 
 #include <cstdint>
 #include <string>

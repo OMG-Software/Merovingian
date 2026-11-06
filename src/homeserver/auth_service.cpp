@@ -23,12 +23,12 @@
 #include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>

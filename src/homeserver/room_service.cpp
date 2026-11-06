@@ -89,9 +89,9 @@
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/identity/identity_client.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
@@ -100,9 +100,9 @@
 #include "merovingian/sync/room_read_access.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/sync/stream_token.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>

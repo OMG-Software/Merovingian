@@ -4,8 +4,8 @@
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>

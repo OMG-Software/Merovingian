@@ -12,7 +12,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/trust_safety/ReviewRecord.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 

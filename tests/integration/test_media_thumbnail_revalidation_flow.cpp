@@ -32,8 +32,9 @@
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>

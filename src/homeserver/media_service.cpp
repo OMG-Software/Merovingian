@@ -33,12 +33,12 @@
 #include "merovingian/media/RemoteMediaDownloadRequest.hpp"
 #include "merovingian/media/RemoteMediaDownloadResult.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <cctype>

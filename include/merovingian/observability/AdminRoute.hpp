@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/http/rate_limit.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/AdminOperation.hpp"
 
 #include <string>
 

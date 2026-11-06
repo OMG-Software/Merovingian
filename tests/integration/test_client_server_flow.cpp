@@ -23,7 +23,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/remote_timestamp_event.hpp"
-#include "merovingian/observability/observability_enums.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

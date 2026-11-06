@@ -33,9 +33,10 @@
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

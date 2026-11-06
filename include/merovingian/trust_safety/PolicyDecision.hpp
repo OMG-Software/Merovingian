@@ -3,7 +3,8 @@
 #pragma once
 
 #include "merovingian/trust_safety/EnforcementReason.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <string>
 

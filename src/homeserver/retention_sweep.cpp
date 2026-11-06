@@ -4,13 +4,13 @@
 #include "merovingian/homeserver/retention_sweep.hpp"
 
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
-#include "merovingian/database/persistent_store_backend.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 
 #include <algorithm>
 #include <chrono>

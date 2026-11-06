@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/media/FederationMediaDownloadBody.hpp"
+#include "merovingian/media/LocalMediaAdminAction.hpp"
 #include "merovingian/media/LocalMediaAdminResult.hpp"
 #include "merovingian/media/LocalMediaBlob.hpp"
 #include "merovingian/media/LocalMediaDownloadTarget.hpp"
@@ -14,6 +15,7 @@
 #include "merovingian/media/MediaRepositoryMetrics.hpp"
 #include "merovingian/media/PendingMediaUpload.hpp"
 #include "merovingian/media/PendingMediaUploadPlan.hpp"
+#include "merovingian/media/PendingUploadAdmission.hpp"
 #include "merovingian/media/RemoteMediaCacheEntry.hpp"
 #include "merovingian/media/RemoteMediaDownloadRequest.hpp"
 #include "merovingian/media/RemoteMediaDownloadResult.hpp"
@@ -30,13 +32,6 @@
 
 namespace merovingian::media
 {
-
-enum class LocalMediaAdminAction
-{
-    quarantine,
-    release,
-    remove,
-};
 
 // Whether a persisted owner string names the remote media cache (ADR-0120): the
 // "@remote-media:<origin>" owner of a server other than `local_server_name`. A local account's
@@ -114,18 +109,6 @@ auto restore_pending_media_uploads(LocalMediaRepository& repository, std::vector
 // The live (unexpired) reservation for `media_id`, or nullptr.
 [[nodiscard]] auto find_pending_media_upload(LocalMediaRepository const& repository, std::string_view media_id,
                                              std::uint64_t now_ms) noexcept -> PendingMediaUpload const*;
-// Whether `user_id` may upload content to `media_id` now, in the order the
-// spec's errors are checked: content already there (409
-// M_CANNOT_OVERWRITE_MEDIA when the user owns it, 403 otherwise), no live
-// reservation (404 M_NOT_FOUND), a reservation made by someone else (403
-// M_FORBIDDEN).
-enum class PendingUploadAdmission
-{
-    accepted,
-    already_uploaded,
-    not_found,
-    forbidden,
-};
 [[nodiscard]] auto admit_pending_media_upload(LocalMediaRepository& repository, std::string_view media_id,
                                               std::string_view user_id, std::uint64_t now_ms) -> PendingUploadAdmission;
 // Forgets the reservation for `media_id` once its content is durable.

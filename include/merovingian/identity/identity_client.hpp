@@ -5,7 +5,7 @@
 #include "merovingian/config/IdentityServerConfig.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
-#include "merovingian/http/outbound_error.hpp"
+#include "merovingian/http/OutboundError.hpp"
 
 #include <cstddef>
 #include <cstdint>

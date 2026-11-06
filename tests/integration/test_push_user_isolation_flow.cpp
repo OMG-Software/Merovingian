@@ -20,7 +20,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
-#include "merovingian/database/persistent_store_backend.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

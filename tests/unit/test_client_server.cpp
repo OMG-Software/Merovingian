@@ -37,7 +37,7 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/persistent_store_backend.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

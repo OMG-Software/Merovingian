@@ -79,15 +79,16 @@
 #include "merovingian/http/client_address.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/observability/AdminOperation.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/CorrelationScope.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>

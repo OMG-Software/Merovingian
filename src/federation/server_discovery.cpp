@@ -7,10 +7,10 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundHeader.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/ParsedOutboundUrl.hpp"
-#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 

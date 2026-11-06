@@ -111,11 +111,11 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/push/user_push_rules.hpp"
 #include "merovingian/rooms/encryption_policy.hpp"
@@ -144,10 +144,10 @@
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/sync/viewer_event_unsigned.hpp"
+#include "merovingian/trust_safety/ReviewTarget.hpp"
 #include "merovingian/trust_safety/SafetyAuditEvent.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
 
 #include <algorithm>
 #include <array>

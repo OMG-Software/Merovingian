@@ -3,10 +3,10 @@
 // Derived from SingleLog by James Chapman, BSD-3-Clause.
 #pragma once
 
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/log_file_sink.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 
 #include <array>
 #include <atomic>

@@ -40,9 +40,9 @@
 #include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/url_preview.hpp"
 #include "merovingian/net/listener.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
-#include "merovingian/observability/observability_enums.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/email_digest_queue.hpp"
 #include "merovingian/push/gateway_circuit_breaker.hpp"
@@ -53,7 +53,7 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
-#include "merovingian/trust_safety/policy_enums.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <array>
 #include <atomic>
