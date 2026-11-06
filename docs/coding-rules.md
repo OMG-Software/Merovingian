@@ -37,11 +37,13 @@ requirements are met.
 - Make each header self-contained. Include the declarations its interface needs.
   Prefer forward declarations when a complete type is not required.
 - Use `#pragma once` in headers. Do not put `using namespace` directives in headers.
-- Define at most one class or struct per file. Give each class or struct its own
-  header and, when needed, a matching source file. Do not combine implementations
-  of multiple classes in one source file. Forward declarations do not count as
+- Define at most one class, struct, or enum per file. An `enum` and an
+  `enum class` count as types for this rule. Give each type its own header and,
+  when needed, a matching source file. Do not combine implementations of
+  multiple classes in one source file. Forward declarations do not count as
   definitions. See
-  [ADR-0466](adr/0466-define-one-class-or-struct-per-file.md).
+  [ADR-0466](adr/0466-define-one-class-or-struct-per-file.md) and
+  [ADR-0514](adr/0514-enums-count-as-types-for-the-one-type-per-file-rule.md).
 - A type nested inside a class or struct is part of its enclosing type and stays
   in the enclosing type's file. Do not extract it only to satisfy the
   one-type-per-file rule.
@@ -51,9 +53,12 @@ requirements are met.
   type, rather than copying it. Do not duplicate a helper type or function across
   files. See
   [ADR-0513](adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md).
-- The filename stem must exactly match the class or struct name, including case.
-  For example, `RoomState` belongs in `RoomState.hpp` and, when needed,
-  `RoomState.cpp`. Do not convert the name to `snake_case`. See
+- The filename stem must exactly match the class, struct, or enum name,
+  including case. For example, `RoomState` belongs in `RoomState.hpp` and, when
+  needed, `RoomState.cpp`; `enum class OutboundError` belongs in
+  `OutboundError.hpp`. Do not convert the name to `snake_case`. A header that
+  defines no type, only free functions and constants, keeps a `snake_case`
+  name. See
   [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md).
 - Put module headers in `include/merovingian/<module>/<name>.hpp` and their
   implementations in `src/<module>/<name>.cpp`. Keep the paths aligned when

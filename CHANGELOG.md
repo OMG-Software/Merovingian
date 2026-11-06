@@ -8,6 +8,7 @@ The largest multi-type files are split into one file per class or struct (ADR-04
 - A header that kept a primary type is renamed after it, with its source: `PersistentStore`, `Config`, `HomeserverRuntime`, `ClientServerRuntime`, `LocalMediaRepository`, `AppserviceClient` and `OutboundClient` (`.hpp`/`.cpp`). Headers with no primary type keep their names and hold only free functions and constants.
 - Files that used the old headers now include the headers for the types they use.
 - Coding rules: a helper class or struct used by one `.cpp` file stays in its anonymous namespace; a helper needed by a second file moves to its own file instead of being copied; nested types stay with their enclosing type (ADR-0513).
+- Coding rules: enums count as types for the one-type-per-file and filename rules (ADR-0514). The enums the split left beside a class or grouped in shared headers now each have their own `<EnumName>.hpp`, and `outbound_error.hpp` and `persistent_store_backend.hpp` are renamed `OutboundError.hpp` and `PersistentStoreBackend.hpp`.
 
 ## 0.12.76
 

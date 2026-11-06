@@ -483,3 +483,4 @@
 * [0467 - Type filenames match the type name exactly](0467-type-filenames-match-the-type-name-exactly.md)
 * [0512 - Group external headers before the standard library](0512-group-external-headers-before-the-standard-library.md)
 * [0513 - Single-file helper types stay in the anonymous namespace](0513-single-file-helper-types-stay-in-the-anonymous-namespace.md)
+* [0514 - Enums count as types for the one-type-per-file rule](0514-enums-count-as-types-for-the-one-type-per-file-rule.md)

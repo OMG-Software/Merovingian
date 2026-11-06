@@ -52,14 +52,15 @@ The production code is split into mirrored modules under `src/` and
 the server, worker, migration tool, and tests; `bootstrap` is currently a
 header-only public boundary.
 
-Within a module, a class or struct lives in a header named exactly after it
+Within a module, a class, struct or enum lives in a header named exactly after it
 (`database/PersistentStore.hpp`, `config/ServerConfig.hpp`), with a matching
 `.cpp` when it has out-of-line members. Snake_case headers such as
 `homeserver/room_service.hpp` declare free functions and constants only. Some
 older headers still define several types; they are being split as they are
 touched ([ADR-0466](adr/0466-define-one-class-or-struct-per-file.md),
 [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md),
-[ADR-0513](adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md)).
+[ADR-0513](adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md),
+[ADR-0514](adr/0514-enums-count-as-types-for-the-one-type-per-file-rule.md)).
 
 | Module | Purpose |
 |--------|---------|
