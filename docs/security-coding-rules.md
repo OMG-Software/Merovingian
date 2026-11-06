@@ -916,6 +916,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   and the condition under which this exemption must be revisited.
   Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
+- **Appservice cleartext http is limited to loopback IP literals and listed
+  hosts (ADR-0515).** The `hs_token` is sent in every request to a
+  registration `url`. `http://` is accepted only when the host is an IPv4
+  address in 127.0.0.0/8, `::1` (`net::is_loopback_ip_literal`, the same
+  definition SMTP uses), or an exact ASCII-case-insensitive entry of
+  `appservice.allow_cleartext_hosts`. `localhost` is a name, not a literal. A
+  `url` with userinfo or a query is refused. The check runs in
+  `load_registrations` and again in `AppserviceClient` before any lookup; never
+  remove the second as redundant, and never add an `http://` or `https://`
+  literal to the client. Why: a network observer could otherwise read the token
+  and impersonate the homeserver. Source: `src/appservice/AGENTS.md`.
+
 - **`security.federation.allow_private_ip_ranges` reaches federation callers
   only.** `discover_server`, well-known fetches, `CachedServerDiscovery::discover`,
   the inbound origin check and the remote media re-check apply it.

@@ -9,6 +9,7 @@ assertion (`?user_id=`), and the outbound `/_matrix/app/v1/*` client.
 |---|---|
 | `registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
 | `registration_yaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
+| `cleartext_policy.cpp` | `appservice_url_problem`: the ADR-0515 rule for a registration `url` (scheme, userinfo, query, cleartext host) |
 | `masquerade_token.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
 | `AppserviceClient.cpp` | Outbound `PUT /transactions/{txnId}` (with the optional `ephemeral` array), `POST /ping`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
 
@@ -119,6 +120,15 @@ directory network (appservice, protocol) it names without asking the appservice 
 
 ## Security rules
 
+- **Cleartext http only to a loopback IP literal or a listed host (ADR-0515).** A registration `url` with
+  scheme `http` is accepted only when its host is an IPv4 address in 127.0.0.0/8, `::1`
+  (`net::is_loopback_ip_literal`, shared with SMTP), or an exact, ASCII-case-insensitive entry of
+  `appservice.allow_cleartext_hosts`. `localhost` is a name, not a literal. A `url` with userinfo, a query or a
+  scheme other than http/https is refused. `https` is unchanged and a null `url` stays valid. The rule is
+  `appservice_url_problem()` in `cleartext_policy.cpp`, applied by `load_registrations` (a per-file finding that
+  never contains a token) and again by `AppserviceClient` before any lookup (defence in depth; the client takes
+  the list from `config::AppserviceConfig`). `AppserviceClient.cpp` holds no `http://`/`https://` literal: it
+  rebuilds the request URL from `http::parse_outbound_url` parts.
 - `as_token` and `hs_token` live in `core::SecretBuffer`. Never log them. The
   `hs_token` must stay reversible because it is transmitted to the appservice;
   it cannot be stored as a hash.

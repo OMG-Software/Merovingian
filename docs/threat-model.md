@@ -1606,7 +1606,12 @@ threat it closes; the controls above are the standing defences these reinforce.
   most real-world bridges, run as a plain-HTTP process on `127.0.0.1`,
   which the ordinary https-only/private-range-rejecting path would make
   entirely unreachable. `hs_token` (sent as `Authorization: Bearer`) is
-  never placed in the URL or logged. If this trust boundary is ever
+  never placed in the URL or logged. Its cleartext exposure is bounded
+  (ADR-0515): `http://` is accepted only to a loopback IP literal
+  (127.0.0.0/8, `::1`) or an exact host named in
+  `appservice.allow_cleartext_hosts`, checked at registration load and again
+  before each call; a URL with userinfo or a query is refused. A bridge on
+  another machine therefore needs `https://` or a deliberate opt-in. If this trust boundary is ever
   weakened — e.g. registration files become editable by a lower-privilege
   process, or a future feature lets a namespace owner influence `url` — this
   exemption must be revisited alongside it.

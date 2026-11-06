@@ -95,6 +95,9 @@ server.http.sync_max_per_device=16
 # application service registrations into /complement/appservice/, and the
 # entrypoint installs them beside the master key and adds the key
 # (install-appservices.sh).
+# Complement registers appservices at http://host.docker.internal:<port>, which is
+# not a loopback literal; plain http to it is allowed by name (ADR-0515).
+appservice.allow_cleartext_hosts=host.docker.internal
 security.federation.per_origin_transaction_rate=1000000000/1s
 security.federation.per_origin_pdu_rate=1000000000/1s
 security.federation.per_origin_edu_rate=1000000000/1s
