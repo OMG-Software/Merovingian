@@ -867,4 +867,4 @@ the job.
 
 ## Room rosters and the room list (ADR-0496)
 
-`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `room_service.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is `mutable`: every reader of `LocalDatabase` holds `runtime.mutex`, which is exclusive.
+`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `room_service.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is a `RoomPositionIndex` (`LocalDatabase::room_positions`) with its own mutex, so a lookup is safe without `runtime.mutex`; a copy or move of the database starts it empty (ADR-0521).

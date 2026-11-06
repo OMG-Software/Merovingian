@@ -1596,57 +1596,15 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     return parse_policy_server_response(result.response.body, std::move(hook));
 }
 
-namespace
-{
-
-    // Rebuilds the position index from `rooms`, the first room of an ID winning.
-    auto rebuild_room_position_index(LocalDatabase const& database) -> void
-    {
-        database.room_position_index.clear();
-        database.room_position_index.reserve(database.rooms.size());
-        for (auto position = std::size_t{0U}; position < database.rooms.size(); ++position)
-        {
-            database.room_position_index.try_emplace(database.rooms[position].room_id, position);
-        }
-        database.room_indexed_rows = database.rooms.size();
-    }
-
-    [[nodiscard]] auto find_local_room_position(LocalDatabase const& database, std::string_view room_id)
-        -> std::optional<std::size_t>
-    {
-        if (database.room_indexed_rows == database.rooms.size())
-        {
-            auto const found = database.room_position_index.find(std::string{room_id});
-            if (found != database.room_position_index.end() && found->second < database.rooms.size() &&
-                database.rooms[found->second].room_id == room_id)
-            {
-                return found->second;
-            }
-        }
-        // A miss, a mismatch or an index out of step: the scan is the answer, and a room it finds means the index was
-        // stale.
-        auto const scanned = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
-            return room.room_id == room_id;
-        });
-        if (scanned == database.rooms.end())
-        {
-            return std::nullopt;
-        }
-        rebuild_room_position_index(database);
-        return static_cast<std::size_t>(scanned - database.rooms.begin());
-    }
-
-} // namespace
-
 auto find_local_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
 {
-    auto const position = find_local_room_position(database, room_id);
+    auto const position = database.room_positions.find(database.rooms, room_id);
     return position.has_value() ? &database.rooms[*position] : nullptr;
 }
 
 auto find_local_room(LocalDatabase const& database, std::string_view room_id) -> LocalRoom const*
 {
-    auto const position = find_local_room_position(database, room_id);
+    auto const position = database.room_positions.find(database.rooms, room_id);
     return position.has_value() ? &database.rooms[*position] : nullptr;
 }
 

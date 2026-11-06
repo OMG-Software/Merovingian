@@ -7,25 +7,25 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/RoomPositionIndex.hpp"
 #include "merovingian/homeserver/session_table.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <list>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
-#include <unordered_map>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace merovingian::homeserver
 {
 
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
 struct LocalDatabase final
 {
     bool opened{false};
@@ -37,16 +37,13 @@ struct LocalDatabase final
     std::vector<LocalUser> users{};
     SessionTable sessions{};
     std::vector<LocalRoom> rooms{};
-    // Position in `rooms` of each room ID (ADR-0496): the first room holding the ID. Trusted only while
-    // `room_indexed_rows == rooms.size()` and the room a position names carries the ID asked for; a lookup that
-    // fails either test scans and rebuilds, so a caller that edits `rooms` directly (hydration, a test) loses speed,
-    // never correctness. `mutable` because lookups are const: every reader holds `runtime.mutex`.
-    mutable std::unordered_map<std::string, std::size_t> room_position_index{};
-    mutable std::size_t room_indexed_rows{0U};
+    // Position in `rooms` of each room ID (ADR-0496, ADR-0521). A verified cache with its own mutex: a lookup through
+    // it is correct however `rooms` was edited, and a copy or move of the database starts with it empty.
+    RoomPositionIndex room_positions{};
     // Bounded window over the most recent `database::max_in_memory_audit_events`
     // audit events (AUTH-1); the oldest is dropped first. The durable copy of
     // every event is the audit_log table, reachable through `persistent_store`.
-    std::deque<observability::AuditLogEvent> audit_events{};
+    std::list<observability::AuditLogEvent> audit_events{};
     // Rate-caps the audit events an unauthenticated client can trigger on every
     // request (AUTH-1, ADR-0080). Guarded by the runtime mutex like the audit rows.
     observability::AuditRateGate audit_rate_gate{};
@@ -78,5 +75,7 @@ struct LocalDatabase final
     // runtime.mutex; entries are added and removed only by PendingStreamOrdering.
     std::multiset<std::uint64_t> pending_stream_orderings{};
 };
+
+static_assert(std::is_nothrow_move_constructible_v<LocalDatabase> && std::is_nothrow_move_assignable_v<LocalDatabase>);
 
 } // namespace merovingian::homeserver
