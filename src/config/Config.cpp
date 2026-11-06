@@ -1798,9 +1798,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // the key is treated as a module name. Empty module names are
     // rejected so a stray blank line does not insert a default for
     // every (no-name) module.
-    for (auto const& [module, level] : config.log_modules().levels)
+    for (auto const& [module_name, level] : config.log_modules().levels)
     {
-        if (module.empty())
+        if (module_name.empty())
         {
             findings.push_back({"log_modules", "log module name must not be empty"});
             break;

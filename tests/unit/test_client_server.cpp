@@ -64,12 +64,12 @@ namespace
 struct ModuleLogLevelGuard final
 {
     merovingian::observability::SingleLog& logger;
-    std::string module;
+    std::string module_name;
     merovingian::observability::LogLevel previous;
 
     ~ModuleLogLevelGuard()
     {
-        logger.set_module_log_level(module, previous);
+        logger.set_module_log_level(module_name, previous);
     }
 };
 
