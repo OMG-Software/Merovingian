@@ -42,6 +42,15 @@ requirements are met.
   of multiple classes in one source file. Forward declarations do not count as
   definitions. See
   [ADR-0466](adr/0466-define-one-class-or-struct-per-file.md).
+- A type nested inside a class or struct is part of its enclosing type and stays
+  in the enclosing type's file. Do not extract it only to satisfy the
+  one-type-per-file rule.
+- A helper class or struct used by only one `.cpp` file stays in that file's
+  anonymous namespace; it does not count against the one-type-per-file rule.
+  When a second file needs the helper, move it to its own file, named after the
+  type, rather than copying it. Do not duplicate a helper type or function across
+  files. See
+  [ADR-0513](adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md).
 - The filename stem must exactly match the class or struct name, including case.
   For example, `RoomState` belongs in `RoomState.hpp` and, when needed,
   `RoomState.cpp`. Do not convert the name to `snake_case`. See
