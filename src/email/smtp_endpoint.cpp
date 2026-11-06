@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/email/smtp_endpoint.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <optional>
-#include <string>
-#include <string_view>
+#include "merovingian/net/loopback_literal.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace merovingian::email
 {
@@ -82,19 +82,6 @@ namespace
         return static_cast<std::uint16_t>(value);
     }
 
-    [[nodiscard]] auto ipv4_is_loopback(std::string const& host) noexcept -> bool
-    {
-        auto address = ::in_addr{};
-        if (::inet_pton(AF_INET, host.c_str(), &address) != 1)
-        {
-            return false;
-        }
-        auto bytes = std::array<unsigned char, sizeof(address)>{};
-        std::memcpy(bytes.data(), &address, bytes.size());
-        constexpr auto loopback_first_octet = static_cast<unsigned char>(127U);
-        return bytes.front() == loopback_first_octet;
-    }
-
 } // namespace
 
 auto parse_smtp_url(std::string_view url) -> std::optional<SmtpEndpoint>
@@ -140,7 +127,7 @@ auto parse_smtp_url(std::string_view url) -> std::optional<SmtpEndpoint>
             return std::nullopt;
         }
         endpoint.host = to_lower_ascii(authority.substr(0U, close + 1U));
-        endpoint.loopback_literal = std::memcmp(&address, &in6addr_loopback, sizeof(address)) == 0;
+        endpoint.loopback_literal = net::is_loopback_ip_literal(literal);
         auto const rest = authority.substr(close + 1U);
         if (!rest.empty())
         {
@@ -159,7 +146,7 @@ auto parse_smtp_url(std::string_view url) -> std::optional<SmtpEndpoint>
         {
             return std::nullopt;
         }
-        endpoint.loopback_literal = ipv4_is_loopback(endpoint.host);
+        endpoint.loopback_literal = net::is_loopback_ip_literal(endpoint.host);
         if (colon != std::string_view::npos)
         {
             port_text = authority.substr(colon + 1U);
