@@ -814,7 +814,7 @@ SCENARIO("The retry job places a retained PDU as soon as its parent arrives, and
             for (auto i = 0; i < 200 && !placed; ++i)
             {
                 {
-                    auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.mutex};
+                    auto const guard = merovingian::homeserver::RuntimeLock{started.runtime.mutex};
                     placed = stores_event(started.runtime.database.persistent_store, child.event_id) &&
                              started.runtime.database.persistent_store.deferred_pdus.empty();
                 }
@@ -836,7 +836,7 @@ SCENARIO("The retry job places a retained PDU as soon as its parent arrives, and
 
             THEN("the runtime no longer holds a wake hook that points at it")
             {
-                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{started.runtime.mutex};
                 REQUIRE_FALSE(static_cast<bool>(started.runtime.deferred_pdu_retry_wake));
             }
         }

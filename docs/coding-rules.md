@@ -154,6 +154,10 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   `homeserver::RuntimeLockRelease` scope from `homeserver/request_lock.hpp`.
   It releases every recursion level held by the caller and restores the lock
   when the scope ends. Do not access protected runtime state while it is released.
+- Lock `HomeserverRuntime::mutex` through `homeserver::RuntimeLock` (a
+  `std::unique_lock<RuntimeMutex const>`). The mutex is not `mutable` and its
+  lock functions are `const`. See
+  [ADR-0522](adr/0522-the-runtime-mutex-locks-through-const.md).
 - Use RAII lock guards. A manual `.unlock()` or `->unlock()` in production code
   needs a same-line `// LOCK_RELEASE: reviewed — <reason>` comment. Prefer the
   existing release scope. See [ADR-0004](adr/0004-release-the-runtime-lock-through-the-mutex-not-a-guard.md).

@@ -24,7 +24,7 @@ auto prune_client_transactions(HomeserverRuntime& runtime, std::chrono::system_c
     if (now_ms > database::to_device_client_txn_retention_ms)
     {
         auto const cutoff_ms = now_ms - database::to_device_client_txn_retention_ms;
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto const removed = database::prune_to_device_client_txns(runtime.database.persistent_store, cutoff_ms);
         if (removed > 0U)
         {

@@ -2146,7 +2146,7 @@ SCENARIO("Main refuses a sign_request frame from a worker without signing and wi
         // that tried to take the lock would block until the request timeout and
         // the reply below would never arrive. That makes "the lock is not
         // taken" observable without any sleep-based synchronisation.
-        auto runtime_guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+        auto runtime_guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
 
         WHEN("the worker sends a sign_request for the active key carrying a serialised PDU")
         {

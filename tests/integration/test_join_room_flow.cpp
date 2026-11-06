@@ -2051,7 +2051,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
             auto outer_lock_restored = false;
             try
             {
-                auto outer_guard = std::unique_lock{runtime.mutex};
+                auto outer_guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
                 auto const request_scope = merovingian::homeserver::RequestLockScope{outer_guard};
                 result =
                     merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});

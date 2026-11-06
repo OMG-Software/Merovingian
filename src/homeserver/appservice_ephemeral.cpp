@@ -165,7 +165,7 @@ auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_i
     {
         return;
     }
-    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const lock = RuntimeLock{runtime.mutex};
     queue_appservice_typing(runtime, room_id, current_typing_users_in_room(runtime, room_id));
 }
 
@@ -176,7 +176,7 @@ auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_i
     {
         return;
     }
-    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const lock = RuntimeLock{runtime.mutex};
     auto const* const room = find_local_room(runtime, room_id);
     if (room == nullptr)
     {
@@ -213,7 +213,7 @@ auto queue_appservice_receipt(HomeserverRuntime& runtime, database::PersistentRe
     {
         return;
     }
-    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const lock = RuntimeLock{runtime.mutex};
     auto const* const room = find_local_room(runtime, receipt.room_id);
     if (room == nullptr)
     {
@@ -261,7 +261,7 @@ auto queue_appservice_presence(HomeserverRuntime& runtime, database::PersistentP
     {
         return;
     }
-    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const lock = RuntimeLock{runtime.mutex};
     auto const& server_name = runtime.config.server().server_name;
 
     // "matching one of the application service's namespaces" (a local user only) settles it at once.

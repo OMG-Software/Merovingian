@@ -2537,7 +2537,7 @@ namespace
             {
                 return;
             }
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime_.mutex};
+            auto const guard = RuntimeLock{runtime_.mutex};
             runtime_.rooms_being_created.erase(*room_id_);
         }
 
@@ -3392,7 +3392,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 
 [[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
 
     // Ensure a current active key exists to retire (this also loads its secret into
     // the runtime). Without a current key there is nothing to rotate from.
@@ -3500,7 +3500,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
                                CreateRoomOptions const& options) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     // create_room is called both standalone (this lock is the only one taken:
     // local_smoke_flow.cpp) and from within a request handler that already
     // holds runtime.mutex (ClientServerRuntime.cpp, local_http_router.cpp) — those
@@ -5632,7 +5632,7 @@ namespace
     // room's stripe mutex and then `runtime.mutex`; this releases `runtime.mutex`, takes
     // and drops the stripe, and restores `runtime.mutex`, which is the order ingestion takes
     // them in. Anything read from runtime state before the call must be read again after it.
-    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, RuntimeLock& guard,
                                         std::string_view room_id) -> void
     {
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
@@ -5674,7 +5674,7 @@ namespace
     // `FederatedJoinPurpose`). The caller holds the MembershipExchangeClaim for the pair and
     // `runtime.mutex` through `guard`; the network exchange and the signature checks run with
     // it released.
-    [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+    [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, RuntimeLock& guard,
                                                    std::string_view room_id, std::string const& user_id,
                                                    std::vector<std::string> candidates) -> OperationResult
     {
@@ -5769,7 +5769,7 @@ namespace
                              std::vector<std::string> const& via_servers,
                              canonicaljson::Object const* third_party_signed) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.join.started", {
                                             {"room_id",          std::string{room_id},                    false},
                                             {"has_access_token", access_token.empty() ? "false" : "true", false}
@@ -6552,7 +6552,7 @@ namespace
 [[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.leave.started", {
                                              {"room_id",          std::string{room_id},                    false},
                                              {"has_access_token", access_token.empty() ? "false" : "true", false}
@@ -7111,7 +7111,7 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard,
                                          std::string_view room_id, std::string_view invitee_server,
                                          std::string_view event_id, std::string_view event_json,
                                          std::uint32_t timeout_seconds) -> RemoteInviteResult
@@ -7221,7 +7221,7 @@ namespace
     // stored. It is offered to that user's server, then stored and sent to the room's other servers
     // (Server-Server API, "Inviting to a room"). Runs with `guard` held, releasing it for the exchange; `client_key`
     // names the ADR-0079 outbound budget the offer draws on.
-    [[nodiscard]] auto offer_and_store_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+    [[nodiscard]] auto offer_and_store_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard,
                                                      std::string_view room_id, std::string const& inviter,
                                                      std::string_view target_user_id, ComposedEvent invite_event,
                                                      std::string_view client_key) -> OperationResult
@@ -7299,7 +7299,7 @@ namespace
                                std::string_view target_user_id, std::string_view reason, std::string_view client_key)
     -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -7395,7 +7395,7 @@ namespace
 auto exchange_third_party_invite(HomeserverRuntime& runtime, federation::ThirdPartyInviteExchange const& exchange,
                                  std::string_view client_key) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     if (auto refused = sync_stream_refusal(runtime); refused.has_value())
     {
         return *refused;
@@ -7501,7 +7501,7 @@ auto request_third_party_invite_exchange(HomeserverRuntime& runtime,
                                          federation::ThirdPartyInviteExchange const& exchange,
                                          std::uint32_t timeout_seconds) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     wire_federation_callbacks(runtime);
     auto const destination = std::string{auth::user_id_server_name(exchange.sender)};
     auto const body = federation::build_third_party_invite_exchange_body(exchange);
@@ -7545,7 +7545,7 @@ auto notify_third_party_bind(HomeserverRuntime& runtime, federation::ThirdPartyB
         return make_operation_result(false, {}, "too many outbound requests", 429U);
     }
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         // An unknown, deactivated or foreign user is answered like a known one, so the endpoint tells nobody which
         // accounts exist.
         auto const known = auth::user_id_server_name(notification.mxid) == runtime.config.server().server_name &&
@@ -7579,7 +7579,7 @@ auto notify_third_party_bind(HomeserverRuntime& runtime, federation::ThirdPartyB
         auto const exchange = federation::ThirdPartyInviteExchange{invite.room_id, invite.sender, notification.mxid,
                                                                    invite.signed_invite};
         auto const own_user = std::invoke([&] {
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             return auth::user_id_server_name(invite.sender) == runtime.config.server().server_name;
         });
         auto const outcome = own_user ? exchange_third_party_invite(runtime, exchange, client_key)
@@ -7631,7 +7631,7 @@ namespace
     // unless `id_server` is an operator-trusted IS it can actually reach, and
     // fails closed on any IS error. Spec: client-server-api.md § Inviting a user
     // via a third-party identifier; identity-service-api.md § store-invite.
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
 
     // Validation under the lock: auth, room, membership, and that `id_server`
     // names an operator-trusted identity server.
@@ -7824,7 +7824,7 @@ namespace
 [[nodiscard]] auto ban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                             std::string_view target_user_id, std::string_view reason) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -7854,7 +7854,7 @@ namespace
 [[nodiscard]] auto kick_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::string_view target_user_id, std::string_view reason) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -7899,7 +7899,7 @@ namespace
 [[nodiscard]] auto unban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view target_user_id) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -7938,7 +7938,7 @@ namespace
 [[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -8189,7 +8189,7 @@ namespace
 [[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::vector<std::string> const& via_servers, std::string_view reason) -> OperationResult
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -9297,7 +9297,7 @@ namespace
 [[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
     -> OperationResult
 {
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -9367,7 +9367,7 @@ namespace
 
 auto propagate_queued_profile(HomeserverRuntime& runtime) -> std::chrono::milliseconds
 {
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     auto& pending = runtime.profile_propagation_pending;
     if (pending.empty())
     {
@@ -9426,7 +9426,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     // Not called under runtime.mutex by its sole caller (wire_federation_callbacks_impl's pdu_sink), and the
     // push and appservice queues read and write the store and the room's member list. Recursive, so a
     // caller that does hold it is unaffected.
-    auto const runtime_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const runtime_guard = RuntimeLock{runtime.mutex};
     auto const* room = find_room(runtime.database, envelope.room_id);
     if (room == nullptr)
     {

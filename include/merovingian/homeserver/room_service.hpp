@@ -67,7 +67,7 @@ namespace merovingian::homeserver
 // nothing read from the runtime before the call may be used after it without being found again. The
 // event is not stored by this call. `timeout_seconds` bounds the exchange (0: the outbound default); a
 // caller offering several invites in one request draws it from one deadline (ADR-0307).
-[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard,
                                          std::string_view room_id, std::string_view invitee_server,
                                          std::string_view event_id, std::string_view event_json,
                                          std::uint32_t timeout_seconds) -> RemoteInviteResult;

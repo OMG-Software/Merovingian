@@ -518,7 +518,7 @@ SCENARIO("A flood of remote typing at the cap never evicts a local user's typing
         join_remote_member(rt, room.room_id, "@late:remote.example.org");
         REQUIRE(put_typing(rt, room, R"({"typing":true})").status == 200U);
         {
-            auto const guard = std::unique_lock{rt.homeserver.mutex};
+            auto const guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
             auto const expires_at = std::chrono::steady_clock::now() + std::chrono::minutes{1};
             while (rt.homeserver.typing_users.size() < merovingian::homeserver::max_inbound_typing_entries)
             {
@@ -535,7 +535,7 @@ SCENARIO("A flood of remote typing at the cap never evicts a local user's typing
 
             THEN("the local user is still typing and the table is still at its cap")
             {
-                auto const guard = std::unique_lock{rt.homeserver.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
                 REQUIRE(rt.homeserver.typing_users.size() == merovingian::homeserver::max_inbound_typing_entries);
                 REQUIRE(contains(merovingian::homeserver::current_typing_users_in_room(rt.homeserver, room.room_id),
                                  "@alice:example.org"));

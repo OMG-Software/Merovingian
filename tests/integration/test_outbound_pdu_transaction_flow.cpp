@@ -612,7 +612,7 @@ SCENARIO("A membership event accepted as the resident is queued for an intereste
             auto joined = merovingian::federation::MembershipAcceptResult{};
             {
                 // handle_membership_ingest_request calls the acceptor with runtime.mutex already held.
-                auto const guard = std::unique_lock{runtime.homeserver.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
                 joined = runtime.homeserver.federation.membership_acceptor(FederationEndpoint::send_join, room.room_id,
                                                                            {}, envelope);
             }

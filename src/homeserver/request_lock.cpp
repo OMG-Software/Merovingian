@@ -11,11 +11,11 @@ namespace
     // The guard owning runtime.mutex for this thread's in-flight request, or
     // null when this thread is not inside a request handler. Only ever read and
     // written by its own thread, so it needs no synchronisation of its own.
-    thread_local auto* current_request_guard = static_cast<std::unique_lock<RuntimeMutex>*>(nullptr);
+    thread_local auto* current_request_guard = static_cast<RuntimeLock*>(nullptr);
 
 } // namespace
 
-RequestLockScope::RequestLockScope(std::unique_lock<RuntimeMutex>& guard) noexcept
+RequestLockScope::RequestLockScope(RuntimeLock& guard) noexcept
     : previous_{current_request_guard}
 {
     current_request_guard = &guard;
@@ -31,12 +31,12 @@ RuntimeLockRelease::RuntimeLockRelease() noexcept
     release(current_request_guard);
 }
 
-RuntimeLockRelease::RuntimeLockRelease(std::unique_lock<RuntimeMutex>& guard) noexcept
+RuntimeLockRelease::RuntimeLockRelease(RuntimeLock& guard) noexcept
 {
     release(&guard);
 }
 
-void RuntimeLockRelease::release(std::unique_lock<RuntimeMutex>* guard) noexcept
+void RuntimeLockRelease::release(RuntimeLock* guard) noexcept
 {
     if (guard == nullptr)
     {

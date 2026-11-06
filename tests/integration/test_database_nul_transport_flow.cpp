@@ -560,7 +560,7 @@ SCENARIO("Federation socket HTTP refuses NUL path components without disconnecti
                             CHECK(handler_still_reached);
                         }
                         {
-                            auto lock = std::unique_lock{runtime.homeserver.mutex};
+                            auto lock = hs::RuntimeLock{runtime.homeserver.mutex};
                             auto const unchanged = room_rows(runtime.homeserver.database.persistent_store) == before;
                             CHECK(unchanged);
                             CHECK(runtime.homeserver.database.next_stream_ordering == stream_before);
@@ -808,7 +808,7 @@ SCENARIO("Federation proxy socket HTTP refuses NUL components with a healthy sep
                         CHECK(runtime.homeserver.federation_proxy->room_sync_status(room.value).state == "ok");
                         CHECK(runtime.homeserver.federation_proxy->room_sync_status(room.value).generation == 0U);
                         {
-                            auto lock = std::unique_lock{runtime.homeserver.mutex};
+                            auto lock = hs::RuntimeLock{runtime.homeserver.mutex};
                             auto const unchanged = room_rows(runtime.homeserver.database.persistent_store) == before;
                             CHECK(unchanged);
                             CHECK(runtime.homeserver.database.next_stream_ordering == stream_before);

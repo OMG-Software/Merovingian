@@ -431,7 +431,7 @@ auto accept_inbound_presence(HomeserverRuntime& runtime, std::string_view origin
 
     // The sink runs without runtime.mutex: presence rows, the appservice queue and the
     // memberships read below are all guarded by it.
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     auto const& store = runtime.database.persistent_store;
 
     // Interest: users joined to a room that one of ours is joined to. One pass over each side per

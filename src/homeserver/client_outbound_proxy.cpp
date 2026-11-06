@@ -28,7 +28,7 @@ namespace
 } // namespace
 
 auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string const& client_key,
-                                         std::unique_lock<RuntimeMutex>& guard, OutboundDeadline const& deadline)
+                                         RuntimeLock& guard, OutboundDeadline const& deadline)
     -> std::optional<http::InFlightBudget::Slot>
 {
     if (auto slot = admit_client_outbound_proxy(runtime, client_key); slot.has_value())

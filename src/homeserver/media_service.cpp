@@ -1898,7 +1898,7 @@ namespace
 {
     // The repository's lookups rebuild its indices, so they must never run
     // without the runtime mutex; it used to be read here unlocked.
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const scope = RequestLockScope{guard};
     auto const decision = media_policy_decision(runtime, media_id);
     if (!decision.allowed)
@@ -1939,7 +1939,7 @@ namespace
 {
     // As download_local_media_for_federation: the repository's lookups need the runtime mutex, and
     // the thumbnail path releases it itself for the decode (RuntimeLockRelease finds this guard).
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     auto const scope = RequestLockScope{guard};
     // Local media only: a remote server is never asked to fetch more media for another server. A
     // reserved ID whose content is missing is answered 504 M_NOT_YET_UPLOADED at once (timeout 0),

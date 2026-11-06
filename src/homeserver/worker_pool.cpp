@@ -660,7 +660,7 @@ namespace
             // join, a send, a sync). Complement run 9 (A6) lost a race by tens of
             // milliseconds with no log line to say where, so the wait is logged.
             auto const waiting_since = std::chrono::steady_clock::now();
-            auto guard = std::unique_lock{runtime.mutex};
+            auto guard = RuntimeLock{runtime.mutex};
             auto const waited =
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waiting_since);
             observability::log_diagnostic("worker_pool", "relay.runtime_lock_acquired",
@@ -850,7 +850,7 @@ namespace
         {
             return {};
         }
-        auto const guard = std::unique_lock{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         for (auto const server : servers)
         {
             if (!server.empty() &&
@@ -995,7 +995,7 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     auto envelope = *relayed.envelope;
     envelope.omit_members = frame.omit_members;
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         result = runtime.federation.membership_acceptor(endpoint, envelope.room_id, {}, envelope);
     }
     return serialize_membership_ingest_result(result);
@@ -1053,7 +1053,7 @@ auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     auto const digest = federation::edu_relay_digest(envelope->edu_type, envelope->content_json);
     auto result = federation::EduDispositionResult{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         // Check after any runtime-lock wait. A channel-local parent ID is only a
         // routing reference: it must still name a live main-verified origin on
         // the exact channel that delivered this relay, and the EDU must be one the
@@ -1149,7 +1149,7 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
         return serialize_invite_ingest_result(result);
     }
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         result = runtime.federation.invite_handler(request);
     }
     return serialize_invite_ingest_result(result);
@@ -1173,7 +1173,7 @@ auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_vie
     auto const request_body = json_get_str(request_json, "request_body");
     auto response_body = std::string{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.one_time_keys_claim_provider)
         {
             response_body = runtime.federation.one_time_keys_claim_provider(request_body);
@@ -1196,7 +1196,7 @@ auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_
     auto const user_id = json_get_str(request_json, "user_id");
     auto response_body = std::string{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.user_devices_provider)
         {
             response_body = runtime.federation.user_devices_provider(user_id);
@@ -1214,7 +1214,7 @@ auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::st
     auto const request_body = json_get_str(request_json, "request_body");
     auto response_body = std::string{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.device_keys_query_provider)
         {
             response_body = runtime.federation.device_keys_query_provider(request_body);
@@ -1233,7 +1233,7 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
     auto const user_id = json_get_str(request_json, "user_id");
     auto profile = federation::FederationProfile{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.profile_query_provider)
         {
             profile = runtime.federation.profile_query_provider(user_id);
@@ -1250,7 +1250,7 @@ auto handle_directory_query_ingest_request(HomeserverRuntime& runtime, std::stri
     auto const room_alias = json_get_str(request_json, "room_alias");
     auto directory = federation::FederationDirectory{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.directory_query_provider && !room_alias.empty())
         {
             directory = runtime.federation.directory_query_provider(room_alias);
@@ -1313,7 +1313,7 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     auto const origin = json_get_str(request_json, "origin");
     auto result = federation::RoomReadResult{};
     {
-        auto guard = std::unique_lock{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (runtime.federation.event_query_provider)
         {
             result = runtime.federation.event_query_provider(event_id, origin);

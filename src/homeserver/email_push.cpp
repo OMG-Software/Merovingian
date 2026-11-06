@@ -81,7 +81,7 @@ namespace
     // notification: the pusher, the user's hold on the address, and what is unread now.
     [[nodiscard]] auto prepare_email(HomeserverRuntime& runtime, push::EmailDigestKey const& key) -> PreparedEmail
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto& store = runtime.database.persistent_store;
         // A deactivated account keeps its pushers and 3PIDs, but nobody can sign in to it to turn
         // the emails off, so it is never mailed.

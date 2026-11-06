@@ -28,7 +28,7 @@ namespace merovingian::homeserver
 class RequestLockScope final
 {
 public:
-    explicit RequestLockScope(std::unique_lock<RuntimeMutex>& guard) noexcept;
+    explicit RequestLockScope(RuntimeLock& guard) noexcept;
     ~RequestLockScope();
 
     RequestLockScope(RequestLockScope const&) = delete;
@@ -37,7 +37,7 @@ public:
     auto operator=(RequestLockScope&&) -> RequestLockScope& = delete;
 
 private:
-    std::unique_lock<RuntimeMutex>* previous_{nullptr};
+    RuntimeLock* previous_{nullptr};
 };
 
 // Releases `HomeserverRuntime::mutex` for the lifetime of the scope and
@@ -94,7 +94,7 @@ public:
     // Releases `guard` and any further levels this thread holds. Use this
     // whenever the guard is in hand rather than published: a nested call site
     // has its own guard, and the published one belongs to a different frame.
-    explicit RuntimeLockRelease(std::unique_lock<RuntimeMutex>& guard) noexcept;
+    explicit RuntimeLockRelease(RuntimeLock& guard) noexcept;
 
     // Re-acquires everything the constructor released. A failure to re-acquire
     // leaves the runtime's locking invariant broken with no way to signal it
@@ -116,12 +116,12 @@ public:
     [[nodiscard]] auto levels_released() const noexcept -> std::size_t;
 
 private:
-    void release(std::unique_lock<RuntimeMutex>* guard) noexcept;
+    void release(RuntimeLock* guard) noexcept;
 
     // Non-owning observer of the mutex this scope released, null when it
     // released nothing. A reference member cannot express "nothing to do", and
     // this mirrors what `std::unique_lock` itself stores.
-    RuntimeMutex* mutex_{nullptr};
+    RuntimeMutex const* mutex_{nullptr};
     std::size_t levels_{0U};
 };
 

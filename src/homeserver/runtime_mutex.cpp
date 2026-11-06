@@ -8,7 +8,7 @@
 namespace merovingian::homeserver
 {
 
-void RuntimeMutex::lock()
+void RuntimeMutex::lock() const
 {
     mutex_.lock();
     ++depth_;
@@ -18,7 +18,7 @@ void RuntimeMutex::lock()
     owner_.store(std::this_thread::get_id(), std::memory_order_release);
 }
 
-auto RuntimeMutex::try_lock() -> bool
+auto RuntimeMutex::try_lock() const -> bool
 {
     if (!mutex_.try_lock())
     {
@@ -29,7 +29,7 @@ auto RuntimeMutex::try_lock() -> bool
     return true;
 }
 
-void RuntimeMutex::unlock()
+void RuntimeMutex::unlock() const
 {
     // Clear the owner before the final release so no window exists in which the
     // mutex is free but still reports an owner. Intermediate levels leave the
