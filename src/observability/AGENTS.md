@@ -67,7 +67,7 @@ durability distinction:
   `audit_log` the same way.
 - **A URL is logged without its query** (F-76, ADR-0418). The logger judges a value by its field
   name, so a query holding a credential or a user's URL passes through under `url`. Log
-  scheme, host, port and path (`loggable_url` in `outbound_client.cpp`), not `sanitized_http_target`,
+  scheme, host, port and path (`loggable_url` in `OutboundClient.cpp`), not `sanitized_http_target`,
   whose marker list misses names such as `share_token` or `sig`.
 - **One log record is one physical line.** `SingleLog::make_log_line` passes the module and
   message through `escape_log_controls` (AUTH-9), so control characters in any logged value are

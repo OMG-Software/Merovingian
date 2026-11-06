@@ -349,7 +349,7 @@ auto build_worker_landlock_rules(config::Config const& config) -> std::vector<La
 
     // ---- TLS / CA trust store (best-effort: distro-dependent) --------------
     // Mirrors http::detect_system_ca_trust()'s candidate file/directory list
-    // (src/http/outbound_client.cpp), which the worker's relay pool reaches
+    // (src/http/OutboundClient.cpp), which the worker's relay pool reaches
     // via OutboundClient for outbound federation requests, plus the
     // directories Debian/Ubuntu's per-certificate symlinks under
     // /etc/ssl/certs commonly resolve into. See ADR-0062 part 3, "Allowlist

@@ -3,10 +3,20 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -22,15 +32,6 @@
 #include <thread>
 #include <tuple>
 #include <utility>
-
-#include <fcntl.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
-#include <openssl/x509.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace
 {

@@ -248,6 +248,7 @@ SCENARIO("Federation media downloads run safely alongside uploads", "[media-on-d
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

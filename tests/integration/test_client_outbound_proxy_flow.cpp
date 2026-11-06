@@ -42,7 +42,8 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>

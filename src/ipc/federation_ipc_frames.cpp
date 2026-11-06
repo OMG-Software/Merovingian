@@ -5,7 +5,9 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/crypto/encoding.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
+#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <cstddef>

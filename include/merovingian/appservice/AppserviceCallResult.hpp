@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/outbound_error.hpp"
 
 #include <cstdint>
 #include <string>

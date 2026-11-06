@@ -17,7 +17,9 @@
 #include "merovingian/config/AppserviceConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 
 #include <cstddef>
 #include <cstdint>

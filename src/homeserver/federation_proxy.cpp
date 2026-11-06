@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

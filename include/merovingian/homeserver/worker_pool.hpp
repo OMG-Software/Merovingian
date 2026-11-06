@@ -9,7 +9,8 @@
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/net/thread_pool.hpp"
 

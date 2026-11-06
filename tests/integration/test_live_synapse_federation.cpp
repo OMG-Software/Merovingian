@@ -12,10 +12,17 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
+#include "merovingian/http/outbound_error.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <chrono>
@@ -27,11 +34,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace
 {

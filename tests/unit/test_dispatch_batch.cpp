@@ -11,7 +11,7 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

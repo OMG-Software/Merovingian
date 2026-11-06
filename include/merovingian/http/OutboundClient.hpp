@@ -2,14 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/outbound_error.hpp"
-// PHASE-B: forwarding includes, removed when consumers include the new headers directly.
-#include "merovingian/http/OutboundHeader.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/http/OutboundResponse.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/http/ParsedOutboundUrl.hpp"
 #include "merovingian/http/SystemCaTrust.hpp"
+#include "merovingian/http/outbound_error.hpp"
 
 #include <cstddef>
 #include <cstdint>

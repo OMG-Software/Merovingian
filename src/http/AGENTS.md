@@ -14,7 +14,7 @@ This module has no Matrix-specific logic — it is a transport layer only.
 | `connection_limiter.cpp` | `ConnectionLimiter` — per-client cap on open connections, applied at accept time (ADR-0072); RAII `Slot` |
 | `client_address.cpp` | `client_address_key` — the key per-client limits count under (IPv6 grouped by prefix); shared by the connection cap and the rate limiter |
 | `keep_alive.cpp` | `KeepAlivePolicy` — idle timeout and the `max_connections` cap on parked keep-alive connections (held by the connection dispatcher, not by worker threads); `Connection` header handling |
-| `outbound_client.cpp` | Performs outbound HTTPS requests against a pre-resolved, pinned address |
+| `OutboundClient.cpp` | Performs outbound HTTPS requests against a pre-resolved, pinned address |
 
 `include/merovingian/http/server.hpp` declares an `http::Server` class that has no
 implementation and no users. The listening server lives in `homeserver/http_server.cpp`.
@@ -29,7 +29,7 @@ implementation and no users. The listening server lives in `homeserver/http_serv
 - **`outbound_client` does not resolve hosts.** `perform()` requires `pinned_addresses` and binds
   them with `CURLOPT_RESOLVE`, so the SSRF policy in `federation::security` stays the single
   source of truth. Resolve server names through `federation/server_discovery.cpp` first, then
-  call `outbound_client.hpp`; do not make ad-hoc HTTP calls from other modules.
+  call `OutboundClient.hpp`; do not make ad-hoc HTTP calls from other modules.
 - **`outbound_client` refuses invalid header fields before any I/O (ADR-0180).** A name must be an
   RFC 9110 token and a value must hold no control character other than HTAB; anything else is
   `OutboundError::invalid_header`. Header values carry client input (an identity server access

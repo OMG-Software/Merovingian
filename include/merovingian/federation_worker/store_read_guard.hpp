@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
 
 #include <mutex>
 #include <shared_mutex>

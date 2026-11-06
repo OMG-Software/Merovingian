@@ -3,7 +3,7 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -5,7 +5,7 @@ http_sources = files(
   'in_flight_budget.cpp',
   'keep_alive.cpp',
   'library_versions.cpp',
-  'outbound_client.cpp',
+  'OutboundClient.cpp',
   'rate_limit.cpp',
   'request.cpp',
   'request_limits.cpp',

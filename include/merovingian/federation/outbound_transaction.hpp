@@ -5,7 +5,8 @@
 
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/server_discovery.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
 
 #include <cstdint>
 #include <functional>

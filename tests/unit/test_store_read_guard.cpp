@@ -18,7 +18,7 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation_worker/store_read_guard.hpp"
 

@@ -10,6 +10,8 @@
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/FederationDirectory.hpp"
+#include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/invite_room_state.hpp"

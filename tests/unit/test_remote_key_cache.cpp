@@ -28,7 +28,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

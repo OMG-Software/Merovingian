@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/appservice/ThirdPartyUser.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/outbound_error.hpp"
 
 #include <cstdint>
 #include <string>

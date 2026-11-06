@@ -14,6 +14,7 @@
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"

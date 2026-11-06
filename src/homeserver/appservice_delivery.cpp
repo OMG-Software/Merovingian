@@ -16,7 +16,7 @@
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/outbound_error.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/observability_enums.hpp"
 

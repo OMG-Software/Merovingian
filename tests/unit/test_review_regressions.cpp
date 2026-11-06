@@ -19,6 +19,7 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"

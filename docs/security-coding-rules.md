@@ -895,7 +895,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   less strict.
   Source: `src/http/AGENTS.md`.
 
-- **Route all outbound federation requests through `outbound_client.hpp` — no ad-hoc HTTP
+- **Route all outbound federation requests through `OutboundClient.hpp` — no ad-hoc HTTP
   calls from other modules.**
   Why: the outbound client implements the Matrix server-discovery protocol including the
   SSRF-relevant private/loopback-address blocking; an ad-hoc HTTP call from elsewhere in the

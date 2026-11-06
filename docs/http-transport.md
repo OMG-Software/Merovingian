@@ -323,7 +323,7 @@ for every existing caller (federation, the push-gateway client, the
 identity-server client all stay https-only with no way to override it).
 Setting it to `true` additionally permits `http://` for that one request.
 There are exactly two sanctioned callers, matching the comment on the field
-in `include/merovingian/http/outbound_client.hpp`:
+in `include/merovingian/http/OutboundClient.hpp`:
 
 1. `appservice::AppserviceClient` (`src/appservice/AppserviceClient.cpp`):
    an appservice registration file's `url` is operator-configured — a local

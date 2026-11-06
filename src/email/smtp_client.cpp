@@ -4,7 +4,7 @@
 
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/email/mailbox_address.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 
 #include <curl/curl.h>
