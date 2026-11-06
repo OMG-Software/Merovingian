@@ -243,6 +243,7 @@ inline constexpr std::chrono::hours max_deferred_pdu_age{24};
 inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
 
 struct PersistentStore;
+struct PersistentStoreOpenResult;
 
 namespace detail
 {
