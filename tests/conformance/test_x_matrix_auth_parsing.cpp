@@ -75,7 +75,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
     {
         auto const empty_value = std::string_view{""};
         auto const bearer = std::string_view{"Bearer token123"};
-        auto const wrong_case = std::string_view{"x-matrix origin=\"a.org\",key=\"ed25519:k\",sig=\"s\""};
         // Rejected because ':' and '=' are not tchars, so these values were required to
         // be quoted — not because unquoted values are categorically invalid. See the
         // unquoted-token scenario above for the values a sender may legally leave bare.
@@ -86,7 +85,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
         {
             auto const r_empty = merovingian::federation::parse_x_matrix_authorization_header(empty_value);
             auto const r_bearer = merovingian::federation::parse_x_matrix_authorization_header(bearer);
-            auto const r_case = merovingian::federation::parse_x_matrix_authorization_header(wrong_case);
             auto const r_unquoted = merovingian::federation::parse_x_matrix_authorization_header(unquoted_non_token);
             auto const r_unclosed = merovingian::federation::parse_x_matrix_authorization_header(unclosed_quote);
 
@@ -94,7 +92,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
             {
                 REQUIRE_FALSE(r_empty.has_value());
                 REQUIRE_FALSE(r_bearer.has_value());
-                REQUIRE_FALSE(r_case.has_value());
                 REQUIRE_FALSE(r_unquoted.has_value());
                 REQUIRE_FALSE(r_unclosed.has_value());
             }

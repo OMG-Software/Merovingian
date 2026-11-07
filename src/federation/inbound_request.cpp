@@ -1614,29 +1614,28 @@ namespace
         {
             return {result.status == 0U ? std::uint16_t{400U} : result.status, result.reason};
         }
+        // The signed event this server just produced must parse: never answer 200 with a null `event`, which the
+        // inviting server would take as an accepted invite it cannot use.
+        auto parsed_event = canonicaljson::parse_lossless(result.signed_event_json);
+        if (parsed_event.error != canonicaljson::ParseError::none)
+        {
+            return {500U, "failed to build invite response"};
+        }
         if (route.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}")
         {
             auto response = canonicaljson::Object{};
-            auto signed_event_value = canonicaljson::Value{};
-            auto parsed_event = canonicaljson::parse_lossless(result.signed_event_json);
-            if (parsed_event.error == canonicaljson::ParseError::none)
-            {
-                signed_event_value = std::move(parsed_event.value);
-            }
-            response.push_back(canonicaljson::make_member("event", std::move(signed_event_value)));
+            response.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
             auto body = serialize_response_object(std::move(response));
-            return {200U, body.empty() ? std::string{"{}"} : std::move(body)};
+            if (body.empty())
+            {
+                return {500U, "failed to serialize invite response"};
+            }
+            return {200U, std::move(body)};
         }
         // Spec (PUT /v1/invite, 200 response): "Array of `integer, Event Container`", that is
         // [200, {"event": <invite event>}], with the signed event under the container's `event` key.
         auto container = canonicaljson::Object{};
-        auto signed_event_value = canonicaljson::Value{};
-        auto parsed_event = canonicaljson::parse_lossless(result.signed_event_json);
-        if (parsed_event.error == canonicaljson::ParseError::none)
-        {
-            signed_event_value = std::move(parsed_event.value);
-        }
-        container.push_back(canonicaljson::make_member("event", std::move(signed_event_value)));
+        container.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
         auto tuple = canonicaljson::Array{};
         tuple.push_back(canonicaljson::Value{static_cast<std::int64_t>(200)});
         tuple.push_back(canonicaljson::Value{std::move(container)});
