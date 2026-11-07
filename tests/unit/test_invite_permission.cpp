@@ -102,9 +102,11 @@ auto constexpr config_path_prefix = "/_matrix/client/v3/";
         .response.status;
 }
 
-[[nodiscard]] auto create_room_for(ClientServerRuntime& runtime, std::string const& token) -> std::string
+[[nodiscard]] auto create_room_for(ClientServerRuntime& runtime, std::string const& token,
+                                   std::string const& room_version = "12") -> std::string
 {
-    auto const created = call(runtime, "POST", "createRoom", token, R"({"preset":"private_chat"})");
+    auto const created = call(runtime, "POST", "createRoom", token,
+                              R"({"preset":"private_chat","room_version":")" + room_version + R"("})");
     REQUIRE(created.response.status == 200U);
     auto const parsed = merovingian::tests::parse_object(created.response.body);
     auto const* room_id = merovingian::tests::string_member(parsed, "room_id");
@@ -354,7 +356,7 @@ SCENARIO("A federation invite to a local user who blocks invites is refused with
         WHEN("the remote server sends PUT /_matrix/federation/v1/invite for bob into a room held here")
         {
             auto const alice = register_user(runtime, "alice");
-            auto const room_id = create_room_for(runtime, alice);
+            auto const room_id = create_room_for(runtime, alice, "10");
             auto const version =
                 merovingian::homeserver::stored_room_version(runtime.homeserver.database.persistent_store, room_id);
             REQUIRE(version.has_value());
