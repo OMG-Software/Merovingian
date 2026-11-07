@@ -35,6 +35,9 @@
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/sync/ParkedPoll.hpp"
+#include "merovingian/sync/ParkedPollLimits.hpp"
+#include "merovingian/sync/WakeReason.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1310,7 +1313,9 @@ auto sync_admission_caps(config::HttpTransportConfig const& settings, std::size_
         pool_worker_count == 0U ? static_cast<std::size_t>(settings.sync_threads) : pool_worker_count;
     auto const pool_cap = static_cast<std::uint32_t>(std::min<std::size_t>(
         configured_pool_size, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    auto const global = std::min(settings.sync_max_in_flight, pool_cap);
+    // A parked wait holds no thread (ADR-0569), so with a sync pool the cap is not the pool size (ADR-0570).
+    auto const global =
+        pool_worker_count == 0U ? std::min(settings.sync_max_in_flight, pool_cap) : settings.sync_max_in_flight;
     return SyncAdmissionCaps{
         .global = global,
         .per_user = std::min(settings.sync_max_per_user, global),
@@ -1393,6 +1398,9 @@ public:
     [[nodiscard]] auto start() -> bool;
     auto request_stop() -> void;
     [[nodiscard]] auto running() const -> bool;
+    // Whether a long-poll with nothing to return can park in the notifier's registry (ADR-0569): the registry was
+    // started by this dispatcher and is still running.
+    [[nodiscard]] auto parks_polls() const -> bool;
 
     // Accept path: an admitted connection waits, parked, for its first byte.
     auto accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode, ConnectionAdmission admission,
@@ -1426,6 +1434,8 @@ private:
     // Created by start() before any listener runs; the pointer never changes
     // afterwards, so the threads that use it need no lock to read it.
     std::unique_ptr<net::ConnectionParker> m_parker{};
+    // Set by start(), before any listener runs: this dispatcher started the notifier's registry.
+    bool m_owns_poll_registry{false};
 };
 
 namespace
@@ -1552,73 +1562,126 @@ namespace
         std::string connection_header;
         http::InFlightBudget::Slot user_slot;
         http::InFlightBudget::Slot device_slot;
+        // Set when the first pass starts: the wait's timeout runs from there, not from the queueing.
+        std::chrono::steady_clock::time_point deadline{};
+        // True until the first pass has run; the first pass checks the positions as well (ADR-0437).
+        bool first_pass{true};
     };
 
-    auto run_sync_handoff(SyncHandoff& handoff) -> void
+    // A long-poll the notifier's registry can hold (ADR-0569). Destroying it closes the connection and releases
+    // the admission slots, so a poll the registry drops at shutdown cleans up after itself.
+    struct ParkedSyncPoll final : sync::ParkedPoll
     {
+        explicit ParkedSyncPoll(SyncHandoff handoff_value)
+            : handoff{std::move(handoff_value)}
+        {
+        }
+        SyncHandoff handoff;
+    };
+
+    // True when a non-blocking peek shows the peer closed (FIN or RST) rather than sent data or nothing.
+    [[nodiscard]] auto peer_has_closed(int fd) -> bool
+    {
+        auto peek_buf = std::array<char, 1>{};
+        auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
+        return n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+    }
+
+    enum class PollStep : std::uint8_t
+    {
+        // Respond now: with the answered result, or with a final rerun that does not wait.
+        answer,
+        client_gone,
+        // The poll was moved into the registry and must not be touched again.
+        parked,
+    };
+
+    // One pass of a long-poll on a sync-pool thread (ADR-0569): take the cursor BEFORE the rerun, rerun, and if
+    // there is still nothing, park with that cursor. A woken poll is rerun from the start; the registry never
+    // answers. `poll` is null on return exactly when the result is `parked` (or a throw lost it).
+    [[nodiscard]] auto advance_sync_poll(std::unique_ptr<ParkedSyncPoll>& poll, sync::WakeReason reason,
+                                         std::optional<DispatchResult>& answered) -> PollStep
+    {
+        auto& handoff = poll->handoff;
         auto& runtime = handoff.ctx.runtime;
-        auto& stats = handoff.ctx.stats;
         auto* const sync_pool = handoff.ctx.sync_pool;
+        auto& notifier = handoff.notifier;
+        auto const fd = http_connection(handoff.connection).fd();
+        if (peer_has_closed(fd))
+        {
+            return PollStep::client_gone;
+        }
+        if (handoff.deadline == std::chrono::steady_clock::time_point{})
+        {
+            handoff.deadline = std::chrono::steady_clock::now() + handoff.wait.timeout;
+        }
+        if (reason == sync::WakeReason::deadline || !sync_pool->running())
+        {
+            return PollStep::answer;
+        }
+        // (a) the cursor, then (b) the rerun whose snapshot is after it.
+        auto cursor = notifier.observe(handoff.wait.user_id);
+        auto const first = std::exchange(handoff.first_pass, false);
+        if (!first || notifier.wait_for_change(handoff.wait.since_stream_ordering, handoff.wait.since_sync_stream_id,
+                                               std::chrono::milliseconds{0}))
+        {
+            auto interim = rerun_waiting_sync(runtime, handoff.request, true);
+            if (interim.status == DispatchResult::Status::complete)
+            {
+                answered = std::move(interim);
+                return PollStep::answer;
+            }
+            handoff.wait.since_stream_ordering = interim.wait.since_stream_ordering;
+            handoff.wait.since_sync_stream_id = interim.wait.since_sync_stream_id;
+        }
+        if (std::chrono::steady_clock::now() >= handoff.deadline)
+        {
+            return PollStep::answer;
+        }
+        // (c) park. Once parked the poll may be resumed on another thread at any moment: copy what is needed first.
+        auto const deadline = handoff.deadline;
+        auto* const dispatcher = handoff.ctx.dispatcher.get();
+        if (dispatcher != nullptr && dispatcher->parks_polls())
+        {
+            auto base = std::unique_ptr<sync::ParkedPoll>{std::move(poll)};
+            if (notifier.park(cursor, deadline, base).parked)
+            {
+                return PollStep::parked;
+            }
+            // Refused (full, or stopping): keep the thread and wait as before, from the cursor already held.
+            poll.reset(static_cast<ParkedSyncPoll*>(base.release()));
+        }
+        auto& held = poll->handoff;
+        constexpr auto poll_interval = std::chrono::milliseconds{1000U};
+        auto const outcome = sync::long_poll_wait(
+            held.notifier, held.wait.user_id, held.wait.since_stream_ordering, held.wait.since_sync_stream_id, deadline,
+            poll_interval,
+            [sync_pool] {
+                return sync_pool->running();
+            },
+            [&] {
+                auto interim = rerun_waiting_sync(runtime, held.request, true);
+                if (interim.status == DispatchResult::Status::complete)
+                {
+                    answered = std::move(interim);
+                    return sync::LongPollStep{true, 0U, 0U};
+                }
+                return sync::LongPollStep{false, interim.wait.since_stream_ordering, interim.wait.since_sync_stream_id};
+            },
+            [fd] {
+                // Quiet slice: a peer that closed ends the wait at once, which keeps a client that reconnects in a
+                // loop from exhausting the pool.
+                return !peer_has_closed(fd);
+            },
+            std::move(cursor));
+        return outcome.client_gone ? PollStep::client_gone : PollStep::answer;
+    }
+
+    // Writes the answer and hands a kept-alive connection back to the dispatcher.
+    auto finish_sync_handoff(SyncHandoff& handoff, DispatchResult const& final_result) -> void
+    {
+        auto& stats = handoff.ctx.stats;
         auto& connection = http_connection(handoff.connection);
-        auto const fd = connection.fd();
-        // Re-wait loop: after each notifier fire, call the handler with
-        // can_wait=true. If the handler returns needs_wait the wakeup was
-        // caused by an event irrelevant to this connection (e.g. another
-        // user's device key upload); advance the cursor past the irrelevant
-        // bump and continue polling. If it returns complete, send immediately.
-        auto dispatched_result = std::optional<DispatchResult>{};
-        auto client_gone = false;
-        try
-        {
-            // Poll in 1-second slices: short enough to detect a dropped client
-            // connection within one slice, and to bound shutdown
-            // (request_stop()) to one slice regardless of the client timeout.
-            constexpr auto poll_interval = std::chrono::milliseconds{1000U};
-            auto const wait_params = handoff.wait;
-            auto const deadline = std::chrono::steady_clock::now() + wait_params.timeout;
-            auto const outcome = sync::long_poll_wait(
-                handoff.notifier, wait_params.user_id, wait_params.since_stream_ordering,
-                wait_params.since_sync_stream_id, deadline, poll_interval,
-                [sync_pool] {
-                    return sync_pool->running();
-                },
-                [&] {
-                    auto interim = rerun_waiting_sync(runtime, handoff.request, true);
-                    if (interim.status == DispatchResult::Status::complete)
-                    {
-                        dispatched_result = std::move(interim);
-                        return sync::LongPollStep{true, 0U, 0U};
-                    }
-                    return sync::LongPollStep{false, interim.wait.since_stream_ordering,
-                                              interim.wait.since_sync_stream_id};
-                },
-                [fd] {
-                    // Notifier did not fire (poll-slice timeout). Check whether
-                    // the peer is still connected via a non-blocking peek: when
-                    // the client closes (FIN or RST), recv returns 0 or a
-                    // connection error, not EAGAIN, so the thread exits at once
-                    // instead of waiting out the timeout. This prevents sync-pool
-                    // exhaustion when clients reconnect rapidly (an SDK reset
-                    // loop abandoning one long-poll every ~90 ms).
-                    auto peek_buf = std::array<char, 1>{};
-                    auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
-                    return !(n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR));
-                });
-            client_gone = outcome.client_gone;
-        }
-        catch (...)
-        {
-            log_swallowed_exception("sync_pool_dispatch");
-        }
-        if (client_gone)
-        {
-            // Client closed before we could respond: close without logging a
-            // completed request.
-            handoff.connection.reset();
-            return;
-        }
-        auto const final_result = dispatched_result.has_value() ? std::move(*dispatched_result)
-                                                                : rerun_waiting_sync(runtime, handoff.request, false);
         ++stats.completed_requests;
         log_diagnostic("request.completed",
                        {
@@ -1642,6 +1705,52 @@ namespace
             return;
         }
         handoff.connection.reset();
+    }
+
+    // A sync-pool task: the first pass of a new long-poll, or the resumption of a woken or expired parked one.
+    auto run_sync_poll(std::unique_ptr<ParkedSyncPoll> poll, sync::WakeReason reason) -> void
+    {
+        auto answered = std::optional<DispatchResult>{};
+        auto step = PollStep::answer;
+        try
+        {
+            step = advance_sync_poll(poll, reason, answered);
+        }
+        catch (...)
+        {
+            log_swallowed_exception("sync_pool_dispatch");
+        }
+        if (poll == nullptr || step == PollStep::parked)
+        {
+            return;
+        }
+        if (step == PollStep::client_gone)
+        {
+            // Closed before we could respond: close without logging a completed request.
+            return;
+        }
+        auto& handoff = poll->handoff;
+        auto const final_result = answered.has_value()
+                                      ? std::move(*answered)
+                                      : rerun_waiting_sync(handoff.ctx.runtime, handoff.request, false);
+        finish_sync_handoff(handoff, final_result);
+    }
+
+    // The registry's resume callback: runs on the registry thread, so it only hands the poll to the sync pool. A
+    // pool that is stopping or full drops it, which closes the connection.
+    auto resume_parked_poll(net::ThreadPool& pool, std::unique_ptr<sync::ParkedPoll> base, sync::WakeReason reason)
+        -> void
+    {
+        auto typed = std::unique_ptr<ParkedSyncPoll>{static_cast<ParkedSyncPoll*>(base.release())};
+        // Pool tasks are copyable; the holder carries the unique pointer to exactly one run (ADR-0077 rule 7).
+        auto holder = std::make_shared<std::unique_ptr<ParkedSyncPoll>>( // SHARED_PTR: reviewed — copyable pool task
+            std::move(typed));
+        if (!pool.submit([holder, reason] {
+                run_sync_poll(std::move(*holder), reason);
+            }))
+        {
+            log_diagnostic("sync.resume_refused", {});
+        }
     }
 
     // A remote media request handed to the media fetch pool (ADR-0121). It owns
@@ -1997,21 +2106,22 @@ namespace
             {
                 // Hand off to the dedicated sync pool: this main-pool worker is
                 // freed at once, and the sync task owns the connection from
-                // here (closing it, or handing it back to the dispatcher for
-                // the next keep-alive round).
-                auto handoff = std::make_shared<SyncHandoff>(
-                    SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
-                                std::move(owner), ctx, local_request, result.wait, *notifier, parse.request.version,
-                                connection_header, std::move(*user_slot), std::move(*device_slot)});
-                if (ctx.sync_pool->submit([handoff] {
-                        run_sync_handoff(*handoff);
+                // here (answering it and closing it or handing it back to the
+                // dispatcher, or parking it in the notifier's registry, ADR-0569).
+                auto poll =
+                    std::make_shared<std::unique_ptr<ParkedSyncPoll>>( // SHARED_PTR: reviewed — copyable pool task
+                        std::make_unique<ParkedSyncPoll>(SyncHandoff{
+                            std::move(owner), ctx, local_request, result.wait, *notifier, parse.request.version,
+                            connection_header, std::move(*user_slot), std::move(*device_slot)}));
+                if (ctx.sync_pool->submit([poll] {
+                        run_sync_poll(std::move(*poll), sync::WakeReason::published);
                     }))
                 {
                     return RoundOutcome::transferred;
                 }
                 // A refused handoff is backpressure, never a reason to wait on
                 // a main request worker. Take ownership back before answering.
-                owner = std::move(handoff->connection);
+                owner = std::move((*poll)->handoff.connection);
                 write_error_response(*stream, 429U, matrix_error("M_LIMIT_EXCEEDED", "sync pool unavailable", 1000U),
                                      transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
                 return RoundOutcome::close_connection;
@@ -2078,7 +2188,28 @@ auto HttpConnectionDispatcher::Impl::start() -> bool
                 self->dispatch(std::move(dispatched));
             }
         });
-    return m_parker->start();
+    if (!m_parker->start())
+    {
+        return false;
+    }
+    // Parking needs a sync pool to resume into and a notifier; otherwise long-polls keep their thread. A registry
+    // already started by another dispatcher on this runtime is left to it.
+    if (sync_pool != nullptr && runtime.sync_notifier != nullptr)
+    {
+        auto const& http_settings = runtime.homeserver.config.server().http;
+        auto const park_limits =
+            sync::ParkedPollLimits{http_settings.sync_max_in_flight, http_settings.sync_max_per_user};
+        m_owns_poll_registry = runtime.sync_notifier->parking().start(
+            park_limits, [pool = sync_pool](std::unique_ptr<sync::ParkedPoll> poll, sync::WakeReason reason) {
+                resume_parked_poll(*pool, std::move(poll), reason);
+            });
+    }
+    return true;
+}
+
+auto HttpConnectionDispatcher::Impl::parks_polls() const -> bool
+{
+    return m_owns_poll_registry && runtime.sync_notifier != nullptr && runtime.sync_notifier->parking().running();
 }
 
 auto HttpConnectionDispatcher::Impl::request_stop() -> void
@@ -2086,6 +2217,11 @@ auto HttpConnectionDispatcher::Impl::request_stop() -> void
     if (m_parker != nullptr)
     {
         m_parker->request_stop();
+    }
+    // After the parker: closes every parked long-poll and joins the registry thread before the pools stop (ADR-0569).
+    if (m_owns_poll_registry)
+    {
+        runtime.sync_notifier->parking().request_stop();
     }
 }
 

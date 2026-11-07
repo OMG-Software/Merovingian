@@ -599,7 +599,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | Key suffix | Default | Valid range |
 |---|---|---|
 | `sync_threads` | `128` | 4..512 |
-| `sync_max_in_flight` | `128` | 1..512 |
+| `sync_max_in_flight` | `2048` | 1..16,384 |
 | `sync_max_per_user` | `4` | 1..64 |
 | `sync_max_per_device` | `2` | 1..16 |
 | `media_fetch_threads` | `16` | 1..256 |
