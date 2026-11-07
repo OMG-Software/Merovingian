@@ -1376,8 +1376,9 @@ namespace
         // read back until 0.12.42: every profile vanished at each restart.
         if (table_load_profile_includes("profiles", profile))
         {
-            auto profiles = query_rows(connection, "postgresql_load_profiles",
-                                       "SELECT user_id, displayname, avatar_url, fields_json FROM profiles ORDER BY user_id");
+            auto profiles =
+                query_rows(connection, "postgresql_load_profiles",
+                           "SELECT user_id, displayname, avatar_url, fields_json FROM profiles ORDER BY user_id");
             if (!profiles.ok)
             {
                 return false;
@@ -2784,11 +2785,12 @@ namespace detail
         }
         // One statement, so the length check and the slice come from the same row version. substring() on bytea
         // is 1-based; the offset, the length and the storage id are bound parameters, never SQL text.
-        auto result = opened.connection.execute(
-            {"postgresql_read_media_blob_chunk",
-             "SELECT substring(bytes from ($2::bigint + 1) for $3::bigint), octet_length(bytes) FROM media_blobs "
-             "WHERE storage_id = $1 AND ref_count <> '0'",
-             {{std::string{storage_id}, false}, {std::to_string(offset), false}, {std::to_string(length), false}}});
+        auto result = opened.connection.execute({
+            "postgresql_read_media_blob_chunk",
+            "SELECT substring(bytes from ($2::bigint + 1) for $3::bigint), octet_length(bytes) FROM media_blobs "
+            "WHERE storage_id = $1 AND ref_count <> '0'",
+            {{std::string{storage_id}, false}, {std::to_string(offset), false}, {std::to_string(length), false}}
+        });
         if (!result.ok || result.rows.empty() || result.rows.front().size() < 2U ||
             result.rows.front()[1] != std::to_string(expected_size) || result.rows.front()[0].size() != length)
         {

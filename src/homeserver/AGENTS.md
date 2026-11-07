@@ -17,6 +17,7 @@ This is the largest and most complex module — read this file carefully before 
 | `RuntimeLockRelease.cpp` | `RuntimeLockRelease`: releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
+| `streamed_body.cpp` | `write_streamed_body`: sends a response body of known length as chunks, one read then one write at a time, stopping at the first failure. Used by `http_server.cpp` for `MediaBodyStream` downloads (ADR-0574). No download holds a lock or a database connection while a chunk is written |
 | `MediaUploadNotifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |

@@ -563,8 +563,8 @@ namespace
             media::local_media_still_servable(runtime.media_repository, media_id, storage_id, legacy_endpoint))
         {
             auto streamed = make_operation_result(true, std::string{content_type} + "|", {}, 200U);
-            streamed.body_stream = MediaBodyStream{database::prepare_media_blob_read(store, storage_id),
-                                                   blob->size_bytes};
+            streamed.body_stream =
+                MediaBodyStream{database::prepare_media_blob_read(store, storage_id), blob->size_bytes};
             return streamed;
         }
         auto bytes = read_servable_media_bytes(runtime, media_id, storage_id, legacy_endpoint);

@@ -1925,7 +1925,8 @@ namespace detail
         }
         auto row_id = std::int64_t{0};
         {
-            auto statement = prepare(database, "SELECT rowid FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'");
+            auto statement =
+                prepare(database, "SELECT rowid FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'");
             if (!statement.has_value() || !bind_text_params(*statement->get(), {std::string{storage_id}}) ||
                 first_step(database, *statement->get()) != SQLITE_ROW)
             {

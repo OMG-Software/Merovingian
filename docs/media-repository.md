@@ -95,6 +95,11 @@ current in-process runtime path.
   federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
+- A download of a file larger than one chunk (256 KiB, `database::media_blob_chunk_bytes`) on SQLite or PostgreSQL is
+  streamed (ADR-0574): the response carries a `MediaBodyStream` instead of body bytes, `Content-Length` is the stored
+  size, and `http_server.cpp` reads one chunk at a time on a short-lived connection and writes it before reading the
+  next, with no lock held. A removal during the transfer fails the next chunk and closes the connection. Thumbnails,
+  uploads and the federation media download are still buffered.
 - Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
   64 MiB, least recently used first out; empty or `0` disables it), keyed by the source
   record, size and method, with each axis past the decoder's largest (4096) keyed as

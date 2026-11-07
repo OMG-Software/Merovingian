@@ -1749,7 +1749,7 @@ namespace
                            {"method",         handoff.request.method,                                       false},
                            {"target",         observability::sanitized_http_target(handoff.request.target), false},
                            {"status",         std::to_string(final_result.response.status),                 false},
-                           {"response_bytes", std::to_string(response_body_bytes(final_result.response)),            false}
+                           {"response_bytes", std::to_string(response_body_bytes(final_result.response)),   false}
         });
         auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
         auto stream = make_connection_stream(connection);
@@ -1885,7 +1885,7 @@ namespace
                            {"method",         handoff.request.method,                                       false},
                            {"target",         observability::sanitized_http_target(handoff.request.target), false},
                            {"status",         std::to_string(result.response.status),                       false},
-                           {"response_bytes", std::to_string(response_body_bytes(result.response)),                  false}
+                           {"response_bytes", std::to_string(response_body_bytes(result.response)),         false}
         });
         auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
         auto stream = make_connection_stream(connection);
@@ -2214,7 +2214,7 @@ namespace
                            {"method",         local_request.method,                                       false},
                            {"target",         observability::sanitized_http_target(local_request.target), false},
                            {"status",         std::to_string(result.response.status),                     false},
-                           {"response_bytes", std::to_string(response_body_bytes(result.response)),                false}
+                           {"response_bytes", std::to_string(response_body_bytes(result.response)),       false}
         });
         auto const decision = decide_connection(ctx, connection, parse.request.version, connection_header);
         if (!write_response(*stream, result.response, decision, keep_alive_policy_for(ctx).idle_timeout_seconds))
