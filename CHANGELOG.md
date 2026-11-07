@@ -16,6 +16,8 @@ Fixes the low findings of the November 2026 project analysis.
 
 ### Added
 
+- `POST /_matrix/client/v1/login/get_token` mints single-use login tokens for the `m.login.token` flow (CS8, ADR-0548). Tokens last 2 minutes and are held in memory only. The feature is off unless `security.login_token.enabled` is set. Every call asks for the account password. A user may hold at most 4 tokens and the server 1024, and each user may make 4 requests a minute. When enabled, `GET /login` offers the flow with `get_login_token: true`, and `/capabilities` reports `m.get_login_token`.
+- `GET /_matrix/client/v3/admin/whois/{userId}`: a server admin may look up any local user, and other users only themselves (CS8). It returns the user's devices. There is no connection data, because the server records none.
 - CI fails a job on any Catch2 skip that `tests/expected_skips.json` does not list for it, and fails closed on a missing or truncated report (T7, ADR-0546). Direct unit tests cover nine headers that had none (T5, T6).
 - Operator guidance in the user manual: ports and DNS, metrics, log rotation, TLS renewal, key rotation and troubleshooting.
 
