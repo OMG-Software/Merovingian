@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-runner-order-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_runner_order.py'],
+  )
+
+  test(
     'expected-skips-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_expected_skips.py'],
