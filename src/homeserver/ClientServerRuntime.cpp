@@ -6360,6 +6360,9 @@ namespace
         // reused for every room's timeline/ephemeral events and the invite
         // list below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+        // Invite permission (SS7, ADR-0552): invites already stored "MUST NOT be served over client synchronisation
+        // endpoints" while the user blocks them. Read once per request, never per invite.
+        auto const invites_blocked = invite_permission_blocks(store, user);
 
         // m.room.history_visibility (CSAZ-3): one filter for the request, shared by every
         // joined room's timeline.
@@ -6636,6 +6639,10 @@ namespace
             }
             if (membership.membership == "invite")
             {
+                if (invites_blocked)
+                {
+                    continue;
+                }
                 // Ignoring Users: "Servers must not send room invites from
                 // ignored users to clients." An invite whose inviter cannot
                 // be resolved (no matching PersistentInvite row) is passed
@@ -7563,7 +7570,12 @@ namespace
         // room itself should the invite later be accepted. An invite from an ignored user is
         // withheld entirely ("Servers must not send room invites from ignored users to clients").
         // An invite this server holds the room state of is withheld until that state has it, as /sync does
-        // (ADR-0301).
+        // (ADR-0301). Every invite is withheld while the user blocks invites (SS7, ADR-0552), and no `invite:`
+        // entry is recorded, so the connection reports it once the block is lifted.
+        if (invite_permission_blocks(store, user))
+        {
+            invited_subscription_ids.clear();
+        }
         auto invites_reported = std::vector<std::string>{};
         auto const invite_room_state = invited_subscription_ids.empty()
                                            ? std::optional<InviteRoomStateIndex>{}

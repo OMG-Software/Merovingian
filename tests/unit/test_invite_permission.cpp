@@ -390,3 +390,61 @@ SCENARIO("A federation invite to a local user who blocks invites is refused with
         }
     }
 }
+
+// Spec, "Invite permission": "invite events for this user already in the database, or received over federation,
+// MUST NOT be served over client synchronisation endpoints such as GET /sync", and "Servers MAY return any
+// suppressed invite events over GET /sync if invite blocking is later disabled." This server returns them.
+SCENARIO("An invite stored before its user blocks invites is withheld from /sync and sliding sync",
+         "[ss7][invite-permission][sync][security]")
+{
+    GIVEN("bob, invited to alice's room while he accepted invites, who then blocks every invite")
+    {
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        auto const room_id = create_room_for(runtime, alice);
+        REQUIRE(call(runtime, "POST", "rooms/" + room_id + "/invite", alice, R"({"user_id":"@bob:example.org"})")
+                    .response.status == 200U);
+        REQUIRE(membership_row(runtime, room_id, "@bob:example.org") == "invite");
+        REQUIRE(set_invite_permission(runtime, "bob", bob, R"({"default_action":"block"})") == 200U);
+        auto const sliding_sync = [&runtime, &bob, &room_id]() {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0", bob,
+                          R"({"conn_id":"ss7","room_subscriptions":{")" + room_id + R"(":{"timeline_limit":1}}})"});
+        };
+
+        WHEN("bob syncs with GET /sync and with sliding sync")
+        {
+            auto const synced = call(runtime, "GET", "sync?timeout=0", bob, {});
+            auto const slid = sliding_sync();
+
+            THEN("neither answer names the room he is invited to")
+            {
+                CAPTURE(synced.response.body, slid.response.body);
+                REQUIRE(synced.response.status == 200U);
+                REQUIRE(slid.response.status == 200U);
+                REQUIRE(synced.response.body.find(room_id) == std::string::npos);
+                REQUIRE(slid.response.body.find(room_id) == std::string::npos);
+            }
+        }
+
+        WHEN("bob first syncs while blocking, then stops blocking invites and syncs again")
+        {
+            REQUIRE(sliding_sync().response.status == 200U);
+            REQUIRE(set_invite_permission(runtime, "bob", bob, "{}") == 200U);
+            auto const synced = call(runtime, "GET", "sync?timeout=0", bob, {});
+            auto const slid = sliding_sync();
+
+            THEN("both answers report the invite again")
+            {
+                CAPTURE(synced.response.body, slid.response.body);
+                REQUIRE(synced.response.status == 200U);
+                REQUIRE(slid.response.status == 200U);
+                REQUIRE(synced.response.body.find("\"invite\":{\"" + room_id + "\"") != std::string::npos);
+                REQUIRE(slid.response.body.find(room_id) != std::string::npos);
+            }
+        }
+    }
+}

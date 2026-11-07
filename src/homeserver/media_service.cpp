@@ -549,17 +549,18 @@ namespace
     }
 
     // ADR-0574: the answer for a download of media already resolved under the runtime mutex. A file larger than one
-    // chunk, on a database backend, is not read here at all: the result carries a MediaBodyStream and the HTTP
-    // layer reads it chunk by chunk as it writes, so no request holds the file. Anything else is read whole, as
-    // before, which is still at most one chunk. Runs with the runtime mutex held. nullopt when the bytes cannot
-    // be read or the media is no longer servable.
+    // chunk, on SQLite, is not read here at all: the result carries a MediaBodyStream and the HTTP layer reads it
+    // chunk by chunk as it writes, so no request holds the file. PostgreSQL stays buffered: a substring() of a
+    // compressed TOASTed bytea decompresses the whole value for every chunk. Anything else is read whole, as
+    // before. Runs with the runtime mutex held. nullopt when the bytes cannot be read or the media is no longer
+    // servable.
     [[nodiscard]] auto serve_servable_media(HomeserverRuntime& runtime, std::string_view media_id,
                                             std::string_view storage_id, bool legacy_endpoint,
                                             std::string_view content_type) -> std::optional<OperationResult>
     {
         auto const& store = runtime.database.persistent_store;
         auto const* blob = media::find_local_media_blob(runtime.media_repository, storage_id);
-        if (blob != nullptr && store.backend != database::PersistentStoreBackend::memory &&
+        if (blob != nullptr && store.backend == database::PersistentStoreBackend::sqlite &&
             blob->size_bytes > database::media_blob_chunk_bytes &&
             media::local_media_still_servable(runtime.media_repository, media_id, storage_id, legacy_endpoint))
         {

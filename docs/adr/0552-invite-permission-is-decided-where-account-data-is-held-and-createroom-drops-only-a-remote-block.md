@@ -33,6 +33,13 @@ server answers the offer after the room exists; its 403 `M_INVITE_BLOCKED` drops
 and nothing queued; `deliver_remote_invite` reports the errcode (`RemoteInviteResult::errcode`) from the fixed value
 `OutboundCallResult::remote_errcode`, never from the remote's text.
 
+An invite already stored when the user starts blocking (or one stored before the account data was written) is
+withheld from `/sync` (`rooms.invite`) and from sliding sync's invited `room_subscriptions` while the block lasts
+(the spec's MUST). The check is made once per request, for the syncing user only, so it costs one account-data
+lookup whatever the number of invites. The invite row is kept, not rejected: the spec lets a server return
+suppressed invites once blocking is disabled, and this server does, on the next sync. Sliding sync records no
+`invite:<room>` entry for a withheld invite, so the connection reports it after the block is lifted.
+
 ### Negative Consequences
 
 * `PUT /state/m.room.member` with membership invite for a REMOTE invitee still stores the event and queues it (it is

@@ -1,6 +1,6 @@
 # Media downloads are streamed from the database in chunks
 
-* Status: accepted; supersedes the "single in-memory blob copy" part of [ADR-0113](0113-default-media-quotas-and-single-blob-copy.md)
+* Status: accepted; supersedes the "single in-memory blob copy" part of [ADR-0113](0113-default-media-quotas-and-single-blob-copy.md) for SQLite downloads; PostgreSQL stays buffered
 * Deciders: James Chapman
 * Date: 2026-11-07
 
@@ -30,7 +30,7 @@ constant instead of the file size, without holding a database connection while a
 ## Decision Outcome
 
 Chosen option: "one chunk per short-lived connection". A download of a file larger than
-`database::media_blob_chunk_bytes` (256 KiB) on a database backend returns `OperationResult::body_stream` /
+`database::media_blob_chunk_bytes` (256 KiB) on SQLite returns `OperationResult::body_stream` /
 `LocalHttpResponse::body_stream` (a `MediaBodyStream`: a `MediaBlobRead` captured under the runtime mutex, and the
 stored `size_bytes`) with an empty body. `http_server.cpp::write_response` sends the head with
 `Content-Length: size_bytes`, then `write_streamed_body` reads a chunk with `database::read_media_blob_chunk` and
@@ -41,8 +41,14 @@ chunk. A file of one chunk or less, and the memory backend, are read whole as be
   the connection is closed (rolling back) before the chunk is written. The row is selected with a bound `storage_id`
   and `ref_count <> '0'`, and the blob length must equal the promised length. Statement preparation and the first
   step use the ADR-0159 retry.
-* PostgreSQL: `substring(bytes from $2::bigint + 1 for $3::bigint)` with bound parameters, plus `octet_length(bytes)`
-  in the same statement, on a fresh connection per chunk.
+* PostgreSQL: not streamed; a download is read whole, as before. `database::read_media_blob_chunk` has a PostgreSQL
+  branch (`substring(bytes from $2::bigint + 1 for $3::bigint)` with `octet_length(bytes)`, bound parameters, a fresh
+  connection per chunk), but `serve_servable_media` never builds a stream for it. `media_blobs.bytes` keeps the
+  default `EXTENDED` storage, so a large value is compressed in TOAST and every `substring()` decompresses the whole
+  value: about 200 chunks of a 50 MiB file would cost about 200 full decompressions, a CPU amplification any client
+  that can download the file could trigger. Turn streaming on for PostgreSQL only together with a migration to
+  `ALTER COLUMN bytes SET STORAGE EXTERNAL` (which applies to values written after it, so existing rows would need
+  rewriting) and a test against a real cluster.
 
 Why the blob cannot change mid-stream unnoticed: a stored blob's bytes are written once, under its content-hash
 `storage_id`. The only later write to `bytes` is moderation/release, which sets `ref_count` to 0 and replaces the bytes.
@@ -53,11 +59,10 @@ request answered just before the quarantine.
 
 ### Negative Consequences
 
-* A connection (SQLite open, PostgreSQL connect and authenticate) per 256 KiB chunk, so a 50 MiB file costs about 200
-  of them. Holding one open would be cheaper and is rejected: it pins a read lock (SQLite) or a backend (PostgreSQL)
-  for as long as a client is slow.
-* PostgreSQL `substring()` on a compressed TOASTed value detaches the whole value per chunk. The column's storage
-  would need to be `EXTERNAL` to slice cheaply; that is a schema change left for later.
+* A SQLite open per 256 KiB chunk, so a 50 MiB file costs about 200 of them. Holding one open would be cheaper and is
+  rejected: it pins a read lock for as long as a client is slow.
+* PostgreSQL downloads are still buffered whole (see above), so on PostgreSQL the memory problem this ADR addresses
+  remains until the column's storage changes.
 * Left buffered: thumbnails (the decoder needs the whole file), uploads, the federation media download (a multipart
   body that also crosses the worker IPC), and a remote media fetch's first response (the bytes just arrived over the
   network). A slow-drip client that accepts a byte inside each write timeout can still hold a request thread, as with

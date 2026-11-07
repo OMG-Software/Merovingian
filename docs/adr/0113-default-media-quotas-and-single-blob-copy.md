@@ -1,7 +1,8 @@
 # Default media quotas and a single in-memory blob copy
 
-* Status: superseded by [ADR-0574](0574-media-downloads-are-streamed-from-the-database-in-chunks.md) for the in-memory blob copy; accepted for the quota defaults; since [ADR-0119](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
-  media bytes are no longer held in memory, so `max_total_size` limits stored bytes, not
+* Status: accepted for the quota defaults; the single in-memory blob copy is superseded, for SQLite downloads, by
+  [ADR-0574](0574-media-downloads-are-streamed-from-the-database-in-chunks.md). Since
+  [ADR-0119](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md) media bytes are no longer held in memory, so `max_total_size` limits stored bytes, not
   memory. On 2026-10-07 the project owner raised the defaults for on-disk storage to
   `250GiB` total, `10GiB` per user and `1000000` records, and cached remote media moved to
   its own budget ([ADR-0120](0120-cached-remote-media-has-its-own-storage-budget.md)).

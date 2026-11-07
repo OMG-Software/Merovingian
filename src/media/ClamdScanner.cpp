@@ -5,7 +5,6 @@
 
 #include "merovingian/core/FileDescriptor.hpp"
 
-#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -102,22 +101,12 @@ namespace
             error = std::string{"socket path does not fit sockaddr_un"};
             return core::FileDescriptor{};
         }
-        auto descriptor = core::FileDescriptor{::socket(AF_UNIX, SOCK_STREAM, 0)};
+        // Close-on-exec is set atomically with the socket: worker processes are spawned from this process on other
+        // threads, and a separate fcntl would leave a window in which a fork inherits the descriptor.
+        auto descriptor = core::FileDescriptor{::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)};
         if (!descriptor.valid())
         {
             error = "socket: " + errno_text(errno);
-            return core::FileDescriptor{};
-        }
-        // Close-on-exec first: the thumbnail worker is spawned from this process.
-        if (!descriptor.set_cloexec())
-        {
-            error = std::string{"cannot set close-on-exec"};
-            return core::FileDescriptor{};
-        }
-        auto const flags = ::fcntl(descriptor.get(), F_GETFL, 0);
-        if (flags < 0 || ::fcntl(descriptor.get(), F_SETFL, flags | O_NONBLOCK) != 0)
-        {
-            error = std::string{"cannot set non-blocking mode"};
             return core::FileDescriptor{};
         }
         address.sun_family = AF_UNIX;
