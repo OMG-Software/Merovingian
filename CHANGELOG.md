@@ -4,6 +4,25 @@ Fixes the low findings of the November 2026 project analysis.
 
 ### Fixed
 
+- Client-server: the device ID in `GET`/`PUT`/`DELETE /devices/{deviceId}` is percent-decoded (C12). Ban, kick and unban refuse a body without a valid `user_id`, and the services check it again (C15). `/keys/claim` validates the whole body before it spends a one-time key (C16).
+- `/relations` answers 400 for an invalid `dir`, and gives `next_batch` only when the limit cut the page (C17). `/messages` requires `dir` to be `b` or `f` (C19).
+- `/sync` no longer sends the unspecified `timeline.event_count` (CS9). `/capabilities` advertises `m.account_moderation` to server admins (CS10). Stale push and remote-media comments and messages were reworded (CS12).
+- Remote `/keys/query` sends the requested device IDs and keeps only those devices in the answer (G17). The filter now uses hashed lookups, so the work done under the runtime lock stays linear in the request and the answer.
+- Rooms: if storing a local event commits but the bookkeeping after it fails, the event is still federated, notified and answered 200 (C13, ADR-0535). A remote invite is authorised again against current state once the exchange returns (C18, ADR-0536). When the upgrade tombstone is refused, the upgrader leaves the replacement room (C21, ADR-0534). A test pins one receipt per room, user, type and thread (S4).
+- Federation: the 64 KiB PDU limit is judged without the relay's `unsigned` (F5, ADR-0537). The IPC frame cap now counts the frame header, and a failed send fails at once instead of blocking the requester (F6). Outbound `v=` and `ver=` query values are percent-encoded (F7). A room v12 create PDU takes its room ID from its own event ID (F8).
+- Membership answers carry only the fields the spec defines for their endpoint (SS5, SS6, ADR-0538). A transaction holding a PDU that cannot be serialised is refused with 400 (SS12). The `X-Matrix` scheme is matched without regard to case (SS13). The invite answer is 500, not 200 with a null event, when this server's own signed event does not parse.
+- `max_transaction_pdus` and `max_transaction_edus` accept only the spec values, 50 and 100 (SS11, ADR-0539).
+- Sync: `types` and `not_types` honour a `*` anywhere, through one iterative glob matcher shared by both filter paths (S3, ADR-0541). HTTP method tokens accept lowercase letters (S5). A failed sync stream watermark write is logged at error level, and the next write covers it. It no longer throws after earlier writes have committed (S6, ADR-0540).
+
+### Added
+
+- CI fails a job on any Catch2 skip that `tests/expected_skips.json` does not list for it, and fails closed on a missing or truncated report (T7, ADR-0546). Direct unit tests cover nine headers that had none (T5, T6).
+- Operator guidance in the user manual: ports and DNS, metrics, log rotation, TLS renewal, key rotation and troubleshooting.
+
+### Changed
+
+- Docs: every module's key-file table and the layout tree are complete. The manual says `merovingian-db-migrate` only prints a plan. ADR numbering allows gaps but never reuses a number (ADR-0543). Nineteen duplicate ADR index rows were removed.
+
 ## 0.12.80
 
 Every header the first split (0.12.79) left now holds at most one type, and every file named after a type holds that type (ADR-0466, ADR-0467). No behaviour changes.
