@@ -124,7 +124,7 @@ jobs:
       # integration, smoke). It writes the compilation database the analysis
       # reads, with every generated file it names in place.
       - name: Build and test with coverage
-        run: sh scripts/build-linux.sh --builddir build-sonar --coverage
+        run: sh scripts/build-linux.sh --builddir build-sonar --coverage --skip-job sonarcloud
 
       # The same scope and options as coverage.yml's Codecov report, written in
       # SonarQube's generic coverage format to the path sonar-project.properties
