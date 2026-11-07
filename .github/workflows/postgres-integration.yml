@@ -159,5 +159,16 @@ jobs:
       - name: Build the integration tests
         run: meson compile -C build merovingian-integration-tests
 
+      # The binary also writes an XML report, which the skip gate reads: a [postgresql] scenario that skipped
+      # would otherwise pass without having run against the database (ADR-0546).
       - name: Run live PostgreSQL integration tests
-        run: ./build/tests/merovingian-integration-tests "[postgresql]"
+        env:
+          MEROVINGIAN_CATCH_REPORT_DIR: ${{ runner.temp }}/skip-reports
+        run: |
+          mkdir -p "${MEROVINGIAN_CATCH_REPORT_DIR}"
+          ./build/tests/merovingian-integration-tests "[postgresql]"
+
+      - name: Fail on unexpected skips
+        env:
+          MEROVINGIAN_CATCH_REPORT_DIR: ${{ runner.temp }}/skip-reports
+        run: python3 scripts/check_expected_skips.py --job postgres-integration --reports "${MEROVINGIAN_CATCH_REPORT_DIR}"

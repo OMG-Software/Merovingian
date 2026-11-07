@@ -163,7 +163,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
-   (observer, subject). A remote user's own membership change reaches the same table through
+   (observer, subject). It goes through `RemoteDeviceListCache` first (ADR-0560, ADR-0561): an update that
+   changes nothing in the cached list writes no row, a gap (`prev_id` above the snapshot and never applied, or
+   empty) or an unreadable update marks the list stale, and a subject nobody local shares a room with is erased.
+   The cache is filled only from `accept_remote_user_devices_response` (whole answer or nothing) and only through
+   `begin_resync` / `store_snapshot`, so an update that arrives during the fill voids it. A remote user's own membership change reaches the same table through
    `apply_membership_to_roster` (the membership acceptor and `ingest_pdu_event` both call it),
    never by editing `LocalRoom::members` directly: a join is `changed` and the leave of the last
    shared room is `left` for the local members. A published device's `unsigned.device_display_name`
@@ -357,6 +361,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `RemoteDeviceListCache.cpp` | The in-memory device lists of remote users who share a room with a local user (G14, ADR-0560, ADR-0561): fill tickets, update sequencing by `stream_id`/`prev_id`, caps per user and in all. Guarded by `runtime.mutex` |
 | `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
 | `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
 | `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
@@ -401,3 +406,10 @@ one slow name server, which a remote operator chooses, would hold every other lo
 takes `federation_guard` while holding it: the second lock deadlocks, and a `key_resolution_slot_released` wait would
 otherwise sleep with the lock held. When two operations need the same state, write a lock-held helper that expects the
 caller to hold the guard (`completed_answer_with_guard_held` is the model) and call that from both.
+
+## Wire-shape notes (analysis lows 0.12.81)
+
+- The 64 KiB PDU limit is judged on the event without `unsigned` (`pdu_format_violation`); the raw-byte check before parsing is only a work bound (ADR-0537).
+- `send_join`, `send_leave` and `send_knock` answer exactly the spec's fields (`{}` for v2 `send_leave`; no `room_version` or `origin` in `send_join`), and the v1 invite answers `[200, {"event": ...}]` (ADR-0538).
+- A `/send` holding a PDU that cannot be serialised is refused 400 as a whole; the `X-Matrix` scheme is matched case-insensitively through `has_x_matrix_scheme`; a room v12 create PDU's room ID comes from `room_id_for_received_event` on every parse path.
+- Outbound query values (`ver`, `v`) are percent-encoded; `max_transaction_pdus` / `max_transaction_edus` accept only 50 and 100 (ADR-0539).

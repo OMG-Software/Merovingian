@@ -32,6 +32,7 @@
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/event_query.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -326,6 +327,34 @@ public:
         "{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},\"depth\":1,"
         "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
         origin + "\",\"type\":\"m.room.message\"}";
+    auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(base_parsed.error == merovingian::canonicaljson::ParseError::none);
+    REQUIRE(policy != nullptr);
+    auto const event_with_hash = with_correct_content_hash(base_parsed.value);
+    auto store = FederationTestSigningStore{
+        merovingian::crypto::SigningKeyRecord{
+                                              origin, key_id,
+                                              merovingian::crypto::Ed25519PublicKey{
+                std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()}},
+                                              true, }
+    };
+    auto provider = FederationTestEd25519Provider{token};
+    auto signed_event = merovingian::events::sign_event_for_server(event_with_hash, *policy, store, provider, origin);
+    REQUIRE(signed_event.error.empty());
+    return signed_event.event_json;
+}
+
+// A room v12 m.room.create PDU: no room_id (rooms/v12.md), signed with v12 redaction rules.
+[[nodiscard]] auto signed_v12_create_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
+    -> std::string
+{
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    REQUIRE(derive_test_keypair(token, public_key, secret_key));
+    auto const event_json = "{\"auth_events\":[],\"content\":{\"room_version\":\"12\"},\"depth\":1,"
+                            "\"origin_server_ts\":1,\"prev_events\":[],\"sender\":\"@alice:" +
+                            origin + "\",\"state_key\":\"\",\"type\":\"m.room.create\"}";
     auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
     auto const* policy = merovingian::rooms::find_room_version_policy("12");
     REQUIRE(base_parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -723,6 +752,9 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
                 REQUIRE(response.status == 200U);
                 REQUIRE(*invite_seen);
                 REQUIRE(runtime.accepted_transactions.empty());
+                // Spec: SS API v1.19 PUT /v1/invite, 200 response: [200, {"event": ...}].
+                REQUIRE(response.body.starts_with(R"([200,{"event":{)"));
+                REQUIRE(response.body.ends_with("}}]"));
             }
         }
     }
@@ -1563,6 +1595,38 @@ SCENARIO("Inbound v10 room PDU with 'origin' field fails verification when room 
     }
 }
 
+SCENARIO("A room v12 create PDU takes its room ID from its own event ID", "[federation][inbound][pdu][v12][low-f8]")
+{
+    GIVEN("a signed v12 m.room.create PDU that carries no room_id")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"v12-create-token"};
+        auto const pdu_json = signed_v12_create_pdu(origin, key_id, token);
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+
+        WHEN("the PDU is parsed and authorised")
+        {
+            auto const pdu = merovingian::federation::parse_federation_pdu(pdu_json);
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
+
+            THEN("its room ID is the event ID with the sigil swapped, as the envelope parser derives it")
+            {
+                REQUIRE(envelope.has_value());
+                REQUIRE_FALSE(pdu.event_id.empty());
+                CHECK(pdu.room_id == "!" + pdu.event_id.substr(1U));
+                CHECK(pdu.room_id == envelope->room_id);
+                CHECK(decision.accepted);
+            }
+        }
+    }
+}
+
 SCENARIO("Federation PDU authorization verifies JSON event signatures with the remote signing key",
          "[federation][inbound][pdu][signing]")
 {
@@ -2024,6 +2088,34 @@ SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_s
 // main-side entry point; handle_inbound_federation_request honours
 // signature_verified=true (set by the worker on the trusted path) by skipping
 // the crypto check. These scenarios pin both halves of the split.
+
+// Spec: SS API v1.19 "Transactions": the answer lists a result for every PDU of the transaction. A PDU with no event ID
+// cannot be listed, so a transaction holding one is refused as a whole.
+SCENARIO("A transaction holding a PDU that cannot be serialised is refused with 400",
+         "[federation][inbound][transaction][low-ss12]")
+{
+    GIVEN("a signed /send whose only PDU holds a lone surrogate")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const bad_pdu = std::string{R"({"content":{"body":"\ud800"},"room_id":"!room:example.org"})"};
+        auto const request = signed_request(origin, key_id, token, transaction_body(origin, bad_pdu));
+
+        WHEN("the request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the whole transaction is refused with 400")
+            {
+                REQUIRE(response.status == 400U);
+            }
+        }
+    }
+}
 
 SCENARIO("verify_inbound_federation_signature accepts a validly signed request and returns the identity",
          "[federation][inbound][security]")

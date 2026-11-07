@@ -1559,6 +1559,63 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
     }
 }
 
+// Spec: Matrix Client-Server API v1.19, "Invite permission" (SS7): the invited user's homeserver answers
+// PUT /v2/invite with 403 M_INVITE_BLOCKED when the user blocks invites. For POST /invite that is a refusal
+// the client sees, with nothing stored and nothing queued; for POST /createRoom "it is possible for one of the
+// invited users to be rejected whilst the room creation as a whole succeeds".
+SCENARIO("A remote server that answers an invite with M_INVITE_BLOCKED is not retried and does not fail createRoom",
+         "[integration][federation][invite][ss7][invite-permission]")
+{
+    GIVEN("alice and bob, a user of another server whose server blocks bob's invites")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+        auto const blocked_answer = [](std::string const&) {
+            return merovingian::tests::tls_mock::json_http_response(
+                "403 Forbidden", R"({"errcode":"M_INVITE_BLOCKED","error":"This user is not accepting invites"})");
+        };
+
+        WHEN("alice invites bob with POST /invite")
+        {
+            auto const room_id = create_room(runtime, alice, R"({"preset":"private_chat"})");
+            auto invitee = InviteeServer{runtime, blocked_answer};
+            auto const invited = call(runtime, "POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                      std::string{R"({"user_id":")"} + bob + R"("})");
+            invitee.thread.join();
+
+            THEN("alice is refused with 403 M_INVITE_BLOCKED, nothing is stored and nothing is queued")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invited.response.status == 403U);
+                REQUIRE(invited.response.body.find("M_INVITE_BLOCKED") != std::string::npos);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+
+        WHEN("alice creates a room with bob in its invite list")
+        {
+            auto invitee = InviteeServer{runtime, blocked_answer};
+            auto const created = call(runtime, "POST", "/_matrix/client/v3/createRoom", alice,
+                                      std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
+            invitee.thread.join();
+
+            THEN("createRoom still answers 200 with a room, and the blocked invite is not queued")
+            {
+                CAPTURE(created.response.body);
+                REQUIRE(created.response.status == 200U);
+                REQUIRE(created.response.body.find("room_id") != std::string::npos);
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+    }
+}
+
 // Spec: Matrix Client-Server API v1.19, GET /sync: `rooms.leave` is "the rooms that the user has left or
 // been banned from", and an incremental sync reports a leave that happened after `since`. Rejecting an
 // invite is such a leave. Complement TestFederationRoomsInvite, "Invited user can reject invite over
@@ -2032,6 +2089,53 @@ SCENARIO("A withdrawn invite that cannot get a sync position is refused and leav
             {
                 REQUIRE(merovingian::database::find_invite(store, room_id, carol_id).has_value());
                 REQUIRE_FALSE(store.events.contains(envelope.event_id));
+            }
+        }
+    }
+}
+
+// C18 (ADR-0536): the offer to the invitee's server runs with runtime.mutex released, so the inviter can lose the
+// power to invite during it. The invite is judged by the auth rules again before it is stored or sent.
+SCENARIO("An invite to another server is refused when the inviter loses the power to invite during the offer",
+         "[integration][federation][invite][remote-invite-handshake][c18]")
+{
+    GIVEN("a version 10 room where inviting needs level 50, alice at 100, and bob of another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const room_id = create_room(
+            runtime, alice,
+            R"({"preset":"private_chat","room_version":"10","power_level_content_override":{"invite":50}})");
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+        auto const invite_target = "/_matrix/client/v3/rooms/" + room_id + "/invite";
+        auto const invite_body = std::string{R"({"user_id":")"} + bob + R"("})";
+
+        WHEN("alice lowers her own level to 0 while bob's server is answering, and the server co-signs the invite")
+        {
+            auto const answer = invitee_answering(InviteeAnswer::cosigned);
+            auto invitee = InviteeServer{
+                runtime, [&](std::string const& raw_request) {
+                    auto const lowered =
+                        call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.power_levels",
+                             alice, R"({"invite":50,"users":{"@alice:example.org":0}})");
+                    CHECK(lowered.response.status == 200U);
+                    return answer(raw_request);
+                }};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            invitee.thread.join();
+
+            THEN("alice is refused 403 M_FORBIDDEN and nothing is stored or sent")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invitee.captured.size() == 1U);
+                REQUIRE(invited.response.status == 403U);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
             }
         }
     }

@@ -32,10 +32,11 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
     }
 
     // ADR-0212 / ADR-0213: the asynchronous-upload and URL preview limits are
-    // copied into the media repository's runtime config at startup.
+    // copied into the media repository's runtime config at startup. The clamd
+    // scanner (ADR-0565) is built once at startup.
     if (starts_with(key, "security.media.url_preview_") || key == "security.media.pending_upload_ttl_seconds" ||
         key == "security.media.max_pending_uploads_per_user" || key == "security.media.max_pending_uploads" ||
-        key == "security.media.pending_upload_max_wait_ms")
+        key == "security.media.pending_upload_max_wait_ms" || starts_with(key, "security.media.clamd_"))
     {
         return ReloadPolicy::restart_required;
     }

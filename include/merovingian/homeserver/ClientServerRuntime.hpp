@@ -16,6 +16,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LoginTokenStore.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
@@ -60,6 +61,9 @@ struct ClientServerRuntime final
     // authority of its own (the credential travels in the auth block) and must
     // not survive a restart.
     std::vector<UiaSession> uia_sessions{};
+    // The login tokens POST /login/get_token has minted and nobody has redeemed (CS8, ADR-0548). In memory only,
+    // bounded, and guarded by homeserver.mutex like the UIA sessions above.
+    LoginTokenStore login_tokens{};
     // CORS policy snapshot. Copied from `config.server().cors` at
     // `start_client_server()` time. CORS is not hot-reloadable: a config
     // change requires a server restart.

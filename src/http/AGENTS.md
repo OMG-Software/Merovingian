@@ -15,6 +15,8 @@ This module has no Matrix-specific logic — it is a transport layer only.
 | `client_address.cpp` | `client_address_key` — the key per-client limits count under (IPv6 grouped by prefix); shared by the connection cap and the rate limiter |
 | `keep_alive.cpp` | `KeepAlivePolicy` — idle timeout and the `max_connections` cap on parked keep-alive connections (held by the connection dispatcher, not by worker threads); `Connection` header handling |
 | `OutboundClient.cpp` | Performs outbound HTTPS requests against a pre-resolved, pinned address |
+| `InFlightBudget.cpp` | `InFlightBudget` — admission guard bounding work in flight process-wide and per client key; `try_acquire` answers at once, never queues; RAII `Slot` and `Waiter` (ADR-0079, ADR-0310) |
+| `library_versions.cpp` | Reports the libcurl version (running and build-time) for the start-up log |
 
 `include/merovingian/http/Server.hpp` declares an `http::Server` class that has no
 implementation and no users. The listening server lives in `homeserver/http_server.cpp`.

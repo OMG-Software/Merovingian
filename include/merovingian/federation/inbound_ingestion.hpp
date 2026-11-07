@@ -51,6 +51,12 @@ inline constexpr auto max_event_depth = std::int64_t{9007199254740991};
 // event) calls this one.
 [[nodiscard]] auto pdu_depth_violation(canonicaljson::Value const& event) -> std::string;
 
+// The room an event belongs to. A room v12 `m.room.create` event has no `room_id` (rooms/v12.md): its room is the
+// create event's own reference-hash ID with the `$` sigil swapped for `!`. Any other event, or a create event that
+// names its room, keeps the `room_id` it carries. One definition for every parser of a received PDU.
+[[nodiscard]] auto room_id_for_received_event(std::string_view room_id, std::string_view event_type,
+                                              std::string_view event_id) -> std::string;
+
 [[nodiscard]] auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
     -> std::string;
 

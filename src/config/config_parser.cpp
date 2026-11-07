@@ -1421,6 +1421,14 @@ namespace
         {
             security.login_throttle.window = std::string{value};
         }
+        // CS8 (ADR-0548): the login token that POST /login/get_token mints.
+        else if (key == "security.login_token.enabled")
+        {
+            if (!parse_bool_value(value, security.login_token.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         // Token lifetimes and audit-log retention.
         else if (key == "security.access_token_lifetime_ms")
         {
@@ -1679,6 +1687,29 @@ namespace
             if (!parse_bool_value(value, security.media.enable_av_scanner))
             {
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        // G15, ADR-0565: the optional clamd malware scanner.
+        else if (key == "security.media.clamd_socket_path")
+        {
+            security.media.clamd_socket_path = std::string{value};
+        }
+        else if (key == "security.media.clamd_timeout_ms")
+        {
+            if (!parse_u32_value(value, security.media.clamd_timeout_ms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.clamd_max_scan_size")
+        {
+            security.media.clamd_max_scan_size = std::string{value};
+        }
+        else if (key == "security.media.clamd_max_concurrent")
+        {
+            if (!parse_u32_value(value, security.media.clamd_max_concurrent))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
         // Remote fetch policy: private-IP blocking, timeouts, sandboxed decoding and cache sizing.

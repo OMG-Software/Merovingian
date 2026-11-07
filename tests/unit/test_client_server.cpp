@@ -816,7 +816,7 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // A successful room creation MUST return HTTP 200 with a "room_id". The /sync
-// response MUST include "event_count" and MUST NOT expose plaintext encrypted
+// response MUST NOT carry the unspecified "event_count" member and MUST NOT expose plaintext encrypted
 // event content - the server is blind to E2EE payloads.
 SCENARIO("Client-server runtime room state joined rooms and sync endpoints compose the homeserver path",
          "[homeserver][client-server]")
@@ -871,7 +871,8 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
                 // Do NOT remove - /sync is the primary client data delivery mechanism
                 REQUIRE(sync.response.status == 200U);
                 REQUIRE(sync.response.body.find(id) != std::string::npos);
-                REQUIRE(sync.response.body.find("event_count") != std::string::npos);
+                // Spec: a joined room's `timeline` defines events, limited and prev_batch only.
+                REQUIRE(sync.response.body.find("event_count") == std::string::npos);
                 // Matrix E2EE: m.room.encrypted events are relayed opaquely
                 // through /sync — clients decrypt locally. The event type and
                 // ciphertext payload MUST appear in the sync response.

@@ -385,6 +385,55 @@ SCENARIO("Inbound ingestion rejects PDUs that exceed the spec event size limit",
     }
 }
 
+SCENARIO("Inbound ingestion judges the event size limit without the relay's unsigned",
+         "[federation][inbound-ingestion][limits][unsigned][low-f5]")
+{
+    // Spec: SS API v1.19 "PDUs" / CS API "Size limits" - the limit is on the event as signed; `unsigned` is
+    // covered by no signature and is not part of it.
+    auto const with_unsigned = [](std::string pdu_json) {
+        pdu_json.pop_back();
+        pdu_json += R"(,"unsigned":{"relay_note":")" + std::string(8192U, 'u') + R"("}})";
+        return pdu_json;
+    };
+
+    GIVEN("a PDU of exactly the limit that arrives with a large unsigned")
+    {
+        auto const base =
+            pad_pdu_to_target_size(build_minimal_pdu_json("!room:example.org", "@alice:example.org", "m.room.message"),
+                                   merovingian::events::max_event_size_bytes);
+        auto const pdu_json = with_unsigned(base);
+
+        WHEN("the PDU is parsed")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+            THEN("it is accepted and the stored JSON holds no unsigned")
+            {
+                REQUIRE(pdu_json.size() > merovingian::events::max_event_size_bytes);
+                REQUIRE(envelope.has_value());
+                REQUIRE(envelope->json.find("unsigned") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a PDU one byte over the limit that also carries an unsigned")
+    {
+        auto const base =
+            pad_pdu_to_target_size(build_minimal_pdu_json("!room:example.org", "@alice:example.org", "m.room.message"),
+                                   merovingian::events::max_event_size_bytes + 1U);
+
+        WHEN("the PDU is parsed")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(with_unsigned(base));
+
+            THEN("it is refused")
+            {
+                REQUIRE_FALSE(envelope.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound ingestion enforces the prev_events and auth_events array limits",
          "[federation][inbound-ingestion][limits][m03]")
 {

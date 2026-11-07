@@ -11,6 +11,7 @@
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
+#include "merovingian/sync/type_pattern.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -484,29 +485,12 @@ auto validate_filter_definition(std::string_view filter_json) -> std::optional<s
 // Spec: Matrix CS API v1.19 § Filtering
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
-// Type entries in types/not_types support two wildcard forms:
-//   "*"        — matches every event type
-//   "prefix*"  — matches any event type that starts with prefix
-// All other entries are exact matches.
-[[nodiscard]] auto matches_type_pattern(std::string_view pattern, std::string_view event_type) noexcept -> bool
-{
-    if (pattern == "*")
-    {
-        return true; // bare wildcard: match everything
-    }
-    if (pattern.ends_with('*'))
-    {
-        // prefix wildcard: e.g. "m.room.*" matches "m.room.message"
-        auto const prefix = pattern.substr(0, pattern.size() - 1);
-        return event_type.starts_with(prefix);
-    }
-    return pattern == event_type; // exact match
-}
-
+// Type entries in types/not_types are matched by type_pattern_matches: `*` anywhere in an entry stands for
+// any run of characters; an entry without `*` is an exact match.
 [[nodiscard]] auto type_matches_list(std::vector<std::string> const& list, std::string_view event_type) noexcept -> bool
 {
     return std::ranges::any_of(list, [event_type](std::string const& pattern) {
-        return matches_type_pattern(pattern, event_type);
+        return type_pattern_matches(pattern, event_type);
     });
 }
 
@@ -525,7 +509,7 @@ auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_t
     // applying types/not_types in that case would reject every event.
     if (!event_type.empty())
     {
-        // Spec MUST: types/not_types support wildcard patterns (* and prefix*).
+        // Spec MUST: types/not_types support wildcard patterns (`*` anywhere in a pattern).
         if (!filter.types.empty() && !type_matches_list(filter.types, event_type))
         {
             return false;

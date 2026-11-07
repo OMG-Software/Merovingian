@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/homeserver/MediaBodyStream.hpp"
+
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace merovingian::homeserver
@@ -27,6 +30,9 @@ struct OperationResult final
     // R17: for a successful media download, the filename to serve in
     // Content-Disposition (the upload's, or the remote server's); empty when none.
     std::string media_filename{};
+    // ADR-0574: for a successful download too large to hold, the stored bytes to send in chunks. `value` then
+    // holds only the "content_type|" prefix, with no bytes after it.
+    std::optional<MediaBodyStream> body_stream{};
 };
 
 } // namespace merovingian::homeserver

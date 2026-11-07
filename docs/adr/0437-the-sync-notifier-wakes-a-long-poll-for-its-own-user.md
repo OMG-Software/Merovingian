@@ -1,6 +1,6 @@
 # The sync notifier wakes a long-poll for its own user, and a publish with no scope wakes everyone
 
-* Status: accepted
+* Status: accepted; the 1 s slice wait is superseded by [ADR-0569](0569-a-long-poll-with-nothing-to-return-parks-in-a-registry-and-gives-up-its-sync-pool-thread.md) (the scoped-wake decision stands)
 * Date: 2026-11-04
 
 Technical Story: performance defect P4 of the 2026-11-04 project analysis (every event wakes every long-poll)

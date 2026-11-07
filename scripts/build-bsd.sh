@@ -18,6 +18,7 @@ dry_run=0
 buildtype=
 sanitize=
 coverage=false
+skip_job=
 hardening=
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
@@ -41,6 +42,8 @@ Options:
   --sanitize <list>   Meson b_sanitize value, for example address,undefined.
   --coverage          Enable Meson coverage instrumentation.
   --build-fuzz        Enable fuzz harness targets.
+  --skip-job <name>   After the tests, fail on any Catch2 skip that job <name> in
+                      tests/expected_skips.json does not list (ADR-0546).
   --no-tests          Build without running tests.
   --setup-only        Configure/reconfigure Meson and stop.
   --compile-only      Configure/reconfigure and compile, but do not test.
@@ -160,6 +163,11 @@ while [ "$#" -gt 0 ]; do
         --build-fuzz)
             build_fuzz=true
             ;;
+        --skip-job)
+            shift
+            [ "$#" -gt 0 ] || fail "--skip-job requires a job name"
+            skip_job=$1
+            ;;
         --no-tests)
             run_tests=0
             ;;
@@ -270,5 +278,66 @@ export MEROVINGIAN_TEST_DISABLE_HARDENING=1
 timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-2}"
 meson_test_timeout_args="--timeout-multiplier ${timeout_multiplier}"
 
+# With --skip-job each Catch2 binary also writes an XML report, and
+# scripts/check_expected_skips.py fails the build on a skipped test case the job
+# does not expect: meson reports a skipped Catch2 test case as passed (ADR-0546).
+skip_reports=
+if [ -n "$skip_job" ]; then
+    case "$builddir" in
+        /*) skip_reports=$builddir/skip-reports ;;
+        *) skip_reports=$repo_root/$builddir/skip-reports ;;
+    esac
+    run rm -rf "$skip_reports"
+    run mkdir -p "$skip_reports"
+fi
+
+test_status=0
 # shellcheck disable=SC2086
-run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args}
+run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 MEROVINGIAN_CATCH_REPORT_DIR="$skip_reports" meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args} || test_status=$?
+
+gate_status=0
+if [ -n "$skip_job" ]; then
+    # FreeBSD and NetBSD install Python only as meson's dependency, as a versioned binary (python3.11) with no
+    # python3 or python link. Prefer python3, then the interpreter meson itself runs on, then any python3.N.
+    skip_python=
+    if command -v python3 >/dev/null 2>&1; then
+        skip_python=python3
+    else
+        meson_path=$(command -v meson 2>/dev/null || true)
+        if [ -n "$meson_path" ]; then
+            # "#!/usr/local/bin/python3.11" names it; "#!/usr/bin/env python3.11" names it second.
+            meson_interpreter=$(sed -n '1{
+                s/^#![[:space:]]*//
+                s/^[^[:space:]]*\/env[[:space:]][[:space:]]*//
+                s/[[:space:]].*$//
+                p
+            }' "$meson_path")
+            case "$meson_interpreter" in
+                /*) ;;
+                *) meson_interpreter=$(command -v "$meson_interpreter" 2>/dev/null || true) ;;
+            esac
+            if [ -n "$meson_interpreter" ] && [ -x "$meson_interpreter" ]; then
+                skip_python=$meson_interpreter
+            fi
+        fi
+        if [ -z "$skip_python" ]; then
+            for minor in 14 13 12 11 10 9; do
+                if command -v "python3.$minor" >/dev/null 2>&1; then
+                    skip_python=python3.$minor
+                    break
+                fi
+            done
+        fi
+    fi
+    if [ -z "$skip_python" ]; then
+        echo "build-bsd.sh: no Python interpreter found for check_expected_skips.py" >&2
+        gate_status=2
+    else
+        run "$skip_python" "$script_dir/check_expected_skips.py" --job "$skip_job" --reports "$skip_reports" || gate_status=$?
+    fi
+fi
+
+if [ "$test_status" -ne 0 ]; then
+    exit "$test_status"
+fi
+exit "$gate_status"

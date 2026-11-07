@@ -710,7 +710,7 @@ leave the process seeing only the paths before it (ADR-0162). The calls are:
 4. `unveil(NULL, NULL)` — locks the vnode allowlist.
 5. `pledge("stdio rpath wpath cpath flock inet unix dns proc exec", NULL)` — the
    `proc exec` promises allow `fork()`/`exec()` for the thumbnail worker;
-   `unix` allows the AF_UNIX IPC channel to the federation worker.
+   `unix` allows the AF_UNIX IPC channel to the federation worker. The optional clamd socket (ADR-0565) is not reachable under `unveil`, so the server refuses `security.media.clamd_socket_path` on OpenBSD, and on FreeBSD where Capsicum forbids connecting by path (ADR-0566); Linux (seccomp allows AF_UNIX `socket`/`connect`) and NetBSD are supported.
 
 `openbsd_pledge_is_active()` returns `true` after step 5. The final startup
 hardening self-check runs in `run_server()` after `start_client_server()` has

@@ -16,25 +16,30 @@ This is the largest and most complex module — read this file carefully before 
 | `RequestLockScope.cpp` | `RequestLockScope`: publishes the mutex of the request's runtime lock on its thread (see below) |
 | `RuntimeLockRelease.cpp` | `RuntimeLockRelease`: releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
+| `clamd_media_scan.cpp` | `clamd_media_cleared` (G15, ADR-0565): the one place media is sent to clamd. Returns nullopt when no scan applies, else true only for a clean verdict; releases `runtime.mutex` for the scan, logs and audits `media.scan_infected` / `media.scan_failed`. Callers hold no runtime state across it |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
+| `streamed_body.cpp` | `write_streamed_body`: sends a response body of known length as chunks, one read then one write at a time, stopping at the first failure. Used by `http_server.cpp` for `MediaBodyStream` downloads (ADR-0574). No download holds a lock or a database connection while a chunk is written |
 | `MediaUploadNotifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `retention_sweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `LoginTokenStore.cpp` | `LoginTokenStore`: the in-memory, bounded, single-use login tokens `POST /login/get_token` mints (CS8, ADR-0548). Hash only, constant-time scan, never evicts; guarded by `runtime.mutex` |
 | `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
+| `remote_device_list_scope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
 | `public_rooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
+| `invite_permission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
 | `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `RemoteTimestampEvent.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`; a room held locally is answered from local state, one not held is asked for from the `via` servers over federation `GET /hierarchy`, ADR-0556; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `PushRoomFacts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
@@ -240,6 +245,15 @@ the main pool's threads for the round trip. Every such call therefore:
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
 
+`POST /keys/query` answers a remote user who shares a joined room with a local user from `remote_device_lists` when it
+holds a current list (ADR-0560): no slot, no call. An uncached one is filled with `GET /user/devices/{userId}`
+(`key_query.user_devices`, at most `max_device_list_fills_per_key_query` (4) per request, under the same slot, server
+admission and deadline as the batched query); a failed fill falls back to the batched `/user/keys/query`. Take the
+fill's ticket (`begin_resync`) before the lock is released and store the answer with it; never store a snapshot
+without one. A user outside the shared-room scope (`remote_users_sharing_a_room_with_local_users`, one pass per
+request) is erased and asked for as before. Cached keys go through the same merge as an answer (devices asked for,
+the viewer's signatures on the master key).
+
 `POST /keys/query` and `POST /keys/claim` are the same kind of request for each remote server they name (F-17, ADR-0350). `RemoteKeyCalls`
 takes one slot for all of them, and every call is `perform_bounded_outbound_call` on the remaining time of one
 `remote_keys_deadline_seconds` (30 s) deadline, for at most `remote_keys_max_servers` (16) distinct servers. A server it does not ask is
@@ -268,6 +282,8 @@ asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slo
 only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
 state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
 `join_rule` / `world_readable` / `allowed_room_ids`.
+
+`GET /room_summary/{roomIdOrAlias}?via=` is the same kind of request for a room held locally nowhere (`remote_room_summary`, ADR-0556): it reuses `RemoteHierarchy` for one room, so it takes its slot with `admit_client_outbound_proxy` (never the waiting form; a request with no token answers 429 at once too), one deadline, at most 3 servers and `OutboundAnswerTrust::unverified`. A malformed `via` (any of the first 8 not a server name) is `400 M_INVALID_PARAM` before anything is looked up, and this server's own name is never a target. Local state always wins and is never replaced by the remote answer; a remote answer is shown only by its own `join_rule` / `world_readable` / `allowed_room_ids` (an unauthenticated caller: `public`, `knock`, `knock_restricted` or `world_readable` only). An alias is resolved in this server's directory only.
 
 Every caller of `perform_outbound_call` (and its wrappers) names an `OutboundAnswerTrust` (F-43, ADR-0349). `signature_verified` is for a call
 whose every use of a success body is a signature check on the whole of it and whose failure only means "no data": today the four
@@ -348,6 +364,9 @@ on that record, each by the inviter's server, which the spec calls a resident se
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
   sends on; createRoom replaces its already stored invite with it (`store_cosigned_invite`). An answer that fails
   is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
+- `offer_and_store_remote_invite` runs the room's auth rules for the composed invite against the CURRENT state when
+  `runtime.mutex` is back (`composed_event_is_still_authorised`, ADR-0536): an inviter banned or demoted during the
+  exchange is `403` with nothing stored or sent. Membership alone is not rechecked in its place.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
   room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
   one test; the invite handler and `rescind_invite_from_inviter` use it and must agree. For a room this server is in, it stores no event (the
@@ -551,8 +570,17 @@ every connection that is not being served and hands it to the main pool only onc
 at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
 the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
 and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task,
-one sync-pool task or one media-fetch-pool task (`std::unique_ptr<HttpConnection>`); pass it on by
-moving it, never by sharing it.
+one sync-pool task, one media-fetch-pool task or the notifier's parked-poll registry
+(`std::unique_ptr<HttpConnection>`); pass it on by moving it, never by sharing it.
+
+A `/sync` or sliding-sync long-poll with nothing to return does not keep its sync-pool thread (ADR-0569): the
+sync-pool task takes the user's cursor, reruns, and parks (`SyncNotifier::park`) its `ParkedSyncPoll` in
+`ParkedPollRegistry` with the deadline; a publish for that user, or the deadline, resumes it on the sync pool
+(`resume_parked_poll`, `run_sync_poll`). Rules: take the cursor BEFORE the rerun and park with that cursor; never
+run a request from the registry thread or a publisher; never touch a poll after `park()` succeeded (it may already
+be running on another thread); `HttpConnectionDispatcher::Impl::request_stop()` stops the registry (closing every
+parked poll) before the pools stop. `sync_max_in_flight` bounds parked, queued and running waits together
+(ADR-0570); a refused park falls back to the in-thread slice wait (`long_poll_wait` with the held cursor).
 
 ## Work under the runtime lock is bounded by the request
 
@@ -602,6 +630,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
 - `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its
   `events_default` and `invite`, as the upgrader; the last step is best effort (ADR-0476).
+  If the tombstone is refused (a power change raced `create_room`), the upgrader leaves the replacement room so it is
+  abandoned, both room IDs are logged, and the refusal is returned unchanged (ADR-0534). `test_after_upgrade_room_created`
+  is the test seam for that race.
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
@@ -713,6 +744,7 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 3. Building `declared_mime|sniffed_mime|scanner_verdict|<body>` before calling `call_local()` —
    `sniffed_mime` from `media::sniff_mime_type()`, `scanner_verdict` from
    `media::content_matches_eicar_test_signature()` (see `src/media/AGENTS.md`)
+3a. The clamd scan is not done here: it runs in `media_service.cpp` once the user is authenticated, with the lock released (ADR-0565)
 4. Mapping internal `202` (quarantined) responses to `200` toward the client with `content_uri`
 
 ## Key docs
@@ -755,6 +787,11 @@ itself; projecting twice allocates a second stream ordering and duplicates devic
 A membership learned over federation (the membership acceptor, `ingest_pdu_event`) is applied to the live
 roster with `apply_membership_to_roster`, the same call `finish_local_membership` ends with, so the
 device-list `changed`/`left` rows follow; never edit `LocalRoom::members` for a membership change.
+
+`persist_composed_event` returns a `PersistOutcome` (ADR-0535): `not_stored` is the only value a caller answers with an
+error. `stored_bookkeeping_failed` means the event committed but the roster or device-list step after it failed (logged
+as `event.persist.failed` with the event ID); the caller still federates, notifies and answers success. Compare with
+`== PersistOutcome::not_stored`, never treat the value as a bool.
 
 The `memberships` row and invite change are never written in a transaction of their own after the event: pass
 a `database::MembershipProjection` to `store_event_with_state` / `prepare_store_event_with_state` (or

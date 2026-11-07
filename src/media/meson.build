@@ -1,4 +1,5 @@
 media_sources = files(
+  'ClamdScanner.cpp',
   'decoder_hardening.cpp',
   'DecoderHardeningOps.cpp',
   'LocalMediaRepository.cpp',

@@ -24,6 +24,8 @@ struct RemoteInviteResult final
     // homeserver and the invited homeserver, it can be sent to all of the servers in the room").
     std::string cosigned_event_json{};
     std::vector<events::EventSignature> cosigned_signatures{};
+    // `M_INVITE_BLOCKED` when the invited user's server refused with that errcode (SS7); else empty.
+    std::string errcode{};
 };
 
 } // namespace merovingian::homeserver

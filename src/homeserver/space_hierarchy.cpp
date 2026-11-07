@@ -1257,6 +1257,80 @@ namespace
         return serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output : std::string{};
     }
 
+    // ---- Room summary for a room this server holds no state for ---------------------
+
+    // Without a token the answer must not tell a private room from one that does not exist.
+    [[nodiscard]] auto summary_refusal(bool authenticated) -> SpaceHierarchyResult
+    {
+        if (authenticated)
+        {
+            return {404U, matrix_error("M_NOT_FOUND", "The room could not be found.")};
+        }
+        return {401U, matrix_error("M_MISSING_TOKEN", "Missing access token")};
+    }
+
+    // A room ID worth asking another server about: the Room ID grammar's sigil and bounds (at most
+    // 255 bytes, no NUL). Room IDs are opaque, so nothing more is checked.
+    [[nodiscard]] auto room_id_is_askable(std::string_view room_id) noexcept -> bool
+    {
+        return room_id.size() >= 2U && room_id.size() <= 255U && room_id.front() == '!' &&
+               room_id.find('\0') == std::string_view::npos;
+    }
+
+    // What an unauthenticated caller may read of a room (CS API, Room Summaries): a `public`, `knock` or
+    // `knock_restricted` join rule ("When not present, the room is assumed to be `public`") or
+    // `world_readable`, by the remote summary's own fields.
+    [[nodiscard]] auto remote_summary_is_public(canonicaljson::Object const& summary) -> bool
+    {
+        auto const* readable = bool_member(summary, "world_readable");
+        if (readable != nullptr && *readable)
+        {
+            return true;
+        }
+        auto const* rule = string_member(summary, "join_rule");
+        return rule == nullptr || *rule == "public" || *rule == "knock" || *rule == "knock_restricted";
+    }
+
+    // `GET /room_summary` for a room not held locally: ask the `via` servers (at most 3, never this
+    // server) for the room's hierarchy chunk, under one slot and one deadline (ADR-0079). The answer is
+    // untrusted: only spec fields are copied, it must be for the requested room, and it is shown only
+    // when the caller may see the room by the answer's own `join_rule` / `world_readable` /
+    // `allowed_room_ids`. Nothing else the remote server sent is kept.
+    [[nodiscard]] auto remote_room_summary(HomeserverRuntime& runtime, std::string_view user_id,
+                                           std::string const& room_id, std::vector<std::string> const& via,
+                                           std::string const& client_key) -> SpaceHierarchyResult
+    {
+        auto const authenticated = !user_id.empty();
+        auto remote = RemoteHierarchy{runtime, client_key, false};
+        auto found = remote.lookup(room_id, via);
+        if (found.status == RemoteStatus::refused)
+        {
+            auto refusal = SpaceHierarchyResult{
+                429U, matrix_error("M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly")};
+            refusal.retry_after_ms = runtime.client_outbound_proxy_policy.retry_after_ms;
+            return refusal;
+        }
+        // The runtime lock is held again here.
+        auto const& store = runtime.database.persistent_store;
+        if (found.status != RemoteStatus::found ||
+            !(authenticated ? remote_summary_visible_to(store, user_id, found.room.summary)
+                            : remote_summary_is_public(found.room.summary)))
+        {
+            return summary_refusal(authenticated);
+        }
+        // RoomSummary has no `children_state`; `membership` is for a room the caller is joined to, which a
+        // room this server holds no state for is not.
+        std::erase_if(found.room.summary, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "children_state";
+        });
+        auto const serialized = canonicaljson::serialize_canonical(json_obj(std::move(found.room.summary)));
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {500U, matrix_error("M_UNKNOWN", "failed to serialize room summary")};
+        }
+        return {200U, serialized.output};
+    }
+
 } // namespace
 
 auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view user_id,
@@ -1356,19 +1430,15 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
     return answer;
 }
 
-auto handle_client_room_summary(HomeserverRuntime const& runtime, std::string_view user_id,
-                                std::string_view room_id_or_alias) -> SpaceHierarchyResult
+auto handle_client_room_summary(HomeserverRuntime& runtime, std::string_view user_id, std::string_view room_id_or_alias,
+                                std::vector<std::string> const& via, std::string const& client_key)
+    -> SpaceHierarchyResult
 {
     auto const& store = runtime.database.persistent_store;
     auto const authenticated = !user_id.empty();
 
-    // Without a token the answer must not tell a private room from one that does not exist.
     auto const refuse = [authenticated]() -> SpaceHierarchyResult {
-        if (authenticated)
-        {
-            return {404U, matrix_error("M_NOT_FOUND", "The room could not be found.")};
-        }
-        return {401U, matrix_error("M_MISSING_TOKEN", "Missing access token")};
+        return summary_refusal(authenticated);
     };
 
     auto room_id = std::string{};
@@ -1389,7 +1459,12 @@ auto handle_client_room_summary(HomeserverRuntime const& runtime, std::string_vi
     }
     if (!room_exists(store, room_id))
     {
-        return refuse();
+        // Local state, when held, always answers (above); only a room this server holds none of is asked for.
+        if (via.empty() || !room_id_is_askable(room_id))
+        {
+            return refuse();
+        }
+        return remote_room_summary(runtime, user_id, room_id, via, client_key);
     }
 
     auto const membership = authenticated ? user_membership(store, room_id, user_id) : std::nullopt;

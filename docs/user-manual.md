@@ -599,7 +599,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | Key suffix | Default | Valid range |
 |---|---|---|
 | `sync_threads` | `128` | 4..512 |
-| `sync_max_in_flight` | `128` | 1..512 |
+| `sync_max_in_flight` | `512` | 1..16,384 |
 | `sync_max_per_user` | `4` | 1..64 |
 | `sync_max_per_device` | `2` | 1..16 |
 | `media_fetch_threads` | `16` | 1..256 |
@@ -1065,14 +1065,21 @@ reaches code execution substitute a key of their own and then decrypt or re-sign
 at will. The file is never written after provisioning, so `0400` costs nothing.
 
 A server upgrading from an earlier version that already holds a legacy plaintext
-signing secret keeps reading it and continues to federate; configure a master key
-and rotate the signing key to re-encrypt the active secret under the at-rest
-format.
+signing secret keeps reading it and continues to federate. The server has no
+operator command that rotates the signing key (see
+[Signing-key rotation](#signing-key-rotation)), so nothing re-encrypts that
+secret under the at-rest format.
 
 New access and refresh token issuance also requires a usable master key. Losing
 the file, changing it to an insecure mode/owner, or exhausting locked memory
 returns HTTP 503 rather than minting tokens with an unkeyed digest. Existing
 legacy validation formats are not a fallback for new issuance.
+
+#### Login tokens: `security.login_token.enabled`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.login_token.enabled` | `false` | Boolean. Turns on `POST /_matrix/client/v1/login/get_token` and the `m.login.token` flow it feeds. A signed-in user re-enters the account password on every call (a recent successful call is never reused) and gets a single-use token valid for 2 minutes; a client with no session logs in with it as that user and gets a new device. A token is spent by the first login attempt that names it, whether or not that attempt succeeds. Each user holds at most 4 live tokens and the server at most 1024 (over either: `429 M_LIMIT_EXCEEDED`), and a user is limited to 4 requests per minute to the endpoint. Tokens are held in memory only (no database table), so a restart drops every unredeemed token. Off: the endpoint answers `404 M_UNRECOGNIZED`, `GET /login` offers no `m.login.token` flow and `m.get_login_token` reports `enabled: false`. Reloadable. |
 
 #### Token lifetimes — `security.*_token_lifetime_ms`
 
@@ -1243,8 +1250,8 @@ events for many users and an abusive remote can rotate sender IDs.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`; higher values are rejected. |
-| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`; higher values are rejected. |
+| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`, and a lower limit would refuse legal transactions, so `50` is the only accepted value. |
+| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`, and a lower limit would refuse legal transactions, so `100` is the only accepted value. |
 | `security.federation.per_origin_transaction_rate` | `600/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
 | `security.federation.per_origin_pdu_rate` | `6000/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
 | `security.federation.per_origin_edu_rate` | `12000/60s` | Weighted EDU budget per verified remote origin per window. |
@@ -1469,7 +1476,11 @@ Service API".
 | `security.media.remote_fetch_enabled` | `false` (the example config sets `true`) | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run on a dedicated media fetch pool, so a slow remote server never holds a main request thread, with at most `server.http.media_fetch_max_in_flight` (64) fetches running or waiting and `server.http.media_fetch_max_per_client` (8) for one client; over either the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000. Requests for the same remote file at the same time share one fetch, and each fetch has a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
 | `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path does not read it: remote fetches use the fixed 30 s client-outbound deadline (bounded further by `security.federation.remote_timeout` when that is shorter). |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
-| `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
+| `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked for the EICAR test signature, and by clamd when `clamd_socket_path` is set (`media::content_matches_eicar_test_signature`). See the warning below. |
+| `security.media.clamd_socket_path` | empty (off) | Absolute path (at most 103 bytes) of a local ClamAV daemon's AF_UNIX socket. When set, media is scanned with clamd's `INSTREAM` command and cleared only by `stream: OK`; infected media, a clamd error, a timeout, an unreachable socket and media above `clamd_max_scan_size` all stay quarantined. Scans apply to media whose policy is `allow-after-scan` (local uploads, URL-preview images, and remote media once `remote_fetch_media_policy` is relaxed to it); `allow` is never scanned. Requires `enable_av_scanner=true`. Refused at startup on FreeBSD (Capsicum) and OpenBSD (unveil). Requires a restart. |
+| `security.media.clamd_timeout_ms` | `10000` | Deadline for one file's whole clamd exchange, including waiting for a scan place, 100..120000. Requires a restart. |
+| `security.media.clamd_max_scan_size` | `25MiB` | Media above this is not sent to clamd and stays quarantined; positive, at most `1GiB`. Match clamd's `StreamMaxLength` (default 25 MiB) and keep it at or above `max_upload_size`, or larger uploads are never scanned (startup warns). Requires a restart. |
+| `security.media.clamd_max_concurrent` | `4` | Scans in flight at once, 1..64; a further scan waits for a place until its deadline, then fails closed. Requires a restart. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
 | `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
@@ -1716,6 +1727,7 @@ take effect.
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
+| `security.login_token.enabled` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |
@@ -1856,7 +1868,7 @@ database.role=runtime
 database.pool_size=16
 ```
 
-Use `database.role=migration` only with the offline migration tool. The live
+`database.role=migration` is reserved for the offline migration planner. The live
 server requires `database.role=runtime`. Startup fails closed if the URI file
 is missing, unreadable, or empty; the server never falls back to an ephemeral
 in-memory database. The programmatic-only in-memory backend exists for tests
@@ -1876,6 +1888,19 @@ from the files, and the plan is rejected (exit 78) unless their versions run
 contiguously from `<current-version> + 1` to `<target-version>`; without
 `--migrations`, the plan is built from the steps this build carries. A plan to a
 version this build does not have, such as `--plan 1 2`, is rejected.
+
+The tool only prints a plan. It takes no database URI or config file, never
+opens a database, and never changes one: it sets the migration role
+internally and does not read a config. It only reads the
+`*.sql` migration files named by `--migrations`, if given, and writes the plan
+to standard output.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | The plan was built and printed, or `--help` / `--version` was given. |
+| `64` | Usage error: wrong arguments, or a version that is not a decimal integer between 0 and 4294967295. |
+| `65` | The `--migrations` directory or one of its files could not be loaded. |
+| `78` | The plan was rejected, for example a version this build does not have or a gap in the migration files. The reason is printed. |
 
 The live server applies pending migrations automatically on startup.
 
@@ -2636,6 +2661,53 @@ security.federation.enabled=true
 
 Set it to `false` to run a non-federating server.
 
+### Ports, DNS and delegation
+
+Other servers find yours from the server name in your user IDs (`server.name`),
+by the steps of the Matrix specification's "Resolving server names"
+([server-server API](matrix-v1.19-spec/server-server-api.md#resolving-server-names)).
+This server resolves other servers the same way (`src/federation/server_discovery.cpp`),
+and a peer that follows the specification resolves yours as follows:
+
+1. If the server name is an IP literal or has an explicit port, the peer connects
+   there.
+2. Otherwise it fetches `https://<server name>/.well-known/matrix/server`. A
+   response of `{"m.server": "host:port"}` delegates federation to that host and
+   port. With a host and no port, the peer looks up SRV records for the delegated
+   host, then uses port `8448`.
+3. With no usable well-known answer, the peer looks up the SRV record
+   `_matrix-fed._tcp.<server name>` (falling back to the deprecated
+   `_matrix._tcp.<server name>`), and finally connects to the server name on
+   port `8448`.
+
+Merovingian does not serve `/.well-known/matrix/server`: the reverse proxy does
+(see the [nginx example](#nginx-example)). It does serve
+`/.well-known/matrix/client` for clients.
+
+| Port | Used by | Open to |
+|---|---|---|
+| `443` | The reverse proxy: client API, and federation when `.well-known` delegates to `<name>:443` | Everyone |
+| `8448` | Federation, when you do not delegate: either the proxy or a federation listener with TLS (`listeners.federation.tls=true`, `reverse_proxy=false`) | Everyone, if used |
+| `8008`, `8009` | The default loopback client and federation listeners behind the proxy | Nothing outside the host |
+
+Two ways to publish a name such as `example.org` for a server at
+`matrix.example.org`:
+
+- Delegation by well-known: serve `{"m.server": "matrix.example.org:443"}` at
+  `https://example.org/.well-known/matrix/server`. Only port `443` needs to be
+  reachable, and no SRV record is needed.
+- Delegation by SRV record, with no well-known file:
+
+  ```text
+  _matrix-fed._tcp.example.org. 3600 IN SRV 10 5 443 matrix.example.org.
+  ```
+
+  The certificate presented must be valid for `example.org`, not for the SRV
+  target.
+
+Allow outbound traffic as well: this server connects to other servers on the ports
+they publish, and resolves SRV records through the system resolver.
+
 ### Allow-list federation
 
 ```ini
@@ -2819,6 +2891,89 @@ percent-encoded; an optional `{"reason": "..."}` body) holds the target for revi
 
 There is no route that stops the server. Stop it with the service manager.
 
+### Metrics and alerting
+
+`GET /_merovingian/admin/metrics` answers Prometheus text format
+(`text/plain; version=0.0.4`). It is an admin route, so it needs an access token
+of an admin user as `Authorization: Bearer <token>`; there is no separate
+metrics credential. It is served on the client listener (default
+`127.0.0.1:8008`). The reverse-proxy examples above route only `/_matrix/` paths,
+so they do not expose it: have Prometheus scrape the loopback listener directly,
+from the same host or over a private network.
+
+The default access token lifetime is one hour (`security.access_token_lifetime_ms`),
+after which a scrape gets `401` and Prometheus marks the target `up == 0`. Either
+log in as a dedicated admin user and rewrite the token file before it expires, or
+set that lifetime to `0` (no expiry), which applies to every user's tokens.
+
+```yaml
+scrape_configs:
+  - job_name: merovingian
+    metrics_path: /_merovingian/admin/metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/merovingian-token
+    static_configs:
+      - targets: ['127.0.0.1:8008']
+```
+
+The metrics the server exports (`admin_metrics` in `src/homeserver/HomeserverRuntime.cpp`
+and `media_repository_metrics` in `src/media/LocalMediaRepository.cpp`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `merovingian_server_identity{server_name}` | gauge | Always `1`; carries the server name. |
+| `merovingian_runtime_started` | gauge | `1` once startup has completed. |
+| `merovingian_database_schema_version` | gauge | Validated schema version. |
+| `merovingian_health_status{component,status}` | gauge | Per component (`runtime`, `listeners`, `database`, `federation`, `media`, `hardening`): `1` ok, `0` degraded, `-1` failed. |
+| `users_total`, `sessions_total`, `rooms_total`, `events_total` | gauge | Row counts in the store. |
+| `audit_events_appended_total`, `admin_actions_total` | counter | Durable audit and admin-action rows. |
+| `merovingian_federation_outbound_rejected_total` | counter | Outbound transactions refused because the dispatch queue was full. |
+| `merovingian_federation_outbound_pending` | gauge | Outbound transactions waiting in the dispatch queue. |
+| `merovingian_appservice_outbox_queued{appservice_id}` | gauge | Events queued for an application service. |
+| `merovingian_appservice_outbox_dropped_total{appservice_id}`, `merovingian_appservice_ephemeral_dropped_total{appservice_id}` | counter | Items dropped at the queue caps since the process started. |
+| `media_uploads_accepted_total`, `media_uploads_rejected_total`, `media_uploads_quarantined_total`, `media_downloads_served_total`, `media_downloads_blocked_total`, and the other `media_*` counters | counter | Media repository activity; `GET /_merovingian/admin/media/metrics` reports the same media figures. |
+| `media_stored_blobs`, `media_stored_bytes` | gauge | Stored media. |
+
+The two federation queue metrics exist only while the federation dispatch worker is running. Example
+alert rules built only on these metrics (thresholds are examples to tune):
+
+```yaml
+groups:
+  - name: merovingian
+    rules:
+      - alert: MerovingianScrapeFailing
+        expr: up{job="merovingian"} == 0
+        for: 5m
+      - alert: MerovingianComponentUnhealthy
+        expr: merovingian_health_status < 1
+        for: 5m
+      - alert: MerovingianFederationQueueRejecting
+        expr: increase(merovingian_federation_outbound_rejected_total[15m]) > 0
+      - alert: MerovingianFederationQueueBacklog
+        expr: merovingian_federation_outbound_pending > 100
+        for: 15m
+      - alert: MerovingianAppserviceEventsDropped
+        expr: increase(merovingian_appservice_outbox_dropped_total[1h]) > 0
+```
+
+### Log rotation
+
+Console logging goes to standard output. Under the packaged systemd unit, which
+does not pass `--log-file`, that is the journal, and the journal rotates it:
+`journalctl -u merovingian-server`. This is the recommended setup.
+
+The `--log-file` sink cannot be rotated by an external tool. The server opens
+the file once at start-up, truncates it, and keeps writing to that descriptor;
+it does not reopen on `SIGHUP` or on any other signal, and it opens the file
+without `O_APPEND`. Moving the file away (the default `logrotate` mode) leaves
+the server writing to the moved file. `copytruncate` is not safe either: after
+the truncation the server keeps writing at its old offset, so the file fills
+with zero bytes up to that offset. To rotate a `--log-file`, restart the server
+(each start truncates it, so copy it away first). Use `--log-file` for short
+diagnostic sessions rather than as the long-term log.
+
 ## Maintenance
 
 ### Backups
@@ -2976,6 +3131,42 @@ These steps are an operator procedure, not evidence of an end-to-end recovery
 certification. Rehearse them on disposable data and record the actual restore,
 startup and client checks for your deployment before relying on a backup.
 
+### TLS certificate renewal
+
+The TLS listeners (`listeners.*.tls=true`) read the certificate chain and the
+private key once, when the listeners open at start-up. The server does not watch
+the files and has no reload signal or command (`listeners.*.tls_certificate_file`
+and `tls_private_key_file` are "Restart required" in the
+[reloadability policy](#reloadability-policy)). To pick up a renewed
+certificate, replace the files and restart the service:
+
+1. Write the new certificate chain and key to the configured paths, keeping the
+   permissions the server requires: a certificate that is a regular,
+   non-executable file that is not group/other-writable, and a key that is a
+   regular, non-symlink file owned by the service user with mode `0400`.
+2. `systemctl restart merovingian-server`.
+3. Check the log for the `Listening:` lines with `tls=true`, and the certificate
+   with `openssl s_client -connect host:port -servername name`.
+
+If the new files are rejected, the restart fails before any listener opens (exit
+`81`, or `79` if the file metadata check fails) and the service stays down, so
+check the permissions and test the new pair with `openssl` before restarting. A
+deployment where a reverse proxy terminates TLS renews the certificate in the
+proxy and needs no Merovingian restart.
+
+### Signing-key rotation
+
+The server generates its Ed25519 federation signing key on first start and
+stores it encrypted under the master key. Operators have no way to rotate it
+today: the code can retire the active key and publish it under `old_verify_keys`
+on `GET /_matrix/key/v2/server` (`rotate_server_signing_key` in
+`src/homeserver/room_service.cpp`), but nothing reachable by an operator calls
+it. It has no admin route, command-line flag, signal or configuration key, and
+only the test suite calls it. The server never regenerates a lost key silently
+(ADR-0017), and a missing key with a missing or wrong master key makes start-up
+fail. Back up the master key with the database (see [Backups](#backups)). A key
+that is suspected leaked cannot be rotated with the released server.
+
 ### Upgrades
 
 1. Review the [`CHANGELOG.md`](../CHANGELOG.md) for the target version.
@@ -3012,6 +3203,10 @@ commit.
 | A remote server's `send_join` into a room here is refused `503` ("retry with omit_members=true") | The room's state and auth chain are too large to send. | The remote server should retry with `omit_members=true`; raise `join_response_max_size` (restart) for servers that do not. |
 | Federation worker does not start | `merovingian-fed-worker` binary is missing or `federation.worker.binary` points to the wrong path. | Check binary location and permissions. |
 | Encrypted media downloads fail | `application/octet-stream` was removed from `security.media.allowed_mime_types`. | Restore it. |
+| Exit `80` with `Runtime failed to start: ...` naming the database (for example `schema ledger records a migration this build does not have`, `schema version is not compatible`, `unable to open SQLite persistent store`) | The database was written by a newer build, or by a pre-1.0 build from before the 0.12.47 schema collapse; or the database cannot be opened. The server never opens a schema it does not recognise. | Run the build that wrote the database, or restore a backup taken by the build you run. Migrations never move a schema backwards. For open failures, check `database.uri_file` or the SQLite path and the service user's access. |
+| Exit `81` with `Listener ... failed to configure TLS: ...` | The certificate or key could not be loaded, the key does not match the certificate, or the key is not a regular non-symlink file owned by the service user with mode `0400`. | Fix the files named in the message (see [TLS certificate renewal](#tls-certificate-renewal)). Exit `79` instead means the file-metadata check in config validation refused them. |
+| Exit `80` with `Startup refused: hardening self-check reports a disabled control: <name>` | The named hardening control (seccomp, privilege drop, `no_new_privs`, and so on) is not in effect, for example the service runs as root or the platform lacks the control. | Run as the service user under the packaged unit; see [Startup hardening self-check](#startup-hardening-self-check). The server refuses to start rather than run unhardened. |
+| Exit `80` with `Federation worker failed to start`, or federation answers `503` and the log repeats `Federation worker exited` and `Federation worker restart failed` | The worker binary is missing or cannot be launched, or the worker died after start-up. The supervisor restarts a dead worker after 1 s, doubling the wait up to 30 s, and resets the wait once the worker has stayed healthy for 30 s; federation answers `503` meanwhile and local users are unaffected. | Fix the cause in the worker's log lines. On FreeBSD the restart cannot succeed after a worker death, because capability mode forbids spawning by path (ADR-0377): restart the server. |
 
 ## Security checklist
 

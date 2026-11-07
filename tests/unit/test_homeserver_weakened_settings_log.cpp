@@ -5,6 +5,7 @@
 // server starts (ADR-0232, ADR-0236): open registration, and a password policy
 // weaker than the default. A server at its defaults announces neither.
 
+#include "../support/ConsoleLogCapture.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -31,50 +32,6 @@
 
 namespace
 {
-
-// Sends the console log to a string for the scope's lifetime. Safe only while
-// the logger's asynchronous writer threads are not running, which is the case
-// in the unit test binary.
-class ConsoleLogCapture final
-{
-public:
-    ConsoleLogCapture()
-        : logger_{merovingian::observability::SingleLog::instance()}
-    {
-        REQUIRE_FALSE(logger_.get().writers_started());
-        previous_level_ = logger_.get().exchange_console_log_level(merovingian::observability::LogLevel::info);
-        previous_buffer_ = std::cout.rdbuf(output_.rdbuf());
-    }
-    ~ConsoleLogCapture()
-    {
-        std::cout.rdbuf(previous_buffer_);
-        std::ignore = logger_.get().exchange_console_log_level(previous_level_);
-    }
-    ConsoleLogCapture(ConsoleLogCapture const&) = delete;
-    auto operator=(ConsoleLogCapture const&) -> ConsoleLogCapture& = delete;
-    ConsoleLogCapture(ConsoleLogCapture&&) = delete;
-    auto operator=(ConsoleLogCapture&&) -> ConsoleLogCapture& = delete;
-
-    // True when a CRITICAL line names `event`.
-    [[nodiscard]] auto has_critical(std::string const& event) const -> bool
-    {
-        auto lines = std::istringstream{output_.str()};
-        for (auto line = std::string{}; std::getline(lines, line);)
-        {
-            if (line.find("<CRITICAL>") != std::string::npos && line.find(event) != std::string::npos)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-private:
-    std::reference_wrapper<merovingian::observability::SingleLog> logger_;
-    std::ostringstream output_{};
-    std::streambuf* previous_buffer_{nullptr};
-    merovingian::observability::LogLevel previous_level_{};
-};
 
 [[nodiscard]] auto config_with(merovingian::config::RegistrationSecurityConfig registration,
                                merovingian::config::PasswordPolicyConfig password_policy) -> merovingian::config::Config
@@ -105,14 +62,14 @@ SCENARIO("Weakened registration and password settings are logged at CRITICAL on 
 
         WHEN("it starts")
         {
-            auto const capture = ConsoleLogCapture{};
+            auto const capture = merovingian::tests::ConsoleLogCapture{};
             auto started = merovingian::homeserver::start_client_server(config);
 
             THEN("both weakenings are announced at CRITICAL")
             {
                 REQUIRE(started.started);
-                REQUIRE(capture.has_critical("registration.open"));
-                REQUIRE(capture.has_critical("registration.password_policy_relaxed"));
+                REQUIRE(capture.has_line("CRITICAL", "registration.open"));
+                REQUIRE(capture.has_line("CRITICAL", "registration.password_policy_relaxed"));
             }
         }
     }
@@ -123,14 +80,14 @@ SCENARIO("Weakened registration and password settings are logged at CRITICAL on 
 
         WHEN("it starts")
         {
-            auto const capture = ConsoleLogCapture{};
+            auto const capture = merovingian::tests::ConsoleLogCapture{};
             auto started = merovingian::homeserver::start_client_server(config);
 
             THEN("the weaker policy is announced, and closed registration is not")
             {
                 REQUIRE(started.started);
-                REQUIRE(capture.has_critical("registration.password_policy_relaxed"));
-                REQUIRE_FALSE(capture.has_critical("registration.open"));
+                REQUIRE(capture.has_line("CRITICAL", "registration.password_policy_relaxed"));
+                REQUIRE_FALSE(capture.has_line("CRITICAL", "registration.open"));
             }
         }
     }
@@ -142,7 +99,7 @@ SCENARIO("Weakened registration and password settings are logged at CRITICAL on 
 
         WHEN("each starts")
         {
-            auto const capture = ConsoleLogCapture{};
+            auto const capture = merovingian::tests::ConsoleLogCapture{};
             auto started_defaults = merovingian::homeserver::start_client_server(defaults);
             auto started_stricter = merovingian::homeserver::start_client_server(stricter);
 
@@ -150,8 +107,8 @@ SCENARIO("Weakened registration and password settings are logged at CRITICAL on 
             {
                 REQUIRE(started_defaults.started);
                 REQUIRE(started_stricter.started);
-                REQUIRE_FALSE(capture.has_critical("registration.open"));
-                REQUIRE_FALSE(capture.has_critical("registration.password_policy_relaxed"));
+                REQUIRE_FALSE(capture.has_line("CRITICAL", "registration.open"));
+                REQUIRE_FALSE(capture.has_line("CRITICAL", "registration.password_policy_relaxed"));
             }
         }
     }

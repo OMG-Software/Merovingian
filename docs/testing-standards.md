@@ -294,6 +294,31 @@ map, so real-server SSRF and TLS-trust behaviour is unchanged.
    holding `runtime.mutex`. The join's whole state is persisted before it
    returns (ADR-0241), so there is nothing to wait for.
 
+## Expected skips
+
+`meson test` counts a Catch2 test case that called `SKIP()` as passed, so a runner missing a precondition
+would pass with the test silently not run. Each CI job that runs Catch2 therefore declares the skips it expects
+([ADR-0546](adr/0546-ci-fails-on-a-catch2-skip-its-job-does-not-list.md)):
+
+- `tests/expected_skips.json` holds `groups` (lists of `{test, message?, reason, unverified?}`) and `jobs` (a job
+  name mapped to the groups it combines). `test` is the scenario name without the `Scenario: ` prefix;
+  `message` is an optional substring the SKIP message must contain; `reason` says why this runner skips it.
+- The build scripts take `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`). They set
+  `MEROVINGIAN_CATCH_REPORT_DIR`, so every test binary also writes an XML report there, and run
+  `scripts/check_expected_skips.py` after the suite. A skip that is not listed for the job fails the job and is
+  printed with the test name, message and source line. No report, a truncated report or a bad list also fails.
+- A listed skip that did not happen only warns. Remove the entry (or its `unverified` flag) when the runner
+  settles.
+- Local runs are unchanged: without the variable the binaries use the command line they are given. To check a
+  change locally, run a binary with `MEROVINGIAN_CATCH_REPORT_DIR=/some/dir` and then
+  `python3 scripts/check_expected_skips.py --job ubuntu --reports /some/dir`.
+
+To add an expected skip: add an entry to the group whose runners skip it (or a new group, then name it under
+each job that needs it), with a one-line reason; add `message` when only one reason is acceptable. To add a job,
+add it under `jobs` and pass its name to the build script in the workflow. `tests/tooling/test_expected_skips.py`
+checks that every entry names an existing test case and that every workflow job passes a known name.
+Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip means the worker binary was not found.
+
 ## Sanitizers and concurrency tests
 
 - CI runs the suite under sanitizers in `.github/workflows/sanitizers.yml`:

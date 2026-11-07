@@ -48,7 +48,7 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build and test with sanitizers
-        run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined
+        run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined --skip-job asan-ubsan
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -99,7 +99,7 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build and test with ThreadSanitizer
-        run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread 2>&1 | tee tsan-ci-log.txt
+        run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread --skip-job tsan 2>&1 | tee tsan-ci-log.txt
 
       - name: Upload TSan logs
         if: always()

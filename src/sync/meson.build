@@ -3,6 +3,7 @@ sync_sources = files(
   'DeviceListDelta.cpp',
   'HistoryVisibility.cpp',
   'LazyMemberTracker.cpp',
+  'ParkedPollRegistry.cpp',
   'PreparedRoomEventFilter.cpp',
   'ReadMarkers.cpp',
   'ReceiptContentBuilder.cpp',
@@ -18,6 +19,7 @@ sync_sources = files(
   'SyncFilter.cpp',
   'SyncNotifier.cpp',
   'ThreadNotificationCounts.cpp',
+  'type_pattern.cpp',
   'ViewerEventUnsigned.cpp',
 )
 

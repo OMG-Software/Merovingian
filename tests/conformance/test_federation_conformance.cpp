@@ -511,19 +511,11 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
                 auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
-                // Spec MUST: room_version is present and is a string.
-                // Do NOT remove — a joining server uses this to select auth rules.
-                auto const* rv_val = json_get(*root, std::string{"room_version"});
-                REQUIRE(rv_val != nullptr);
-                REQUIRE(std::get_if<std::string>(&rv_val->storage()) != nullptr);
-
-                // Spec MUST (v2): origin is present and is a string.
-                // Do NOT remove — the joining server validates the resident's identity.
-                auto const* origin_val = json_get(*root, std::string{"origin"});
-                REQUIRE(origin_val != nullptr);
-                auto const* origin_str = std::get_if<std::string>(&origin_val->storage());
-                REQUIRE(origin_str != nullptr);
-                REQUIRE(!origin_str->empty());
+                // Spec (v2 200 response): the fields are auth_chain, event, members_omitted,
+                // servers_in_room and state. room_version comes from make_join, and the
+                // resident is the authenticated destination: neither is in this answer (ADR-0538).
+                REQUIRE(json_get(*root, std::string{"room_version"}) == nullptr);
+                REQUIRE(json_get(*root, std::string{"origin"}) == nullptr);
 
                 // Spec MUST: auth_chain is an array.
                 // Do NOT remove — the joining server uses this to validate the join.
@@ -3172,7 +3164,7 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, join_pdu.body));
 
-            THEN("the response is 200 with room_version, auth_chain, state, and event")
+            THEN("the response is 200 with auth_chain, state, and event, and no room_version")
             {
                 // Spec MUST: v1 endpoint MUST be supported and return 200.
                 REQUIRE(response.status == 200U);
@@ -3182,8 +3174,8 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
                 auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
-                // Spec MUST: room_version is present (same as v2).
-                REQUIRE(json_get(*root, std::string{"room_version"}) != nullptr);
+                // The v1 path answers the v2 body, which has no room_version (ADR-0538).
+                REQUIRE(json_get(*root, std::string{"room_version"}) == nullptr);
                 // Spec MUST: auth_chain array is present.
                 REQUIRE(json_get(*root, std::string{"auth_chain"}) != nullptr);
                 // Spec MUST: state array is present.

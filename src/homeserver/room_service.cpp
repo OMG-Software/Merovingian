@@ -81,6 +81,7 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/PersistOutcome.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
 #include "merovingian/homeserver/PushRoomFacts.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
@@ -97,6 +98,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
@@ -352,6 +354,13 @@ namespace
         result.errcode = "M_TOO_LARGE";
         return result;
     }
+    // SS7: 403 M_INVITE_BLOCKED, for an invite to a local user whose m.invite_permission_config blocks invites.
+    [[nodiscard]] auto invite_blocked_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "the invited user is not accepting invites", 403U);
+        result.errcode = std::string{invite_blocked_errcode};
+        return result;
+    }
     [[nodiscard]] auto invalid_state_key_result() -> OperationResult
     {
         auto result = make_operation_result(false, {}, "state_key must not contain NUL", 400U);
@@ -359,8 +368,22 @@ namespace
         return result;
     }
 
+    // Defence in depth for ban, kick and unban: the route refuses a missing or malformed `user_id`, but a
+    // caller of the service must not be able to compose an m.room.member with an empty or invalid state_key.
+    [[nodiscard]] auto refuse_invalid_membership_target(std::string_view target_user_id)
+        -> std::optional<OperationResult>
+    {
+        if (auth::user_id_is_valid(target_user_id))
+        {
+            return std::nullopt;
+        }
+        auto result = make_operation_result(false, {}, "target user_id is not a valid Matrix user ID", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string_view sender, ComposedEvent const& composed) -> bool;
+                                              std::string_view sender, ComposedEvent const& composed) -> PersistOutcome;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool;
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -1512,7 +1535,7 @@ namespace
                                                  std::string_view membership, ComposedEvent const& composed_event)
         -> OperationResult
     {
-        if (!persist_composed_event(runtime, room_id, sender_user_id, composed_event))
+        if (persist_composed_event(runtime, room_id, sender_user_id, composed_event) == PersistOutcome::not_stored)
         {
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
@@ -1707,6 +1730,14 @@ namespace
         }
         auto const local_users = local_user_ids(runtime.database);
         auto const departing_is_local = local_users.contains(departing_user_id);
+        // A remote user who now shares no room with a local user gets no updates sent here: forget their
+        // cached device list (ADR-0560).
+        if (!departing_is_local && std::ranges::none_of(still_sharing, [&local_users](std::string_view member) {
+                return local_users.contains(member);
+            }))
+        {
+            runtime.remote_device_lists.erase(departing_user_id);
+        }
         auto changes = std::vector<database::PersistentDeviceListChange>{};
         for (auto const& member : room->members)
         {
@@ -2287,7 +2318,7 @@ namespace
     // m.room.create event first — deriving the room ID from its reference hash
     // (MSC4291) — and persist it once that room ID is known.
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string_view sender, ComposedEvent const& composed) -> bool
+                                              std::string_view sender, ComposedEvent const& composed) -> PersistOutcome
     {
         // ADR-0064 phase B1: every locally created event goes through the
         // store_local_event choke point, never database::store_event_with_state
@@ -2300,7 +2331,7 @@ namespace
                                {"reason",   std::string{reason},  false}
             },
                            observability::LogEventSeverity::warning);
-            return false;
+            return PersistOutcome::not_stored;
         };
         auto const* policy = rooms::find_room_version_policy(composed.room_version);
         if (policy == nullptr)
@@ -2340,13 +2371,16 @@ namespace
                 runtime.database.persistent_store, *policy, std::move(event), std::move(state), composed.basis,
                 state_resolution_limits(runtime.config.security().federation.state_resolution), std::move(membership)))
         {
-            return false;
+            return PersistOutcome::not_stored;
         }
+        // The event is durable from here. A bookkeeping failure is logged with the event ID (failed) but is not a
+        // store failure: the caller still federates and announces the event (C13).
         if (is_member_event && !finish_local_membership(runtime, room_id, composed, std::move(committed_membership)))
         {
-            return failed("roster or device-list update after the member event failed");
+            std::ignore = failed("roster or device-list update after the member event failed");
+            return PersistOutcome::stored_bookkeeping_failed;
         }
-        return true;
+        return PersistOutcome::stored;
     }
 
     // CSAZ-9: true when createRoom content the client supplied cannot fit in an
@@ -2455,7 +2489,7 @@ namespace
             // compose_signed_event already emitted a diagnostic.
             return composition.failure;
         }
-        if (!persist_composed_event(runtime, room_id, sender, *composition.event))
+        if (persist_composed_event(runtime, room_id, sender, *composition.event) == PersistOutcome::not_stored)
         {
             return ComposeFailure::rejected;
         }
@@ -2691,6 +2725,24 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
     return {result.ok, std::move(result.body)};
 }
 
+namespace
+{
+
+    // "M_INVITE_BLOCKED" when a remote error body's `errcode` is exactly that, else empty (SS7). The body is a
+    // remote server's, so nothing else of it is kept.
+    [[nodiscard]] auto remote_invite_blocked_errcode(std::string_view body) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(body);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        auto const* errcode = root == nullptr ? nullptr : string_member(*root, "errcode");
+        return errcode != nullptr && *errcode == invite_blocked_errcode ? std::string{invite_blocked_errcode}
+                                                                        : std::string{};
+    }
+
+} // namespace
+
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
                                          std::string_view room_id, federation::OutboundTransaction const& transaction,
                                          std::string_view key_id, core::SecretBuffer secret_key,
@@ -2879,7 +2931,8 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
         return {false,
                 outcome.error_detail.empty() ? "remote server returned " + std::to_string(outcome.response.status)
                                              : outcome.error_detail,
-                outcome.ok ? outcome.response.status : std::uint16_t{0U}};
+                outcome.ok ? outcome.response.status : std::uint16_t{0U},
+                outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{}};
     }
     return {true, outcome.response.body, outcome.response.status};
 }
@@ -3995,7 +4048,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             return emit_state("m.room.create", std::move(create_content));
         }
-        if (!persist_composed_event(runtime, room_id, *user_id, *precomposed_create))
+        if (persist_composed_event(runtime, room_id, *user_id, *precomposed_create) == PersistOutcome::not_stored)
         {
             return false;
         }
@@ -5663,8 +5716,8 @@ namespace
     // room's stripe mutex and then `runtime.mutex`; this releases `runtime.mutex`, takes
     // and drops the stripe, and restores `runtime.mutex`, which is the order ingestion takes
     // them in. Anything read from runtime state before the call must be read again after it.
-    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, RuntimeLock& guard,
-                                        std::string_view room_id) -> void
+    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, RuntimeLock& guard, std::string_view room_id)
+        -> void
     {
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto const released = RuntimeLockRelease{guard};
@@ -6401,7 +6454,7 @@ namespace
                 });
                 return make_operation_result(false, {}, "third-party invite event rejected", 403U);
             }
-            if (!persist_composed_event(runtime, room_id, inviter_id, *composed_invite))
+            if (persist_composed_event(runtime, room_id, inviter_id, *composed_invite) == PersistOutcome::not_stored)
             {
                 log_diagnostic("room.join.rejected",
                                {
@@ -6515,7 +6568,7 @@ namespace
             });
             return make_operation_result(false, {}, "membership event rejected", 403U);
         }
-        if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+        if (persist_composed_event(runtime, room_id, *user_id, *composed) == PersistOutcome::not_stored)
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                              false},
@@ -7142,10 +7195,10 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard,
-                                         std::string_view room_id, std::string_view invitee_server,
-                                         std::string_view event_id, std::string_view event_json,
-                                         std::uint32_t timeout_seconds) -> RemoteInviteResult
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard, std::string_view room_id,
+                                         std::string_view invitee_server, std::string_view event_id,
+                                         std::string_view event_json, std::uint32_t timeout_seconds)
+    -> RemoteInviteResult
 {
     // One deadline for the whole offer: the exchange and the checks of the answer (its key lookups) draw from
     // it, so a caller offering several invites under one deadline is not held past it (ADR-0307). 0 means the
@@ -7210,8 +7263,12 @@ namespace
     auto const final_refusal = status >= 400U && status < 500U && status != 408U && status != 429U;
     if (final_refusal)
     {
-        return {RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
-                "the invited user's server refused the invite"};
+        auto const blocked = status == 403U && call.remote_errcode == invite_blocked_errcode;
+        auto refusal = RemoteInviteResult{
+            RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
+            blocked ? "the invited user is not accepting invites" : "the invited user's server refused the invite"};
+        refusal.errcode = blocked ? std::string{invite_blocked_errcode} : std::string{};
+        return refusal;
     }
     return {RemoteInviteOutcome::unreachable, 502U, call.body};
 }
@@ -7247,6 +7304,38 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
 namespace
 {
 
+    // True when the room's auth rules, applied to `composed` against the room's CURRENT state, still allow it. The
+    // compose step judged the event against the state of its time; an offer to another server runs with
+    // runtime.mutex released, so the inviter's power level or standing may have changed since (C18). Reads the
+    // runtime, so the caller holds runtime.mutex.
+    [[nodiscard]] auto composed_event_is_still_authorised(HomeserverRuntime& runtime, std::string_view room_id,
+                                                          std::string_view sender, ComposedEvent const& composed)
+        -> bool
+    {
+        auto const* policy = rooms::find_room_version_policy(composed.room_version);
+        auto const parsed = canonicaljson::parse_lossless(composed.json);
+        if (policy == nullptr || parsed.error != canonicaljson::ParseError::none)
+        {
+            return false;
+        }
+        auto const auth_map =
+            build_auth_event_map(runtime.database.persistent_store, room_id, sender,
+                                 composed.state_key.value_or(std::string{}), composed.event_type, parsed.value);
+        auto const decision = events::authorize_event_against_auth_events(parsed.value, *policy, auth_map);
+        if (!decision.allowed)
+        {
+            log_diagnostic("event.auth.rejected", {
+                                                      {"room_id",    std::string{room_id},            false},
+                                                      {"sender",     std::string{sender},             false},
+                                                      {"event_type", composed.event_type,             false},
+                                                      {"rule_hook",  std::string{decision.rule_hook}, false},
+                                                      {"rule_step",  std::string{decision.rule_step}, false},
+                                                      {"reason",     std::string{decision.reason},    false}
+            });
+        }
+        return decision.allowed;
+    }
+
     // The tail shared by an invite a client sends (`invite_user`) and one issued for a third-party invite
     // (`exchange_third_party_invite`): `invite_event` is composed and signed for a user of ANOTHER server and not yet
     // stored. It is offered to that user's server, then stored and sent to the room's other servers
@@ -7276,14 +7365,9 @@ namespace
                 : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
         if (delivery.outcome == RemoteInviteOutcome::refused)
         {
-            return make_operation_result(false, {}, delivery.reason, delivery.status);
-        }
-        if (delivery.outcome == RemoteInviteOutcome::delivered)
-        {
-            // Signed by both servers now: this is the event that is stored and sent to the room's servers.
-            invite_event.json = delivery.cosigned_event_json;
-            invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
-                                           delivery.cosigned_signatures.end());
+            auto refused = make_operation_result(false, {}, delivery.reason, delivery.status);
+            refused.errcode = delivery.errcode;
+            return refused;
         }
 
         // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
@@ -7295,6 +7379,19 @@ namespace
         if (!room_has_member(*room, inviter))
         {
             return make_operation_result(false, {}, "user is not joined", 403U);
+        }
+        // Being joined is not enough: the inviter may have been banned, or lost the power to invite, during the
+        // exchange. The event composed before it is judged again against the current state (C18).
+        if (!composed_event_is_still_authorised(runtime, room_id, inviter, invite_event))
+        {
+            return make_operation_result(false, {}, "inviter is no longer allowed to invite", 403U);
+        }
+        if (delivery.outcome == RemoteInviteOutcome::delivered)
+        {
+            // Signed by both servers now: this is the event that is stored and sent to the room's servers.
+            invite_event.json = delivery.cosigned_event_json;
+            invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
+                                           delivery.cosigned_signatures.end());
         }
         // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
         // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
@@ -7353,6 +7450,10 @@ namespace
     auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
     if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
     {
+        if (invite_permission_blocks(runtime.database.persistent_store, target_user_id))
+        {
+            return invite_blocked_result();
+        }
         auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
         if (!result.ok)
         {
@@ -7805,7 +7906,7 @@ namespace
     {
         return make_operation_result(false, {}, "third-party invite event rejected", 403U);
     }
-    if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+    if (persist_composed_event(runtime, room_id, *user_id, *composed) == PersistOutcome::not_stored)
     {
         return make_operation_result(false, {}, "third-party invite persistence failed", 500U);
     }
@@ -7861,6 +7962,10 @@ namespace
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
+    }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
@@ -7890,6 +7995,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
@@ -7935,6 +8044,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
@@ -9003,6 +9116,18 @@ namespace
 namespace
 {
 
+    // True when the composed m.room.member event's `content.membership` is "invite".
+    [[nodiscard]] auto composed_membership_is_invite(std::string_view event_json) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        auto const* content = root == nullptr ? nullptr : object_member_as_object(*root, "content");
+        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+        return membership != nullptr && *membership == "invite";
+    }
+
     // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
@@ -9059,6 +9184,15 @@ namespace
             return event_too_large_result();
         }
         auto const& composed = composition.event;
+        // SS7: PUT .../state/m.room.member/{stateKey} with membership invite is refused for a local invitee who
+        // blocks invites, before anything is stored.
+        if (composed.has_value() && composed->event_type == "m.room.member" && composed->state_key.has_value() &&
+            auth::user_id_server_name(*composed->state_key) == runtime.config.server().server_name &&
+            composed_membership_is_invite(composed->json) &&
+            invite_permission_blocks(runtime.database.persistent_store, *composed->state_key))
+        {
+            return invite_blocked_result();
+        }
         if (!composed.has_value())
         {
             log_diagnostic("room.event.rejected", {
@@ -9101,7 +9235,7 @@ namespace
         // local event path uses, rather than duplicating the raw store call —
         // this is the client-facing send/state-send/redaction endpoint, so it
         // was the one local path most likely to be hit by a real client.
-        if (!persist_composed_event(runtime, room_id, user_id, *composed))
+        if (persist_composed_event(runtime, room_id, user_id, *composed) == PersistOutcome::not_stored)
         {
             log_diagnostic("room.event.rejected", {
                                                       {"actor",      user_id,                    false},
@@ -9694,6 +9828,15 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
+    // Spec (GET /relations, `dir`): "One of: [b, f]", default b. A value outside the enum is a bad
+    // request, not a silent backward page.
+    if (request.dir.has_value() && *request.dir != "b" && *request.dir != "f")
+    {
+        auto result = make_operation_result(false, {}, "dir must be one of: b, f", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     // Spec: "404 The parent event was not found or the user does not have permission to read this event
     // (it might be contained in history that is not accessible to the user)". A user who left, or a peek of a
     // world_readable room, is not refused here: the per-event HistoryVisibility below decides.
@@ -9909,6 +10052,9 @@ namespace
         }
     }
 
+    // `end` is now the end of the requested range. A page cut by `limit` ends before it and has a
+    // next_batch; a range that `to` closed has no more results to offer.
+    auto const range_end = end;
     if (end - start > static_cast<std::size_t>(limit))
     {
         end = start + static_cast<std::size_t>(limit);
@@ -9929,7 +10075,7 @@ namespace
         response.push_back(canonicaljson::make_member(
             "prev_batch", canonicaljson::Value{std::to_string(matches[start - 1U]->stream_ordering)}));
     }
-    if (end < matches.size())
+    if (end < range_end)
     {
         response.push_back(canonicaljson::make_member(
             "next_batch", canonicaljson::Value{std::to_string(matches[end]->stream_ordering)}));
