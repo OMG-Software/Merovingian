@@ -288,6 +288,11 @@ struct SharedRoom final
         REQUIRE(initial.response.status == 200U);
         auto since = json_string_after(initial.response.body, "next_batch");
         REQUIRE_FALSE(since.empty());
+        // The token is an encoded triplet joined by a pipe, which a request target carries percent-encoded.
+        for (auto at = since.find('|'); at != std::string::npos; at = since.find('|'))
+        {
+            since.replace(at, 1U, "%7C");
+        }
         room.pollers.push_back({login.value, std::move(since)});
     }
     return room;
