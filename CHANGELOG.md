@@ -11,7 +11,7 @@ Every header the first split (0.12.79) left now holds at most one type, and ever
 - ADR-0002 and ADR-0003 link to `RuntimeMutex.hpp` and `RuntimeLockRelease.hpp`, because their old targets are gone and `mkdocs build --strict` refused the dead links. Only the link targets change; the records' text stays as written.
 - `scripts/reject-unsafe.sh` exempts `src/core/SecretBuffer.cpp` from the libsodium boundary under its new name. The old pattern no longer matched any file, so the gate rejected the file's `sodium_mlock` and `sodium_memzero` calls.
 - `database/state_group_tables.hpp` is gone. Its three tables have their own headers and sources, and their shared rules are in `state_group_table_support.hpp`.
-- Every file now includes the headers of the types it names, instead of reaching them through the old multi-type headers.
+- Every file now includes the headers of the types it names, instead of reaching them through the old multi-type headers. That includes code compiled only on the BSDs: `test_hardening_self_check.cpp` includes `elf_probe.hpp` for its non-Linux PIE scenario.
 - Helpers that two files now share are moved, never copied (ADR-0513): `appservice/secret_view.hpp`, `homeserver::poll_for_tls`, `homeserver::published_request_mutex` and the PostgreSQL and SQLite connection deleters.
 - Three test helper types are moved into their file's anonymous namespace (`PrivateAddressDiscoveryNetwork`, `RelayCase`) or renamed after their type (`ScratchPostgresqlDatabase.hpp`).
 - Two types keep their member definitions in the `.cpp` named for something else, because moving them needs a module-internal header for the helpers they share: `PostgresqlConnection` (`postgresql_store.cpp`) and the `LandlockHardeningOps` constructor (`landlock_hardening.cpp`).
