@@ -7,8 +7,10 @@
 ## Context and Problem Statement
 
 GitHub Actions has no job priority. When a pull request is pushed, every workflow it triggers creates its jobs in the same
-second, and every job without `needs:` joins one queue for runners. The account runs at most 20 jobs at once, so the rest
-wait, and the queue is served roughly in the order jobs joined it.
+second, and every job without `needs:` joins one queue for runners. The organisation runs at most 20 jobs at once, across
+every pull request, so the rest wait. The queue is not served in the order jobs joined it. On #567's first run, while #566's
+CI held every runner, CodeQL waited from 15:14:09 to 15:31:47, and three jobs that joined at 15:18 and 15:27 got runners
+before it. A queued job's place cannot be relied on, so the only way to start a job at once is for no job to be waiting.
 
 On #566 at `d567ec02`, 34 jobs needed nothing and joined at once. `sonarcloud` joined last, 5 seconds after the others,
 because its workflow's `concurrency` group first cancels the previous run. It was still queued minutes later, behind the OS
@@ -37,7 +39,8 @@ Chosen option: the gate. `queue-after-analyses` (check name "Queue after Sonar a
 permissions and runs `true`. Every job in `ci.yml` and `packages.yml` that needed nothing now needs it, and so joins the
 queue only after it has finished. The jobs that already needed another job (the two Fedora aggregates, the Complement image,
 and the staging, signing and publishing chain) are unchanged. A pull request now starts 15 jobs at once, under the cap, so
-`sonarcloud` and CodeQL never queue. The OS and package jobs queue a few seconds later and take runners as they free up.
+when the runners are free `sonarcloud` and CodeQL do not queue. The OS and package jobs queue a few seconds later and take
+runners as they free up.
 `tests/tooling/test_ci_runner_order.py` counts the jobs that need nothing in every workflow that runs for a pull request
 (one per matrix entry) and fails when they exceed 20. It also fails when a job in the two workflows needs nothing, or when
 an analysis needs anything.
@@ -64,6 +67,9 @@ Rejected:
 
 ### Negative Consequences
 
+* The gate orders one push, not the organisation. The 20 runners are shared by every pull request, so while another pull
+  request's CI holds them, this one's analyses queue with everything else, in an order GitHub does not keep. Nothing in a
+  workflow can change that: only free runners, or a higher cap, can.
 * The OS and package jobs start a few seconds later than before, after the gate has run. On a push where runners are free,
   that is the whole cost.
 * A new job in `ci.yml` or `packages.yml` must `needs:` the gate (or another job) and carry `if: ${{ !cancelled() }}`, or

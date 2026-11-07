@@ -328,10 +328,11 @@ beside them.
 
 ## CI job order
 
-GitHub Actions has no job priority, and the account runs at most 20 jobs at once. Every job in `ci.yml` and
-`packages.yml` that needs no other job `needs:` the gate job `queue-after-analyses` and carries
-`if: ${{ !cancelled() }}`, so a pull request starts few enough jobs at once that `sonarcloud` and CodeQL, the two longest,
-never queue ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)). The
+GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request; queued
+jobs are not served in the order they joined. Every job in `ci.yml` and `packages.yml` that needs no other job `needs:`
+the gate job `queue-after-analyses` and carries `if: ${{ !cancelled() }}`, so a pull request starts few enough jobs at
+once that, when no other pull request's CI holds the runners, `sonarcloud` and CodeQL, the two longest, do not queue
+([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)). The
 condition matters: without it a failed gate skips the jobs, and a skipped required check counts as passed.
 `tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when an analysis waits for anything, or
 when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
