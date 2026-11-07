@@ -495,6 +495,18 @@ security.media.quarantine_unknown_mime=true
 # (encrypted-room attachments) is unscannable ciphertext no matter what this
 # flag is set to.
 #security.media.enable_av_scanner=true
+# Optional malware scanning through a local ClamAV daemon (off while the socket
+# path is empty). Media is sent to clamd over its AF_UNIX socket with INSTREAM
+# and served only after `stream: OK`; infected media, any clamd failure or
+# timeout, and media above clamd_max_scan_size stay quarantined. Applies to
+# media whose policy is allow-after-scan. Needs enable_av_scanner=true. Not
+# available on FreeBSD or OpenBSD (the server refuses to start). Keep
+# clamd_max_scan_size at or above max_upload_size, and equal to clamd's
+# StreamMaxLength, or larger uploads are never scanned.
+#security.media.clamd_socket_path=/run/clamav/clamd.ctl
+#security.media.clamd_timeout_ms=10000
+#security.media.clamd_max_scan_size=25MiB
+#security.media.clamd_max_concurrent=4
 # Acceptance disposition for authenticated local uploads: allow,
 # allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
 # accepts a clean scanner verdict and quarantines/rejects otherwise — the only

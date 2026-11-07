@@ -20,6 +20,7 @@ homeserver_sources = files(
   'local_smoke_flow.cpp',
   'local_http_router.cpp',
   'local_services.cpp',
+  'clamd_media_scan.cpp',
   'media_service.cpp',
   'MediaUploadNotifier.cpp',
   'operator_admin.cpp',

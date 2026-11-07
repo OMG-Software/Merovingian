@@ -40,6 +40,7 @@
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
+#include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/UrlPreviewCache.hpp"
 #include "merovingian/net/RuntimeListeners.hpp"
@@ -170,6 +171,10 @@ struct HomeserverRuntime final
     std::unique_ptr<LocalDatabaseScope> audit_sink_scope{};
     federation::FederationRuntimeState federation{};
     media::LocalMediaRepository media_repository{};
+    // G15, ADR-0565: the clamd malware scanner, null while security.media.clamd_socket_path is empty. Built once at
+    // start-up from the media repository's config; tests install one directly. Its own concurrency bound is atomic,
+    // so it is used with `mutex` released (a scan blocks), and held through a unique_ptr because it is not movable.
+    std::unique_ptr<media::ClamdScanner> clamd_scanner{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
     std::unique_ptr<http::OutboundClient> outbound_client{};
