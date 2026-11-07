@@ -2036,3 +2036,50 @@ SCENARIO("A withdrawn invite that cannot get a sync position is refused and leav
         }
     }
 }
+
+// C18 (ADR-0536): the offer to the invitee's server runs with runtime.mutex released, so the inviter can lose the
+// power to invite during it. The invite is judged by the auth rules again before it is stored or sent.
+SCENARIO("An invite to another server is refused when the inviter loses the power to invite during the offer",
+         "[integration][federation][invite][remote-invite-handshake][c18]")
+{
+    GIVEN("a version 10 room where inviting needs level 50, alice at 100, and bob of another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const room_id = create_room(
+            runtime, alice,
+            R"({"preset":"private_chat","room_version":"10","power_level_content_override":{"invite":50}})");
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+        auto const invite_target = "/_matrix/client/v3/rooms/" + room_id + "/invite";
+        auto const invite_body = std::string{R"({"user_id":")"} + bob + R"("})";
+
+        WHEN("alice lowers her own level to 0 while bob's server is answering, and the server co-signs the invite")
+        {
+            auto const answer = invitee_answering(InviteeAnswer::cosigned);
+            auto invitee = InviteeServer{
+                runtime, [&](std::string const& raw_request) {
+                    auto const lowered =
+                        call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.power_levels",
+                             alice, R"({"invite":50,"users":{"@alice:example.org":0}})");
+                    CHECK(lowered.response.status == 200U);
+                    return answer(raw_request);
+                }};
+            auto const invited = call(runtime, "POST", invite_target, alice, invite_body);
+            invitee.thread.join();
+
+            THEN("alice is refused 403 M_FORBIDDEN and nothing is stored or sent")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invitee.captured.size() == 1U);
+                REQUIRE(invited.response.status == 403U);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+    }
+}

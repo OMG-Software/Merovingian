@@ -407,6 +407,7 @@ shell = find_program('sh')
       'unit/test_create_room_invite_3pid.cpp',
       'unit/test_relations_recursion.cpp',
       'unit/test_review_regressions.cpp',
+      'unit/test_receipt_thread_uniqueness.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
       'unit/test_runtime_database.cpp',

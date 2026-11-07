@@ -348,6 +348,9 @@ on that record, each by the inviter's server, which the spec calls a resident se
   verified signatures merged in (`with_server_signatures`). That co-signed event is what `invite_user` stores and
   sends on; createRoom replaces its already stored invite with it (`store_cosigned_invite`). An answer that fails
   is `refused` (502), never `delivered`, and never queued. The key lookup runs with `runtime.mutex` released.
+- `offer_and_store_remote_invite` runs the room's auth rules for the composed invite against the CURRENT state when
+  `runtime.mutex` is back (`composed_event_is_still_authorised`, ADR-0536): an inviter banned or demoted during the
+  exchange is `403` with nothing stored or sent. Membership alone is not rechecked in its place.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
   room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
   one test; the invite handler and `rescind_invite_from_inviter` use it and must agree. For a room this server is in, it stores no event (the
@@ -602,6 +605,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
 - `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its
   `events_default` and `invite`, as the upgrader; the last step is best effort (ADR-0476).
+  If the tombstone is refused (a power change raced `create_room`), the upgrader leaves the replacement room so it is
+  abandoned, both room IDs are logged, and the refusal is returned unchanged (ADR-0534). `test_after_upgrade_room_created`
+  is the test seam for that race.
 - `POST /createRoom` refuses past `max_create_room_invites` or `max_create_room_initial_state` with
   `400 M_TOO_LARGE` before `create_room` is called (ADR-0316): `create_room` stores one event per entry under
   the lock.
@@ -755,6 +761,11 @@ itself; projecting twice allocates a second stream ordering and duplicates devic
 A membership learned over federation (the membership acceptor, `ingest_pdu_event`) is applied to the live
 roster with `apply_membership_to_roster`, the same call `finish_local_membership` ends with, so the
 device-list `changed`/`left` rows follow; never edit `LocalRoom::members` for a membership change.
+
+`persist_composed_event` returns a `PersistOutcome` (ADR-0535): `not_stored` is the only value a caller answers with an
+error. `stored_bookkeeping_failed` means the event committed but the roster or device-list step after it failed (logged
+as `event.persist.failed` with the event ID); the caller still federates, notifies and answers success. Compare with
+`== PersistOutcome::not_stored`, never treat the value as a bool.
 
 The `memberships` row and invite change are never written in a transaction of their own after the event: pass
 a `database::MembershipProjection` to `store_event_with_state` / `prepare_store_event_with_state` (or

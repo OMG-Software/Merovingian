@@ -206,6 +206,10 @@ struct HomeserverRuntime final
     // clock that stands still, as two requests inside one millisecond see it,
     // or one stepped back. Always empty in production.
     std::optional<std::int64_t> test_frozen_event_clock_ms{};
+    // Test-only: called by POST /rooms/{roomId}/upgrade once the replacement room exists and before the
+    // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
+    // request would (C21). Always empty in production.
+    std::function<void()> test_after_upgrade_room_created{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,
@@ -557,4 +561,3 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
                               std::string_view membership) -> void;
 
 } // namespace merovingian::homeserver
-

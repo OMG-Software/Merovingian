@@ -81,6 +81,7 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/PersistOutcome.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
 #include "merovingian/homeserver/PushRoomFacts.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
@@ -360,7 +361,7 @@ namespace
     }
 
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string_view sender, ComposedEvent const& composed) -> bool;
+                                              std::string_view sender, ComposedEvent const& composed) -> PersistOutcome;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                                 std::string_view joining_user_id) -> bool;
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -1512,7 +1513,7 @@ namespace
                                                  std::string_view membership, ComposedEvent const& composed_event)
         -> OperationResult
     {
-        if (!persist_composed_event(runtime, room_id, sender_user_id, composed_event))
+        if (persist_composed_event(runtime, room_id, sender_user_id, composed_event) == PersistOutcome::not_stored)
         {
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
@@ -2287,7 +2288,7 @@ namespace
     // m.room.create event first — deriving the room ID from its reference hash
     // (MSC4291) — and persist it once that room ID is known.
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                              std::string_view sender, ComposedEvent const& composed) -> bool
+                                              std::string_view sender, ComposedEvent const& composed) -> PersistOutcome
     {
         // ADR-0064 phase B1: every locally created event goes through the
         // store_local_event choke point, never database::store_event_with_state
@@ -2300,7 +2301,7 @@ namespace
                                {"reason",   std::string{reason},  false}
             },
                            observability::LogEventSeverity::warning);
-            return false;
+            return PersistOutcome::not_stored;
         };
         auto const* policy = rooms::find_room_version_policy(composed.room_version);
         if (policy == nullptr)
@@ -2340,13 +2341,16 @@ namespace
                 runtime.database.persistent_store, *policy, std::move(event), std::move(state), composed.basis,
                 state_resolution_limits(runtime.config.security().federation.state_resolution), std::move(membership)))
         {
-            return false;
+            return PersistOutcome::not_stored;
         }
+        // The event is durable from here. A bookkeeping failure is logged with the event ID (failed) but is not a
+        // store failure: the caller still federates and announces the event (C13).
         if (is_member_event && !finish_local_membership(runtime, room_id, composed, std::move(committed_membership)))
         {
-            return failed("roster or device-list update after the member event failed");
+            std::ignore = failed("roster or device-list update after the member event failed");
+            return PersistOutcome::stored_bookkeeping_failed;
         }
-        return true;
+        return PersistOutcome::stored;
     }
 
     // CSAZ-9: true when createRoom content the client supplied cannot fit in an
@@ -2455,7 +2459,7 @@ namespace
             // compose_signed_event already emitted a diagnostic.
             return composition.failure;
         }
-        if (!persist_composed_event(runtime, room_id, sender, *composition.event))
+        if (persist_composed_event(runtime, room_id, sender, *composition.event) == PersistOutcome::not_stored)
         {
             return ComposeFailure::rejected;
         }
@@ -3995,7 +3999,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             return emit_state("m.room.create", std::move(create_content));
         }
-        if (!persist_composed_event(runtime, room_id, *user_id, *precomposed_create))
+        if (persist_composed_event(runtime, room_id, *user_id, *precomposed_create) == PersistOutcome::not_stored)
         {
             return false;
         }
@@ -5663,8 +5667,8 @@ namespace
     // room's stripe mutex and then `runtime.mutex`; this releases `runtime.mutex`, takes
     // and drops the stripe, and restores `runtime.mutex`, which is the order ingestion takes
     // them in. Anything read from runtime state before the call must be read again after it.
-    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, RuntimeLock& guard,
-                                        std::string_view room_id) -> void
+    auto wait_for_in_flight_room_events(HomeserverRuntime& runtime, RuntimeLock& guard, std::string_view room_id)
+        -> void
     {
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto const released = RuntimeLockRelease{guard};
@@ -6401,7 +6405,7 @@ namespace
                 });
                 return make_operation_result(false, {}, "third-party invite event rejected", 403U);
             }
-            if (!persist_composed_event(runtime, room_id, inviter_id, *composed_invite))
+            if (persist_composed_event(runtime, room_id, inviter_id, *composed_invite) == PersistOutcome::not_stored)
             {
                 log_diagnostic("room.join.rejected",
                                {
@@ -6515,7 +6519,7 @@ namespace
             });
             return make_operation_result(false, {}, "membership event rejected", 403U);
         }
-        if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+        if (persist_composed_event(runtime, room_id, *user_id, *composed) == PersistOutcome::not_stored)
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                              false},
@@ -7142,10 +7146,10 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard,
-                                         std::string_view room_id, std::string_view invitee_server,
-                                         std::string_view event_id, std::string_view event_json,
-                                         std::uint32_t timeout_seconds) -> RemoteInviteResult
+[[nodiscard]] auto deliver_remote_invite(HomeserverRuntime& runtime, RuntimeLock& guard, std::string_view room_id,
+                                         std::string_view invitee_server, std::string_view event_id,
+                                         std::string_view event_json, std::uint32_t timeout_seconds)
+    -> RemoteInviteResult
 {
     // One deadline for the whole offer: the exchange and the checks of the answer (its key lookups) draw from
     // it, so a caller offering several invites under one deadline is not held past it (ADR-0307). 0 means the
@@ -7247,6 +7251,38 @@ auto queue_remote_invite(HomeserverRuntime& runtime, std::string_view room_id, s
 namespace
 {
 
+    // True when the room's auth rules, applied to `composed` against the room's CURRENT state, still allow it. The
+    // compose step judged the event against the state of its time; an offer to another server runs with
+    // runtime.mutex released, so the inviter's power level or standing may have changed since (C18). Reads the
+    // runtime, so the caller holds runtime.mutex.
+    [[nodiscard]] auto composed_event_is_still_authorised(HomeserverRuntime& runtime, std::string_view room_id,
+                                                          std::string_view sender, ComposedEvent const& composed)
+        -> bool
+    {
+        auto const* policy = rooms::find_room_version_policy(composed.room_version);
+        auto const parsed = canonicaljson::parse_lossless(composed.json);
+        if (policy == nullptr || parsed.error != canonicaljson::ParseError::none)
+        {
+            return false;
+        }
+        auto const auth_map =
+            build_auth_event_map(runtime.database.persistent_store, room_id, sender,
+                                 composed.state_key.value_or(std::string{}), composed.event_type, parsed.value);
+        auto const decision = events::authorize_event_against_auth_events(parsed.value, *policy, auth_map);
+        if (!decision.allowed)
+        {
+            log_diagnostic("event.auth.rejected", {
+                                                      {"room_id",    std::string{room_id},            false},
+                                                      {"sender",     std::string{sender},             false},
+                                                      {"event_type", composed.event_type,             false},
+                                                      {"rule_hook",  std::string{decision.rule_hook}, false},
+                                                      {"rule_step",  std::string{decision.rule_step}, false},
+                                                      {"reason",     std::string{decision.reason},    false}
+            });
+        }
+        return decision.allowed;
+    }
+
     // The tail shared by an invite a client sends (`invite_user`) and one issued for a third-party invite
     // (`exchange_third_party_invite`): `invite_event` is composed and signed for a user of ANOTHER server and not yet
     // stored. It is offered to that user's server, then stored and sent to the room's other servers
@@ -7278,13 +7314,6 @@ namespace
         {
             return make_operation_result(false, {}, delivery.reason, delivery.status);
         }
-        if (delivery.outcome == RemoteInviteOutcome::delivered)
-        {
-            // Signed by both servers now: this is the event that is stored and sent to the room's servers.
-            invite_event.json = delivery.cosigned_event_json;
-            invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
-                                           delivery.cosigned_signatures.end());
-        }
 
         // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
         auto* room = find_room(runtime.database, room_id);
@@ -7295,6 +7324,19 @@ namespace
         if (!room_has_member(*room, inviter))
         {
             return make_operation_result(false, {}, "user is not joined", 403U);
+        }
+        // Being joined is not enough: the inviter may have been banned, or lost the power to invite, during the
+        // exchange. The event composed before it is judged again against the current state (C18).
+        if (!composed_event_is_still_authorised(runtime, room_id, inviter, invite_event))
+        {
+            return make_operation_result(false, {}, "inviter is no longer allowed to invite", 403U);
+        }
+        if (delivery.outcome == RemoteInviteOutcome::delivered)
+        {
+            // Signed by both servers now: this is the event that is stored and sent to the room's servers.
+            invite_event.json = delivery.cosigned_event_json;
+            invite_event.signatures.insert(invite_event.signatures.end(), delivery.cosigned_signatures.begin(),
+                                           delivery.cosigned_signatures.end());
         }
         // An unreachable invitee's server gets the invite from the retry queue. Queued before the invite is
         // stored: once stored, the invite cannot be taken back, and an invite that was neither delivered nor
@@ -7805,7 +7847,7 @@ namespace
     {
         return make_operation_result(false, {}, "third-party invite event rejected", 403U);
     }
-    if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+    if (persist_composed_event(runtime, room_id, *user_id, *composed) == PersistOutcome::not_stored)
     {
         return make_operation_result(false, {}, "third-party invite persistence failed", 500U);
     }
@@ -9101,7 +9143,7 @@ namespace
         // local event path uses, rather than duplicating the raw store call —
         // this is the client-facing send/state-send/redaction endpoint, so it
         // was the one local path most likely to be hit by a real client.
-        if (!persist_composed_event(runtime, room_id, user_id, *composed))
+        if (persist_composed_event(runtime, room_id, user_id, *composed) == PersistOutcome::not_stored)
         {
             log_diagnostic("room.event.rejected", {
                                                       {"actor",      user_id,                    false},
