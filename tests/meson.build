@@ -534,6 +534,15 @@ shell = find_program('sh')
 
   test('unit-tests', unit_tests, timeout: 600)
 
+  # The CI skip report must not capture the stdout the logger tests swap (ADR-0546).
+  test(
+    'catch-report-capture-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_catch_report_capture.py', unit_tests.full_path()],
+    depends: unit_tests,
+    timeout: 300,
+  )
+
   # Linked without the override above, to see the cost the shipped server hashes at.
   password_cost_tests = executable(
     'merovingian-password-cost-tests',

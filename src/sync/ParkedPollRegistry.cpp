@@ -259,7 +259,10 @@ auto ParkedPollRegistry::run() -> void
         }
         else
         {
-            m_signal.wait_until(lock, m_deadlines.begin()->first);
+            // A copy, never m_deadlines.begin()->first: wait_until holds its time point by reference and reads it again
+            // on waking, and wake_users / stop erase that node while this thread waits.
+            auto const next_deadline = m_deadlines.begin()->first;
+            m_signal.wait_until(lock, next_deadline);
         }
     }
 }

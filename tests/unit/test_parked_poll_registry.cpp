@@ -173,6 +173,43 @@ SCENARIO("A parked poll is resumed by a publish that concerns its user and not b
     }
 }
 
+SCENARIO("Resuming the poll whose deadline the registry thread is waiting for leaves that thread working",
+         "[p15a][sync][parked-poll]")
+{
+    GIVEN("one parked poll, so the registry thread waits until its deadline")
+    {
+        auto notifier = SyncNotifier{};
+        auto recorder = Recorder{};
+        auto destroyed = std::atomic<std::size_t>{0U};
+        REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
+        auto first = make_poll("first", destroyed);
+        REQUIRE(notifier.park(notifier.observe("@alice:test"), std::chrono::steady_clock::now() + 60s, first).parked);
+        std::this_thread::sleep_for(100ms);
+
+        WHEN("a publish resumes that poll, erasing the deadline being waited for, and another poll then parks")
+        {
+            // The thread used to wait on a reference into the erased deadline entry: ASan reports the read on waking.
+            auto const scope = std::vector<std::string>{"@alice:test"};
+            notifier.publish(1U, 1U, std::span<std::string const>{scope});
+            REQUIRE(recorder.wait_for(1U, 5s));
+            auto second = make_poll("second", destroyed);
+            REQUIRE(
+                notifier.park(notifier.observe("@bob:test"), std::chrono::steady_clock::now() + 150ms, second).parked);
+
+            THEN("the first is resumed as published and the second at its own deadline")
+            {
+                REQUIRE(recorder.wait_for(2U, 5s));
+                auto const items = recorder.items();
+                REQUIRE(items.size() == 2U);
+                REQUIRE(items.front().name == "first");
+                REQUIRE(items.front().reason == WakeReason::published);
+                REQUIRE(items.back().name == "second");
+                REQUIRE(items.back().reason == WakeReason::deadline);
+            }
+        }
+    }
+}
+
 SCENARIO("A publish between taking the cursor and parking still resumes the poll", "[p15a][sync][parked-poll]")
 {
     GIVEN("a cursor taken before a publish that lands before the park")

@@ -531,7 +531,8 @@ SCENARIO("A user holds a bounded number of login tokens", "[cs8][login-token][cl
             {
                 REQUIRE(response.status == 429U);
                 REQUIRE(errcode_of(response) == "M_LIMIT_EXCEEDED");
-                auto const* retry = int_member(parse_object(response.body), "retry_after_ms");
+                auto const body = parse_object(response.body);
+                auto const* retry = int_member(body, "retry_after_ms");
                 REQUIRE(retry != nullptr);
                 REQUIRE(*retry > 0);
                 REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 4U);
