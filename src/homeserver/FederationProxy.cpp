@@ -140,13 +140,12 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         // origin/key/signature credential. Without this the rejection is an
         // opaque 502 in the access log and a peer whose PDUs are being dropped
         // is indistinguishable from one that never called.
-        auto constexpr scheme = std::string_view{"X-Matrix "};
         observability::log_diagnostic(
             "federation_proxy", "federation_proxy.authorization_unparsed",
             {
-                {"target",       observability::sanitized_http_target(request.target),        false},
-                {"header_bytes", std::to_string(request.access_token.size()),                 false},
-                {"scheme_ok",    request.access_token.starts_with(scheme) ? "true" : "false", false}
+                {"target",       observability::sanitized_http_target(request.target),                     false},
+                {"header_bytes", std::to_string(request.access_token.size()),                              false},
+                {"scheme_ok",    federation::has_x_matrix_scheme(request.access_token) ? "true" : "false", false}
         },
             observability::LogEventSeverity::warning);
         // 502 rather than 401: Synapse propagates 401 from federation responses

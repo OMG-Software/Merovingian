@@ -282,7 +282,8 @@ security.federation.remote_timeout=60s
 # Inbound transaction caps and per-origin budgets.
 # max_transaction_pdus/edus bound a single PUT /send transaction; the spec caps
 # PDUs at 50 and EDUs at 100 per transaction, and a sender exceeding either is
-# rejected rather than silently truncated.
+# rejected rather than silently truncated. A lower value would refuse legal
+# transactions, so the only accepted values are 50 and 100.
 # The per_origin_* budgets are the abuse controls for inbound federation: they
 # are counted per originating server, so one noisy or hostile peer cannot spend
 # the whole server's capacity. transaction/pdu/edu rates bound /send volume;

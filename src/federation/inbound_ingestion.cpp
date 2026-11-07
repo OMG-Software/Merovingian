@@ -42,6 +42,8 @@ namespace
         observability::log_diagnostic("inbound_ingestion", event, fields, severity);
     }
 
+    inline constexpr std::size_t max_raw_pdu_bytes = 4U * events::max_event_size_bytes;
+
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -107,6 +109,16 @@ auto pdu_depth_violation(canonicaljson::Value const& event) -> std::string
     return {};
 }
 
+auto room_id_for_received_event(std::string_view room_id, std::string_view event_type, std::string_view event_id)
+    -> std::string
+{
+    if (room_id.empty() && event_type == "m.room.create" && event_id.size() > 1U)
+    {
+        return "!" + std::string{event_id.substr(1U)};
+    }
+    return std::string{room_id};
+}
+
 auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> std::string
 {
     auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
@@ -114,7 +126,9 @@ auto pdu_format_violation(canonicaljson::Value const& event, rooms::RoomVersionP
     {
         return "PDU root is not an object";
     }
-    auto const serialized = canonicaljson::serialize_canonical(event);
+    // The 64 KiB limit is on the event as signed: the relaying server's `unsigned` is covered by no signature or
+    // hash, is never stored (ADR-0402) and so does not count.
+    auto const serialized = canonicaljson::serialize_canonical(events::without_unsigned(event));
     if (serialized.error != canonicaljson::CanonicalJsonError::none ||
         serialized.output.size() > events::max_event_size_bytes)
     {
@@ -173,7 +187,10 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
         });
         return std::nullopt;
     }
-    if (pdu_json.size() > events::max_event_size_bytes)
+    // Only a bound on the work done before `unsigned` is removed: the 64 KiB limit itself is judged on the event
+    // without it, in `pdu_format_violation`. Four times the limit leaves a relay room for its own `unsigned`
+    // while keeping a hostile body from being parsed at any size.
+    if (pdu_json.size() > max_raw_pdu_bytes)
     {
         log_diagnostic("pdu.parse.rejected", {
                                                  {"reason", "PDU exceeds 65536 byte size limit", false}
@@ -238,14 +255,8 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
     // Spec: Room Version 12 (MSC4291) — the m.room.create event has no room_id
     // field. The room ID equals the create event's reference hash with '!' sigil:
     //   room_id = "!" + event_id.substr(1)   (swap '$' → '!')
-    if (envelope.event.room_id.empty() && envelope.event.event_type == "m.room.create")
-    {
-        out.room_id = "!" + event_id_result.event_id.substr(1);
-    }
-    else
-    {
-        out.room_id = envelope.event.room_id;
-    }
+    out.room_id =
+        room_id_for_received_event(envelope.event.room_id, envelope.event.event_type, event_id_result.event_id);
     out.room_version = std::string{resolved_ver};
     out.sender = envelope.event.sender;
     out.event_type = envelope.event.event_type;

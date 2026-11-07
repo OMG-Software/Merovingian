@@ -325,9 +325,31 @@ SCENARIO("Outbound make/send helpers build properly framed OutboundTransactions"
                 REQUIRE(invite_v1.body == "{\"signed\":\"event\"}");
                 REQUIRE(bf.method == "GET");
                 REQUIRE(bf.target.find("/_matrix/federation/v1/backfill/%21room%3Aexample.org") == 0U);
-                REQUIRE(bf.target.find("v=$e1") != std::string::npos);
-                REQUIRE(bf.target.find("v=$e2") != std::string::npos);
+                REQUIRE(bf.target.find("v=%24e1") != std::string::npos);
+                REQUIRE(bf.target.find("v=%24e2") != std::string::npos);
                 REQUIRE(bf.target.find("limit=10") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Outbound query values are percent-encoded", "[federation][membership][outbound][low-f7]")
+{
+    GIVEN("a room version and event IDs holding query syntax characters")
+    {
+        WHEN("make_join and backfill requests are built")
+        {
+            auto const mj = merovingian::federation::make_outbound_make_membership(
+                merovingian::federation::FederationEndpoint::make_join, "remote.example.org", "local.example.org",
+                "!room:example.org", "@alice:local.example.org", {"a+b/c&d=e#f%g?h i"});
+            auto const bf = merovingian::federation::make_outbound_backfill(
+                "remote.example.org", "local.example.org", "!room:example.org", {"$ab+cd/ef&gh=ij"}, 0U);
+
+            THEN("none of them reaches the receiver as query syntax")
+            {
+                REQUIRE(mj.target.find("?ver=a%2Bb%2Fc%26d%3De%23f%25g%3Fh%20i") != std::string::npos);
+                REQUIRE(bf.target.find("?v=%24ab%2Bcd%2Fef%26gh%3Dij") != std::string::npos);
+                REQUIRE(bf.target.find('+') == std::string::npos);
             }
         }
     }

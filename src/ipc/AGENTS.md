@@ -35,7 +35,7 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    `--config` rather than negotiating over IPC, so both must restart to pick up a change. A response over the
    cap is replaced by `{"ipc_error":"response_too_large"}`, which the reader turns into "no response" for the
    waiter at once (`send_request` returns `nullopt`, as for a timeout), so the requester never waits out its timeout
-   (ADR-0368). `ipc_error` is a reserved frame member.
+   (ADR-0368). `ipc_error` is a reserved frame member. The cap is on the BUILT frame (body plus the `id` / `reply_to` header), not the body: `send_response` replaces a response whose frame is over it, `send_request` returns `nullopt` before registering a pending entry, and `send_notification` returns `false` (`[[nodiscard]]`), so no send is silently lost.
 5. **Response bodies are base64-encoded, not JSON-string-escaped.** Base64's 4/3 expansion is
    fixed; escaping's is payload-dependent and can push a near-cap response over the frame limit
    (ADR-0043).

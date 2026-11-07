@@ -44,6 +44,11 @@
 namespace merovingian::federation
 {
 
+// True when `header_value` starts with the `X-Matrix` auth-scheme and a space. The scheme is compared
+// ASCII-case-insensitively (RFC 9110 section 11.1: auth-schemes are case-insensitive); the credentials after it keep
+// their case. One definition for every place that reads the scheme.
+[[nodiscard]] auto has_x_matrix_scheme(std::string_view header_value) noexcept -> bool;
+
 // Parses an Authorization header value that begins with "X-Matrix ". Returns
 // std::nullopt for any malformed input or if the required fields (origin, key,
 // sig) are absent.

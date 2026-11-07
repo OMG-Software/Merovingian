@@ -38,7 +38,8 @@ namespace
         first = false;
         target.append(key);
         target.push_back('=');
-        target.append(value);
+        // A query value is data: `+`, `/`, `&`, `=`, `#`, `%`, `?` and a space must not reach the receiver as syntax.
+        target.append(core::percent_encode_path_component(value));
     }
 
     [[nodiscard]] auto build_v2_invite_body(std::string_view room_version, std::string_view signed_event_json,

@@ -42,8 +42,8 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                                        "security.federation.default_policy=deny\n"
                                        "security.federation.allowed_servers=matrix.org\n"
                                        "security.federation.max_transaction_size=8MiB\n"
-                                       "security.federation.max_transaction_pdus=25\n"
-                                       "security.federation.max_transaction_edus=75\n"
+                                       "security.federation.max_transaction_pdus=50\n"
+                                       "security.federation.max_transaction_edus=100\n"
                                        "security.federation.per_origin_transaction_rate=60/60s\n"
                                        "security.federation.per_origin_pdu_rate=300/60s\n"
                                        "security.federation.per_origin_edu_rate=900/60s\n"
@@ -67,8 +67,8 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                 REQUIRE(result.config.security().federation.allowed_servers.size() == 1U);
                 REQUIRE(result.config.security().federation.allowed_servers.front() == "matrix.org");
                 REQUIRE(result.config.security().federation.max_transaction_size == "8MiB");
-                REQUIRE(result.config.security().federation.max_transaction_pdus == 25U);
-                REQUIRE(result.config.security().federation.max_transaction_edus == 75U);
+                REQUIRE(result.config.security().federation.max_transaction_pdus == 50U);
+                REQUIRE(result.config.security().federation.max_transaction_edus == 100U);
                 REQUIRE(result.config.security().federation.per_origin_transaction_rate.max_requests == 60U);
                 REQUIRE(result.config.security().federation.per_origin_pdu_rate.max_requests == 300U);
                 REQUIRE(result.config.security().federation.per_origin_edu_rate.max_requests == 900U);
@@ -1113,6 +1113,42 @@ SCENARIO("Every federation deny range must be a well-formed address or CIDR rang
                     INFO(entry);
                     CHECK(findings_with(entry) == 0);
                 }
+            }
+        }
+    }
+}
+
+// Spec: SS API v1.19 "Transactions" - at most 50 PDUs and 100 EDUs per transaction. A lower configured limit would
+// make /send refuse a legal transaction, so only the spec's own values are accepted.
+SCENARIO("Key-value config parser refuses a transaction cap below the spec limit", "[config][parser][low-ss11]")
+{
+    GIVEN("transaction caps of zero, one below and exactly the spec limit")
+    {
+        WHEN("each is parsed")
+        {
+            auto const pdu_low =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_pdus=49\n");
+            auto const pdu_zero =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_pdus=0\n");
+            auto const edu_low =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_edus=99\n");
+            auto const edu_zero =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_edus=0\n");
+            auto const pdu_ok =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_pdus=50\n");
+            auto const edu_ok =
+                merovingian::config::parse_key_value_config("security.federation.max_transaction_edus=100\n");
+
+            THEN("every value below the spec limit is refused and the spec limit is accepted")
+            {
+                REQUIRE_FALSE(pdu_low.findings.empty());
+                REQUIRE(pdu_low.findings.front().field == "security.federation.max_transaction_pdus");
+                REQUIRE_FALSE(pdu_zero.findings.empty());
+                REQUIRE_FALSE(edu_low.findings.empty());
+                REQUIRE(edu_low.findings.front().field == "security.federation.max_transaction_edus");
+                REQUIRE_FALSE(edu_zero.findings.empty());
+                REQUIRE(pdu_ok.findings.empty());
+                REQUIRE(edu_ok.findings.empty());
             }
         }
     }

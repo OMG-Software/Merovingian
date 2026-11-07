@@ -401,3 +401,10 @@ one slow name server, which a remote operator chooses, would hold every other lo
 takes `federation_guard` while holding it: the second lock deadlocks, and a `key_resolution_slot_released` wait would
 otherwise sleep with the lock held. When two operations need the same state, write a lock-held helper that expects the
 caller to hold the guard (`completed_answer_with_guard_held` is the model) and call that from both.
+
+## Wire-shape notes (analysis lows 0.12.81)
+
+- The 64 KiB PDU limit is judged on the event without `unsigned` (`pdu_format_violation`); the raw-byte check before parsing is only a work bound (ADR-0537).
+- `send_join`, `send_leave` and `send_knock` answer exactly the spec's fields (`{}` for v2 `send_leave`; no `room_version` or `origin` in `send_join`), and the v1 invite answers `[200, {"event": ...}]` (ADR-0538).
+- A `/send` holding a PDU that cannot be serialised is refused 400 as a whole; the `X-Matrix` scheme is matched case-insensitively through `has_x_matrix_scheme`; a room v12 create PDU's room ID comes from `room_id_for_received_event` on every parse path.
+- Outbound query values (`ver`, `v`) are percent-encoded; `max_transaction_pdus` / `max_transaction_edus` accept only 50 and 100 (ADR-0539).

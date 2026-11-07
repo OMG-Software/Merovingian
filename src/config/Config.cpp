@@ -1589,17 +1589,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.max_transaction_size",
                             "federation transaction size must be a positive byte size no greater than 64MiB"});
     }
-    if (config.security().federation.max_transaction_pdus == 0U ||
-        config.security().federation.max_transaction_pdus > 50U)
+    // The spec allows a transaction of up to 50 PDUs and 100 EDUs (SS API "Transactions"), so a lower limit makes
+    // /send refuse a legal transaction. The keys stay, but the only value they take is the spec's own (owner decision
+    // 2026-11-07).
+    if (config.security().federation.max_transaction_pdus != 50U)
     {
-        findings.push_back(
-            {"security.federation.max_transaction_pdus", "federation transaction PDU limit must be between 1 and 50"});
+        findings.push_back({"security.federation.max_transaction_pdus",
+                            "federation transaction PDU limit must be 50, the Matrix limit; a lower value would "
+                            "refuse legal transactions"});
     }
-    if (config.security().federation.max_transaction_edus == 0U ||
-        config.security().federation.max_transaction_edus > 100U)
+    if (config.security().federation.max_transaction_edus != 100U)
     {
-        findings.push_back(
-            {"security.federation.max_transaction_edus", "federation transaction EDU limit must be between 1 and 100"});
+        findings.push_back({"security.federation.max_transaction_edus",
+                            "federation transaction EDU limit must be 100, the Matrix limit; a lower value would "
+                            "refuse legal transactions"});
     }
     if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_transaction_rate))
     {

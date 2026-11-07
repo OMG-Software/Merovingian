@@ -75,7 +75,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
     {
         auto const empty_value = std::string_view{""};
         auto const bearer = std::string_view{"Bearer token123"};
-        auto const wrong_case = std::string_view{"x-matrix origin=\"a.org\",key=\"ed25519:k\",sig=\"s\""};
         // Rejected because ':' and '=' are not tchars, so these values were required to
         // be quoted — not because unquoted values are categorically invalid. See the
         // unquoted-token scenario above for the values a sender may legally leave bare.
@@ -86,7 +85,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
         {
             auto const r_empty = merovingian::federation::parse_x_matrix_authorization_header(empty_value);
             auto const r_bearer = merovingian::federation::parse_x_matrix_authorization_header(bearer);
-            auto const r_case = merovingian::federation::parse_x_matrix_authorization_header(wrong_case);
             auto const r_unquoted = merovingian::federation::parse_x_matrix_authorization_header(unquoted_non_token);
             auto const r_unclosed = merovingian::federation::parse_x_matrix_authorization_header(unclosed_quote);
 
@@ -94,7 +92,6 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
             {
                 REQUIRE_FALSE(r_empty.has_value());
                 REQUIRE_FALSE(r_bearer.has_value());
-                REQUIRE_FALSE(r_case.has_value());
                 REQUIRE_FALSE(r_unquoted.has_value());
                 REQUIRE_FALSE(r_unclosed.has_value());
             }
@@ -266,6 +263,48 @@ SCENARIO("X-Matrix quoted values handle backslash-escaped quotes per RFC 7230",
                 REQUIRE(result->origin == "matrix.example.org");
                 REQUIRE(result->key_id == "ed25519:a\"b");
                 REQUIRE(result->signature == "sigval==");
+            }
+        }
+    }
+}
+
+// Spec: SS API v1.19 "Request Authentication" defines the `X-Matrix` scheme; RFC 9110 section 11.1 makes
+// auth-scheme names case-insensitive. The credentials after the scheme keep their case.
+SCENARIO("The X-Matrix auth scheme is matched without regard to case", "[federation][x-matrix][parsing][low-ss13]")
+{
+    GIVEN("headers whose scheme is written in other cases")
+    {
+        auto const credentials = std::string{R"( origin="Matrix.Example.org",key="ed25519:Auto",sig="AbC")"};
+
+        WHEN("they are parsed and the scheme is tested")
+        {
+            for (auto const scheme : {"x-matrix", "X-MATRIX", "x-Matrix", "X-Matrix"})
+            {
+                auto const header = std::string{scheme} + credentials;
+                auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+                THEN("the credentials are read and keep their case")
+                {
+                    REQUIRE(merovingian::federation::has_x_matrix_scheme(header));
+                    REQUIRE(result.has_value());
+                    CHECK(result->origin == "Matrix.Example.org");
+                    CHECK(result->key_id == "ed25519:Auto");
+                    CHECK(result->signature == "AbC");
+                }
+            }
+        }
+    }
+
+    GIVEN("headers that are not the X-Matrix scheme")
+    {
+        WHEN("the scheme is tested")
+        {
+            THEN("none of them matches")
+            {
+                CHECK_FALSE(merovingian::federation::has_x_matrix_scheme("Bearer abc"));
+                CHECK_FALSE(merovingian::federation::has_x_matrix_scheme("X-Matrix"));
+                CHECK_FALSE(merovingian::federation::has_x_matrix_scheme("X-Matrixorigin=\"a\""));
+                CHECK_FALSE(merovingian::federation::has_x_matrix_scheme(""));
             }
         }
     }

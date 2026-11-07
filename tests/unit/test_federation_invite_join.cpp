@@ -1234,7 +1234,7 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime.federation, signed_put(target, join.body));
 
-            THEN("the response contains origin, non-empty state, and non-empty auth_chain")
+            THEN("the response contains non-empty state and non-empty auth_chain, and no origin")
             {
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
@@ -1242,12 +1242,9 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
                 auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
-                // Spec MUST: origin == resident server name
-                auto const* origin_val = json_get(*root, std::string{"origin"});
-                REQUIRE(origin_val != nullptr);
-                auto const* origin_str = std::get_if<std::string>(&origin_val->storage());
-                REQUIRE(origin_str != nullptr);
-                REQUIRE(*origin_str == std::string{local_server});
+                // Spec (v2 200 response): no origin field; the resident is the request's
+                // authenticated destination (ADR-0538).
+                REQUIRE(json_get(*root, std::string{"origin"}) == nullptr);
 
                 // Spec MUST: state array, non-empty
                 auto const* state_val = json_get(*root, std::string{"state"});
