@@ -35,6 +35,16 @@ struct MediaSecurityConfig final
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
+    // G15, ADR-0565: malware scanning through a local ClamAV daemon (clamd) on an
+    // AF_UNIX socket, using the INSTREAM command. Off unless clamd_socket_path is
+    // set (an absolute path, which also requires enable_av_scanner). A failure of
+    // any kind, and media above clamd_max_scan_size, is never treated as clean.
+    // clamd_timeout_ms bounds the whole exchange for one file; clamd_max_concurrent
+    // bounds the scans in flight at once.
+    std::string clamd_socket_path{};
+    std::uint32_t clamd_timeout_ms{10000U};
+    std::string clamd_max_scan_size{"25MiB"};
+    std::uint32_t clamd_max_concurrent{4U};
     // Acceptance disposition for authenticated local uploads. One of "allow",
     // "allow-after-scan", "quarantine", "deny". Validated by validate_config()
     // via is_valid_media_acceptance_policy(); parsed into

@@ -41,6 +41,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
     auto const thumbnail_cache_limit = config::parse_size_limit(config.security().media.thumbnail_cache_size);
     auto const preview_page_limit = config::parse_size_limit(config.security().media.url_preview_max_page_size);
     auto const preview_image_limit = config::parse_size_limit(config.security().media.url_preview_max_image_size);
+    auto const clamd_scan_limit = config::parse_size_limit(config.security().media.clamd_max_scan_size);
     auto const& configured_types = config.security().media.allowed_mime_types;
     auto allowed_types =
         configured_types.empty() ? default_allowed_mime_types() : std::vector<std::string>{configured_types};
@@ -89,6 +90,8 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         config.security().media.url_preview_cache_ttl_seconds,
         config.security().media.url_preview_cache_max_entries,
         config.security().federation.allow_private_ip_ranges,
+        {config.security().media.clamd_socket_path, config.security().media.clamd_timeout_ms,
+         clamd_scan_limit.valid ? clamd_scan_limit.bytes : 0U, config.security().media.clamd_max_concurrent},
     };
 }
 
@@ -111,7 +114,8 @@ auto media_summary(RuntimeMediaConfig const& config) -> std::string
            " decode_in_sandbox=" + std::string{config.decode_in_sandbox ? "true" : "false"} +
            " thumbnailing_enabled=" + std::string{config.thumbnailing_enabled ? "true" : "false"} +
            " max_pending_uploads_per_user=" + std::to_string(config.max_pending_uploads_per_user) +
-           " url_preview_enabled=" + std::string{config.url_preview_enabled ? "true" : "false"};
+           " url_preview_enabled=" + std::string{config.url_preview_enabled ? "true" : "false"} +
+           " clamd_enabled=" + std::string{config.clamd.enabled() ? "true" : "false"};
 }
 
 } // namespace merovingian::media

@@ -504,6 +504,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
     , federation(std::move(other.federation))
     , media_repository(std::move(other.media_repository))
+    , clamd_scanner(std::move(other.clamd_scanner))
     , hardening(std::move(other.hardening))
     , started(other.started)
     , outbound_client(std::move(other.outbound_client))
@@ -561,6 +562,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     audit_sink_scope = std::make_unique<LocalDatabaseScope>(database);
     federation = std::move(other.federation);
     media_repository = std::move(other.media_repository);
+    clamd_scanner = std::move(other.clamd_scanner);
     hardening = std::move(other.hardening);
     started = other.started;
     outbound_client = std::move(other.outbound_client);
@@ -1170,6 +1172,10 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
             });
     }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
+    if (runtime.media_repository.config.clamd.enabled())
+    {
+        runtime.clamd_scanner = std::make_unique<media::ClamdScanner>(runtime.media_repository.config.clamd);
+    }
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store,
                              runtime.config.server().server_name);
 

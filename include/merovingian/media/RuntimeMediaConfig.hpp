@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/media/ClamdScannerSettings.hpp"
 #include "merovingian/media/MediaAcceptancePolicy.hpp"
 
 #include <cstdint>
@@ -99,6 +100,8 @@ struct RuntimeMediaConfig final
     // fetched from a federation peer, so the same networks are reachable.
     // URL preview does not use this.
     std::vector<std::string> allowed_private_fetch_ranges{};
+    // G15, ADR-0565: the optional clamd malware scanner; off while its socket path is empty.
+    ClamdScannerSettings clamd{};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

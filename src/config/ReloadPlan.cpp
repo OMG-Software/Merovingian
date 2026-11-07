@@ -463,6 +463,22 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.pending_upload_ttl_seconds");
     }
+    if (current_media.clamd_socket_path != next_media.clamd_socket_path)
+    {
+        add_change(plan, "security.media.clamd_socket_path");
+    }
+    if (current_media.clamd_timeout_ms != next_media.clamd_timeout_ms)
+    {
+        add_change(plan, "security.media.clamd_timeout_ms");
+    }
+    if (current_media.clamd_max_scan_size != next_media.clamd_max_scan_size)
+    {
+        add_change(plan, "security.media.clamd_max_scan_size");
+    }
+    if (current_media.clamd_max_concurrent != next_media.clamd_max_concurrent)
+    {
+        add_change(plan, "security.media.clamd_max_concurrent");
+    }
     if (current_media.max_pending_uploads_per_user != next_media.max_pending_uploads_per_user)
     {
         add_change(plan, "security.media.max_pending_uploads_per_user");

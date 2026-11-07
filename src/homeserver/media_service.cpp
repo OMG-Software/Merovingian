@@ -29,6 +29,7 @@
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/clamd_media_scan.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -670,8 +671,13 @@ namespace
         // verdict for attacker-controlled content; media::fetch_remote_media() decides the
         // real disposition (allow/allow-after-scan/quarantine/deny) via
         // RuntimeMediaConfig::remote_fetch_media_policy, so this must reflect that no scan
-        // actually happened.
-        remote_req.scanner_clean = false;
+        // actually happened. With the clamd scanner on (G15, ADR-0565, and the remote policy
+        // `allow-after-scan`) the bytes are scanned here, and only a clean verdict clears them; a
+        // failed or oversize scan leaves scanner_clean false, so they stay quarantined.
+        remote_req.scanner_clean =
+            clamd_media_cleared(runtime, true, "server", std::string{origin_server} + '/' + std::string{media_id},
+                                remote_req.bytes)
+                .value_or(false);
         remote_req.decoder_marked_safe = true;
 
         auto const now = media::remote_media_cache_now_ms();
@@ -1627,6 +1633,11 @@ namespace
     {
         return invalid_upload_filename_result();
     }
+    // G15, ADR-0565: a file the EICAR check already refused is not sent to clamd.
+    if (scanner_clean)
+    {
+        scanner_clean = clamd_media_cleared(runtime, false, *user_id, "upload", bytes).value_or(true);
+    }
 
     auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
                                                   std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean};
@@ -1688,9 +1699,14 @@ namespace
                                                 std::string_view declared_mime_type, std::string_view bytes)
     -> OperationResult
 {
-    auto request = media::LocalMediaUploadRequest{
-        std::string{owner_user_id}, strip_mime_parameters(std::string{declared_mime_type}),
-        media::sniff_mime_type(bytes), std::string{bytes}, !media::content_matches_eicar_test_signature(bytes)};
+    auto scanner_clean = !media::content_matches_eicar_test_signature(bytes);
+    if (scanner_clean)
+    {
+        scanner_clean = clamd_media_cleared(runtime, false, owner_user_id, "fetched-media", bytes).value_or(true);
+    }
+    auto request = media::LocalMediaUploadRequest{std::string{owner_user_id},
+                                                  strip_mime_parameters(std::string{declared_mime_type}),
+                                                  media::sniff_mime_type(bytes), std::string{bytes}, scanner_clean};
     auto const result =
         media::upload_local_media(runtime.media_repository, runtime.config.server().server_name, request);
     if (!result.ok)
@@ -1783,20 +1799,42 @@ namespace
         refused.errcode = std::string{errcode};
         return refused;
     };
-    switch (media::admit_pending_media_upload(repository, media_id, *user_id, media::remote_media_cache_now_ms()))
+    // The refusal for this ID, or nothing when the upload may proceed. Asked again after a clamd scan, which
+    // runs with runtime.mutex released: the reservation may have changed meanwhile.
+    auto const admission_refusal = [&]() -> std::optional<OperationResult> {
+        switch (media::admit_pending_media_upload(repository, media_id, *user_id, media::remote_media_cache_now_ms()))
+        {
+        case media::PendingUploadAdmission::already_uploaded:
+            return refuse(409U, "M_CANNOT_OVERWRITE_MEDIA", "Media already uploaded");
+        case media::PendingUploadAdmission::not_found:
+            return refuse(404U, "M_NOT_FOUND", "Unknown media ID");
+        case media::PendingUploadAdmission::forbidden:
+            return refuse(403U, "M_FORBIDDEN", "This media ID was not created by you");
+        case media::PendingUploadAdmission::accepted:
+            break;
+        }
+        return std::nullopt;
+    };
+    if (auto refusal = admission_refusal(); refusal.has_value())
     {
-    case media::PendingUploadAdmission::already_uploaded:
-        return refuse(409U, "M_CANNOT_OVERWRITE_MEDIA", "Media already uploaded");
-    case media::PendingUploadAdmission::not_found:
-        return refuse(404U, "M_NOT_FOUND", "Unknown media ID");
-    case media::PendingUploadAdmission::forbidden:
-        return refuse(403U, "M_FORBIDDEN", "This media ID was not created by you");
-    case media::PendingUploadAdmission::accepted:
-        break;
+        return *refusal;
     }
     if (!upload_name.empty() && !media::media_filename_is_valid(upload_name))
     {
         return invalid_upload_filename_result();
+    }
+    // G15, ADR-0565: see upload_local_media.
+    if (scanner_clean)
+    {
+        auto const cleared = clamd_media_cleared(runtime, false, *user_id, std::string{media_id}, bytes);
+        if (cleared.has_value())
+        {
+            scanner_clean = *cleared;
+            if (auto refusal = admission_refusal(); refusal.has_value())
+            {
+                return *refusal;
+            }
+        }
     }
 
     auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
