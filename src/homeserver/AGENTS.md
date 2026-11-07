@@ -16,6 +16,7 @@ This is the largest and most complex module — read this file carefully before 
 | `RequestLockScope.cpp` | `RequestLockScope`: publishes the mutex of the request's runtime lock on its thread (see below) |
 | `RuntimeLockRelease.cpp` | `RuntimeLockRelease`: releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
+| `clamd_media_scan.cpp` | `clamd_media_cleared` (G15, ADR-0565): the one place media is sent to clamd. Returns nullopt when no scan applies, else true only for a clean verdict; releases `runtime.mutex` for the scan, logs and audits `media.scan_infected` / `media.scan_failed`. Callers hold no runtime state across it |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
 | `MediaUploadNotifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
@@ -731,6 +732,7 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 3. Building `declared_mime|sniffed_mime|scanner_verdict|<body>` before calling `call_local()` —
    `sniffed_mime` from `media::sniff_mime_type()`, `scanner_verdict` from
    `media::content_matches_eicar_test_signature()` (see `src/media/AGENTS.md`)
+3a. The clamd scan is not done here: it runs in `media_service.cpp` once the user is authenticated, with the lock released (ADR-0565)
 4. Mapping internal `202` (quarantined) responses to `200` toward the client with `content_uri`
 
 ## Key docs

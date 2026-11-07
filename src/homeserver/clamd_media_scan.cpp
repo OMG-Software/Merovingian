@@ -50,11 +50,11 @@ auto clamd_media_cleared(HomeserverRuntime& runtime, bool const remote_fetch, st
     observability::log_diagnostic(
         "media_service", event,
         {
-            {"actor",   std::string{actor},   false},
-            {"subject", std::string{subject}, false},
-            {"verdict", infected ? "infected" : (result.verdict == media::ClamdVerdict::oversize ? "oversize" : "failed"),
-             false                                                                                                     },
-            {infected ? "signature" : "reason", result.detail, false}
+            {"actor",                           std::string{actor},                                             false},
+            {"subject",                         std::string{subject},                                           false},
+            {"verdict",
+             infected ? "infected" : (result.verdict == media::ClamdVerdict::oversize ? "oversize" : "failed"), false},
+            {infected ? "signature" : "reason", result.detail,                                                  false}
     },
         infected ? observability::LogEventSeverity::warning : observability::LogEventSeverity::error);
     append_local_audit(runtime.database, observability::AuditCategory::moderation, event, actor, subject,

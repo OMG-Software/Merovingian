@@ -181,6 +181,7 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
   `docs/user-manual.md`), which defaults remote-fetched media to
   `quarantine` rather than blindly trusting it.
+  **clamd (G15, ADR-0565, ADR-0566):** with `security.media.clamd_socket_path` set, media whose policy is `allow-after-scan` is also sent to a local ClamAV daemon (`media::ClamdScanner`, `homeserver::clamd_media_cleared`) before it is admitted: local uploads (`POST /upload`, `PUT /upload/{server}/{id}`), URL-preview images, and remote media after fetch (so `remote_fetch_media_policy=allow-after-scan` now clears a clean file instead of always quarantining). Only `stream: OK` clears; infected, error, timeout, unreachable socket, no scan capacity and oversize (`clamd_max_scan_size`) all leave `scanner_clean=false` and the media quarantined. The scan runs with `runtime.mutex` released, at most `clamd_max_concurrent` at once. Infected and failed scans log and audit `media.scan_infected` / `media.scan_failed`. With the socket empty (the default) nothing changes: remote media keeps `scanner_clean=false`, which under the default `quarantine` policy means it is held for review. Not available on FreeBSD or OpenBSD.
   **Local uploads (issue #418):** `ClientServerRuntime.cpp` previously hardcoded
   `scanner_clean` to the literal `"clean"` in the internal pipe body
   regardless of upload content, making the quarantine-on-infection path
