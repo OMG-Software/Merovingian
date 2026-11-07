@@ -1947,7 +1947,7 @@ namespace detail
         {
             return std::nullopt;
         }
-        auto chunk = std::string(length, ' ');
+        auto chunk = std::string(length, 'x');
         if (sqlite3_blob_read(blob.get(), chunk.data(), static_cast<int>(length), static_cast<int>(offset)) !=
             SQLITE_OK)
         {
