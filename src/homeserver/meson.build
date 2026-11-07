@@ -44,6 +44,7 @@ homeserver_sources = files(
   'RuntimeLockRelease.cpp',
   'restricted_join.cpp',
   'room_service.cpp',
+  'remote_device_list_scope.cpp',
   'send_join_answer.cpp',
   'send_join_answer_authorization.cpp',
   'public_rooms.cpp',

@@ -340,6 +340,7 @@ shell = find_program('sh')
       'unit/test_remote_key_read_through.cpp',
       'unit/test_remote_old_verify_keys.cpp',
       'unit/test_federation_edu_idempotence.cpp',
+      'unit/test_federation_remote_device_list_cache.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',
       'unit/test_federation_transactions.cpp',

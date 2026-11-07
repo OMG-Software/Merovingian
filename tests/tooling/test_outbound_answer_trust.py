@@ -42,6 +42,7 @@ VERIFIED_EVENTS = {
 # and is classified on purpose rather than by default.
 EXPECTED_EVENTS = VERIFIED_EVENTS | {
     "key_query.remote",
+    "key_query.user_devices",
     "key_claim.remote",
     "profile.proxy",
     "public_rooms.proxy",

@@ -1722,6 +1722,14 @@ namespace
         }
         auto const local_users = local_user_ids(runtime.database);
         auto const departing_is_local = local_users.contains(departing_user_id);
+        // A remote user who now shares no room with a local user gets no updates sent here: forget their
+        // cached device list (ADR-0560).
+        if (!departing_is_local && std::ranges::none_of(still_sharing, [&local_users](std::string_view member) {
+                return local_users.contains(member);
+            }))
+        {
+            runtime.remote_device_lists.erase(departing_user_id);
+        }
         auto changes = std::vector<database::PersistentDeviceListChange>{};
         for (auto const& member : room->members)
         {

@@ -118,6 +118,7 @@
 #include "merovingian/homeserver/password_reset.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
+#include "merovingian/homeserver/remote_device_list_scope.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
@@ -8677,6 +8678,10 @@ namespace
     // timeouts. A server this does not let through is reported in `failures`, as the spec has it for a server
     // that could not be reached (client-server-api.md, POST /keys/query and /keys/claim, `failures`); the
     // local half of the answer is unaffected, so a one-time key already claimed here is still returned.
+    // How many remote users' device lists one /keys/query may fill with GET /user/devices (ADR-0560). The rest are
+    // asked with the batched /user/keys/query, as before the cache.
+    constexpr auto max_device_list_fills_per_key_query = std::size_t{4U};
+
     class RemoteKeyCalls final
     {
     public:
@@ -8863,7 +8868,7 @@ namespace
             local_users.push_back(user_request.key);
         }
         // Collect cross-signing keys for the queried local users. Remote
-        // users' keys come from their own server below; none are cached here.
+        // users' keys come from the cache or their own server below.
         auto master_keys = canonicaljson::Object{};
         auto self_signing_keys = canonicaljson::Object{};
         auto user_signing_keys = canonicaljson::Object{};
@@ -8891,72 +8896,22 @@ namespace
             }
         }
 
-        // Federation proxy: POST /_matrix/federation/v1/user/keys/query for
-        // each remote server. Unreachable servers appear in the failures object.
+        // Remote users: answered from the remote device-list cache when it holds them (ADR-0560), else asked of
+        // their own server. Unreachable servers appear in the failures object.
         auto failures = canonicaljson::Object{};
         if (!remote_by_server.empty())
         {
-            wire_federation_callbacks(rt.homeserver);
-            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
-            for (auto const& [server, remote_requests] : remote_by_server)
-            {
-                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
-                {
-                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
-                    continue;
-                }
-                auto uid_list = std::vector<std::string>{};
-                auto remote_dk = canonicaljson::Object{};
-                for (auto const& [uid, device_ids] : remote_requests)
-                {
-                    uid_list.push_back(uid);
-                    // Spec (POST /keys/query, `device_keys`): an empty list asks for every device.
-                    auto device_array = canonicaljson::Array{};
-                    for (auto const& device_id : device_ids)
-                    {
-                        device_array.push_back(json_str(device_id));
-                    }
-                    remote_dk.push_back(json_member(uid, json_arr(std::move(device_array))));
-                }
-                auto q_body_obj = canonicaljson::Object{};
-                q_body_obj.push_back(json_member("device_keys", json_obj(std::move(remote_dk))));
-                auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
-                auto const tx = federation::make_outbound_transaction(
-                    server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
-                // Each outbound call must own the key because the network path can
-                // release runtime.mutex and the runtime key may be rotated.
-                auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
-                auto const [ok, resp_body] = perform_bounded_outbound_call(
-                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
-                    "key_query.remote", remote_calls.remaining_seconds());
-                if (!ok)
-                {
-                    failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
-                    continue;
-                }
-                // Keep only what the server may speak for: its own requested
-                // users, with keys that describe the user they are filed under.
-                auto accepted = federation::accept_remote_key_query_response(server, resp_body, uid_list);
-                if (!accepted.has_value())
-                {
-                    failures.push_back(json_member(
-                        server, json_obj({
-                                    json_member("errcode", json_str("M_UNKNOWN")),
-                                    json_member("error", json_str("remote key query response is not a JSON object")),
-                                })));
-                    continue;
-                }
+            using RemoteRequests = std::vector<std::pair<std::string, std::vector<std::string>>>;
+            // Merges the keys one server may speak for (its answer, or the cache's copy of it) for the users asked of
+            // it: only the devices asked for, and the master key with the viewer's own signatures merged back in.
+            auto const merge_remote_keys = [&](federation::RemoteKeyQueryKeys& accepted, RemoteRequests const& asked) {
                 auto requested_by_user = std::unordered_map<std::string_view, std::vector<std::string> const*>{};
-                requested_by_user.reserve(remote_requests.size());
-                for (auto const& [uid, device_ids] : remote_requests)
+                requested_by_user.reserve(asked.size());
+                for (auto const& [uid, device_ids] : asked)
                 {
                     requested_by_user.emplace(uid, &device_ids);
                 }
-                for (auto& user_devices : accepted->device_keys)
+                for (auto& user_devices : accepted.device_keys)
                 {
                     keep_requested_devices(user_devices, requested_by_user);
                     users.push_back(std::move(user_devices));
@@ -8965,7 +8920,7 @@ namespace
                 // signature against to show the user as verified. That
                 // signature was uploaded here, not to the remote server, so
                 // merge it back in for the user who made it.
-                for (auto const& master : accepted->master_keys)
+                for (auto const& master : accepted.master_keys)
                 {
                     auto const* key_object = std::get_if<canonicaljson::Object>(&master.value->storage());
                     if (key_object == nullptr)
@@ -8981,9 +8936,159 @@ namespace
                     }
                     master_keys.push_back(json_member(master.key, json_obj(std::move(merged))));
                 }
-                for (auto& self_signing : accepted->self_signing_keys)
+                for (auto& self_signing : accepted.self_signing_keys)
                 {
                     self_signing_keys.push_back(std::move(self_signing));
+                }
+            };
+
+            // Only a user who shares a joined room with a local user is cached: nobody else's updates reach this
+            // server. One pass over the memberships for the whole request.
+            auto& device_lists = rt.homeserver.remote_device_lists;
+            auto const cacheable = [&] {
+                auto candidates = std::unordered_set<std::string_view>{};
+                for (auto const& [server, remote_requests] : remote_by_server)
+                {
+                    for (auto const& request : remote_requests)
+                    {
+                        candidates.insert(request.first);
+                    }
+                }
+                return remote_users_sharing_a_room_with_local_users(store, local_server, candidates);
+            }();
+            auto fill_by_server = std::map<std::string, RemoteRequests, std::less<>>{};
+            auto batch_by_server = std::map<std::string, RemoteRequests, std::less<>>{};
+            auto fills_left = max_device_list_fills_per_key_query;
+            for (auto& [server, remote_requests] : remote_by_server)
+            {
+                for (auto& request : remote_requests)
+                {
+                    if (!cacheable.contains(request.first))
+                    {
+                        device_lists.erase(request.first);
+                        batch_by_server[server].push_back(std::move(request));
+                    }
+                    else if (auto const* list = device_lists.find_current(request.first); list != nullptr)
+                    {
+                        auto cached = federation::remote_key_query_keys_from_cache(request.first, *list);
+                        merge_remote_keys(cached, RemoteRequests{std::move(request)});
+                    }
+                    else if (fills_left > 0U)
+                    {
+                        --fills_left;
+                        fill_by_server[server].push_back(std::move(request));
+                    }
+                    else
+                    {
+                        batch_by_server[server].push_back(std::move(request));
+                    }
+                }
+            }
+
+            if (!fill_by_server.empty() || !batch_by_server.empty())
+            {
+                wire_federation_callbacks(rt.homeserver);
+                auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+                auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+                auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+                auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
+                for (auto const& server_requests : remote_by_server)
+                {
+                    auto const& server = server_requests.first;
+                    auto fill = RemoteRequests{};
+                    if (auto const found = fill_by_server.find(server); found != fill_by_server.end())
+                    {
+                        fill = std::move(found->second);
+                    }
+                    auto batch = RemoteRequests{};
+                    if (auto const found = batch_by_server.find(server); found != batch_by_server.end())
+                    {
+                        batch = std::move(found->second);
+                    }
+                    if (fill.empty() && batch.empty())
+                    {
+                        continue;
+                    }
+                    if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                    {
+                        failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                        continue;
+                    }
+                    // Fill the cache from GET /user/devices, the answer whose stream_id later updates are matched
+                    // against (ADR-0560). A failed or refused fill falls back to the batched query below.
+                    for (auto& request : fill)
+                    {
+                        auto const ticket = device_lists.begin_resync(request.first);
+                        auto const tx = federation::make_outbound_transaction(
+                            server, "GET",
+                            "/_matrix/federation/v1/user/devices/" + core::percent_encode_path_component(request.first),
+                            local_server, {});
+                        auto call_secret = core::SecretBuffer{signing_secret.bytes()};
+                        // Unverified (ADR-0349): the device list is the remote server's word.
+                        auto const [ok, resp_body] = perform_bounded_outbound_call(
+                            rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                            "key_query.user_devices", remote_calls.remaining_seconds());
+                        auto list =
+                            ok ? federation::accept_remote_user_devices_response(server, request.first, resp_body)
+                               : std::nullopt;
+                        if (!list.has_value())
+                        {
+                            batch.push_back(std::move(request));
+                            continue;
+                        }
+                        auto cached = federation::remote_key_query_keys_from_cache(request.first, *list);
+                        // Not kept if an update for the user arrived while the lock was released (ADR-0561).
+                        std::ignore = device_lists.store_snapshot(request.first, ticket, std::move(*list));
+                        merge_remote_keys(cached, RemoteRequests{std::move(request)});
+                    }
+                    if (batch.empty())
+                    {
+                        continue;
+                    }
+                    auto uid_list = std::vector<std::string>{};
+                    auto remote_dk = canonicaljson::Object{};
+                    for (auto const& [uid, device_ids] : batch)
+                    {
+                        uid_list.push_back(uid);
+                        // Spec (POST /keys/query, `device_keys`): an empty list asks for every device.
+                        auto device_array = canonicaljson::Array{};
+                        for (auto const& device_id : device_ids)
+                        {
+                            device_array.push_back(json_str(device_id));
+                        }
+                        remote_dk.push_back(json_member(uid, json_arr(std::move(device_array))));
+                    }
+                    auto q_body_obj = canonicaljson::Object{};
+                    q_body_obj.push_back(json_member("device_keys", json_obj(std::move(remote_dk))));
+                    auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
+                    auto const tx = federation::make_outbound_transaction(
+                        server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
+                    // Each outbound call must own the key because the network path can
+                    // release runtime.mutex and the runtime key may be rotated.
+                    auto call_secret = core::SecretBuffer{signing_secret.bytes()};
+                    // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
+                    auto const [ok, resp_body] = perform_bounded_outbound_call(
+                        rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                        "key_query.remote", remote_calls.remaining_seconds());
+                    if (!ok)
+                    {
+                        failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
+                        continue;
+                    }
+                    // Keep only what the server may speak for: its own requested
+                    // users, with keys that describe the user they are filed under.
+                    auto accepted = federation::accept_remote_key_query_response(server, resp_body, uid_list);
+                    if (!accepted.has_value())
+                    {
+                        failures.push_back(json_member(
+                            server,
+                            json_obj({
+                                json_member("errcode", json_str("M_UNKNOWN")),
+                                json_member("error", json_str("remote key query response is not a JSON object")),
+                            })));
+                        continue;
+                    }
+                    merge_remote_keys(*accepted, batch);
                 }
             }
         }

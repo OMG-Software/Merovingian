@@ -163,7 +163,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    is dropped alone, not the EDU (ADR-0335). A `m.device_list_update` /
    `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
    joined room with the subject, as one batch (`record_device_list_changes`), one row per
-   (observer, subject). A remote user's own membership change reaches the same table through
+   (observer, subject). It goes through `RemoteDeviceListCache` first (ADR-0560, ADR-0561): an update that
+   changes nothing in the cached list writes no row, a gap (`prev_id` above the snapshot and never applied, or
+   empty) or an unreadable update marks the list stale, and a subject nobody local shares a room with is erased.
+   The cache is filled only from `accept_remote_user_devices_response` (whole answer or nothing) and only through
+   `begin_resync` / `store_snapshot`, so an update that arrives during the fill voids it. A remote user's own membership change reaches the same table through
    `apply_membership_to_roster` (the membership acceptor and `ingest_pdu_event` both call it),
    never by editing `LocalRoom::members` directly: a join is `changed` and the leave of the last
    shared room is `left` for the local members. A published device's `unsigned.device_display_name`
@@ -357,6 +361,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `RemoteDeviceListCache.cpp` | The in-memory device lists of remote users who share a room with a local user (G14, ADR-0560, ADR-0561): fill tickets, update sequencing by `stream_id`/`prev_id`, caps per user and in all. Guarded by `runtime.mutex` |
 | `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
 | `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
 | `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
