@@ -19,7 +19,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -94,28 +93,32 @@ namespace
         }
     }
 
-    [[nodiscard]] auto connect_to(std::string const& path, Clock::time_point const deadline)
-        -> std::expected<core::FileDescriptor, std::string>
+    [[nodiscard]] auto connect_to(std::string const& path, Clock::time_point const deadline, std::string& error)
+        -> core::FileDescriptor
     {
         auto address = sockaddr_un{};
         if (path.empty() || path.size() >= sizeof(address.sun_path))
         {
-            return std::unexpected{std::string{"socket path does not fit sockaddr_un"}};
+            error = std::string{"socket path does not fit sockaddr_un"};
+            return core::FileDescriptor{};
         }
         auto descriptor = core::FileDescriptor{::socket(AF_UNIX, SOCK_STREAM, 0)};
         if (!descriptor.valid())
         {
-            return std::unexpected{"socket: " + errno_text(errno)};
+            error = "socket: " + errno_text(errno);
+            return core::FileDescriptor{};
         }
         // Close-on-exec first: the thumbnail worker is spawned from this process.
         if (!descriptor.set_cloexec())
         {
-            return std::unexpected{std::string{"cannot set close-on-exec"}};
+            error = std::string{"cannot set close-on-exec"};
+            return core::FileDescriptor{};
         }
         auto const flags = ::fcntl(descriptor.get(), F_GETFL, 0);
         if (flags < 0 || ::fcntl(descriptor.get(), F_SETFL, flags | O_NONBLOCK) != 0)
         {
-            return std::unexpected{std::string{"cannot set non-blocking mode"}};
+            error = std::string{"cannot set non-blocking mode"};
+            return core::FileDescriptor{};
         }
         address.sun_family = AF_UNIX;
         std::memcpy(address.sun_path, path.data(), path.size());
@@ -127,23 +130,26 @@ namespace
         if (errno != EINPROGRESS)
         {
             // EAGAIN here is a full listen backlog on Linux: clamd is saturated, so this is a failure, not a retry.
-            return std::unexpected{"connect: " + errno_text(errno)};
+            error = "connect: " + errno_text(errno);
+            return core::FileDescriptor{};
         }
         if (!wait_for(descriptor.get(), POLLOUT, deadline))
         {
-            return std::unexpected{std::string{"connect timed out"}};
+            error = std::string{"connect timed out"};
+            return core::FileDescriptor{};
         }
-        auto error = 0;
-        auto error_length = static_cast<socklen_t>(sizeof(error));
-        if (::getsockopt(descriptor.get(), SOL_SOCKET, SO_ERROR, &error, &error_length) != 0 || error != 0)
+        auto socket_error = 0;
+        auto socket_error_length = static_cast<socklen_t>(sizeof(socket_error));
+        if (::getsockopt(descriptor.get(), SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_length) != 0 ||
+            socket_error != 0)
         {
-            return std::unexpected{"connect: " + errno_text(error)};
+            error = "connect: " + errno_text(socket_error);
+            return core::FileDescriptor{};
         }
         return descriptor;
     }
 
-    [[nodiscard]] auto send_all(int const fd, std::string_view data, Clock::time_point const deadline)
-        -> std::expected<void, std::string>
+    [[nodiscard]] auto send_all(int const fd, std::string_view data, Clock::time_point const deadline) -> std::string
     {
         while (!data.empty())
         {
@@ -161,20 +167,20 @@ namespace
             {
                 if (!wait_for(fd, POLLOUT, deadline))
                 {
-                    return std::unexpected{std::string{"timed out sending the stream"}};
+                    return std::string{"timed out sending the stream"};
                 }
                 continue;
             }
-            return std::unexpected{"send: " + errno_text(sent < 0 ? errno : EPIPE)};
+            return "send: " + errno_text(sent < 0 ? errno : EPIPE);
         }
         return {};
     }
 
     // Sends the INSTREAM command, the bytes in length-prefixed chunks, and the zero-length terminator.
     [[nodiscard]] auto send_stream(int const fd, std::string_view bytes, Clock::time_point const deadline)
-        -> std::expected<void, std::string>
+        -> std::string
     {
-        if (auto const sent = send_all(fd, instream_command, deadline); !sent.has_value())
+        if (auto const sent = send_all(fd, instream_command, deadline); !sent.empty())
         {
             return sent;
         }
@@ -190,7 +196,7 @@ namespace
             frame.push_back(static_cast<char>((length >> 8U) & 0xFFU));
             frame.push_back(static_cast<char>(length & 0xFFU));
             frame.append(chunk);
-            if (auto const sent = send_all(fd, frame, deadline); !sent.has_value())
+            if (auto const sent = send_all(fd, frame, deadline); !sent.empty())
             {
                 return sent;
             }
@@ -200,16 +206,14 @@ namespace
     }
 
     // Reads the reply up to its NUL terminator. A reply without one, or a longer one, is malformed.
-    [[nodiscard]] auto read_reply(int const fd, Clock::time_point const deadline)
-        -> std::expected<std::string, std::string>
+    [[nodiscard]] auto read_reply(int const fd, Clock::time_point const deadline, std::string& reply) -> std::string
     {
-        auto reply = std::string{};
         auto buffer = std::array<char, 128U>{};
         while (true)
         {
             if (!wait_for(fd, POLLIN, deadline))
             {
-                return std::unexpected{std::string{"timed out waiting for the reply"}};
+                return std::string{"timed out waiting for the reply"};
             }
             auto const received = ::recv(fd, buffer.data(), buffer.size(), 0);
             if (received < 0)
@@ -218,22 +222,22 @@ namespace
                 {
                     continue;
                 }
-                return std::unexpected{"recv: " + errno_text(errno)};
+                return "recv: " + errno_text(errno);
             }
             if (received == 0)
             {
-                return std::unexpected{std::string{"clamd closed the connection before it finished its reply"}};
+                return std::string{"clamd closed the connection before it finished its reply"};
             }
             auto const view = std::string_view{buffer.data(), static_cast<std::size_t>(received)};
             auto const terminator = view.find('\0');
             reply.append(view.substr(0U, terminator));
             if (reply.size() > max_reply_bytes)
             {
-                return std::unexpected{std::string{"clamd reply is too long"}};
+                return std::string{"clamd reply is too long"};
             }
             if (terminator != std::string_view::npos)
             {
-                return reply;
+                return {};
             }
         }
     }
@@ -337,21 +341,22 @@ auto ClamdScanner::scan(std::string_view const bytes) -> ClamdScanResult
     }
     auto const slot = ScanSlot{m_in_flight};
 
-    auto connection = connect_to(m_settings.socket_path, deadline);
-    if (!connection.has_value())
+    auto error = std::string{};
+    auto const connection = connect_to(m_settings.socket_path, deadline, error);
+    if (!connection.valid())
     {
-        return result_of(ClamdVerdict::failed, sanitise_detail(connection.error()));
+        return result_of(ClamdVerdict::failed, sanitise_detail(error));
     }
-    if (auto const sent = send_stream(connection->get(), bytes, deadline); !sent.has_value())
+    if (auto const sent = send_stream(connection.get(), bytes, deadline); !sent.empty())
     {
-        return result_of(ClamdVerdict::failed, sanitise_detail(sent.error()));
+        return result_of(ClamdVerdict::failed, sanitise_detail(sent));
     }
-    auto const reply = read_reply(connection->get(), deadline);
-    if (!reply.has_value())
+    auto reply = std::string{};
+    if (auto const received = read_reply(connection.get(), deadline, reply); !received.empty())
     {
-        return result_of(ClamdVerdict::failed, sanitise_detail(reply.error()));
+        return result_of(ClamdVerdict::failed, sanitise_detail(received));
     }
-    return classify_reply(*reply);
+    return classify_reply(reply);
 }
 
 auto clamd_supported_on_this_platform() noexcept -> bool
