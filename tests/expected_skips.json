@@ -1,0 +1,224 @@
+{
+  "_comment": "Skips each CI job expects (ADR-0546, docs/testing-standards.md). A Catch2 test case that skips and is not listed for the job fails the job. 'unverified' marks an entry whose runner behaviour was assumed, not observed.",
+  "groups": {
+    "landlock": [
+      {
+        "test": "A real Landlock ruleset denies access outside its allowlist and permits access inside it",
+        "message": "Landlock is unavailable",
+        "reason": "Skips when the runner's kernel or container runtime does not offer Landlock. Whether GitHub's ubuntu-latest kernel and Docker's default seccomp profile allow it has not been checked.",
+        "unverified": true
+      },
+      {
+        "test": "A Landlock rule for a regular file is accepted by the running kernel",
+        "message": "kernel has no Landlock support",
+        "reason": "Skips when the runner kernel has no Landlock; availability on GitHub runners not checked.",
+        "unverified": true
+      },
+      {
+        "test": "Landlock ABI 6 signal scope is requested when the kernel supports it",
+        "message": "is older than ABI 6",
+        "reason": "ABI 6 needs Linux 6.12; GitHub's ubuntu-latest kernel is expected to be older, not checked.",
+        "unverified": true
+      },
+      {
+        "test": "Landlocked production SQLite worker cannot open main's database for writing",
+        "message": "kernel has no Landlock support",
+        "reason": "Skips when the runner kernel has no Landlock; availability on GitHub runners not checked.",
+        "unverified": true
+      },
+      {
+        "test": "A task is confined only when it has a seccomp filter and no_new_privs",
+        "message": "cannot enforce on this kernel",
+        "reason": "Child reports SKIP when the kernel cannot enforce the filter or Landlock; runner capability not checked.",
+        "unverified": true
+      }
+    ],
+    "asan": [
+      {
+        "test": "Live secret allocations remain independently locked",
+        "message": "AddressSanitizer",
+        "reason": "AddressSanitizer replaces mlock with a version that locks nothing, so kernel lock state cannot be observed (the test skips itself under ASan)."
+      },
+      {
+        "test": "Derived keys and their copies occupy locked allocations",
+        "message": "AddressSanitizer",
+        "reason": "AddressSanitizer replaces mlock with a version that locks nothing, so kernel lock state cannot be observed (the test skips itself under ASan)."
+      },
+      {
+        "test": "Signing box cache fails closed when its key copy cannot be locked",
+        "message": "AddressSanitizer",
+        "reason": "AddressSanitizer replaces mlock with a version that locks nothing, so kernel lock state cannot be observed (the test skips itself under ASan)."
+      }
+    ],
+    "tsan": [
+      {
+        "test": "The federation worker starts and serves a request under the worker seccomp filter",
+        "message": "ThreadSanitizer",
+        "reason": "The worker seccomp filter does not enumerate the syscalls ThreadSanitizer needs, so the scenario skips under TSan. The test only detects TSan through __SANITIZE_THREAD__, which clang may not define: unverified for the clang TSan job.",
+        "unverified": true
+      }
+    ],
+    "root-container": [
+      {
+        "test": "The federation worker starts and serves a request under the worker seccomp filter",
+        "message": "skipped under root",
+        "reason": "The CI container runs as root, and a root worker fails the seccomp filter for unrelated reasons (fchown, capability bounding set); the test skips under root."
+      }
+    ],
+    "bsd": [
+      {
+        "test": "The federation worker starts and serves a request under the worker seccomp filter",
+        "message": "Linux-only",
+        "reason": "seccomp is Linux-only; the scenario skips on the BSDs."
+      },
+      {
+        "test": "merovingian-server caps the connections one client address may hold open",
+        "message": "127.0.0.2",
+        "reason": "The BSDs configure only 127.0.0.1 on loopback, so 127.0.0.2 is not a local address (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "merovingian-server does not cap connections from a trusted reverse proxy",
+        "message": "127.0.0.3",
+        "reason": "The BSDs configure only 127.0.0.1 on loopback, so 127.0.0.3 is not a local address (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "One client keeping every connection alive does not hold the workers another client needs",
+        "message": "127.0.0.2",
+        "reason": "The BSDs configure only 127.0.0.1 on loopback (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "One client trickling request bodies does not hold the workers another client needs, and is cut off",
+        "message": "127.0.0.2",
+        "reason": "The BSDs configure only 127.0.0.1 on loopback (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "Connections that never send a byte do not hold the workers another client needs",
+        "message": "127.0.0.2",
+        "reason": "The BSDs configure only 127.0.0.1 on loopback (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "The logger starts no thread until its writers are explicitly started",
+        "message": "/proc/self/task",
+        "reason": "The BSDs have no /proc/self/task, or it does not enumerate threads, so the thread-count check skips (not confirmed on the CI VMs).",
+        "unverified": true
+      }
+    ],
+    "no-smtp": [
+      {
+        "test": "A notification for an email pusher is mailed, as an unread count only, after the delay",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "An unreadable SMTP password file sends nothing and keeps the email due",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A submission relay must start TLS before mail is sent to it",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A cleartext relay at a loopback literal is used when TLS is explicitly not required",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A user who cannot sign in resets the password with a code emailed to their address",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A password-reset session is bounded, cannot validate without an account, and is single use",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "Reset emails to one address are throttled across sessions and answer alike",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "Reset emails are not dropped while other background tasks fill the parked-futures list",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A password-reset session fails once the address has left the account",
+        "message": "libcurl was built without SMTP",
+        "reason": "The linked libcurl was built without SMTP (RHEL's libcurl-minimal) so there is no SMTP session to test. Which runners link such a libcurl has not been confirmed.",
+        "unverified": true
+      }
+    ]
+  },
+  "jobs": {
+    "ubuntu": [
+      "landlock"
+    ],
+    "release-linux": [
+      "landlock"
+    ],
+    "coverage": [
+      "landlock"
+    ],
+    "sonarcloud": [
+      "landlock"
+    ],
+    "asan-ubsan": [
+      "landlock",
+      "asan"
+    ],
+    "tsan": [
+      "landlock",
+      "tsan"
+    ],
+    "fedora": [
+      "landlock",
+      "root-container"
+    ],
+    "debian": [
+      "landlock",
+      "root-container"
+    ],
+    "opensuse": [
+      "landlock",
+      "root-container"
+    ],
+    "rhel": [
+      "landlock",
+      "root-container",
+      "no-smtp"
+    ],
+    "freebsd": [
+      "bsd",
+      "no-smtp"
+    ],
+    "openbsd": [
+      "bsd",
+      "no-smtp"
+    ],
+    "netbsd": [
+      "bsd",
+      "no-smtp"
+    ],
+    "release-freebsd": [
+      "bsd",
+      "no-smtp"
+    ],
+    "postgres-integration": []
+  }
+}

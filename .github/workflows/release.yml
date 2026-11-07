@@ -49,7 +49,7 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build hardened Linux package
-        run: sh scripts/build-linux.sh --builddir build-linux-release --profile hardened
+        run: sh scripts/build-linux.sh --builddir build-linux-release --profile hardened --skip-job release-linux
 
       - name: Collect release evidence
         run: sh scripts/collect-release-evidence.sh "Linux x86_64" build-linux-release release-evidence-linux-x86_64.md
@@ -136,7 +136,7 @@ jobs:
           run: |
             tag="${GITHUB_REF_NAME}"
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
-            sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened
+            sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened --skip-job release-freebsd
             sh scripts/collect-release-evidence.sh "FreeBSD x86_64" build-freebsd-release release-evidence-freebsd-x86_64.md || true
             sh scripts/check-release-readiness.sh
             package_root="merovingian-${tag}-freebsd-x86_64"

@@ -57,7 +57,7 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build
+        run: sh scripts/build-linux.sh --builddir build --skip-job ubuntu
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -255,7 +255,7 @@ jobs:
           restore-keys: ccache-fedora-ci-${{ matrix.image }}-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-fedora
+        run: sh scripts/build-linux.sh --builddir build-fedora --skip-job fedora
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -338,7 +338,7 @@ jobs:
           restore-keys: ccache-debian-ci-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-debian
+        run: sh scripts/build-linux.sh --builddir build-debian --skip-job debian
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -423,7 +423,7 @@ jobs:
           restore-keys: ccache-rhel-ci-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-rhel
+        run: sh scripts/build-linux.sh --builddir build-rhel --skip-job rhel
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -514,7 +514,7 @@ jobs:
           restore-keys: ccache-opensuse-ci-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-opensuse
+        run: sh scripts/build-linux.sh --builddir build-opensuse --skip-job opensuse
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
@@ -552,7 +552,7 @@ jobs:
           usesh: true
           run: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
-            if ! sh scripts/build-bsd.sh --builddir build; then
+            if ! sh scripts/build-bsd.sh --builddir build --skip-job freebsd; then
                 echo "::group::FreeBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then
                     grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
@@ -606,7 +606,7 @@ jobs:
           prepare: |
             pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: |
-            if ! sh scripts/build-bsd.sh --builddir build; then
+            if ! sh scripts/build-bsd.sh --builddir build --skip-job openbsd; then
                 echo "::group::OpenBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then
                     grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
@@ -701,7 +701,7 @@ jobs:
               export PKG_PATH="https://${mirror}/${package_path}"
               /usr/sbin/pkg_add -U gdb && break
             done
-            if ! sh scripts/build-bsd.sh --builddir build; then
+            if ! sh scripts/build-bsd.sh --builddir build --skip-job netbsd; then
                 echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then
                     # The unit test binary emits thousands of structured runtime

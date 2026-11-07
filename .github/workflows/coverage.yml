@@ -155,7 +155,7 @@ jobs:
           SQL
 
       - name: Build and test with coverage
-        run: sh scripts/build-linux.sh --builddir build-coverage --coverage
+        run: sh scripts/build-linux.sh --builddir build-coverage --coverage --skip-job coverage
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()

@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'expected-skips-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_expected_skips.py'],
+  )
+
+  test(
     'password-hash-override-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_password_hash_override.py'],
