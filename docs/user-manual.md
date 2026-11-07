@@ -1065,9 +1065,10 @@ reaches code execution substitute a key of their own and then decrypt or re-sign
 at will. The file is never written after provisioning, so `0400` costs nothing.
 
 A server upgrading from an earlier version that already holds a legacy plaintext
-signing secret keeps reading it and continues to federate; configure a master key
-and rotate the signing key to re-encrypt the active secret under the at-rest
-format.
+signing secret keeps reading it and continues to federate. The server has no
+operator command that rotates the signing key (see
+[Signing-key rotation](#signing-key-rotation)), so nothing re-encrypts that
+secret under the at-rest format.
 
 New access and refresh token issuance also requires a usable master key. Losing
 the file, changing it to an insecure mode/owner, or exhausting locked memory
@@ -2649,6 +2650,53 @@ security.federation.enabled=true
 
 Set it to `false` to run a non-federating server.
 
+### Ports, DNS and delegation
+
+Other servers find yours from the server name in your user IDs (`server.name`),
+by the steps of the Matrix specification's "Resolving server names"
+([server-server API](matrix-v1.19-spec/server-server-api.md#resolving-server-names)).
+This server resolves other servers the same way (`src/federation/server_discovery.cpp`),
+and a peer that follows the specification resolves yours as follows:
+
+1. If the server name is an IP literal or has an explicit port, the peer connects
+   there.
+2. Otherwise it fetches `https://<server name>/.well-known/matrix/server`. A
+   response of `{"m.server": "host:port"}` delegates federation to that host and
+   port. With a host and no port, the peer looks up SRV records for the delegated
+   host, then uses port `8448`.
+3. With no usable well-known answer, the peer looks up the SRV record
+   `_matrix-fed._tcp.<server name>` (falling back to the deprecated
+   `_matrix._tcp.<server name>`), and finally connects to the server name on
+   port `8448`.
+
+Merovingian does not serve `/.well-known/matrix/server`: the reverse proxy does
+(see the [nginx example](#nginx-example)). It does serve
+`/.well-known/matrix/client` for clients.
+
+| Port | Used by | Open to |
+|---|---|---|
+| `443` | The reverse proxy: client API, and federation when `.well-known` delegates to `<name>:443` | Everyone |
+| `8448` | Federation, when you do not delegate: either the proxy or a federation listener with TLS (`listeners.federation.tls=true`, `reverse_proxy=false`) | Everyone, if used |
+| `8008`, `8009` | The default loopback client and federation listeners behind the proxy | Nothing outside the host |
+
+Two ways to publish a name such as `example.org` for a server at
+`matrix.example.org`:
+
+- Delegation by well-known: serve `{"m.server": "matrix.example.org:443"}` at
+  `https://example.org/.well-known/matrix/server`. Only port `443` needs to be
+  reachable, and no SRV record is needed.
+- Delegation by SRV record, with no well-known file:
+
+  ```text
+  _matrix-fed._tcp.example.org. 3600 IN SRV 10 5 443 matrix.example.org.
+  ```
+
+  The certificate presented must be valid for `example.org`, not for the SRV
+  target.
+
+Allow outbound traffic as well: this server connects to other servers on the ports
+they publish, and resolves SRV records through the system resolver.
+
 ### Allow-list federation
 
 ```ini
@@ -2832,6 +2880,89 @@ percent-encoded; an optional `{"reason": "..."}` body) holds the target for revi
 
 There is no route that stops the server. Stop it with the service manager.
 
+### Metrics and alerting
+
+`GET /_merovingian/admin/metrics` answers Prometheus text format
+(`text/plain; version=0.0.4`). It is an admin route, so it needs an access token
+of an admin user as `Authorization: Bearer <token>`; there is no separate
+metrics credential. It is served on the client listener (default
+`127.0.0.1:8008`). The reverse-proxy examples above route only `/_matrix/` paths,
+so they do not expose it: have Prometheus scrape the loopback listener directly,
+from the same host or over a private network.
+
+The default access token lifetime is one hour (`security.access_token_lifetime_ms`),
+after which a scrape gets `401` and Prometheus marks the target `up == 0`. Either
+log in as a dedicated admin user and rewrite the token file before it expires, or
+set that lifetime to `0` (no expiry), which applies to every user's tokens.
+
+```yaml
+scrape_configs:
+  - job_name: merovingian
+    metrics_path: /_merovingian/admin/metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/merovingian-token
+    static_configs:
+      - targets: ['127.0.0.1:8008']
+```
+
+The metrics the server exports (`admin_metrics` in `src/homeserver/HomeserverRuntime.cpp`
+and `media_repository_metrics` in `src/media/LocalMediaRepository.cpp`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `merovingian_server_identity{server_name}` | gauge | Always `1`; carries the server name. |
+| `merovingian_runtime_started` | gauge | `1` once startup has completed. |
+| `merovingian_database_schema_version` | gauge | Validated schema version. |
+| `merovingian_health_status{component,status}` | gauge | Per component (`runtime`, `listeners`, `database`, `federation`, `media`, `hardening`): `1` ok, `0` degraded, `-1` failed. |
+| `users_total`, `sessions_total`, `rooms_total`, `events_total` | gauge | Row counts in the store. |
+| `audit_events_appended_total`, `admin_actions_total` | counter | Durable audit and admin-action rows. |
+| `merovingian_federation_outbound_rejected_total` | counter | Outbound transactions refused because the dispatch queue was full. |
+| `merovingian_federation_outbound_pending` | gauge | Outbound transactions waiting in the dispatch queue. |
+| `merovingian_appservice_outbox_queued{appservice_id}` | gauge | Events queued for an application service. |
+| `merovingian_appservice_outbox_dropped_total{appservice_id}`, `merovingian_appservice_ephemeral_dropped_total{appservice_id}` | counter | Items dropped at the queue caps since the process started. |
+| `media_uploads_accepted_total`, `media_uploads_rejected_total`, `media_uploads_quarantined_total`, `media_downloads_served_total`, `media_downloads_blocked_total`, and the other `media_*` counters | counter | Media repository activity; `GET /_merovingian/admin/media/metrics` reports the same media figures. |
+| `media_stored_blobs`, `media_stored_bytes` | gauge | Stored media. |
+
+The two federation queue metrics exist only while the federation dispatch worker is running. Example
+alert rules built only on these metrics (thresholds are examples to tune):
+
+```yaml
+groups:
+  - name: merovingian
+    rules:
+      - alert: MerovingianScrapeFailing
+        expr: up{job="merovingian"} == 0
+        for: 5m
+      - alert: MerovingianComponentUnhealthy
+        expr: merovingian_health_status < 1
+        for: 5m
+      - alert: MerovingianFederationQueueRejecting
+        expr: increase(merovingian_federation_outbound_rejected_total[15m]) > 0
+      - alert: MerovingianFederationQueueBacklog
+        expr: merovingian_federation_outbound_pending > 100
+        for: 15m
+      - alert: MerovingianAppserviceEventsDropped
+        expr: increase(merovingian_appservice_outbox_dropped_total[1h]) > 0
+```
+
+### Log rotation
+
+Console logging goes to standard output. Under the packaged systemd unit, which
+does not pass `--log-file`, that is the journal, and the journal rotates it:
+`journalctl -u merovingian-server`. This is the recommended setup.
+
+The `--log-file` sink cannot be rotated by an external tool. The server opens
+the file once at start-up, truncates it, and keeps writing to that descriptor;
+it does not reopen on `SIGHUP` or on any other signal, and it opens the file
+without `O_APPEND`. Moving the file away (the default `logrotate` mode) leaves
+the server writing to the moved file. `copytruncate` is not safe either: after
+the truncation the server keeps writing at its old offset, so the file fills
+with zero bytes up to that offset. To rotate a `--log-file`, restart the server
+(each start truncates it, so copy it away first). Use `--log-file` for short
+diagnostic sessions rather than as the long-term log.
+
 ## Maintenance
 
 ### Backups
@@ -2989,6 +3120,42 @@ These steps are an operator procedure, not evidence of an end-to-end recovery
 certification. Rehearse them on disposable data and record the actual restore,
 startup and client checks for your deployment before relying on a backup.
 
+### TLS certificate renewal
+
+The TLS listeners (`listeners.*.tls=true`) read the certificate chain and the
+private key once, when the listeners open at start-up. The server does not watch
+the files and has no reload signal or command (`listeners.*.tls_certificate_file`
+and `tls_private_key_file` are "Restart required" in the
+[reloadability policy](#reloadability-policy)). To pick up a renewed
+certificate, replace the files and restart the service:
+
+1. Write the new certificate chain and key to the configured paths, keeping the
+   permissions the server requires: a certificate that is a regular,
+   non-executable file that is not group/other-writable, and a key that is a
+   regular, non-symlink file owned by the service user with mode `0400`.
+2. `systemctl restart merovingian-server`.
+3. Check the log for the `Listening:` lines with `tls=true`, and the certificate
+   with `openssl s_client -connect host:port -servername name`.
+
+If the new files are rejected, the restart fails before any listener opens (exit
+`81`, or `79` if the file metadata check fails) and the service stays down, so
+check the permissions and test the new pair with `openssl` before restarting. A
+deployment where a reverse proxy terminates TLS renews the certificate in the
+proxy and needs no Merovingian restart.
+
+### Signing-key rotation
+
+The server generates its Ed25519 federation signing key on first start and
+stores it encrypted under the master key. Operators have no way to rotate it
+today: the code can retire the active key and publish it under `old_verify_keys`
+on `GET /_matrix/key/v2/server` (`rotate_server_signing_key` in
+`src/homeserver/room_service.cpp`), but nothing reachable by an operator calls
+it. It has no admin route, command-line flag, signal or configuration key, and
+only the test suite calls it. The server never regenerates a lost key silently
+(ADR-0017), and a missing key with a missing or wrong master key makes start-up
+fail. Back up the master key with the database (see [Backups](#backups)). A key
+that is suspected leaked cannot be rotated with the released server.
+
 ### Upgrades
 
 1. Review the [`CHANGELOG.md`](../CHANGELOG.md) for the target version.
@@ -3025,6 +3192,10 @@ commit.
 | A remote server's `send_join` into a room here is refused `503` ("retry with omit_members=true") | The room's state and auth chain are too large to send. | The remote server should retry with `omit_members=true`; raise `join_response_max_size` (restart) for servers that do not. |
 | Federation worker does not start | `merovingian-fed-worker` binary is missing or `federation.worker.binary` points to the wrong path. | Check binary location and permissions. |
 | Encrypted media downloads fail | `application/octet-stream` was removed from `security.media.allowed_mime_types`. | Restore it. |
+| Exit `80` with `Runtime failed to start: ...` naming the database (for example `schema ledger records a migration this build does not have`, `schema version is not compatible`, `unable to open SQLite persistent store`) | The database was written by a newer build, or by a pre-1.0 build from before the 0.12.47 schema collapse; or the database cannot be opened. The server never opens a schema it does not recognise. | Run the build that wrote the database, or restore a backup taken by the build you run. Migrations never move a schema backwards. For open failures, check `database.uri_file` or the SQLite path and the service user's access. |
+| Exit `81` with `Listener ... failed to configure TLS: ...` | The certificate or key could not be loaded, the key does not match the certificate, or the key is not a regular non-symlink file owned by the service user with mode `0400`. | Fix the files named in the message (see [TLS certificate renewal](#tls-certificate-renewal)). Exit `79` instead means the file-metadata check in config validation refused them. |
+| Exit `80` with `Startup refused: hardening self-check reports a disabled control: <name>` | The named hardening control (seccomp, privilege drop, `no_new_privs`, and so on) is not in effect, for example the service runs as root or the platform lacks the control. | Run as the service user under the packaged unit; see [Startup hardening self-check](#startup-hardening-self-check). The server refuses to start rather than run unhardened. |
+| Exit `80` with `Federation worker failed to start`, or federation answers `503` and the log repeats `Federation worker exited` and `Federation worker restart failed` | The worker binary is missing or cannot be launched, or the worker died after start-up. The supervisor restarts a dead worker after 1 s, doubling the wait up to 30 s, and resets the wait once the worker has stayed healthy for 30 s; federation answers `503` meanwhile and local users are unaffected. | Fix the cause in the worker's log lines. On FreeBSD the restart cannot succeed after a worker death, because capability mode forbids spawning by path (ADR-0377): restart the server. |
 
 ## Security checklist
 
