@@ -410,6 +410,7 @@ shell = find_program('sh')
       'unit/test_create_room_power_level_override.cpp',
       'unit/test_create_room_entry_caps.cpp',
       'unit/test_create_room_invite_3pid.cpp',
+      'unit/test_invite_permission.cpp',
       'unit/test_relations_recursion.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_receipt_thread_uniqueness.cpp',

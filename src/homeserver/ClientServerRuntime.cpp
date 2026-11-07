@@ -112,6 +112,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/operator_admin.hpp"
@@ -18570,6 +18571,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
+        // SS7: a local invitee who blocks invites refuses the request whole, before the room exists. A remote
+        // invitee's server is asked after the room is made and can only drop its own invite (see below).
+        for (auto const& invitee : invitees)
+        {
+            if (server_name_from_user_id(invitee) == rt.homeserver.config.server().server_name &&
+                merovingian::homeserver::invite_permission_blocks(rt.homeserver.database.persistent_store, invitee))
+            {
+                return dispatch_err(req, rt, 403U, std::string{merovingian::homeserver::invite_blocked_errcode},
+                                    "an invited user is not accepting invites");
+            }
+        }
+
         auto options = CreateRoomOptions{};
         options.directory_public = visibility_value != nullptr && *visibility_value == "public";
         options.room_version = room_version;
@@ -18709,6 +18722,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"invitee_server", std::string{invitee_server}, false}
                 },
                                observability::LogEventSeverity::warning);
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused &&
+                     delivery.errcode == merovingian::homeserver::invite_blocked_errcode)
+            {
+                // SS7: the invitee's server blocks invites. That one invite is dropped (not queued) and the
+                // room, already made, is kept: createRoom still answers 200.
+                log_diagnostic("room.create.invite_blocked",
+                               {
+                                   {"actor",   *user,   false},
+                                   {"room_id", room_id, false},
+                                   {"invitee", invitee, false}
+                });
             }
             else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused)
             {

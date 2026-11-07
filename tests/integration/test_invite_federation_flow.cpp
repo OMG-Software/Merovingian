@@ -1559,6 +1559,63 @@ SCENARIO("A createRoom invite to a user of another server reaches that server be
     }
 }
 
+// Spec: Matrix Client-Server API v1.19, "Invite permission" (SS7): the invited user's homeserver answers
+// PUT /v2/invite with 403 M_INVITE_BLOCKED when the user blocks invites. For POST /invite that is a refusal
+// the client sees, with nothing stored and nothing queued; for POST /createRoom "it is possible for one of the
+// invited users to be rejected whilst the room creation as a whole succeeds".
+SCENARIO("A remote server that answers an invite with M_INVITE_BLOCKED is not retried and does not fail createRoom",
+         "[integration][federation][invite][ss7][invite-permission]")
+{
+    GIVEN("alice and bob, a user of another server whose server blocks bob's invites")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unstarted_dispatch_worker(runtime);
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = std::string{"@bob:"} + std::string{inviting_server};
+        auto const blocked_answer = [](std::string const&) {
+            return merovingian::tests::tls_mock::json_http_response(
+                "403 Forbidden", R"({"errcode":"M_INVITE_BLOCKED","error":"This user is not accepting invites"})");
+        };
+
+        WHEN("alice invites bob with POST /invite")
+        {
+            auto const room_id = create_room(runtime, alice, R"({"preset":"private_chat"})");
+            auto invitee = InviteeServer{runtime, blocked_answer};
+            auto const invited = call(runtime, "POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                      std::string{R"({"user_id":")"} + bob + R"("})");
+            invitee.thread.join();
+
+            THEN("alice is refused with 403 M_INVITE_BLOCKED, nothing is stored and nothing is queued")
+            {
+                CAPTURE(invited.response.body);
+                REQUIRE(invited.response.status == 403U);
+                REQUIRE(invited.response.body.find("M_INVITE_BLOCKED") != std::string::npos);
+                REQUIRE(membership_row(runtime, room_id, bob).empty());
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+
+        WHEN("alice creates a room with bob in its invite list")
+        {
+            auto invitee = InviteeServer{runtime, blocked_answer};
+            auto const created = call(runtime, "POST", "/_matrix/client/v3/createRoom", alice,
+                                      std::string{R"({"preset":"private_chat","invite":[")"} + bob + R"("]})");
+            invitee.thread.join();
+
+            THEN("createRoom still answers 200 with a room, and the blocked invite is not queued")
+            {
+                CAPTURE(created.response.body);
+                REQUIRE(created.response.status == 200U);
+                REQUIRE(created.response.body.find("room_id") != std::string::npos);
+                REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+    }
+}
+
 // Spec: Matrix Client-Server API v1.19, GET /sync: `rooms.leave` is "the rooms that the user has left or
 // been banned from", and an incremental sync reports a leave that happened after `since`. Rejecting an
 // invite is such a leave. Complement TestFederationRoomsInvite, "Invited user can reject invite over

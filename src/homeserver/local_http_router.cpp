@@ -85,6 +85,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
@@ -2957,6 +2958,16 @@ namespace
             if (!invite.origin.empty() && server_name_from_user_id(*sender) != invite.origin)
             {
                 return {false, 400U, "invite event sender is not on the origin server", {}};
+            }
+            // SS7, Server-Server API PUT /v1/invite and /v2/invite: an invite for a user who blocks invites is
+            // 403 M_INVITE_BLOCKED, decided here on main (the federation worker relays invites to this handler,
+            // and only main holds account data) and before anything is signed or stored.
+            if (invite_permission_blocks(rt->database.persistent_store, *target_user))
+            {
+                return {false,
+                        403U,
+                        matrix_error(std::string{invite_blocked_errcode}, "the invited user is not accepting invites"),
+                        {}};
             }
             // Audit FED-5: a room whose current state we hold (we have its
             // create event) is authorised against that state before we sign
