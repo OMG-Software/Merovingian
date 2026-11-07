@@ -179,7 +179,7 @@ SCENARIO("Sync admission follows the configured cap with a sync pool and the thr
 
             THEN("global admission is still the configured cap, because a parked wait holds no thread (ADR-0570)")
             {
-                REQUIRE(caps.global == 2048U);
+                REQUIRE(caps.global == 512U);
                 REQUIRE(caps.per_user == 4U);
                 REQUIRE(caps.per_device == 2U);
             }
@@ -187,11 +187,11 @@ SCENARIO("Sync admission follows the configured cap with a sync pool and the thr
 
         WHEN("the pool is larger than the configured global wait cap")
         {
-            auto const caps = merovingian::homeserver::sync_admission_caps(config, 256U);
+            auto const caps = merovingian::homeserver::sync_admission_caps(config, 1024U);
 
             THEN("the configured admission limit is applied")
             {
-                REQUIRE(caps.global == 2048U);
+                REQUIRE(caps.global == 512U);
             }
         }
 

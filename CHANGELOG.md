@@ -19,11 +19,13 @@ Fixes the low findings of the November 2026 project analysis.
 - `POST /_matrix/client/v1/login/get_token` mints single-use login tokens for the `m.login.token` flow (CS8, ADR-0548). Tokens last 2 minutes and are held in memory only. The feature is off unless `security.login_token.enabled` is set. Every call asks for the account password. A user may hold at most 4 tokens and the server 1024, and each user may make 4 requests a minute. When enabled, `GET /login` offers the flow with `get_login_token: true`, and `/capabilities` reports `m.get_login_token`.
 - `GET /_matrix/client/v3/admin/whois/{userId}`: a server admin may look up any local user, and other users only themselves (CS8). It returns the user's devices. There is no connection data, because the server records none.
 - `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}?via=` covers a room this server holds no state for (G13, ADR-0556). It asks up to 3 of the `via` servers through federation `GET /hierarchy/{roomId}`, under one client-outbound slot and one deadline. Without a slot it answers 429 at once, with or without a token. A remote answer is shown only according to its own `join_rule`, `world_readable` and `allowed_room_ids`, and local state always wins. A `via` that is not a server name is `400 M_INVALID_PARAM`, and this server's own name is never asked.
+- A `/sync` or sliding-sync long-poll with nothing to return parks in the sync notifier's registry and gives up its sync-pool thread (P15a, ADR-0569). A publish for the user, or the request's deadline, resumes it on the sync pool. A park that is refused falls back to the previous in-thread wait. At shutdown, parked long-polls are closed rather than answered.
 - CI fails a job on any Catch2 skip that `tests/expected_skips.json` does not list for it, and fails closed on a missing or truncated report (T7, ADR-0546). Direct unit tests cover nine headers that had none (T5, T6).
 - Operator guidance in the user manual: ports and DNS, metrics, log rotation, TLS renewal, key rotation and troubleshooting.
 
 ### Changed
 
+- `server.http.sync_max_in_flight` now bounds parked, queued and running waits together, and is no longer clamped to `sync_threads` (ADR-0570). The default is 512 (was 128) and the range is 1..16384 (was 1..512). Each parked wait keeps its socket open, so a higher value needs file-descriptor headroom. The systemd unit allows 65536.
 - Docs: every module's key-file table and the layout tree are complete. The manual says `merovingian-db-migrate` only prints a plan. ADR numbering allows gaps but never reuses a number (ADR-0543). Nineteen duplicate ADR index rows were removed.
 
 ## 0.12.80

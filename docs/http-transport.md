@@ -1036,7 +1036,8 @@ conventions.
 Both v3 and sliding-sync waits share admission budgets keyed by authenticated
 account and device, rather than bearer token or IP address: four waits per
 account and two per device by default (`sync_max_per_user`, `sync_max_per_device`). The configured global cap defaults to
-2048 and counts parked waits too (it is not clamped to the pool, ADR-0570); per-account and per-device
+512 and counts parked waits too (it is not clamped to the pool, ADR-0570). Each parked wait keeps its socket
+open, so raising the cap needs file-descriptor headroom (the systemd unit sets `LimitNOFILE=65536`); per-account and per-device
 caps cannot exceed that global cap. All three caps are `server.http` settings. Queued tasks count against these limits. Excess
 waits get 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`, and a refused sync-pool
 submission also returns 429 immediately instead of waiting on a main worker.
@@ -1044,7 +1045,7 @@ Slots are released on response, disconnect, exception and failed handoff.
 Timeouts are capped at 120 seconds. See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
 
 A long-poll that finds nothing parks in the notifier's `ParkedPollRegistry` and holds no sync-pool thread while it waits
-(ADR-0569); `sync_max_in_flight` (default 2048, 1..16384) now caps parked, queued and running waits together and is no
+(ADR-0569); `sync_max_in_flight` (default 512, 1..16384) now caps parked, queued and running waits together and is no
 longer clamped to `sync_threads` (ADR-0570), the registry also caps parked waits per user at `sync_max_per_user`.
 Shutdown closes parked connections without answering; a disconnected parked client is released when it resumes or at its
 deadline.

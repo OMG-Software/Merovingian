@@ -24,12 +24,18 @@ nothing. What should the global cap be, and what bounds a pool queue the waits n
 only the no-pool fallback (a wait holds the calling thread) is still clamped to the configured `sync_threads`.
 The per-account and per-device caps stay below it. The sync pool's queue depth is `sync_max_in_flight`, so an
 admitted wait can always be queued: admitted waits never exceed the depth, and a task that is queued or running
-holds one admission slot. `sync_max_in_flight` defaults to 2048 (was 128) and its range is 1..16384 (was 1..512);
+holds one admission slot. `sync_max_in_flight` defaults to 512 (was 128) and its range is 1..16384 (was 1..512);
 the registry caps parked entries at the same value, and `sync_max_per_user` per user.
 
-The memory a parked wait holds is its connection, its copied request and its slots, a few KiB; the descriptor is
-already bounded at accept time by `listeners` and `server.http.max_connections_per_ip`. Raising the key is a
-restart-required change, as before.
+The memory a parked wait holds is its connection, its copied request and its slots, a few KiB. Its socket is
+a file descriptor the whole time, and `server.http.max_connections_per_ip` bounds that per client address only,
+not in total. The default is therefore 512, not higher: with 256 idle keep-alive connections, the request
+threads and the database and outbound sockets, the process stays under the 1024 open files many hosts give a
+daemon by default (the BSD rc scripts set no limit of their own). Past the limit `accept4` fails with `EMFILE`
+and the listener retries every 100 ms, so new clients stall. An operator raising the key must raise the
+descriptor limit with it; the systemd unit's `LimitNOFILE=65536` (ADR-0499) leaves room for the maximum.
+Rejected: a 2048 default, which exceeds a 1024 descriptor limit before any other connection is counted.
+Raising the key is a restart-required change, as before.
 
 ## Links
 
