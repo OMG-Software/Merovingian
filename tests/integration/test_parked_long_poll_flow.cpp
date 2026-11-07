@@ -283,17 +283,16 @@ struct SharedRoom final
         auto const joined = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/join/" + percent_encode_room(room.room_id), login.value, "{}"});
         REQUIRE(joined.response.status == 200U);
+        room.pollers.push_back({login.value, {}});
+    }
+    // Every join is done before any initial sync, so no later join is an event after a poller's token.
+    for (auto& poller : room.pollers)
+    {
         auto const initial = merovingian::homeserver::handle_client_server_request(
-            runtime, {"GET", "/_matrix/client/v3/sync?timeout=0&set_presence=offline", login.value, ""});
+            runtime, {"GET", "/_matrix/client/v3/sync?timeout=0&set_presence=offline", poller.token, ""});
         REQUIRE(initial.response.status == 200U);
-        auto since = json_string_after(initial.response.body, "next_batch");
-        REQUIRE_FALSE(since.empty());
-        // The token is an encoded triplet joined by a pipe, which a request target carries percent-encoded.
-        for (auto at = since.find('|'); at != std::string::npos; at = since.find('|'))
-        {
-            since.replace(at, 1U, "%7C");
-        }
-        room.pollers.push_back({login.value, std::move(since)});
+        poller.since = json_string_after(initial.response.body, "next_batch");
+        REQUIRE_FALSE(poller.since.empty());
     }
     return room;
 }
@@ -381,6 +380,7 @@ SCENARIO("A parked long-poll with no event is answered when its timeout passes",
         auto const begun = std::chrono::steady_clock::now();
         REQUIRE(send_all(client.fd(), sync_request(room.pollers.front(), "1000")));
         auto const parked = wait_until_parked(runtime, 1U, 10s);
+        INFO("early answer: " + (parked ? std::string{} : read_until_close(client.fd(), 200ms)).substr(0U, 1200U));
 
         WHEN("the timeout passes")
         {
