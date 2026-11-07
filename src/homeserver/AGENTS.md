@@ -554,8 +554,17 @@ every connection that is not being served and hands it to the main pool only onc
 at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
 the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
 and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task,
-one sync-pool task or one media-fetch-pool task (`std::unique_ptr<HttpConnection>`); pass it on by
-moving it, never by sharing it.
+one sync-pool task, one media-fetch-pool task or the notifier's parked-poll registry
+(`std::unique_ptr<HttpConnection>`); pass it on by moving it, never by sharing it.
+
+A `/sync` or sliding-sync long-poll with nothing to return does not keep its sync-pool thread (ADR-0569): the
+sync-pool task takes the user's cursor, reruns, and parks (`SyncNotifier::park`) its `ParkedSyncPoll` in
+`ParkedPollRegistry` with the deadline; a publish for that user, or the deadline, resumes it on the sync pool
+(`resume_parked_poll`, `run_sync_poll`). Rules: take the cursor BEFORE the rerun and park with that cursor; never
+run a request from the registry thread or a publisher; never touch a poll after `park()` succeeded (it may already
+be running on another thread); `HttpConnectionDispatcher::Impl::request_stop()` stops the registry (closing every
+parked poll) before the pools stop. `sync_max_in_flight` bounds parked, queued and running waits together
+(ADR-0570); a refused park falls back to the in-thread slice wait (`long_poll_wait` with the held cursor).
 
 ## Work under the runtime lock is bounded by the request
 

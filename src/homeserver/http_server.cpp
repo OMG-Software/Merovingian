@@ -2197,9 +2197,10 @@ auto HttpConnectionDispatcher::Impl::start() -> bool
     if (sync_pool != nullptr && runtime.sync_notifier != nullptr)
     {
         auto const& http_settings = runtime.homeserver.config.server().http;
-        auto const limits = sync::ParkedPollLimits{http_settings.sync_max_in_flight, http_settings.sync_max_per_user};
+        auto const park_limits =
+            sync::ParkedPollLimits{http_settings.sync_max_in_flight, http_settings.sync_max_per_user};
         m_owns_poll_registry = runtime.sync_notifier->parking().start(
-            limits, [pool = sync_pool](std::unique_ptr<sync::ParkedPoll> poll, sync::WakeReason reason) {
+            park_limits, [pool = sync_pool](std::unique_ptr<sync::ParkedPoll> poll, sync::WakeReason reason) {
                 resume_parked_poll(*pool, std::move(poll), reason);
             });
     }
