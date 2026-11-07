@@ -490,3 +490,4 @@
 * [0541 - Event type filters use one iterative glob matcher, shared by both filter paths](0541-event-type-filters-use-an-iterative-glob-matcher-shared-by-both-filter-paths.md)
 * [0543 - ADR numbers are assigned in order, gaps are allowed, and a number is never reused](0543-adr-numbers-are-assigned-in-order-gaps-are-allowed-and-a-number-is-never-reused.md)
 * [0546 - CI fails on a Catch2 skip its job does not list](0546-ci-fails-on-a-catch2-skip-its-job-does-not-list.md)
+* [0548 - Login tokens are opt-in, single-use, held in memory and always ask for the password](0548-login-tokens-are-opt-in-single-use-and-held-in-memory.md)
