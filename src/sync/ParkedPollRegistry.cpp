@@ -23,11 +23,9 @@ auto ParkedPollRegistry::running() const -> bool
 }
 
 auto ParkedPollRegistry::park(std::string_view, std::chrono::steady_clock::time_point, std::unique_ptr<ParkedPoll>&)
-    -> std::expected<std::uint64_t, core::Error>
+    -> ParkOutcome
 {
-    return std::unexpected{
-        core::Error{core::ErrorCode::internal_failure, "not implemented"}
-    };
+    return ParkOutcome{false, 0U, "not implemented"};
 }
 
 auto ParkedPollRegistry::wake_users(std::span<std::string const>) -> void

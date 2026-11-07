@@ -126,8 +126,8 @@ SCENARIO("A parked poll is resumed by a publish that concerns its user and not b
         auto const far = std::chrono::steady_clock::now() + 60s;
         auto alice_poll = make_poll("alice", destroyed);
         auto bob_poll = make_poll("bob", destroyed);
-        REQUIRE(notifier.park(notifier.observe("@alice:test"), far, alice_poll).has_value());
-        REQUIRE(notifier.park(notifier.observe("@bob:test"), far, bob_poll).has_value());
+        REQUIRE(notifier.park(notifier.observe("@alice:test"), far, alice_poll).parked);
+        REQUIRE(notifier.park(notifier.observe("@bob:test"), far, bob_poll).parked);
         REQUIRE(alice_poll == nullptr);
 
         WHEN("a publish is scoped to alice")
@@ -188,7 +188,7 @@ SCENARIO("A publish between taking the cursor and parking still resumes the poll
         WHEN("the poll then parks with that cursor")
         {
             auto poll = make_poll("late", destroyed);
-            REQUIRE(notifier.park(cursor, std::chrono::steady_clock::now() + 60s, poll).has_value());
+            REQUIRE(notifier.park(cursor, std::chrono::steady_clock::now() + 60s, poll).parked);
 
             THEN("it is resumed at once rather than waiting for its deadline")
             {
@@ -210,8 +210,8 @@ SCENARIO("A parked poll whose deadline passes is resumed with the deadline reaso
         auto const now = std::chrono::steady_clock::now();
         auto late = make_poll("late", destroyed);
         auto soon = make_poll("soon", destroyed);
-        REQUIRE(notifier.park(notifier.observe("@a:test"), now + 60s, late).has_value());
-        REQUIRE(notifier.park(notifier.observe("@b:test"), now + 150ms, soon).has_value());
+        REQUIRE(notifier.park(notifier.observe("@a:test"), now + 60s, late).parked);
+        REQUIRE(notifier.park(notifier.observe("@b:test"), now + 150ms, soon).parked);
 
         WHEN("the earlier deadline passes")
         {
@@ -240,8 +240,8 @@ SCENARIO("The registry refuses a park past its caps and leaves the poll with the
         auto const far = std::chrono::steady_clock::now() + 60s;
         auto first = make_poll("a1", destroyed);
         auto second = make_poll("b1", destroyed);
-        REQUIRE(notifier.park(notifier.observe("@a:test"), far, first).has_value());
-        REQUIRE(notifier.park(notifier.observe("@b:test"), far, second).has_value());
+        REQUIRE(notifier.park(notifier.observe("@a:test"), far, first).parked);
+        REQUIRE(notifier.park(notifier.observe("@b:test"), far, second).parked);
 
         WHEN("the same user parks again, and a third user parks past the total")
         {
@@ -252,8 +252,8 @@ SCENARIO("The registry refuses a park past its caps and leaves the poll with the
 
             THEN("both are refused and the caller still owns both polls")
             {
-                REQUIRE_FALSE(same.has_value());
-                REQUIRE_FALSE(total.has_value());
+                REQUIRE_FALSE(same.parked);
+                REQUIRE_FALSE(total.parked);
                 REQUIRE(same_user != nullptr);
                 REQUIRE(third_user != nullptr);
                 REQUIRE(notifier.parking().parked() == 2U);
@@ -278,7 +278,7 @@ SCENARIO("Stopping the registry destroys every parked poll promptly and refuses 
             REQUIRE(notifier
                         .park(notifier.observe("@u" + std::to_string(index) + ":test"),
                               std::chrono::steady_clock::now() + 60s, poll)
-                        .has_value());
+                        .parked);
         }
 
         WHEN("it is stopped")
@@ -299,9 +299,9 @@ SCENARIO("Stopping the registry destroys every parked poll promptly and refuses 
                 REQUIRE(destroyed.load() == 5U);
                 REQUIRE(recorder.items().empty());
                 REQUIRE(notifier.parking().parked() == 0U);
-                REQUIRE_FALSE(after_stop.has_value());
+                REQUIRE_FALSE(after_stop.parked);
                 REQUIRE(late != nullptr);
-                REQUIRE_FALSE(unstarted.has_value());
+                REQUIRE_FALSE(unstarted.parked);
                 REQUIRE_FALSE(notifier.parking().running());
             }
         }
@@ -342,8 +342,7 @@ SCENARIO("Many threads parking and publishing at once resume every poll exactly 
                         for (auto count = std::size_t{0U}; count < per_thread; ++count)
                         {
                             auto poll = make_poll("t", destroyed);
-                            if (!notifier.park(cursors[index], std::chrono::steady_clock::now() + 60s, poll)
-                                     .has_value())
+                            if (!notifier.park(cursors[index], std::chrono::steady_clock::now() + 60s, poll).parked)
                             {
                                 ++refused;
                             }

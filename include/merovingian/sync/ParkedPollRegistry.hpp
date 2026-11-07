@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/Error.hpp"
+#include "merovingian/sync/ParkOutcome.hpp"
 #include "merovingian/sync/ParkedPoll.hpp"
 #include "merovingian/sync/ParkedPollLimits.hpp"
 #include "merovingian/sync/WakeReason.hpp"
@@ -11,7 +11,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <functional>
 #include <map>
 #include <memory>
@@ -62,7 +61,7 @@ public:
     // Parks `poll` for `user` until `deadline`. On success the poll is moved from and the result is its ticket; on
     // refusal (not started, stopped, full, or the user is at its cap) `poll` is untouched and still the caller's.
     [[nodiscard]] auto park(std::string_view user, std::chrono::steady_clock::time_point deadline,
-                            std::unique_ptr<ParkedPoll>& poll) -> std::expected<std::uint64_t, core::Error>;
+                            std::unique_ptr<ParkedPoll>& poll) -> ParkOutcome;
 
     // Resume every parked poll of the named users / of everyone / the one with `ticket` (a no-op when it is no
     // longer parked). They are resumed on the registry thread, never on the caller.

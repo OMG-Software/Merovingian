@@ -12,7 +12,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -103,7 +102,7 @@ public:
     // comparison sees; when it has moved the entry is woken at once. On success `poll` is moved from; on refusal it
     // is untouched and the caller keeps the wait (see long_poll_wait).
     [[nodiscard]] auto park(WaitCursor const& cursor, std::chrono::steady_clock::time_point deadline,
-                            std::unique_ptr<ParkedPoll>& poll) -> std::expected<std::uint64_t, core::Error>;
+                            std::unique_ptr<ParkedPoll>& poll) -> ParkOutcome;
 
     // The registry of parked polls. A publish wakes it after releasing mutex_; the transport starts and stops it.
     [[nodiscard]] auto parking() noexcept -> ParkedPollRegistry&

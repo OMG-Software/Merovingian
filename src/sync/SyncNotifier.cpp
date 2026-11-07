@@ -267,13 +267,13 @@ auto SyncNotifier::moved_since(WaitCursor const& cursor) -> bool
 }
 
 auto SyncNotifier::park(WaitCursor const& cursor, std::chrono::steady_clock::time_point deadline,
-                        std::unique_ptr<ParkedPoll>& poll) -> std::expected<std::uint64_t, core::Error>
+                        std::unique_ptr<ParkedPoll>& poll) -> ParkOutcome
 {
     // Insert first, compare second: a publish before the insert moved a generation before the comparison.
     auto ticket = parked_.park(cursor.user, deadline, poll);
-    if (ticket.has_value() && moved_since(cursor))
+    if (ticket.parked && moved_since(cursor))
     {
-        parked_.wake(*ticket);
+        parked_.wake(ticket.ticket);
     }
     return ticket;
 }
