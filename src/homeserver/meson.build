@@ -22,6 +22,7 @@ homeserver_sources = files(
   'local_services.cpp',
   'clamd_media_scan.cpp',
   'media_service.cpp',
+  'streamed_body.cpp',
   'MediaUploadNotifier.cpp',
   'operator_admin.cpp',
   'url_preview_service.cpp',

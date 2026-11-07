@@ -80,6 +80,15 @@ namespace
 
     using SqliteStatement = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
+    struct SqliteBlobDeleter final
+    {
+        auto operator()(sqlite3_blob* blob) const noexcept -> void
+        {
+            std::ignore = sqlite3_blob_close(blob);
+        }
+    };
+    using SqliteBlob = std::unique_ptr<sqlite3_blob, SqliteBlobDeleter>;
+
     [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool;
 
     [[nodiscard]] auto parse_invite_state_events_json(std::string_view json) -> std::vector<std::string>
@@ -1886,6 +1895,65 @@ namespace detail
             return std::nullopt;
         }
         return bytes;
+    }
+
+    auto read_media_blob_chunk_from_sqlite(std::string const& path, std::string_view storage_id,
+                                           std::uint64_t expected_size, std::uint64_t offset, std::size_t length)
+        -> std::optional<std::string>
+    {
+        // sqlite3_blob_read takes int offsets and lengths.
+        auto constexpr int_limit = static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+        if (path.empty() || length == 0U || expected_size > int_limit || offset > expected_size ||
+            length > expected_size - offset)
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto& database = **connection;
+        // One deferred transaction pins a single snapshot: the row check and the blob read below see the same
+        // bytes. The connection is closed (rolling the transaction back) before this returns, so a client that
+        // stops reading holds no read lock between chunks (ADR-0574).
+        if (retry_false_hot_journal(database, [&database] {
+                return sqlite3_exec(&database, "BEGIN", nullptr, nullptr, nullptr);
+            }) != SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        auto row_id = std::int64_t{0};
+        {
+            auto statement =
+                prepare(database, "SELECT rowid FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'");
+            if (!statement.has_value() || !bind_text_params(*statement->get(), {std::string{storage_id}}) ||
+                first_step(database, *statement->get()) != SQLITE_ROW)
+            {
+                return std::nullopt;
+            }
+            row_id = sqlite3_column_int64(statement->get(), 0);
+        }
+        auto* raw_blob = static_cast<sqlite3_blob*>(nullptr);
+        if (retry_false_hot_journal(database, [&database, row_id, &raw_blob] {
+                return sqlite3_blob_open(&database, "main", "media_blobs", "bytes", row_id, 0, &raw_blob);
+            }) != SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        auto const blob = SqliteBlob{raw_blob};
+        // The stored length must still be the length the response promised in Content-Length.
+        if (static_cast<std::uint64_t>(sqlite3_blob_bytes(blob.get())) != expected_size)
+        {
+            return std::nullopt;
+        }
+        auto chunk = std::string(length, 'x');
+        if (sqlite3_blob_read(blob.get(), chunk.data(), static_cast<int>(length), static_cast<int>(offset)) !=
+            SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        return chunk;
     }
 
     auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix, std::size_t limit)

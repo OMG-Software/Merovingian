@@ -12306,6 +12306,8 @@ namespace
             filename = local_response.media_filename;
         }
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
+        // ADR-0574: a streamed download carries no bytes here; the HTTP layer reads them in chunks as it writes.
+        response.body_stream = local_response.body_stream;
         apply_media_security_headers(response, content_type, filename);
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};

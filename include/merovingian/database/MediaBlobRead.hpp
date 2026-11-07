@@ -4,12 +4,17 @@
 
 #include "merovingian/database/PersistentStoreBackend.hpp"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace merovingian::database
 {
+
+// ADR-0574: a download larger than this is sent in chunks of this size, read from the database one at a time,
+// so the memory a transfer holds is this, not the file. A file this size or smaller is read whole.
+inline constexpr std::size_t media_blob_chunk_bytes = 256U * 1024U;
 
 // ADR-0119: media bytes live only in the database and are read per request.
 // prepare_media_blob_read runs under the runtime mutex and captures where to

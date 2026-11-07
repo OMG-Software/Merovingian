@@ -4235,6 +4235,28 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     return std::nullopt;
 }
 
+auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_size, std::uint64_t offset,
+                           std::size_t length) -> std::optional<std::string>
+{
+    switch (read.backend)
+    {
+    case PersistentStoreBackend::memory:
+        if (!read.memory_bytes.has_value() || read.memory_bytes->size() != expected_size || length == 0U ||
+            offset > expected_size || length > expected_size - offset)
+        {
+            return std::nullopt;
+        }
+        return read.memory_bytes->substr(static_cast<std::size_t>(offset), length);
+    case PersistentStoreBackend::sqlite:
+        return detail::read_media_blob_chunk_from_sqlite(read.sqlite_path, read.storage_id, expected_size, offset,
+                                                         length);
+    case PersistentStoreBackend::postgresql:
+        return detail::read_media_blob_chunk_from_postgresql(read.postgresql_conninfo, read.postgresql_runtime_role,
+                                                             read.storage_id, expected_size, offset, length);
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool
 {
