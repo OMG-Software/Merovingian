@@ -1856,7 +1856,7 @@ database.role=runtime
 database.pool_size=16
 ```
 
-Use `database.role=migration` only with the offline migration tool. The live
+`database.role=migration` is reserved for the offline migration planner. The live
 server requires `database.role=runtime`. Startup fails closed if the URI file
 is missing, unreadable, or empty; the server never falls back to an ephemeral
 in-memory database. The programmatic-only in-memory backend exists for tests
@@ -1876,6 +1876,19 @@ from the files, and the plan is rejected (exit 78) unless their versions run
 contiguously from `<current-version> + 1` to `<target-version>`; without
 `--migrations`, the plan is built from the steps this build carries. A plan to a
 version this build does not have, such as `--plan 1 2`, is rejected.
+
+The tool only prints a plan. It takes no database URI or config file, never
+opens a database, and never changes one: it sets the migration role
+internally and does not read a config. It only reads the
+`*.sql` migration files named by `--migrations`, if given, and writes the plan
+to standard output.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | The plan was built and printed, or `--help` / `--version` was given. |
+| `64` | Usage error: wrong arguments, or a version that is not a decimal integer between 0 and 4294967295. |
+| `65` | The `--migrations` directory or one of its files could not be loaded. |
+| `78` | The plan was rejected, for example a version this build does not have or a gap in the migration files. The reason is printed. |
 
 The live server applies pending migrations automatically on startup.
 
