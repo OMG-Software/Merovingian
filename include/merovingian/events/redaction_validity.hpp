@@ -3,6 +3,8 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/RedactionContext.hpp" // split-shim
+#include "merovingian/events/RedactionVerdict.hpp" // split-shim
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <optional>
@@ -10,25 +12,6 @@
 
 namespace merovingian::events
 {
-
-// What a redaction needs, besides the two events, to be judged: the room's power levels as the
-// redaction event itself saw them (the m.room.power_levels event among its auth_events) and the
-// room's m.room.create event. A default-constructed (null) Value stands for "no such event".
-struct RedactionContext final
-{
-    canonicaljson::Value power_levels{};
-    canonicaljson::Value create{};
-};
-
-enum class RedactionVerdict
-{
-    // Spec, "Handling redactions": one of the two conditions holds.
-    applies,
-    // Neither condition holds; the redaction is kept but not applied.
-    sender_lacks_authority,
-    // The target is an event the server must keep whole (the room's m.room.create event).
-    target_not_redactable,
-};
 
 // The event ID a redaction names. Spec (rooms/v11.md): `redacts` moved from the top level of the
 // event to its `content` in room version 11, so the location follows the room version's redaction

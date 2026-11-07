@@ -5,10 +5,13 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/NotificationCounts.hpp" // split-shim
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
+#include "merovingian/sync/ThreadNotificationCounts.hpp"
+#include "merovingian/sync/TimelineExpansion.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/read_markers.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
@@ -23,15 +26,6 @@
 
 namespace merovingian::sync
 {
-
-// Whether a room's timeline is built from its delta floor or resent from its latest events.
-// MSC4186 "Changes to `timeline_limit`": when a request raises a seen room's timeline_limit the
-// server SHOULD send the latest N events even if some were sent before (timeline_limit_expands).
-enum class TimelineExpansion : std::uint8_t
-{
-    none,   // events after room_since_event_ordering only
-    expand, // the latest timeline_limit events, whatever was sent before
-};
 
 // True when `room_id` has been sent on this connection and `timeline_limit` is larger than the
 // limit it was last built with, or no limit was recorded for it ("If the server does not know if
@@ -132,23 +126,6 @@ enum class TimelineExpansion : std::uint8_t
 // "events the client has not synced" (#417).
 [[nodiscard]] auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
                                         std::string_view room_id, std::string_view user) -> ReadMarkers;
-
-// Unread counts of one thread, or of a whole room.
-struct NotificationCounts final
-{
-    std::uint64_t notification_count{0U};
-    std::uint64_t highlight_count{0U};
-};
-
-// A room's unread counts split by thread: `main` for the main timeline, a
-// thread root's event ID for each thread. A thread with nothing unread has no
-// entry.
-struct ThreadNotificationCounts final
-{
-    std::map<std::string, NotificationCounts, std::less<>> threads{};
-
-    [[nodiscard]] auto total() const noexcept -> NotificationCounts;
-};
 
 // The room's unread counts per thread: the events `markers` do not cover, after
 // `unread.counted_after(room_id)` and not sent by `user`, that `unread` classifies as

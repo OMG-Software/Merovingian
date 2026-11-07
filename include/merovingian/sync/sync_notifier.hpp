@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/LongPollOutcome.hpp"
+#include "merovingian/sync/LongPollStep.hpp"
+#include "merovingian/sync/WaitCursor.hpp"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -25,15 +29,6 @@ inline constexpr std::uint64_t k_max_sync_timeout_ms = 120'000U;
 
 // The users a publish can have changed anything for (ADR-0437). A publish with no scope is a broadcast.
 using AffectedUsers = std::span<std::string const>;
-
-// Where a user stands in the notifier's history (ADR-0437): their generation and the broadcast generation, taken
-// together under the notifier's mutex by `SyncNotifier::observe`.
-struct WaitCursor final
-{
-    std::string user{};
-    std::uint64_t user_generation{0U};
-    std::uint64_t broadcast_generation{0U};
-};
 
 // Long-polling primitive for /sync. The runtime increments the global
 // stream counters every time a new event, to-device message, device-list
@@ -140,22 +135,6 @@ private:
     std::uint64_t signals_sent_{0U};
     std::size_t waiting_{0U};
     std::size_t waiting_anyone_{0U};
-};
-
-// What a rerun of the sync decided: `complete` means respond now; otherwise the position it ended with.
-struct LongPollStep final
-{
-    bool complete{false};
-    std::uint64_t since_stream_ordering{0U};
-    std::uint64_t since_sync_stream_id{0U};
-};
-
-struct LongPollOutcome final
-{
-    // A rerun completed.
-    bool dispatched{false};
-    // `idle` reported the client gone.
-    bool client_gone{false};
 };
 
 // The long-poll sequence all three transports share (ADR-0437). With a user: take a cursor; if the positions are

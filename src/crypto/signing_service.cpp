@@ -28,16 +28,6 @@ auto signing_key_record_is_usable(SigningKeyRecord const& key) noexcept -> bool
            ed25519_public_key_shape_is_valid(key.public_key);
 }
 
-auto SigningKeyStore::active_keys_for_server(std::string_view server_name) -> std::vector<SigningKeyRecord>
-{
-    auto result = active_key_for_server(server_name);
-    if (!result.error.empty() || !signing_key_record_is_usable(result.key))
-    {
-        return {};
-    }
-    return {std::move(result.key)};
-}
-
 auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std::string_view server_name,
                      std::string_view message) -> ServerSignatureResult
 {

@@ -267,8 +267,6 @@ auto prepare(homeserver::HomeserverRuntime& runtime) -> void
     runtime.federation.remote_key_resolver = genuine_key_resolver();
 }
 
-} // namespace
-
 // A fresh main runtime with a room and a valid signed event for `path`. Each check below starts from one, so a
 // refusal is never the leftover of an earlier relay. The runtime is built in place and never moved once its
 // federation callbacks are wired (they capture its address).
@@ -312,6 +310,8 @@ private:
     StartedMain main_runtime_;
     RelayedEvent event_;
 };
+
+} // namespace
 
 // F-24: the worker that relayed the event had a snapshot without the room's current ACL.
 // (The checks loop inside THEN: a Catch2 section inside a loop runs for its first pass only.)

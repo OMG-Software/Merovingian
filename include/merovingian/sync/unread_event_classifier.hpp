@@ -3,23 +3,19 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/sync/UnreadEventOutcome.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <string_view>
 
+namespace merovingian::database
+{
+struct PersistentEvent;
+} // namespace merovingian::database
+
 namespace merovingian::sync
 {
-
-// What one unread event counts as. Spec (client-server-api.md, "Receiving notifications"):
-// "Notifications are determined by the push rules which apply to an event", and
-// `highlight_count` is "The number of unread notifications for this room with the highlight flag
-// set", so `highlight` implies `notify`.
-struct UnreadEventOutcome final
-{
-    bool notify{false};
-    bool highlight{false};
-};
 
 // Decides, for one user and one request, which events count towards unread notifications
 // (R15, ADR-0205). count_unread_by_thread() asks it about every unread event; the homeserver's

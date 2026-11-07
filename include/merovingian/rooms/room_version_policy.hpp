@@ -2,48 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/rooms/AuthRules.hpp"                // split-shim
+#include "merovingian/rooms/EventFormat.hpp"              // split-shim
+#include "merovingian/rooms/EventIdFormat.hpp"            // split-shim
+#include "merovingian/rooms/RedactionRules.hpp"           // split-shim
+#include "merovingian/rooms/StateResolutionAlgorithm.hpp" // split-shim
+
 #include <string_view>
 #include <vector>
 
 namespace merovingian::rooms
 {
-
-enum class EventFormat : unsigned char
-{
-    room_v3_plus,
-};
-
-enum class RedactionRules : unsigned char
-{
-    room_v1_v7,    // v1–v7: join_rules preserves only join_rule
-    room_v8_v10,   // v8–v10: join_rules also preserves allow (restricted joins, MSC3083)
-    room_v11_plus, // v11+: revised rules (aliases stripped, third_party_invite in member, etc.)
-};
-
-enum class AuthRules : unsigned char
-{
-    room_v1,
-    room_v6_plus, // room versions 6–11
-    room_v12,     // room version 12 (MSC4289/MSC4291): creator privilege + implicit create
-};
-
-enum class StateResolutionAlgorithm : unsigned char
-{
-    v2,
-    // Room v12 (MSC4289/MSC4291): state resolution v2.1 — the iterative auth
-    // checks algorithm starts from an empty state map instead of the
-    // unconflicted state map, and the full conflicted set additionally
-    // includes the conflicted state subgraph.
-    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md — "State resolution"
-    // ("This state resolution algorithm is largely the same as the algorithm
-    // found in room version 2 with the following modifications").
-    v2_1,
-};
-
-enum class EventIdFormat : unsigned char
-{
-    reference_hash,
-};
 
 struct RoomVersionPolicy final
 {

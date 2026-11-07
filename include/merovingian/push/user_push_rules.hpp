@@ -3,7 +3,10 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/push/push_rules.hpp"
+#include "merovingian/push/PushRuleEditOutcome.hpp"
+#include "merovingian/push/PushRuleEntry.hpp"
+#include "merovingian/push/PushRuleKind.hpp"
+#include "merovingian/push/PushRulePlacement.hpp"
 
 #include <array>
 #include <cstddef>
@@ -34,51 +37,6 @@ inline constexpr auto max_push_rule_bytes = std::size_t{4096U};
 // content. Anything else is nullopt.
 [[nodiscard]] auto parse_push_rule_kind(std::string_view name) noexcept -> std::optional<PushRuleKind>;
 [[nodiscard]] auto push_rule_kind_name(PushRuleKind kind) noexcept -> std::string_view;
-
-// The outcome of an edit of a user's push rules: `applied`, or why it was refused and nothing
-// changed. (Not std::expected, which this project's toolchain does not build.)
-enum class PushRuleEditOutcome : std::uint8_t
-{
-    applied,
-    // No rule of that kind has that ID.
-    not_found,
-    // A rule ID the spec forbids: empty, longer than max_push_rule_id_bytes,
-    // containing '/' or '\', or (room and sender rules) not a room or user ID.
-    invalid_rule_id,
-    // The body or actions are not a valid rule of the kind, or exceed a bound.
-    invalid_rule,
-    // The rule ID starts with '.', reserved for server-default rules, which can
-    // be enabled, disabled and given new actions but not created or deleted.
-    server_default_rule,
-    // `before` / `after` names no rule of the same kind.
-    unknown_relative_rule,
-    // `before` / `after` names a server-default rule.
-    relative_to_server_default,
-    // Creating the rule would exceed the user's rule cap.
-    too_many_rules,
-};
-
-// Where PUT places a rule: `before` and `after` are the query parameters of the
-// same name. When both are given, `before` decides (spec: "the new or updated
-// rule must be the next most important rule with respect to the rule
-// identified by before").
-struct PushRulePlacement final
-{
-    std::optional<std::string> before{};
-    std::optional<std::string> after{};
-};
-
-// One rule of a UserPushRules, as GET returns it. `conditions` is set for
-// override and underride rules, `pattern` for content rules.
-struct PushRuleEntry final
-{
-    std::string rule_id{};
-    bool is_default{false};
-    bool enabled{true};
-    canonicaljson::Array actions{};
-    std::optional<canonicaljson::Array> conditions{};
-    std::optional<std::string> pattern{};
-};
 
 // One user's push rules: the server-default ruleset with the user's own rules
 // and their changes to the defaults applied, in evaluation order. Spec

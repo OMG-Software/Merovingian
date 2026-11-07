@@ -7,6 +7,13 @@
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
+#include "merovingian/push/GatewayCircuitOutcome.hpp"
+#include "merovingian/push/PushGatewayCounts.hpp" // split-shim
+#include "merovingian/push/PushGatewayDevice.hpp" // split-shim
+#include "merovingian/push/PushGatewayNotification.hpp"
+#include "merovingian/push/PushGatewayRejection.hpp"
+#include "merovingian/push/PushGatewayResult.hpp"
+#include "merovingian/push/TestForcedPushGatewayResolution.hpp"
 #include "merovingian/push/gateway_in_flight_limiter.hpp"
 
 #include <chrono>
@@ -22,72 +29,10 @@
 namespace merovingian::push
 {
 
-// One entry of the Push Gateway `/notify` request's `devices` array: one
-// pusher to notify. `data_format` mirrors the pusher's `data.format`
-// (excluding `url`, which routes the request instead of being sent in the
-// body); `tweak_sound`/`tweak_highlight` come from push-rule evaluation.
-struct PushGatewayDevice final
-{
-    std::string app_id{};
-    std::string pushkey{};
-    std::uint64_t pushkey_ts{0U};
-    std::optional<std::string> data_format{};
-    // Every OTHER member of the pusher's `data` dictionary as supplied at
-    // registration, beyond `format` (above). Matrix v1.19 Push Gateway API:
-    // the notify request's Device object's `data` field is "the data
-    // dictionary passed in at pusher creation minus the url key" — so any
-    // custom member (routing/credential fields a specific gateway depends
-    // on, for example) MUST be forwarded to the gateway verbatim, not just
-    // `format`. `url` itself is never part of this: it only ever routes the
-    // request (see PushGatewayClient::notify's `gateway_url` parameter) and
-    // must never appear in the request body. build_device_object() also
-    // defensively skips any `url`/`format` member found here, so a caller
-    // that (incorrectly) includes either key can never produce a duplicate
-    // or leak the routing URL into the body. Empty/nullopt when the
-    // pusher's `data` had no members beyond `url`/`format`.
-    std::optional<canonicaljson::Object> data_extra{};
-    std::optional<std::string> tweak_sound{};
-    bool tweak_highlight{false};
-};
-
-struct PushGatewayCounts final
-{
-    std::uint32_t unread{0U};
-    std::uint32_t missed_calls{0U};
-};
-
-// Everything needed to build one `POST /_matrix/push/v1/notify` request body
-// (docs/matrix-v1.19-spec/push-gateway-api.md). `content_json` is the
-// pre-serialized `content` field of the event, already omitted by the caller
-// when the format is `event_id_only` or the event has no content; empty
-// means "omit `content`".
-struct PushGatewayNotification final
-{
-    std::string event_id{};
-    std::string room_id{};
-    std::string room_alias{};
-    std::string room_name{};
-    std::string type{};
-    std::string sender{};
-    std::string sender_display_name{};
-    bool user_is_target{false};
-    std::string prio{"high"};
-    std::string content_json{};
-    PushGatewayCounts counts{};
-    std::vector<PushGatewayDevice> devices{};
-};
-
 // Pure builder: no network, no I/O. Serializes `notification` to the
 // canonical-JSON request body the Push Gateway API expects. Unit-testable in
 // isolation from the outbound transport.
 [[nodiscard]] auto build_notify_request_body(PushGatewayNotification const& notification) -> std::string;
-
-// Parsed `200` response to `/notify`: the list of pushkeys the gateway
-// rejects as permanently invalid.
-struct PushGatewayRejection final
-{
-    std::vector<std::string> rejected_pushkeys{};
-};
 
 // Pure parser: no network. Returns nullopt for a malformed body (missing or
 // wrong-typed `rejected`).
@@ -98,48 +43,6 @@ struct PushGatewayRejection final
 // nullopt for a URL notify() would refuse. Keys the gateway circuit breaker
 // (OUT-3, ADR-0151).
 [[nodiscard]] auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>;
-
-// Outcome of one PushGatewayClient::notify() call.
-//   - `disabled == true` means config.enabled was false and no network call
-//     was made at all (the config-gate fail-closed path).
-//   - `ok == false` (with `disabled == false`) means a transport failure —
-//     DNS/TLS/SSRF/connection/timeout; see `error`/`error_detail`.
-//   - `ok == true` means the gateway was reached; `status` carries its HTTP
-//     status and `rejected_pushkeys` — populated only on a 200 — is the
-//     spec's "list of rejected push keys" the caller MUST stop sending to
-//     and remove the associated pushers for. This client never touches the
-//     database itself; the caller owns acting on the rejection.
-struct PushGatewayResult final
-{
-    bool ok{false};
-    bool disabled{false};
-    std::uint16_t status{0U};
-    std::vector<std::string> rejected_pushkeys{};
-    http::OutboundError error{http::OutboundError::network_error};
-    std::string error_detail{};
-    // The request was not sent because too many were already in flight to this gateway host or
-    // address (GatewayInFlightLimiter, F-79). Not a failure of the gateway: the caller retries it.
-    bool busy{false};
-};
-
-// What a delivery says about whether its gateway host can be reached
-// (OUT-3, ADR-0151). Only `transport_failure` counts toward opening the host's
-// circuit: any HTTP answer, a 5xx or 429 included, is about one notification,
-// and a host shared by many users must not be closed to all of them by one
-// user's pusher. `not_attempted` (delivery disabled, a URL or response this
-// server refused, or a request held back by GatewayInFlightLimiter) neither
-// counts nor resets. `slow_answer` is an HTTP answer that took more than half
-// the total timeout (F-79, ADR-0409): it counts toward the circuit like a
-// transport failure, because a gateway answering just inside the timeout holds
-// a delivery slot as long as one that never answers, and unlike a 5xx, one
-// user's pusher data cannot easily make a shared host slow.
-enum class GatewayCircuitOutcome : std::uint8_t
-{
-    reachable,
-    transport_failure,
-    not_attempted,
-    slow_answer,
-};
 
 [[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> GatewayCircuitOutcome;
 
@@ -158,21 +61,6 @@ enum class GatewayCircuitOutcome : std::uint8_t
 // `rejected` names "all pushkeys given in the notification request that are not
 // valid", so a list naming only other pushkeys does not reject this pusher.
 [[nodiscard]] auto pushkey_was_rejected(PushGatewayResult const& result, std::string_view pushkey) -> bool;
-
-// Test-only override for one push-gateway host. Mirrors
-// identity::TestForcedIdentityResolution's contract exactly (see that type's
-// doc comment for the rationale): when a caller supplies a non-null map and
-// it has an entry keyed by the gateway URL's host, PushGatewayClient::notify()
-// uses these pinned addresses and in-memory CA bundle instead of SSRF-safe
-// discovery. Always empty in production; no production construction path
-// populates it. Exists so integration tests can drive a real local HTTPS
-// gateway (self-signed certificate, loopback address) without weakening the
-// production SSRF/discovery boundary in push_gateway_client.cpp.
-struct TestForcedPushGatewayResolution final
-{
-    std::vector<std::string> pinned_addresses{};
-    std::string trusted_ca_pem{};
-};
 
 // Outbound Push Gateway API client. Mirrors identity::IdentityServerClient's
 // shape and security posture: every call resolves the gateway host to

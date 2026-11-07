@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/sync/EventTypeFilter.hpp"
+#include "merovingian/sync/PreparedRoomEventFilter.hpp" // split-shim
+#include "merovingian/sync/RoomFilter.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -13,52 +17,6 @@
 
 namespace merovingian::sync
 {
-
-// Parsed Matrix v1.19 sync filter. A filter selects which events appear in
-// each portion of the /sync response. The Matrix `Filter` JSON has nested
-// `room` / `presence` / `account_data` filters; we expose the subset the
-// alpha homeserver applies: per-event-type allow/deny lists, per-sender
-// allow/deny lists, room id allow/deny lists, and a `timeline.limit`.
-struct EventTypeFilter final
-{
-    std::vector<std::string> types{};     // included if non-empty AND matched
-    std::vector<std::string> not_types{}; // excluded
-    std::vector<std::string> senders{};
-    std::vector<std::string> not_senders{};
-    std::size_t limit{0U}; // 0 == no cap
-    // True when the filter named a `limit`. `limit: 0` then means no events, not no cap (a
-    // RoomEventFilter's "maximum number of events to return"); `limit` alone cannot say which.
-    bool limit_given{false};
-    // RoomEventFilter, Matrix v1.19 CS API § Filtering. When lazy_load_members
-    // is set the server may send only the membership events of the senders
-    // appearing in the returned events, instead of the room's whole member
-    // list; include_redundant_members suppresses the de-duplication the spec
-    // otherwise permits across repeat calls. On GET /sync only `room.state`'s
-    // flag counts (the spec supports lazy-loading there on the state filter
-    // only; the same flag on `room.timeline` is parsed and ignored) and the
-    // state filter's types/senders apply to the member events (ADR-0452). On
-    // /messages and /context the filter's flag is read from the flat filter.
-    bool lazy_load_members{false};
-    bool include_redundant_members{false};
-    // RoomEventFilter: "If true, enables per-thread notification counts. Only
-    // applies to the /sync endpoint." Read from room.timeline.
-    bool unread_thread_notifications{false};
-    // RoomEventFilter `contains_url`: "If true, includes only events with a url key in
-    // their content. If false, excludes those events. If omitted, url key is not considered
-    // for filtering."
-    std::optional<bool> contains_url{};
-};
-
-struct RoomFilter final
-{
-    std::vector<std::string> rooms{};
-    std::vector<std::string> not_rooms{};
-    EventTypeFilter timeline{};
-    EventTypeFilter state{};
-    EventTypeFilter ephemeral{};
-    EventTypeFilter account_data{};
-    bool include_leave{false};
-};
 
 struct SyncFilter final
 {
@@ -119,53 +77,5 @@ struct SyncFilter final
 // True when a room id is allowed by the room filter's `rooms` / `not_rooms`
 // constraint. The leave/invite/join classification is applied separately.
 [[nodiscard]] auto room_passes_filter(RoomFilter const& filter, std::string_view room_id) noexcept -> bool;
-
-// A RoomFilter's room, type and sender lists, prepared once so that judging an event does not depend on
-// how long the lists are. `room_passes_filter` and `event_passes_filter` scan their lists for every event;
-// that suits a /sync filter judged against a handful of events, not a /search that judges every event of
-// every room the user has been in with lists a client sized (security audit run 2, F-30; ADR-0332).
-// Rooms and senders become hash sets; `types` and `not_types` become a hash set of exact types and a
-// sorted list of the `prefix*` patterns with any pattern covered by a shorter one dropped (so at most one
-// can match an event type, found by binary search). Answers are those of `room_passes_filter` and
-// `event_passes_filter` for the same RoomFilter (its `timeline` lists), entry for entry.
-class PreparedRoomEventFilter final
-{
-public:
-    explicit PreparedRoomEventFilter(RoomFilter const& filter);
-
-    [[nodiscard]] auto room_passes(std::string_view room_id) const noexcept -> bool;
-    [[nodiscard]] auto event_passes(std::string_view event_type, std::string_view sender) const noexcept -> bool;
-
-private:
-    struct StringHash final
-    {
-        using is_transparent = void;
-        [[nodiscard]] auto operator()(std::string_view text) const noexcept -> std::size_t
-        {
-            return std::hash<std::string_view>{}(text);
-        }
-    };
-    using StringSet = std::unordered_set<std::string, StringHash, std::equal_to<>>;
-
-    // The patterns of one `types` or `not_types` list.
-    struct TypePatterns final
-    {
-        // False for an empty list, which restricts nothing.
-        bool any{false};
-        StringSet exact{};
-        // Sorted; none is a prefix of another.
-        std::vector<std::string> prefixes{};
-
-        explicit TypePatterns(std::vector<std::string> const& patterns);
-        [[nodiscard]] auto matches(std::string_view event_type) const noexcept -> bool;
-    };
-
-    StringSet rooms_;
-    StringSet not_rooms_;
-    StringSet senders_;
-    StringSet not_senders_;
-    TypePatterns types_;
-    TypePatterns not_types_;
-};
 
 } // namespace merovingian::sync

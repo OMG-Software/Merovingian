@@ -14,10 +14,13 @@
 // change the answers and read the requests while the server runs; assertions
 // stay on the test thread (Catch2 assertions are not thread-safe).
 
+#include "CapturedAppserviceRequest.hpp" // split-shim
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "tls_mock_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <poll.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -34,20 +37,8 @@
 #include <utility>
 #include <vector>
 
-#include <poll.h>
-#include <unistd.h>
-
 namespace merovingian::tests
 {
-
-struct CapturedAppserviceRequest final
-{
-    std::string method{};
-    std::string target{};
-    std::string authorization{};
-    std::string body{};
-    std::uint16_t answered_status{0U};
-};
 
 class MockAppservice final
 {

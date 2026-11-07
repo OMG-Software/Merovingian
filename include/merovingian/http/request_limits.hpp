@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/http/RequestLimitFinding.hpp" // split-shim
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -17,12 +19,6 @@ struct RequestLimits final
     std::uint32_t max_header_bytes{32768U};
     std::uint32_t max_header_count{100U};
     std::uint64_t max_body_bytes{1048576U};
-};
-
-struct RequestLimitFinding final
-{
-    std::string field{};
-    std::string message{};
 };
 
 [[nodiscard]] auto validate_request_limits(RequestLimits const& limits) -> std::vector<RequestLimitFinding>;

@@ -3,6 +3,8 @@
 
 #include "merovingian/push/push_retry_queue.hpp"
 
+#include "merovingian/push/push_gateway_client.hpp"
+
 #include <algorithm>
 #include <iterator>
 #include <utility>

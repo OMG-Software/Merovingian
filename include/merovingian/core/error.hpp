@@ -2,20 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/ErrorCode.hpp"
+
 #include <string>
 #include <utility>
 
 namespace merovingian::core
 {
-
-enum class ErrorCode
-{
-    none = 0,
-    invalid_argument,
-    io_failure,
-    parse_failure,
-    internal_failure,
-};
 
 class Error final
 {

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentEventStateGroup.hpp"      // split-shim
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp" // split-shim
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -24,24 +27,6 @@ struct PersistentStateGroup final
     std::string room_id{};
     std::optional<std::string> parent_state_group_id{};
     std::uint32_t delta_depth{0U};
-};
-
-// One row of a state group's own state: `state_group_id`'s snapshot or delta
-// contains (event_type, state_key) -> event_id. See PersistentStateGroup.
-struct PersistentStateGroupStateEntry final
-{
-    std::string state_group_id{};
-    std::string event_type{};
-    std::string state_key{};
-    std::string event_id{};
-};
-
-// Maps an event to the state group holding the room's state immediately
-// after it (ADR-0064). One row per event that has a known post-state.
-struct PersistentEventStateGroup final
-{
-    std::string event_id{};
-    std::string state_group_id{};
 };
 
 } // namespace merovingian::database

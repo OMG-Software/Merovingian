@@ -24,6 +24,8 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/SqliteConnectionDeleter.hpp"
+#include "merovingian/database/SqliteWritePool.hpp"
 #include "merovingian/database/connection_pool.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -61,16 +63,6 @@ namespace
     {
         observability::log_diagnostic("sqlite_store", event, fields, severity);
     }
-
-    struct SqliteConnectionDeleter final
-    {
-        auto operator()(sqlite3* connection) const noexcept -> void
-        {
-            sqlite3_close(connection);
-        }
-    };
-
-    using SqliteConnection = std::unique_ptr<sqlite3, SqliteConnectionDeleter>;
 
     struct SqliteStatementDeleter final
     {
@@ -1548,15 +1540,6 @@ namespace
 
 namespace detail
 {
-
-    struct SqliteWritePool final
-    {
-        explicit SqliteWritePool(std::uint32_t limit)
-            : pool{limit}
-        {
-        }
-        ConnectionPool<SqliteConnection> pool;
-    };
 
     auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void
     {

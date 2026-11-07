@@ -5,9 +5,15 @@
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/config/RegistrationSecurityConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
+#include "merovingian/homeserver/AccountSummary.hpp"    // split-shim
+#include "merovingian/homeserver/AdminAuthResult.hpp"   // split-shim
+#include "merovingian/homeserver/DeactivationAudit.hpp" // split-shim
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/OpenidTokenIssueResult.hpp" // split-shim
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PasswordVerificationResult.hpp" // split-shim
 #include "merovingian/homeserver/SessionRefreshResult.hpp"
+#include "merovingian/homeserver/SsoRedirectResult.hpp" // split-shim
 
 #include <cstddef>
 #include <cstdint>
@@ -69,25 +75,6 @@ namespace merovingian::homeserver
     -> std::optional<LocalSession>;
 [[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
-
-// Outcome of an `/_merovingian/admin/*` auth gate. `user_id` is set when the
-// presented token belongs to a confirmed admin; otherwise `denial` identifies
-// which HTTP response applies — `missing_token` for a missing/expired/unknown
-// token (401 M_MISSING_TOKEN/M_UNKNOWN_TOKEN) and `not_admin` for a valid
-// token whose user is not an admin (403 M_FORBIDDEN). This splits the two
-// cases `authenticated_admin_user` collapses, so admin routes match the
-// `/_matrix/client/v3/admin/*` status-code convention (spec v1.19).
-struct AdminAuthResult
-{
-    enum class Denial : std::uint8_t
-    {
-        none,
-        missing_token,
-        not_admin,
-    };
-    std::optional<std::string> user_id{};
-    Denial denial{Denial::none};
-};
 [[nodiscard]] auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) -> AdminAuthResult;
 
 // Returns the account state (active/locked/suspended) of a server-local user,
@@ -106,15 +93,6 @@ struct AdminAuthResult
 // completed UIA before calling this.
 [[nodiscard]] auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 
-// Who and what the audit row of a deactivation names (`auth.account_deactivated`): the owner's own
-// deactivation records the user and the device, an administrator's records the administrator and the user.
-struct DeactivationAudit final
-{
-    std::string actor{};
-    std::string target{};
-    std::string reason{};
-};
-
 // The one deactivation, for `user_id` (see the definition). Call under runtime.mutex.
 [[nodiscard]] auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_id,
                                            DeactivationAudit const& audit) -> OperationResult;
@@ -126,16 +104,6 @@ struct DeactivationAudit final
                                              std::string_view user_id, bool suspended, bool locked,
                                              std::string_view audit_event, std::string_view reason_code)
     -> OperationResult;
-
-// What the operator accounts route reports about an account. Nothing here is a credential.
-struct AccountSummary final
-{
-    bool deactivated{false};
-    bool locked{false};
-    bool suspended{false};
-    bool admin{false};
-    std::size_t devices{0U};
-};
 [[nodiscard]] auto local_account_summary(HomeserverRuntime const& runtime, std::string_view user_id)
     -> std::optional<AccountSummary>;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
@@ -150,22 +118,6 @@ struct AccountSummary final
 // that is no longer active.
 [[nodiscard]] auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id,
                                              std::string_view new_password, bool logout_devices) -> OperationResult;
-// Result of verifying a password during re-authentication (UIA). `ok` is true
-// only when the password is correct AND the account is not currently locked
-// out. `retry_after_ms` is non-zero when this device's UIA password-failure
-// budget is spent (its own counter, keyed (account, device): /login failures never
-// touch it); callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
-// 401 UIA, because further guesses are pointless until the window expires.
-// It is also non-zero when the Argon2id admission budget has no free slot (AUTH-4):
-// the password was not checked, nothing was counted, and the same 429 applies.
-// `ok` is false, with no delay, when the password changed or the session ended
-// while it was being verified.
-struct PasswordVerificationResult final
-{
-    bool ok{false};
-    std::uint64_t retry_after_ms{0U};
-};
-
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> PasswordVerificationResult;
 // Returns true when the presented access token exists in the session store but
@@ -181,20 +133,6 @@ struct PasswordVerificationResult final
 // the hash rather than holding the plaintext token on the request path.
 [[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
     -> std::optional<std::string>;
-
-// Result of minting an OpenID token via `POST
-// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
-// API §OpenID). Kept separate from OperationResult because the spec's 200
-// response has three required fields beyond the token itself.
-struct OpenidTokenIssueResult final
-{
-    bool ok{false};
-    std::uint16_t status{500U};
-    std::string access_token{};
-    std::string matrix_server_name{};
-    std::uint64_t expires_in_seconds{0U};
-    std::string reason{};
-};
 
 // Mints a short-lived OpenID token for `user_id`. The token is stored in the
 // dedicated `openid_tokens` table -- NEVER the access-token store -- so it
@@ -232,17 +170,6 @@ struct OpenidTokenIssueResult final
 // call this rather than re-deriving the condition, so the two paths cannot
 // silently drift apart -- fail closed consistently rather than twice.
 [[nodiscard]] auto sso_is_configured(config::SsoConfig const& sso) noexcept -> bool;
-
-// Outcome of resolving `GET /login/sso/redirect[/{idpId}]` to a concrete
-// redirect target. `location` is only meaningful when `ok` is true.
-struct SsoRedirectResult final
-{
-    bool ok{false};
-    std::uint16_t status{400U};
-    std::string location{};
-    std::string errcode{};
-    std::string reason{};
-};
 
 // Validates the request against `server.sso.*` and, on success, builds the
 // URI the browser should be 302-redirected to. Fails closed (ok=false) when:

@@ -1,11 +1,13 @@
 media_sources = files(
   'decoder_hardening.cpp',
+  'DecoderHardeningOps.cpp',
   'LocalMediaRepository.cpp',
   'runtime_media.cpp',
   'security.cpp',
   'thumbnail_cache.cpp',
   'thumbnailer.cpp',
   'url_preview.cpp',
+  'UrlPreviewCache.cpp',
 )
 
 # Default install location of the out-of-process thumbnail worker. The runtime

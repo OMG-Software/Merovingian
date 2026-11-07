@@ -31,23 +31,4 @@ auto PortableSemaphore::release() noexcept -> void
     m_available.notify_one();
 }
 
-SemaphorePermit::SemaphorePermit(PortableSemaphore& semaphore) noexcept
-    : m_semaphore{semaphore}
-{
-}
-
-SemaphorePermit::SemaphorePermit(SemaphorePermit&& other) noexcept
-    : m_semaphore{other.m_semaphore}
-    , m_owns{std::exchange(other.m_owns, false)}
-{
-}
-
-SemaphorePermit::~SemaphorePermit() noexcept
-{
-    if (m_owns)
-    {
-        m_semaphore.release();
-    }
-}
-
 } // namespace merovingian::core

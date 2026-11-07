@@ -449,17 +449,6 @@ namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
-{
-    auto sum = NotificationCounts{};
-    for (auto const& [thread_id, counts] : threads)
-    {
-        sum.notification_count += counts.notification_count;
-        sum.highlight_count += counts.highlight_count;
-    }
-    return sum;
-}
-
 // Counts the events `markers` do not cover — relative to the user's read
 // receipts, NOT the sync position (#417) — per thread, as the spec asks: "the
 // server is to partition the notification count to each thread (with the main

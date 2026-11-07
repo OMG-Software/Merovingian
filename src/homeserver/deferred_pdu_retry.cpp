@@ -276,42 +276,4 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
     return std::max(delay, std::chrono::milliseconds{1000});
 }
 
-DeferredPduRetryJob::DeferredPduRetryJob(HomeserverRuntime& runtime)
-    : runtime_{runtime}
-    , job_{"deferred-pdu-retry", [&runtime](StopFlag const& stop) {
-               return retry_deferred_pdus(runtime, stop);
-           }}
-{
-}
-
-DeferredPduRetryJob::~DeferredPduRetryJob()
-{
-    stop();
-}
-
-auto DeferredPduRetryJob::start() -> bool
-{
-    {
-        auto const guard = RuntimeLock{runtime_.mutex};
-        runtime_.deferred_pdu_retry_wake = [this]() {
-            job_.wake();
-        };
-    }
-    if (!job_.start())
-    {
-        stop();
-        return false;
-    }
-    return true;
-}
-
-auto DeferredPduRetryJob::stop() noexcept -> void
-{
-    {
-        auto const guard = RuntimeLock{runtime_.mutex};
-        runtime_.deferred_pdu_retry_wake = nullptr;
-    }
-    job_.stop();
-}
-
 } // namespace merovingian::homeserver

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "SqliteCloser.hpp" // split-shim
+
 #include <catch2/catch_test_macros.hpp>
+#include <sqlite3.h>
 
 #include <filesystem>
 #include <memory>
@@ -10,21 +13,8 @@
 #include <string_view>
 #include <tuple>
 
-#include <sqlite3.h>
-
 namespace merovingian::tests
 {
-
-struct SqliteCloser final
-{
-    auto operator()(sqlite3* connection) const noexcept -> void
-    {
-        if (connection != nullptr)
-        {
-            std::ignore = sqlite3_close(connection);
-        }
-    }
-};
 
 // R02: makes every INSERT (or, with `event` = "UPDATE", every UPDATE) into one table of the server's database file fail
 // from a second connection, so the server's own transaction aborts and rolls

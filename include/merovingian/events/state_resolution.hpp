@@ -3,6 +3,13 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/StateEventReference.hpp"    // split-shim
+#include "merovingian/events/StateGroup.hpp"             // split-shim
+#include "merovingian/events/StateKey.hpp"               // split-shim
+#include "merovingian/events/StateKeyHash.hpp"           // split-shim
+#include "merovingian/events/StateResolutionLimits.hpp"  // split-shim
+#include "merovingian/events/StateResolutionRequest.hpp" // split-shim
+#include "merovingian/events/StateResolutionResult.hpp"  // split-shim
 #include "merovingian/events/limits.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -17,101 +24,6 @@
 
 namespace merovingian::events
 {
-
-struct StateKey final
-{
-    std::string event_type{};
-    std::string state_key{};
-
-    [[nodiscard]] auto operator==(StateKey const& other) const noexcept -> bool
-    {
-        return event_type == other.event_type && state_key == other.state_key;
-    }
-};
-
-struct StateKeyHash final
-{
-    [[nodiscard]] auto operator()(StateKey const& key) const noexcept -> std::size_t
-    {
-        auto h = std::hash<std::string>{};
-        return h(key.event_type) ^ (h(key.state_key) * 31);
-    }
-};
-
-struct StateEventReference final
-{
-    StateKey key{};
-    std::string event_id{};
-    std::string sender{};
-    std::int64_t origin_server_ts{0};
-    std::uint64_t depth{0};
-    canonicaljson::Value event_json{};
-    // Trusted receipt metadata, never read from event JSON. Rejected events
-    // remain available to auth-chain walks but cannot supply own-auth fallback.
-    bool rejected{false};
-};
-
-struct StateGroup final
-{
-    std::string group_id{};
-    std::vector<StateEventReference> state{};
-};
-
-struct StateResolutionLimits final
-{
-    std::size_t max_state_groups{merovingian::events::max_state_groups};
-    std::size_t max_events_per_state_group{merovingian::events::max_events_per_state_group};
-    std::size_t max_conflicted_state_keys{merovingian::events::max_conflicted_state_keys};
-    std::size_t max_mainline_auth_chain_depth{merovingian::events::max_mainline_auth_chain_depth};
-    std::size_t max_auth_chain_walk_events{merovingian::events::max_auth_chain_walk_events};
-    std::size_t max_total_state_events{merovingian::events::max_total_state_events};
-};
-
-// Fetches a single event (by id) that is not present in any submitted state
-// group, so the resolver can walk auth_events chains past the two forked
-// state snapshots it was handed. Returns nullopt when the event is unknown
-// to the caller (e.g. not yet persisted). The resolver treats any such miss
-// encountered while walking an auth chain as fatal to the whole resolution
-// (fail closed) rather than proceeding with a partial chain — see
-// resolve_state_v2.
-// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth
-// chain", "Auth difference").
-using EventLookupFn = std::function<std::optional<StateEventReference>(std::string_view event_id)>;
-
-struct StateResolutionRequest final
-{
-    std::string room_version{};
-    std::vector<StateGroup> state_groups{};
-    EventLookupFn event_lookup{};
-    // Required for room v12 (MSC4291, StateResolutionAlgorithm::v2_1)
-    // resolutions: the m.room.create event is implicit in the room ID
-    // (rooms/v12.md rule 2 — "!" + the create event's own reference hash),
-    // and resolve_state_v2 derives the create event's id from this field
-    // and fetches it through `event_lookup` (or a submitted state group)
-    // to seed the iterative auth checks' otherwise-empty starting map —
-    // see resolve_state_v2's implementation comment. Left empty for a
-    // non-v12 resolution, which does not need it. A v12 resolution whose
-    // derived create event cannot be fetched fails closed (ADR-0063)
-    // rather than falling back to the state groups' own (spoofable)
-    // unconflicted agreement — but a v12 resolution given no `room_id` at
-    // all still falls back to that unconflicted agreement, for callers
-    // (this module's own unit tests) using synthetic event ids that do not
-    // follow the MSC4291 room_id convention. Every real production caller
-    // (compute_state_before, recompute_current_state) always supplies
-    // `room_id`, so that fallback is never reachable from untrusted
-    // federation input.
-    std::string room_id{};
-    // Runtime policy, copied from the homeserver configuration by production
-    // callers. Defaults retain the standalone helper API's historical use.
-    StateResolutionLimits limits{};
-};
-
-struct StateResolutionResult final
-{
-    bool resolved{false};
-    std::vector<StateEventReference> resolved_state{};
-    std::string reason{};
-};
 
 using StateMap = std::unordered_map<StateKey, StateEventReference, StateKeyHash>;
 

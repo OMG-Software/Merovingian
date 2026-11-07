@@ -373,6 +373,9 @@ SCENARIO("PushGatewayClient::notify fails closed when push delivery is disabled 
     }
 }
 
+namespace
+{
+
 // SSRF test double: simulates DNS returning a private/loopback address for an
 // attacker-controlled gateway URL. The production client must reject it via
 // CachedServerDiscovery::lookup_addresses_filtered before OutboundClient is
@@ -396,6 +399,8 @@ struct PrivateAddressDiscoveryNetwork final : public merovingian::federation::Se
         return {true, {"127.0.0.1"}, {}};
     }
 };
+
+} // namespace
 
 SCENARIO("PushGatewayClient::notify fails closed on attacker-influenced private gateway destinations",
          "[push][push-gateway][ssrf]")

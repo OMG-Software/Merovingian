@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/RelationKind.hpp"
+#include "merovingian/database/TimeDirection.hpp"
 #include "merovingian/database/persistent_event.hpp"
 
 #include <algorithm>
@@ -25,24 +27,6 @@ namespace merovingian::database
 // The most rows one nearest_by_time() search offers its filter, so a lookup stepping over rows the
 // asker may not see stays bounded however a room's history is spread (ADR-0300).
 inline constexpr std::size_t max_time_search_examined{1000U};
-
-// Which way nearest_by_time() looks from a timestamp (Client-Server API,
-// `GET /rooms/{roomId}/timestamp_to_event`, `dir`: `f` forwards, `b` backwards).
-enum class TimeDirection : unsigned char
-{
-    forwards,
-    backwards,
-};
-
-// The `rel_type` of an event's `content."m.relates_to"` that the server aggregates
-// (client-server-api.md, "Aggregations of child events"). Any other `rel_type`, `m.annotation`
-// included ("not aggregated by the server"), is not indexed at all.
-enum class RelationKind : unsigned char
-{
-    replace,
-    thread,
-    reference,
-};
 
 // How many kinds RelationKind has: each kind has its own list under a target.
 inline constexpr std::size_t relation_kind_count{3U};

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/DeferredPduRetryJob.hpp" // split-shim
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/stop_flag.hpp"
 
@@ -73,32 +74,5 @@ auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view
 // /send path in federation::authorize_federation_pdu, or the worker relay's
 // re-verification in homeserver::handle_pdu_ingest_request, ADR-0071).
 [[nodiscard]] auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> std::chrono::milliseconds;
-
-// Runs retry_deferred_pdus on its own thread and keeps the runtime's wake hook
-// pointing at it. The thread starts only in start(), after process hardening
-// (ADR-0082). stop() (and the destructor) clear the hook under
-// HomeserverRuntime::mutex before stopping the thread, so no request thread can
-// wake a job that no longer exists; call it before the runtime is torn down.
-class DeferredPduRetryJob final
-{
-public:
-    explicit DeferredPduRetryJob(HomeserverRuntime& runtime);
-    ~DeferredPduRetryJob();
-
-    DeferredPduRetryJob(DeferredPduRetryJob const&) = delete;
-    DeferredPduRetryJob(DeferredPduRetryJob&&) = delete;
-    auto operator=(DeferredPduRetryJob const&) -> DeferredPduRetryJob& = delete;
-    auto operator=(DeferredPduRetryJob&&) -> DeferredPduRetryJob& = delete;
-
-    // Installs the wake hook and starts the thread. False if the thread could
-    // not be started (the hook is then left unset).
-    [[nodiscard]] auto start() -> bool;
-    // Clears the wake hook, then stops and joins the thread. Idempotent.
-    auto stop() noexcept -> void;
-
-private:
-    HomeserverRuntime& runtime_;
-    PeriodicJob job_;
-};
 
 } // namespace merovingian::homeserver

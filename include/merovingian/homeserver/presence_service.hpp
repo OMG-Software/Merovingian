@@ -9,6 +9,9 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/PresenceRead.hpp"       // split-shim
+#include "merovingian/homeserver/PresenceReadStatus.hpp" // split-shim
+#include "merovingian/homeserver/SyncPresenceMode.hpp"   // split-shim
 #include "merovingian/sync/sync_filter.hpp"
 
 #include <chrono>
@@ -97,21 +100,6 @@ inline constexpr auto presence_idle_catch_up_interval = std::chrono::seconds{1};
 // not change a state the user chose. The caller holds runtime.mutex.
 auto note_local_message_activity(HomeserverRuntime& runtime, std::string_view user_id) -> void;
 
-// How a GET /presence/{userId}/status is answered.
-enum class PresenceReadStatus : std::uint8_t
-{
-    ok,
-    forbidden,
-    not_found,
-};
-
-struct PresenceRead final
-{
-    PresenceReadStatus status{PresenceReadStatus::not_found};
-    // The response body when `status` is ok.
-    canonicaljson::Object body{};
-};
-
 // GET /_matrix/client/v3/presence/{userId}/status for `requester`. The caller holds runtime.mutex.
 //
 //  * presence off: not_found ("no presence state for this user").
@@ -123,14 +111,6 @@ struct PresenceRead final
 //    not_found.
 [[nodiscard]] auto read_presence(HomeserverRuntime const& runtime, std::string_view requester, std::string_view target)
     -> PresenceRead;
-
-// What the `set_presence` parameter of /sync asks for.
-enum class SyncPresenceMode : std::uint8_t
-{
-    online,      // omitted or "online"
-    unavailable, // "unavailable": "the client is marked as being idle"
-    offline,     // "offline": "not marked as being online when it uses this API"
-};
 
 // nullopt for a value outside the enumeration.
 [[nodiscard]] auto parse_sync_presence_mode(std::optional<std::string_view> value) noexcept

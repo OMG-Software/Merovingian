@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/RawNumber.hpp"
+
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -13,31 +15,8 @@ namespace merovingian::canonicaljson
 
 class Value;
 
-struct ObjectMember final
-{
-    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-    std::string key{};
-    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-    std::unique_ptr<Value> value{};
-
-    ObjectMember() = default;
-    ObjectMember(std::string key_value, std::unique_ptr<Value> owned_value);
-    ObjectMember(ObjectMember&& other) noexcept = default;
-    auto operator=(ObjectMember&& other) noexcept -> ObjectMember& = default;
-    ObjectMember(ObjectMember const& other);
-    auto operator=(ObjectMember const& other) -> ObjectMember&;
-};
-
 using Array = std::vector<Value>;
 using Object = std::vector<ObjectMember>;
-
-// A number Canonical JSON cannot represent (a float, or an integer outside its range), exactly as it was received.
-// Only parse_preserving_numbers makes one; serialize_canonical writes it back verbatim and
-// serialize_canonical_strict refuses it, so it can never reach a hash or a signature this server makes.
-struct RawNumber final
-{
-    std::string token{};
-};
 
 class Value final
 {

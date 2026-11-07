@@ -4,6 +4,8 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/RemoteKeyClaimKeys.hpp" // split-shim
+#include "merovingian/federation/RemoteKeyQueryKeys.hpp" // split-shim
 
 #include <cstdint>
 #include <optional>
@@ -26,16 +28,6 @@ namespace merovingian::federation
 [[nodiscard]] auto build_device_keys_query_response(database::PersistentStore const& store,
                                                     std::string_view request_body) -> std::string;
 
-// The keys a remote server returned from
-// `POST /_matrix/federation/v1/user/keys/query`, reduced to what it may
-// speak for. Each member is keyed by user ID, as in the response.
-struct RemoteKeyQueryKeys final
-{
-    canonicaljson::Object device_keys{};
-    canonicaljson::Object master_keys{};
-    canonicaljson::Object self_signing_keys{};
-};
-
 // Accepts `origin`'s `/user/keys/query` response to a query for
 // `requested_users` (all of which are on `origin`). Keeps only entries for
 // requested users, and only keys that describe the user they are filed
@@ -49,13 +41,6 @@ struct RemoteKeyQueryKeys final
 [[nodiscard]] auto accept_remote_key_query_response(std::string_view origin, std::string_view response_body,
                                                     std::vector<std::string> const& requested_users)
     -> std::optional<RemoteKeyQueryKeys>;
-
-// What a client `POST /keys/claim` takes from one remote server's answer.
-struct RemoteKeyClaimKeys final
-{
-    // User ID -> device ID -> key ID -> key, for requested users and devices only.
-    canonicaljson::Object one_time_keys{};
-};
 
 // Accepts `origin`'s `/user/keys/claim` response to a claim for `requested` (user ID -> the device IDs
 // asked for; every user is on `origin`). Keeps only users that were requested, only devices that were

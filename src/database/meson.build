@@ -1,17 +1,21 @@
 database_sources = files(
   'connection.cpp',
   'event_table.cpp',
+  'EventStateGroupTable.cpp',
   'library_versions.cpp',
   'migration_files.cpp',
   'migration.cpp',
   'PersistentStore.cpp',
   'PersistentServerSigningKey.cpp',
+  'PostgresqlConnectionDeleter.cpp',
   'redaction_view.cpp',
   'postgresql_store.cpp',
   'runtime_database.cpp',
   'schema.cpp',
   'sqlite_store.cpp',
-  'state_group_tables.cpp',
+  'SqliteConnectionDeleter.cpp',
+  'StateGroupEntryTable.cpp',
+  'StateGroupTable.cpp',
   'statement.cpp',
 )
 

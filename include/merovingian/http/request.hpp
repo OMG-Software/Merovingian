@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/http/Header.hpp"             // split-shim
+#include "merovingian/http/HttpVersion.hpp"        // split-shim
+#include "merovingian/http/RequestErrorCode.hpp"   // split-shim
+#include "merovingian/http/RequestHead.hpp"        // split-shim
+#include "merovingian/http/RequestParseResult.hpp" // split-shim
 #include "merovingian/http/request_limits.hpp"
 
 #include <cstdint>
@@ -11,52 +16,6 @@
 
 namespace merovingian::http
 {
-
-enum class RequestErrorCode : std::uint8_t
-{
-    none,
-    malformed_request_line,
-    invalid_method,
-    invalid_target,
-    start_line_too_large,
-    headers_too_large,
-    too_many_headers,
-    duplicate_content_length,
-    invalid_content_length,
-    body_too_large,
-    unsupported_transfer_encoding,
-};
-
-struct Header final
-{
-    std::string name{};
-    std::string value{};
-};
-
-// HTTP protocol version of a request's start line. Drives the persistent
-// connection decision: HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to
-// close (RFC 9112 §9.3 "Connection").
-enum class HttpVersion : std::uint8_t
-{
-    http_1_0,
-    http_1_1,
-};
-
-struct RequestHead final
-{
-    std::string method{};
-    std::string target{};
-    std::vector<Header> headers{};
-    std::uint64_t content_length{0U};
-    bool has_content_length{false};
-    HttpVersion version{HttpVersion::http_1_1};
-};
-
-struct RequestParseResult final
-{
-    RequestHead request{};
-    RequestErrorCode error{RequestErrorCode::none};
-};
 
 [[nodiscard]] auto request_error_name(RequestErrorCode code) noexcept -> char const*;
 [[nodiscard]] auto request_error_status(RequestErrorCode code) noexcept -> std::uint16_t;

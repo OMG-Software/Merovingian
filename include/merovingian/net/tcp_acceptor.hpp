@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/net/TcpBindResult.hpp" // split-shim
 
 #include <cstdint>
 #include <string>
@@ -10,12 +11,6 @@
 
 namespace merovingian::net
 {
-
-struct TcpBindResult final
-{
-    bool ok{false};
-    std::string error{};
-};
 
 class TcpAcceptor final
 {

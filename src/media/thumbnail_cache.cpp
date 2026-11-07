@@ -3,6 +3,8 @@
 
 #include "merovingian/media/thumbnail_cache.hpp"
 
+#include "merovingian/media/thumbnailer.hpp"
+
 #include <algorithm>
 #include <string>
 #include <utility>

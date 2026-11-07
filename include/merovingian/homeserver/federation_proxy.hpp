@@ -5,6 +5,7 @@
 #include "merovingian/config/FederationWorkerConfig.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RoomSyncStatus.hpp" // split-shim
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
@@ -19,18 +20,6 @@ namespace merovingian::homeserver
 
 struct HomeserverRuntime;
 class WorkerPool;
-
-// Observed room-sync state of a federation worker shard.
-//
-// The worker's PersistentStore is a snapshot taken at startup.  When main
-// mutates room state it sends a `room_sync` notification; the worker reloads
-// the room and reports back whether the reload succeeded.  Main records that
-// outcome here and can use it to refuse to serve stale reads from the worker.
-struct RoomSyncStatus final
-{
-    std::string state{};         // "pending", "ok", or "failed"
-    std::uint64_t generation{0}; // monotonic per room_id, assigned by main
-};
 
 // Intercepts inbound federation HTTP requests and forwards them to the
 // out-of-process federation worker pool via encrypted IPC channels.

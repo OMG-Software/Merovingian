@@ -4,10 +4,12 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/PostgresqlConnection.hpp"
+#include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
+#include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
 #include "merovingian/database/connection.hpp"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,12 +17,6 @@
 
 namespace merovingian::database
 {
-
-struct PostgresqlConnectionPolicyResult final
-{
-    bool allowed{false};
-    std::string reason{};
-};
 
 // M-10: pg_advisory_lock() key used to serialize schema migrations across
 // every process sharing one PostgreSQL database. apply_pending_migrations
@@ -34,42 +30,6 @@ struct PostgresqlConnectionPolicyResult final
 // unreachable) but pointless. Exposed here so tests can verify the
 // exclusion and release-on-completion behavior without duplicating the key.
 inline constexpr std::int64_t postgresql_migration_lock_key = 0x4d65726f'76313000LL; // "Merov10\0" in hex, arbitrary.
-
-struct PostgresqlConnectionHandle;
-struct PostgresqlConnectionOpenResult;
-
-class PostgresqlConnection final : public DatabaseExecutor
-{
-public:
-    PostgresqlConnection() noexcept;
-    PostgresqlConnection(PostgresqlConnection const& other) = delete;
-    auto operator=(PostgresqlConnection const& other) -> PostgresqlConnection& = delete;
-    PostgresqlConnection(PostgresqlConnection&& other) noexcept;
-    auto operator=(PostgresqlConnection&& other) noexcept -> PostgresqlConnection&;
-    ~PostgresqlConnection() override;
-
-    [[nodiscard]] auto open() const noexcept -> bool;
-    [[nodiscard]] auto execute(PreparedStatement const& statement) -> QueryResult override;
-    [[nodiscard]] auto execute_transaction(std::vector<PreparedStatement> const& statements) -> bool;
-    // DB-7: open, idle and not closed by the server, so it can serve another
-    // transaction from the write pool.
-    [[nodiscard]] auto reusable() noexcept -> bool;
-
-private:
-    friend auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;
-
-    explicit PostgresqlConnection(std::unique_ptr<PostgresqlConnectionHandle> handle) noexcept;
-
-    std::unique_ptr<PostgresqlConnectionHandle> handle_{};
-};
-
-struct PostgresqlConnectionOpenResult final
-{
-    bool ok{false};
-    std::string reason{};
-    std::string redacted_conninfo{};
-    PostgresqlConnection connection{};
-};
 
 [[nodiscard]] auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnectionPolicyResult;
 [[nodiscard]] auto redact_postgresql_conninfo(std::string_view conninfo) -> std::string;

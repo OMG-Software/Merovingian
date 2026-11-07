@@ -6,6 +6,12 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/state_resolution.hpp"
+#include "merovingian/homeserver/CurrentStateRecompute.hpp"       // split-shim
+#include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp" // split-shim
+#include "merovingian/homeserver/EventBookkeeping.hpp"            // split-shim
+#include "merovingian/homeserver/NewEventBasis.hpp"               // split-shim
+#include "merovingian/homeserver/StateBeforeResult.hpp"           // split-shim
+#include "merovingian/homeserver/StoredWithBookkeeping.hpp"       // split-shim
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
@@ -47,22 +53,6 @@ namespace merovingian::homeserver
 // `state_conflict_resolver` was deleted in ADR-0064 phase B2 along with the
 // rest of that dead plumbing.
 [[nodiscard]] auto make_store_event_lookup(database::PersistentStore const& store) -> events::EventLookupFn;
-
-// Result of resolving the state immediately before an event from its
-// prev_event_ids.
-struct StateBeforeResult final
-{
-    // False when a prev_event has no recorded state group (an older,
-    // pre-Phase-A event, or a genuine gap in our history of the room), or
-    // resolution itself failed closed (an unreachable/missing auth-chain
-    // event, or the walk cap — see ADR-0063). Either way the caller must not
-    // store the event or substitute current state; see
-    // federation::PduIngestionStatus::missing_prev_state.
-    bool ok{false};
-    std::vector<database::PersistentStateGroupStateEntry> state{};
-    // Why `ok` is false, for the caller's log; empty when it is true.
-    std::string reason{};
-};
 
 // State before an event = the state resolution of the states after each of
 // `prev_event_ids`: with a single prev_event this is that event's own
@@ -132,34 +122,6 @@ struct StateBeforeResult final
                                       std::vector<database::PersistentStateGroupStateEntry> const& state_after,
                                       bool accepted = true) -> std::optional<std::string>;
 
-// How a recomputation of the room's current state ended (F-49, ADR-0375).
-enum class CurrentStateRecomputeStatus : std::uint8_t
-{
-    // Current state is the resolution of the room's forward extremities: it was written where it
-    // differed, or the room has no extremity to resolve.
-    resolved,
-    // The extremities could not be resolved (an extremity with no readable state, more extremities
-    // than `max_state_groups`, the state budget, a missing auth-chain event, or a resolution that
-    // fails closed). Current state was not touched, so it is NOT the resolution of the extremities:
-    // each accepted event has put only its own row in it since. Logged at warning level.
-    refused,
-    // A diffed entry could not be written.
-    write_failed,
-};
-
-struct CurrentStateRecompute final
-{
-    CurrentStateRecomputeStatus status{CurrentStateRecomputeStatus::resolved};
-    // Why the extremities could not be resolved; empty unless `status` is `refused`.
-    std::string reason{};
-
-    // True only when current state is the resolution of the extremities.
-    [[nodiscard]] explicit operator bool() const noexcept
-    {
-        return status == CurrentStateRecomputeStatus::resolved;
-    }
-};
-
 // Recomputes the room's current state as the state resolution over its
 // forward extremities' after-states (one extremity: that state directly, no
 // resolution needed), diffs it against the cached `current_state`, and
@@ -219,22 +181,6 @@ struct CurrentStateRecompute final
 [[nodiscard]] auto depth_after_prev_events(database::PersistentStore const& store,
                                            std::vector<std::string> const& prev_event_ids) -> std::uint64_t;
 
-// What a new local event is built on: the prev_events it declares and the
-// state before it, resolved once, before the event is signed.
-struct NewEventBasis final
-{
-    // False when no forward extremity has a state this server can compute;
-    // the event must not be stored. `reason` says why.
-    bool ok{false};
-    std::vector<std::string> prev_event_ids{};
-    std::vector<database::PersistentStateGroupStateEntry> state_before{};
-    // Forward extremities the event does not cite because the state across
-    // them could not be resolved. Storing the event removes them from the
-    // room's extremities along with `prev_event_ids` (ADR-0225).
-    std::vector<std::string> retired_extremities{};
-    std::string reason{};
-};
-
 // Chooses the prev_events of a NEW local event and computes the state before
 // it. Normally that is forward_extremities_for_new_event and the resolution of
 // their states. When that resolution fails (an extremity with no recorded
@@ -251,30 +197,6 @@ struct NewEventBasis final
 [[nodiscard]] auto basis_for_new_event(database::PersistentStore const& store, std::string_view room_id,
                                        rooms::RoomVersionPolicy const& policy,
                                        events::StateResolutionLimits const& limits = {}) -> NewEventBasis;
-
-// How an event this server places itself is recorded: the state after it, the
-// group that state is a delta of (nullopt: a full snapshot), and the forward
-// extremities it replaces as the room's tip.
-struct EventBookkeeping final
-{
-    std::vector<database::PersistentStateGroupStateEntry> state_after{};
-    std::optional<std::string> parent_state_group_id{};
-    std::vector<std::string> replaced_extremities{};
-};
-
-// Whether store_event_with_bookkeeping stored the event, and if not, the step
-// that refused it (`event`, `state_group`, `current_state` or `commit`) and why.
-struct StoredWithBookkeeping final
-{
-    bool ok{false};
-    std::string step{};
-    std::string reason{};
-    // True when the event was stored but the room's forward extremities could not be resolved
-    // (F-49), so current state holds only the event's own row beyond what it already held. A
-    // warning was logged. `resolution_refusal` says why.
-    bool resolution_refused{false};
-    std::string resolution_refusal{};
-};
 
 // Stores an event this server places itself (a local event, or the join event
 // of a federated join) with all of its bookkeeping in ONE transaction

@@ -4,6 +4,7 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationBackfillConfig.hpp"
+#include "merovingian/federation/FederationServerPolicyDecision.hpp" // split-shim
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
@@ -94,12 +95,6 @@ struct RuntimeFederationConfig final
     // not an operator setting. Last, so the positional
     // initialiser in runtime_federation.cpp leaves it at this default.
     std::uint64_t accepted_transaction_cache_bytes{16U * 1024U * 1024U};
-};
-
-struct FederationServerPolicyDecision final
-{
-    bool allowed{false};
-    std::string reason{};
 };
 
 [[nodiscard]] auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig;

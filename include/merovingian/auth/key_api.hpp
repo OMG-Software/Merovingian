@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/KeyApiBoundaryPlan.hpp"
+#include "merovingian/auth/KeyApiEndpoint.hpp"
+#include "merovingian/auth/KeyApiRoute.hpp"
+#include "merovingian/auth/KeyApiRouteMatch.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
@@ -11,53 +15,6 @@
 
 namespace merovingian::auth
 {
-
-enum class KeyApiEndpoint
-{
-    upload_keys,
-    query_keys,
-    claim_keys,
-    device_list_update,
-    upload_cross_signing_keys,
-    upload_signatures,
-    get_key_backup_version,
-    create_key_backup_version,
-    update_key_backup_version,
-    delete_key_backup_version,
-    put_room_key_backup,
-    put_room_key_backup_room,
-    put_room_key_backup_batch,
-    get_room_key_backup,
-    delete_room_key_backup_room,
-    delete_room_key_backup,
-    get_key_backup_version_by_id,
-    get_room_key_backup_batch,
-    delete_room_key_backup_batch,
-};
-
-struct KeyApiRoute final
-{
-    std::string method{};
-    std::string path_template{};
-    KeyApiEndpoint endpoint{KeyApiEndpoint::upload_keys};
-    bool requires_access_token{true};
-    bool stores_server_blind_payload{true};
-    http::RateLimitPolicy rate_limit{};
-};
-
-struct KeyApiRouteMatch final
-{
-    bool matched{false};
-    KeyApiRoute route{};
-    std::string reason{};
-};
-
-struct KeyApiBoundaryPlan final
-{
-    KeyApiRoute route{};
-    std::vector<database::PreparedStatement> database_statements{};
-    std::string audit_event_type{};
-};
 
 [[nodiscard]] auto key_api_endpoint_name(KeyApiEndpoint endpoint) noexcept -> char const*;
 [[nodiscard]] auto key_api_routes() -> std::vector<KeyApiRoute>;

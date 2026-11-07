@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/RoomListResult.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
@@ -16,17 +17,6 @@
 
 namespace merovingian::sync
 {
-
-// Result of computing one named room list for an MSC4186 sliding sync response.
-struct RoomListResult final
-{
-    // Total number of rooms matching the list's filters (for list.count).
-    std::uint64_t count{0U};
-    // Ordered room IDs covering the union of all requested ranges.
-    std::vector<std::string> windowed_room_ids{};
-    // Ops to include in the list response.
-    std::vector<SlidingSyncOp> ops{};
-};
 
 // Compute the windowed room list, sort order, and ops for one named list.
 //

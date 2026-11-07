@@ -4,6 +4,7 @@
 
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/sync/HistoryVisibilityValue.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -15,15 +16,6 @@
 
 namespace merovingian::sync
 {
-
-// The four values of `m.room.history_visibility`'s `history_visibility`.
-enum class HistoryVisibilityValue
-{
-    world_readable,
-    shared,
-    invited,
-    joined,
-};
 
 // Maps the wire value to the enum. Spec (client-server-api.md, "Room History Visibility",
 // server behaviour): "if no `history_visibility` is set, or if the value is not understood,

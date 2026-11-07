@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/push/PushGatewayResult.hpp"
+#include "merovingian/push/PushRetry.hpp"
+#include "merovingian/push/PushRetryAdmission.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -39,29 +41,6 @@ inline constexpr auto push_retry_per_user_capacity = std::size_t{32U};
 // (a retry would be refused again). A rejected pushkey is never retried; see
 // pushkey_was_rejected.
 [[nodiscard]] auto push_delivery_should_retry(PushGatewayResult const& result) noexcept -> bool;
-
-// One notification to one pusher that failed and may be tried again.
-struct PushRetry final
-{
-    std::string user_id{};
-    std::string app_id{};
-    std::string pushkey{};
-    std::string gateway_url{};
-    PushGatewayNotification notification{};
-    // Attempts that have failed: 0 before the first attempt. schedule() is given the count that
-    // includes the attempt that has just failed.
-    std::uint32_t failed_attempts{0U};
-    std::chrono::steady_clock::time_point due{};
-};
-
-enum class PushRetryAdmission : std::uint8_t
-{
-    queued,
-    // push_retry_max_retries retries have already been made.
-    gave_up,
-    // The queue, or the recipient's share of it, is full.
-    queue_full,
-};
 
 // The notifications waiting to be tried again. Thread-safe: delivery tasks schedule retries and
 // drop rejected pushkeys, and the retry job takes the due ones, each under this queue's own mutex

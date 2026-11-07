@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/platform/SeccompProbeResult.hpp"
+#include "merovingian/platform/TaskConfinement.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -9,30 +12,6 @@
 
 namespace merovingian::platform
 {
-
-struct SeccompProbeResult final
-{
-    bool probed{false};               // true when at least one task's status was read successfully
-    bool seccomp_active{false};       // true when EVERY task reports Seccomp: 2 and NoNewPrivs: 1
-    std::size_t tasks_checked{0U};    // tasks whose status was read
-    std::size_t unconfined_tasks{0U}; // tasks that were not confined, or whose status was unreadable
-};
-
-// What one /proc/<pid>/task/<tid>/status says about a single task's seccomp
-// confinement. Seccomp filters and no_new_privs are per-task attributes, so a
-// process is only confined when every task is.
-struct TaskConfinement final
-{
-    bool parsed{false};   // both fields were present and numeric
-    int seccomp_mode{-1}; // 0 disabled, 1 strict, 2 filter
-    int no_new_privs{-1}; // 0 or 1
-
-    // Fail-closed: a task that could not be fully parsed is never confined.
-    [[nodiscard]] constexpr auto confined() const noexcept -> bool
-    {
-        return parsed && seccomp_mode == 2 && no_new_privs == 1;
-    }
-};
 
 // Parses the "Seccomp:" and "NoNewPrivs:" lines of a /proc status file. Pure
 // text handling, available on every platform so it can be tested anywhere.

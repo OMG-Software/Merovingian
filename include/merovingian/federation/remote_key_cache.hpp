@@ -4,6 +4,11 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/KeyMirrorRefresh.hpp"     // split-shim
+#include "merovingian/federation/RemoteKeyFetchResult.hpp" // split-shim
+#include "merovingian/federation/RemoteKeyResponse.hpp"    // split-shim
+#include "merovingian/federation/RemoteOldVerifyKey.hpp"   // split-shim
+#include "merovingian/federation/RemoteVerifyKey.hpp"      // split-shim
 #include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
@@ -17,44 +22,6 @@
 
 namespace merovingian::federation
 {
-
-// One verify key entry returned by GET /_matrix/key/v2/server. Mirrors the
-// per-entry shape from the canonical Matrix server-key response.
-struct RemoteVerifyKey final
-{
-    std::string key_id{};
-    std::string public_key_base64{};
-};
-
-// One `old_verify_keys` entry: a key the server no longer signs with, and when
-// it stopped (server-server-api.md, Publishing keys). Valid only for events
-// sent before `expired_ts`; never for a federation request.
-struct RemoteOldVerifyKey final
-{
-    std::string key_id{};
-    std::string public_key_base64{};
-    std::uint64_t expired_ts{0U};
-};
-
-// Parsed and self-verified result of fetching a remote server's keys.
-struct RemoteKeyResponse final
-{
-    std::string server_name{};
-    std::uint64_t valid_until_ts{0U};
-    std::vector<RemoteVerifyKey> verify_keys{};
-    // Well-formed `old_verify_keys` entries. A malformed entry is skipped on its
-    // own; it never costs the response its `verify_keys`. cache_remote_server_keys
-    // persists each as a retired row (`server_signing_keys.expired_ts`), so events
-    // signed before a rotation verify from the cache with no further fetch.
-    std::vector<RemoteOldVerifyKey> old_verify_keys{};
-};
-
-struct RemoteKeyFetchResult final
-{
-    bool ok{false};
-    RemoteKeyResponse response{};
-    std::string reason{};
-};
 
 // Parses and self-verifies a canonical server-key response body. Used by both
 // the live outbound fetcher and unit tests that drive the verifier directly.
@@ -122,19 +89,6 @@ class CachedServerDiscovery;
 // Source of milliseconds-since-epoch for cache-freshness checks. Injectable so
 // tests can drive deterministic refresh boundaries.
 using RemoteKeyClock = std::function<std::uint64_t()>;
-
-// Whether a resolver that finds no usable cached key first re-reads that
-// server's key rows from the database. A federation worker's in-memory mirror
-// is a snapshot taken when it started, so a key main cached afterwards is
-// invisible to it; `on_miss` lets it read the row main verified and persisted
-// instead of fetching the key again over a fresh connection. Public columns
-// only (`database::refresh_remote_signing_keys`). Main's mirror is
-// authoritative, so main leaves this `never`.
-enum class KeyMirrorRefresh
-{
-    never,
-    on_miss,
-};
 
 // Composes the lookup/fetch/verify/cache flow into a single resolver suitable
 // for `FederationRuntimeState::remote_key_resolver`. Lookups hit the

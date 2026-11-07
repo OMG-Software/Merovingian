@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "EduRelayChannels.hpp" // split-shim
 #include "joining_threads.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
@@ -12,6 +13,9 @@
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include <array>
 #include <chrono>
@@ -28,22 +32,8 @@
 #include <utility>
 #include <vector>
 
-#include <sodium.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-
 namespace merovingian::tests
 {
-
-// Shared by the downstream integration and sync fixtures. Unlike a fabricated
-// authorization callback, this fixture uses the real authenticated transport and
-// main-owned pending metadata. Signature verification is covered independently
-// by the FED-12 behavioral regression, not by this downstream setup helper.
-struct EduRelayChannels final
-{
-    std::unique_ptr<ipc::IpcChannel> main{};
-    std::unique_ptr<ipc::IpcChannel> worker{};
-};
 
 [[nodiscard]] inline auto make_edu_relay_channels() -> EduRelayChannels
 {

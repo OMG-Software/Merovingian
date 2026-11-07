@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/push/EmailDigestAdmission.hpp"
+#include "merovingian/push/EmailDigestKey.hpp"
+#include "merovingian/push/EmailDigestOutcome.hpp"
+#include "merovingian/push/EmailDigestPolicy.hpp"
+
 #include <chrono>
 #include <compare>
 #include <cstddef>
@@ -16,16 +21,6 @@
 namespace merovingian::push
 {
 
-// When notification emails go out (ADR-0219). A notification for an email pusher schedules one
-// email `delay` later, but never sooner than `throttle` after the last email to that pusher; more
-// notifications before then fold into the same email. The email reports how much is unread when
-// it is sent, so one that finds nothing unread (the user read it elsewhere) is not sent at all.
-struct EmailDigestPolicy final
-{
-    std::chrono::seconds delay{600};
-    std::chrono::seconds throttle{3600};
-};
-
 // A failed send is tried again after 1 minute, then 2, 4, 8 and 16, and given up at the 6th failed
 // attempt: about half an hour (31 minutes of backoff) after the first. The 30-minute ceiling is
 // not reached at 6 attempts; it bounds each wait if email_digest_max_attempts is raised.
@@ -38,38 +33,6 @@ inline constexpr auto email_digest_queue_capacity = std::size_t{4096U};
 
 // The wait before the attempt that follows `failed_attempts` failed attempts (at least 1).
 [[nodiscard]] auto email_digest_backoff(std::uint32_t failed_attempts) noexcept -> std::chrono::milliseconds;
-
-// One email pusher: the user and the pusher's pushkey (the address as the client registered it).
-struct EmailDigestKey final
-{
-    std::string user_id{};
-    std::string pushkey{};
-
-    auto operator<=>(EmailDigestKey const&) const = default;
-};
-
-enum class EmailDigestAdmission : std::uint8_t
-{
-    // An email is now due; it was not before.
-    scheduled,
-    // An email was already due or being sent; this notification will be in it, or in the one that
-    // follows it.
-    folded,
-    // email_digest_queue_capacity pushers are tracked and none could be released.
-    queue_full,
-};
-
-// How the attempt at an email taken by take_due ended.
-enum class EmailDigestOutcome : std::uint8_t
-{
-    sent,
-    // Nothing was unread when it was due, so nothing was sent.
-    nothing_unread,
-    // It could not be sent; try again after a backoff.
-    failed,
-    // It must never be sent: the pusher, or the address it sends to, has gone.
-    abandoned,
-};
 
 // The email pushers with a notification email due, and when each last sent one. Thread-safe:
 // request threads note notifications (under runtime.mutex) and the email job takes and completes

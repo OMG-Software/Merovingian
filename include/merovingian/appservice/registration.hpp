@@ -2,113 +2,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/error.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/appservice/AppserviceRegistration.hpp"            // split-shim
+#include "merovingian/appservice/AppserviceRegistrationFinding.hpp"     // split-shim
+#include "merovingian/appservice/AppserviceRegistrationParseResult.hpp" // split-shim
+#include "merovingian/appservice/AppserviceRegistry.hpp"                // split-shim
+#include "merovingian/appservice/EventInterestFacts.hpp"                // split-shim
+#include "merovingian/appservice/LoadRegistrationsResult.hpp"           // split-shim
+#include "merovingian/appservice/Namespace.hpp"                         // split-shim
+#include "merovingian/appservice/Namespaces.hpp"                        // split-shim
 
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <regex>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace merovingian::appservice
 {
-
-// One entry of a `namespaces.{users,aliases,rooms}` array (Matrix v1.19
-// Application Service API §Registration). `regex` is a POSIX regular
-// expression, matched over the whole identifier as `namespace_matches()`
-// below describes, but through the compiled form held here. `exclusive` marks
-// this namespace as reserved for this appservice: no other appservice or
-// human user may create/delete entities matching it.
-//
-// The pattern is compiled once, when the namespace is built (registration
-// load), and every copy shares that compiled form: the interest check runs per
-// event, per registration and per room member while runtime.mutex is held, so
-// compiling per match is not an option (security audit run-1). `compiled` is
-// null when the pattern does not compile; such a namespace matches nothing.
-// The pattern is private and set only by the constructor, so it can never
-// drift from its compiled form.
-class Namespace final
-{
-public:
-    Namespace() = default;
-    Namespace(bool exclusive_value, std::string regex_value);
-
-    [[nodiscard]] auto regex() const noexcept -> std::string const&;
-    [[nodiscard]] auto compiled() const noexcept
-        -> std::shared_ptr<std::regex const> const&; // SHARED_PTR: reviewed — immutable; shared by namespace copies
-
-    bool exclusive{false};
-
-private:
-    std::string m_regex{};
-    std::shared_ptr<std::regex const> m_compiled{}; // SHARED_PTR: reviewed — immutable; shared by namespace copies
-};
-
-struct Namespaces final
-{
-    std::vector<Namespace> users{};
-    std::vector<Namespace> aliases{};
-    std::vector<Namespace> rooms{};
-};
-
-// A parsed appservice registration file (Matrix v1.19 Application Service
-// API §Registration). `as_token`/`hs_token` are held in `core::SecretBuffer`
-// per the project's secret-handling rules (see security/AGENTS.md,
-// src/crypto/AGENTS.md): the raw bytes are mlocked and zeroised on
-// destruction, and comparisons against a presented token MUST go through
-// `crypto::constant_time_equal_variable_length`, never `==`.
-//
-// `url` is `std::nullopt` when the registration file set it to JSON `null`
-// ("no traffic is required" per spec) — the homeserver never attempts an
-// outbound call (transactions, queries, third-party lookups) to such an
-// appservice.
-//
-// Registration files are parsed as JSON (see `parse_registration_json`
-// below) rather than full YAML: the spec describes the format as "normally
-// encoded as an object in a YAML file", and JSON is a strict subset of
-// YAML 1.2, so a JSON registration file is a valid YAML registration file.
-// Full YAML syntax (anchors, comments, unquoted scalars, flow-less block
-// style) is NOT supported — see docs/user-manual.md "Application Service
-// API" for the operator-facing note. This avoids pulling in a new
-// third-party YAML dependency (with its own supply-chain pinning and
-// license-review burden — see security/AGENTS.md) purely to parse a
-// config artifact the project's own JSON parser already reads losslessly.
-struct AppserviceRegistration final
-{
-    std::string id{};
-    std::optional<std::string> url{};
-    core::SecretBuffer as_token{};
-    core::SecretBuffer hs_token{};
-    std::string sender_localpart{};
-    Namespaces namespaces{};
-    std::vector<std::string> protocols{};
-    bool rate_limited{true};
-    bool receive_ephemeral{false};
-
-    AppserviceRegistration() = default;
-    AppserviceRegistration(AppserviceRegistration const&) = delete;
-    auto operator=(AppserviceRegistration const&) -> AppserviceRegistration& = delete;
-    AppserviceRegistration(AppserviceRegistration&&) noexcept = default;
-    auto operator=(AppserviceRegistration&&) noexcept -> AppserviceRegistration& = default;
-    ~AppserviceRegistration() = default;
-};
-
-// Result of parsing or loading one registration document: either a
-// populated `value` (parsing succeeded) or an `error` describing why not.
-// Not `std::expected<AppserviceRegistration, core::Error>` — this project's
-// toolchain (clang + libstdc++, see docs/dev-environment.md) does not build
-// `<expected>` cleanly, and no other module in the codebase uses it, so
-// fallible operations here follow the same `optional value + separate
-// error` shape used throughout config_parser.cpp and auth_service.cpp.
-struct AppserviceRegistrationParseResult final
-{
-    std::optional<AppserviceRegistration> value{};
-    core::Error error{};
-};
 
 // Parses one registration file's JSON text into an AppserviceRegistration.
 // `result.error` (ErrorCode::parse_failure) describes the first problem
@@ -163,22 +71,6 @@ struct AppserviceRegistrationParseResult final
 [[nodiscard]] auto appservice_owns_user(AppserviceRegistration const& registration, std::string_view server_name,
                                         std::string_view user_id) noexcept -> bool;
 
-// What the interest test knows about one event in one room. Every view must
-// outlive the call.
-struct EventInterestFacts final
-{
-    std::string_view room_id{};
-    // Every alias the room has on this server (a room may have several); empty when it has none.
-    std::span<std::string const> room_aliases{};
-    std::string_view sender{};
-    // The state_key of an `m.room.member` event, i.e. the user the membership change is about
-    // (the invitee of an invite, the user kicked or banned). Empty for any other event.
-    std::string_view member_event_target{};
-    // Every user CURRENTLY joined to the room (the sender, if already a member, should be
-    // included by the caller — the test does not special-case it against `sender`).
-    std::span<std::string const> room_members{};
-};
-
 // True when `registration` is interested in an event that occurred in a
 // room, per Matrix v1.19 Application Service API §"Registration": "An
 // application service is said to be 'interested' in a given event if it
@@ -197,67 +89,6 @@ struct EventInterestFacts final
                                                          std::string_view server_name,
                                                          EventInterestFacts const& facts) noexcept -> bool;
 
-// Immutable, load-once collection of every registered appservice. Built at
-// startup from `config::AppserviceConfig::registration_files` (see
-// `load_registry`). Registrations are looked up by `as_token` under
-// constant-time comparison, never by `==`/substring search, because the
-// as_token is a bearer credential.
-class AppserviceRegistry final
-{
-public:
-    AppserviceRegistry() = default;
-    explicit AppserviceRegistry(std::vector<AppserviceRegistration> registrations) noexcept;
-
-    AppserviceRegistry(AppserviceRegistry const&) = delete;
-    auto operator=(AppserviceRegistry const&) -> AppserviceRegistry& = delete;
-    AppserviceRegistry(AppserviceRegistry&&) noexcept = default;
-    auto operator=(AppserviceRegistry&&) noexcept -> AppserviceRegistry& = default;
-    ~AppserviceRegistry() = default;
-
-    [[nodiscard]] auto empty() const noexcept -> bool;
-    [[nodiscard]] auto size() const noexcept -> std::size_t;
-    [[nodiscard]] auto all() const noexcept -> std::vector<AppserviceRegistration> const&;
-
-    // Constant-time lookup by presented as_token (a client-server bearer
-    // token, or the `access_token` query parameter). Returns nullptr when no
-    // registration's as_token matches.
-    [[nodiscard]] auto find_by_as_token(std::string_view presented_token) const noexcept
-        -> AppserviceRegistration const*;
-
-    // Lookup by registration `id` (used by the client-server ping endpoint,
-    // `POST /_matrix/client/v1/appservice/{appserviceId}/ping`). Not a
-    // secret, so an ordinary comparison is fine.
-    [[nodiscard]] auto find_by_id(std::string_view id) const noexcept -> AppserviceRegistration const*;
-
-    // True when `value` is the sender_localpart user of any registered
-    // appservice. Used at startup to ensure every sender exists (AUTH-3).
-    [[nodiscard]] auto is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept -> bool;
-
-    // True when `value` falls in an EXCLUSIVE users namespace owned by an
-    // appservice OTHER than `excluded_id` (pass an empty excluded_id to
-    // check against every registered appservice). Used to enforce the
-    // spec's cross-appservice/human exclusivity rule for registration and
-    // alias creation.
-    [[nodiscard]] auto user_namespace_exclusively_owned_by_other(std::string_view user_id,
-                                                                 std::string_view excluded_id) const noexcept -> bool;
-    [[nodiscard]] auto alias_namespace_exclusively_owned_by_other(std::string_view alias,
-                                                                  std::string_view excluded_id) const noexcept -> bool;
-
-private:
-    std::vector<AppserviceRegistration> m_registrations{};
-};
-
-// Findings from validating a set of freshly-parsed registrations before
-// they become an AppserviceRegistry: spec v1.19 "If the homeserver in
-// question has multiple application services, each as_token and id MUST be
-// unique per application service as these are used to identify the
-// application service. The homeserver MUST enforce this."
-struct AppserviceRegistrationFinding final
-{
-    std::string source{}; // file path, for operator diagnostics
-    std::string message{};
-};
-
 // Validates `registrations` for duplicate `id`/`as_token` values (constant-
 // time for as_token) and structurally invalid namespace regexes. Returns
 // every problem found; an empty result means the set is safe to load.
@@ -267,27 +98,6 @@ struct AppserviceRegistrationFinding final
 [[nodiscard]] auto validate_registrations(std::vector<AppserviceRegistration> const& registrations,
                                           std::string_view server_name = {})
     -> std::vector<AppserviceRegistrationFinding>;
-
-// Loads and validates every registration file named in `paths`, in order.
-// A file that fails to load or parse is recorded in `findings` and
-// skipped (fail-closed per-file, not fail-closed for the whole server —
-// one operator typo in one bridge's file must not prevent every other
-// appservice, or the rest of the homeserver, from starting). The returned
-// registry contains only the registrations that parsed AND passed
-// cross-registration validation (duplicate id/as_token); when a duplicate
-// is found, every registration is dropped and the problem is recorded,
-// since the spec-mandated uniqueness makes a duplicate a fail-closed
-// condition (routing further requests would be ambiguous).
-//
-// ADR-0515: a registration whose non-null `url` is not a valid http(s) url, has a query string, or is
-// `http` to a host that is neither a loopback IP literal nor in `allowed_cleartext_hosts`
-// (`appservice.allow_cleartext_hosts`) is rejected as a per-file finding, because the hs_token is sent
-// to that url in every request. The finding names the problem and never contains a token or the url.
-struct LoadRegistrationsResult final
-{
-    AppserviceRegistry registry{};
-    std::vector<AppserviceRegistrationFinding> findings{};
-};
 
 [[nodiscard]] auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name = {},
                                       std::vector<std::string> const& allowed_cleartext_hosts = {})

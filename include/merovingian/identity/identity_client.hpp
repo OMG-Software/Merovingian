@@ -5,7 +5,13 @@
 #include "merovingian/config/IdentityServerConfig.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
-#include "merovingian/http/OutboundError.hpp"
+#include "merovingian/identity/IdentityServerResult.hpp"         // split-shim
+#include "merovingian/identity/IdentityServerUrl.hpp"            // split-shim
+#include "merovingian/identity/LookupResponse.hpp"               // split-shim
+#include "merovingian/identity/StoreInvitePublicKey.hpp"         // split-shim
+#include "merovingian/identity/StoreInviteResponse.hpp"          // split-shim
+#include "merovingian/identity/TestForcedIdentityResolution.hpp" // split-shim
+#include "merovingian/identity/ValidatedThreepid.hpp"            // split-shim
 
 #include <cstddef>
 #include <cstdint>
@@ -17,72 +23,6 @@
 
 namespace merovingian::identity
 {
-
-// Outcome of an Identity Service API call. `ok` reflects *transport* success
-// only (DNS/TLS/SSRF/connection/timeout) — callers fail closed on `ok == false`
-// and use `error`/`error_detail` for audit logging. When `ok` is true, `status`
-// holds the IS HTTP status and `body` the raw response body; the caller branches
-// on `status` for IS-level outcomes (e.g. a 404 on lookup means "no binding",
-// not a transport failure).
-struct IdentityServerResult final
-{
-    bool ok{false};
-    std::uint16_t status{0U};
-    std::string body{};
-    http::OutboundError error{http::OutboundError::network_error};
-    std::string error_detail{};
-};
-
-// One entry in the `public_keys` array of a store-invite response: the IS's
-// long-term public key and the ephemeral public key it generated for this
-// invite, each with a key_validity_url where joining servers can check it.
-struct StoreInvitePublicKey final
-{
-    std::string public_key{};
-    std::string key_validity_url{};
-};
-
-// Parsed `POST /_matrix/identity/v2/store-invite` response (200). Per the v1.19
-// spec the IS — not the homeserver — generates the invite `token`, the
-// redacted `display_name`, and the `public_keys` (long-term + ephemeral). The
-// homeserver embeds the ephemeral public_key/key_validity_url in the
-// `m.room.third_party_invite` event so joining servers can verify the invite
-// signature via the IS.
-struct StoreInviteResponse final
-{
-    std::string token{};
-    std::string display_name{};
-    std::vector<StoreInvitePublicKey> public_keys{};
-};
-
-// Parsed `POST /_matrix/identity/v2/lookup` response (200): the MXID bound to
-// the 3PID. Empty `mxid` means the IS has no binding for the 3PID.
-struct LookupResponse final
-{
-    std::string mxid{};
-};
-
-// Parsed `GET /_matrix/identity/v2/3pid/getValidated3pid` response (200): the
-// identity server's statement that the session was validated, for which 3PID
-// and when. All three fields are mandatory in the spec; `validated_at_ms` is a
-// positive millisecond timestamp.
-struct ValidatedThreepid final
-{
-    std::string medium{};
-    std::string address{};
-    std::uint64_t validated_at_ms{0U};
-};
-
-// Parsed identity-server base URL. The IS is configured by absolute HTTPS URL
-// (e.g. "https://is.example.org" or "https://is.example.org:8448/path"); the
-// host and port drive SSRF-safe address resolution and the optional `path`
-// prefixes every IS API path.
-struct IdentityServerUrl final
-{
-    std::string host{};
-    std::uint16_t port{443U};
-    std::string path{};
-};
 
 // Pure validator + parser for an identity-server base URL. Returns nullopt for
 // anything that is not an `https://` URL with a non-empty host. No network.
@@ -155,22 +95,6 @@ inline constexpr auto max_id_access_token_bytes = std::size_t{4096U};
 // percent-encoded: the sid is chosen by the identity server and the client
 // secret by the client, so neither may add a query parameter or end the query.
 [[nodiscard]] auto build_get_validated_3pid_path(std::string_view client_secret, std::string_view sid) -> std::string;
-
-// Test-only override for one identity-server host. Mirrors the homeserver's
-// `TestOnlyForcedOutboundResolution` contract: when `HomeserverRuntime` has an
-// entry keyed by the IS host, `IdentityServerClient::perform()` uses these
-// pinned addresses and in-memory CA bundle instead of SSRF-safe discovery. The
-// IS base URL already carries the port (no `resolved_port` override is needed,
-// unlike the federation seam which resolves a different port via SRV/.well-
-// known), so only the pinned addresses and CA bundle are required. The struct
-// lives here — not in `HomeserverRuntime.hpp` — so the `identity` module does not depend
-// on `homeserver` (the dependency runs `homeserver → identity`). Always empty
-// in production; no production construction path populates it.
-struct TestForcedIdentityResolution final
-{
-    std::vector<std::string> pinned_addresses{};
-    std::string trusted_ca_pem{};
-};
 
 // Outbound Identity Service API client. The homeserver is a *client* of one or
 // more operator-configured identity servers (config.server().identity_server).

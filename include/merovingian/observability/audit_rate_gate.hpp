@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/observability/AuditRateDecision.hpp" // split-shim
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -33,15 +35,6 @@ inline constexpr auto audit_rate_gate_window = std::chrono::seconds{60};
 // addresses). Every other kind, including login successes, admin actions and
 // authenticated security events, is written on every occurrence.
 [[nodiscard]] auto audit_event_is_rate_capped(std::string_view event_type) noexcept -> bool;
-
-struct AuditRateDecision final
-{
-    // False when the event must not be written durably; it has been counted.
-    bool write{true};
-    // Number of events the kind suppressed since its last written row. Non-zero
-    // only on the first row written after a window that overran its allowance.
-    std::uint64_t suppressed{0U};
-};
 
 // Not thread-safe: the caller serialises access. The runtime appends audit rows
 // under `HomeserverRuntime::mutex`, and the gate lives beside the rows it gates.

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/RuntimeConfigApplyResult.hpp" // split-shim
 #include "merovingian/config/reload_plan.hpp"
 
 #include <memory>
@@ -10,13 +11,6 @@
 
 namespace merovingian::config
 {
-
-enum class RuntimeConfigApplyResult : unsigned char
-{
-    applied,
-    unchanged,
-    restart_required,
-};
 
 class RuntimeConfigSnapshot final
 {

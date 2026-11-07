@@ -9,6 +9,7 @@
 // tokens it presents from the id alone. A fresh file is written per call, so
 // parallel scenarios never share on-disk state.
 
+#include "TestAppservice.hpp" // split-shim
 #include "in_memory_database_config.hpp"
 #include "master_key.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -32,29 +33,6 @@
 
 namespace merovingian::tests
 {
-
-struct TestAppservice final
-{
-    std::string id{"bridge"};
-    // The registration's `url`; nullopt writes `url: null` ("no traffic is required").
-    std::optional<std::string> url{};
-    // POSIX ERE patterns; an empty string leaves that namespace out.
-    std::string users_regex{};
-    std::string aliases_regex{};
-    std::string rooms_regex{};
-    std::vector<std::string> protocols{};
-    bool receive_ephemeral{false};
-
-    [[nodiscard]] auto as_token() const -> std::string
-    {
-        return "as-token-" + id;
-    }
-
-    [[nodiscard]] auto hs_token() const -> std::string
-    {
-        return "hs-token-" + id;
-    }
-};
 
 [[nodiscard]] inline auto write_test_registration(TestAppservice const& appservice) -> std::filesystem::path
 {

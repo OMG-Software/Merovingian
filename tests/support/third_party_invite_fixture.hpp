@@ -6,6 +6,7 @@
 // m.room.third_party_invite, and the identity server's signed object.
 
 #include "../federation_signing_test_support.hpp"
+#include "InviteRoom.hpp" // split-shim
 #include "in_memory_database_config.hpp"
 #include "json_test_support.hpp"
 #include "master_key.hpp"
@@ -108,13 +109,6 @@ namespace fed = merovingian::federation;
     });
     return found == memberships.end() ? std::string{} : found->membership;
 }
-
-// A room of alice's holding an m.room.third_party_invite for `token` whose key is `identity_key`'s.
-struct InviteRoom final
-{
-    std::string room_id{};
-    std::string alice_token{};
-};
 
 [[nodiscard]] inline auto room_with_third_party_invite(merovingian::homeserver::ClientServerRuntime& runtime,
                                                        std::string const& token,

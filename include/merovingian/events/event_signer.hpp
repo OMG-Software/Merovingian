@@ -6,6 +6,10 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/EventSigningDiagnosticField.hpp" // split-shim
+#include "merovingian/events/SignatureVerificationResult.hpp" // split-shim
+#include "merovingian/events/SignedEventResult.hpp"           // split-shim
+#include "merovingian/events/SigningKeyId.hpp"                // split-shim
 #include "merovingian/events/event.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -16,37 +20,6 @@
 
 namespace merovingian::events
 {
-
-struct SigningKeyId final
-{
-    std::string server_name{};
-    std::string key_id{};
-};
-
-struct SignatureVerificationResult final
-{
-    bool valid{false};
-    std::string error{};
-};
-
-struct SignedEventResult final
-{
-    std::string event_json{};
-    std::string server_name{};
-    std::string key_id{};
-    std::string signature{};
-    std::string error{};
-};
-
-// One key/value pair of the diagnostic emitted when an event is signed. Modelled
-// here rather than as an observability::StructuredLogField so event_signer.hpp
-// does not drag the observability header (and its database/http dependencies)
-// into every translation unit that signs an event.
-struct EventSigningDiagnosticField final
-{
-    std::string key{};
-    std::string value{};
-};
 
 // A key ID is valid only if it names a signing algorithm this server implements.
 // Spec: Matrix Server-Server API v1.19 — "The object's key is the algorithm and

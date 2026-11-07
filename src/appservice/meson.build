@@ -1,5 +1,7 @@
 appservice_sources = files(
   'AppserviceClient.cpp',
+  'AppserviceRegistry.cpp',
+  'Namespace.cpp',
   'cleartext_policy.cpp',
   'masquerade_token.cpp',
   'registration.cpp',

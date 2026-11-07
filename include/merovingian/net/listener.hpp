@@ -3,6 +3,8 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/net/ListenerPlan.hpp" // split-shim
+#include "merovingian/net/ListenerRole.hpp" // split-shim
 
 #include <cstdint>
 #include <string>
@@ -10,22 +12,6 @@
 
 namespace merovingian::net
 {
-
-enum class ListenerRole : std::uint8_t
-{
-    client,
-    federation,
-};
-
-struct ListenerPlan final
-{
-    ListenerRole role{ListenerRole::client};
-    std::string bind{};
-    bool tls{false};
-    bool reverse_proxy{true};
-    std::string tls_certificate_file{};
-    std::string tls_private_key_file{};
-};
 
 class RuntimeListeners final
 {

@@ -4,6 +4,9 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"  // split-shim
+#include "merovingian/federation/PublicRoomsRefusal.hpp" // split-shim
+#include "merovingian/federation/PublicRoomsRequest.hpp" // split-shim
 
 #include <cstddef>
 #include <optional>
@@ -21,32 +24,6 @@
 // (ADR-0460). The listing itself is homeserver/public_rooms.hpp.
 namespace merovingian::federation
 {
-
-struct PublicRoomsFilter final
-{
-    std::string generic_search_term{};
-    // Not specified: every room, whatever its type. Specified: only rooms of a listed type, with an entry
-    // holding no value standing for the spec's `null`, "rooms without a room type". An empty list searches
-    // for no type, so it lists nothing.
-    std::optional<std::vector<std::optional<std::string>>> room_types{};
-};
-
-struct PublicRoomsRequest final
-{
-    PublicRoomsFilter filter{};
-    // Absent: the request set no limit (or `limit=0`, the spec's "no limit"). The server still pages.
-    std::optional<std::size_t> limit{};
-    std::size_t since_offset{0U};
-    bool include_all_networks{false};
-    std::string third_party_instance_id{};
-};
-
-// A refused request: always 400, with this standard error.
-struct PublicRoomsRefusal final
-{
-    std::string errcode{};
-    std::string message{};
-};
 
 // What was read, or why not. Not std::expected, which this project's toolchain does not build.
 using PublicRoomsFilterResult = std::variant<PublicRoomsFilter, PublicRoomsRefusal>;

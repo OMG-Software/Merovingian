@@ -4,6 +4,9 @@
 
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/DispatchDestinationSnapshot.hpp" // split-shim
+#include "merovingian/federation/DispatchWorkerConfig.hpp"        // split-shim
+#include "merovingian/federation/DispatchWorkerSummary.hpp"       // split-shim
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
@@ -26,15 +29,6 @@
 namespace merovingian::federation
 {
 
-// Snapshot of a destination's retry state. The dispatch worker keeps these
-// in memory keyed by server_name so it can short-circuit through the
-// existing destination_should_retry circuit breaker between attempts.
-struct DispatchDestinationSnapshot final
-{
-    std::string server_name{};
-    FederationDestination state{};
-};
-
 // Wall-clock millisecond source. Injectable so deterministic tests can drive
 // retry boundaries without sleeping.
 using DispatchClock = std::function<std::uint64_t()>;
@@ -52,61 +46,6 @@ using DispatchResolver = std::function<std::optional<ServerDiscoveryResult>(std:
 // The most that discovery may take on a delivery thread (F-20, ADR-0354). The runtime's general remote
 // timeout is for other callers; discovery here runs before an attempt has even started.
 inline constexpr auto dispatch_discovery_timeout_seconds = std::uint32_t{10U};
-
-struct DispatchWorkerConfig final
-{
-    // Identity used when signing outbound traffic. The signing identity
-    // mirrors the runtime's persisted Ed25519 signing key. `secret_key` is
-    // the raw 64-byte libsodium Ed25519 secret key, held in an owning,
-    // mlocked, zeroised SecretBuffer so the worker never keeps an unpinned
-    // std::string copy. Per-call OutboundCall objects borrow it via .bytes().
-    std::string origin{};
-    std::string key_id{};
-    core::SecretBuffer secret_key{};
-    // Bound on the in-memory enqueue list. Enforced fail-closed: enqueue
-    // returns false once the limit is hit. Zero disables the bound for tests.
-    std::size_t max_queue_depth{1024U};
-    // Bound on how many queued transactions one destination may hold, so a dead or hostile peer
-    // whose circuit stays open cannot fill the queue every other peer shares (security audit
-    // run-1). Past it enqueue refuses the transaction and counts it in `rejected`; the peer
-    // fetches what it missed itself once it is reachable (prev_events, /get_missing_events).
-    // Zero derives it from max_queue_depth: see effective_max_pending_per_destination.
-    std::size_t max_pending_per_destination{0U};
-    // Why the operator's policy excludes a destination, empty when it does not (ADR-0391). Enqueue refuses such a
-    // transaction and replay drops its durable row, so nothing queued can reach one: the policy cannot change
-    // while the process runs. Unset excludes nothing.
-    std::function<std::string(std::string_view destination)> destination_refusal{};
-    // Maximum number of retry attempts before a transaction is dropped and
-    // recorded as terminally failed. Matches the federation backoff curve.
-    std::uint32_t max_retries{8U};
-    // Threads delivering at once. One destination holds at most one of them at a time (ADR-0354).
-    std::size_t delivery_threads{1U};
-    // The whole of one attempt once the destination is known.
-    std::uint32_t attempt_timeout_seconds{30U};
-    // An attempt, discovery included, that took longer than this and then succeeded counts against
-    // the destination all the same (ADR-0354).
-    std::uint64_t slow_attempt_ms{10000U};
-    // How long a shutdown keeps delivering what was already due. What it does not reach stays durable.
-    std::chrono::milliseconds shutdown_drain_budget{std::chrono::seconds{30}};
-    // Optional PEM CA bundle trusted in place of the system trust store. Only ever set by tests, as
-    // with OutboundCall::trusted_ca_pem.
-    std::string trusted_ca_pem{};
-    // How long the worker sleeps when the queue is empty before re-checking
-    // for shutdown. Smaller values shorten shutdown latency.
-    std::chrono::milliseconds idle_poll{std::chrono::milliseconds{50}};
-};
-
-struct DispatchWorkerSummary final
-{
-    std::size_t enqueued{0U};
-    std::size_t delivered{0U};
-    std::size_t failed{0U};
-    std::size_t dropped{0U};
-    std::size_t pending{0U};
-    // Transactions refused at enqueue because the queue, or the destination's share of it, was
-    // full. A malformed transaction or one offered during shutdown is not counted.
-    std::size_t rejected{0U};
-};
 
 // The per-destination bound a worker with `config` enforces: max_pending_per_destination when set,
 // otherwise a sixteenth of max_queue_depth and never below 16 (256 for the default 4096).

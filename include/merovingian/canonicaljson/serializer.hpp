@@ -2,28 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/SerializeResult.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 
-#include <string>
 #include <string_view>
 #include <vector>
 
 namespace merovingian::canonicaljson
 {
-
-enum class CanonicalJsonError : unsigned char
-{
-    none,
-    duplicate_object_key,
-    invalid_string,
-    float_not_allowed,
-};
-
-struct SerializeResult final
-{
-    std::string output{};
-    CanonicalJsonError error{CanonicalJsonError::none};
-};
 
 [[nodiscard]] auto canonical_json_error_name(CanonicalJsonError error) noexcept -> char const*;
 [[nodiscard]] auto string_is_valid_for_json(std::string_view value) noexcept -> bool;

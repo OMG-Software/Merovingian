@@ -3,6 +3,13 @@
 #pragma once
 
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/Ed25519Keypair.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp" // split-shim
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519SecretKeyHandle.hpp" // split-shim
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/SignatureResult.hpp" // split-shim
+#include "merovingian/crypto/VerificationResult.hpp"
 
 #include <array>
 #include <cstddef>
@@ -14,65 +21,6 @@
 
 namespace merovingian::crypto
 {
-
-struct Ed25519PublicKey final
-{
-    std::string bytes{};
-};
-
-struct Ed25519SecretKeyHandle final
-{
-    std::string key_id{};
-};
-
-struct Ed25519Signature final
-{
-    std::string bytes{};
-};
-
-// Size of the libsodium Ed25519 secret key representation (seed || public key).
-// Named so callers can size buffers without default-constructing an
-// Ed25519Keypair purely to read `.secret_key.size()` — the secret is now a
-// move-only SecretBuffer whose size is a runtime property.
-constexpr auto ed25519_secret_key_bytes = std::size_t{64U};
-constexpr auto ed25519_public_key_bytes = std::size_t{32U};
-
-// The secret half lives in core::SecretBuffer, not a plain std::array: this is
-// forgery-capable material, so it must be mlocked against swap and zeroised on
-// destruction for its whole lifetime, including the window between generation
-// and storage encoding. That makes the keypair move-only.
-struct Ed25519Keypair final
-{
-    std::array<std::uint8_t, ed25519_public_key_bytes> public_key{};
-    core::SecretBuffer secret_key{};
-};
-
-struct SignatureResult final
-{
-    Ed25519Signature signature{};
-    std::string error{};
-};
-
-struct VerificationResult final
-{
-    bool valid{false};
-    std::string error{};
-};
-
-class Ed25519Provider
-{
-public:
-    Ed25519Provider() = default;
-    Ed25519Provider(Ed25519Provider const& other) = delete;
-    auto operator=(Ed25519Provider const& other) -> Ed25519Provider& = delete;
-    Ed25519Provider(Ed25519Provider&& other) noexcept = delete;
-    auto operator=(Ed25519Provider&& other) noexcept -> Ed25519Provider& = delete;
-    virtual ~Ed25519Provider() = default;
-
-    [[nodiscard]] virtual auto sign(Ed25519SecretKeyHandle const& key, std::string_view message) -> SignatureResult = 0;
-    [[nodiscard]] virtual auto verify(Ed25519PublicKey const& public_key, std::string_view message,
-                                      Ed25519Signature const& signature) -> VerificationResult = 0;
-};
 
 [[nodiscard]] auto ed25519_public_key_shape_is_valid(Ed25519PublicKey const& public_key) noexcept -> bool;
 [[nodiscard]] auto ed25519_signature_shape_is_valid(Ed25519Signature const& signature) noexcept -> bool;

@@ -4,6 +4,7 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/OpenedMasterKeyFile.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 
 #include <cstdint>
@@ -59,17 +60,6 @@ namespace merovingian::crypto
 // gone away.
 [[nodiscard]] auto master_key_file_identity(std::string_view path) -> std::string;
 
-// ISO-7: one opened master key file. `identity` (as master_key_file_identity
-// describes it) and the bytes load_master_key_material(opened) reads come from
-// the same descriptor, so a cache keyed on the identity can never hold a key
-// derived from a file swapped in between the two. Every derived-key cache opens
-// the file once this way; opening for the identity and again for the bytes is
-// the race this exists to close.
-struct OpenedMasterKeyFile final
-{
-    core::FileDescriptor file;
-    std::string identity{};
-};
 [[nodiscard]] auto open_master_key_file(std::string_view path) -> std::optional<OpenedMasterKeyFile>;
 [[nodiscard]] auto load_master_key_material(OpenedMasterKeyFile const& opened) -> std::optional<core::SecretBuffer>;
 

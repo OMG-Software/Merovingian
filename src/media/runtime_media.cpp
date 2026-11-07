@@ -3,6 +3,8 @@
 
 #include "merovingian/media/runtime_media.hpp"
 
+#include "merovingian/media/security.hpp"
+
 #include <string>
 #include <vector>
 

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/platform/HardeningCheck.hpp"
+#include "merovingian/platform/HardeningStatus.hpp"
 #include "merovingian/platform/elf_probe.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
@@ -12,20 +14,6 @@
 
 namespace merovingian::platform
 {
-
-enum class HardeningStatus : std::uint8_t
-{
-    enabled,
-    disabled,
-    unknown,
-};
-
-struct HardeningCheck final
-{
-    std::string name{};
-    HardeningStatus status{HardeningStatus::unknown};
-    std::string note{};
-};
 
 class HardeningSelfCheck final
 {

@@ -4,6 +4,9 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/ServerAclDecision.hpp"   // split-shim
+#include "merovingian/federation/ServerAclEvaluation.hpp" // split-shim
+#include "merovingian/federation/ServerAclEvent.hpp"      // split-shim
 
 #include <optional>
 #include <string>
@@ -12,26 +15,6 @@
 
 namespace merovingian::federation
 {
-
-struct ServerAclEvent final
-{
-    std::vector<std::string> allow{};
-    std::vector<std::string> deny{};
-    bool allow_ip_literals{true};
-};
-
-enum class ServerAclDecision : std::uint8_t
-{
-    allow,
-    deny,
-};
-
-struct ServerAclEvaluation final
-{
-    ServerAclDecision decision{ServerAclDecision::deny};
-    std::string rule{};
-    std::string reason{};
-};
 
 // Parses the content of an m.room.server_acl state event. Missing or
 // malformed fields fall back to the spec defaults (empty lists, allow

@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/events/state_resolution.hpp"
+#include "merovingian/federation/StateAtEvent.hpp" // split-shim
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/room_read_result.hpp"
 
@@ -76,23 +77,6 @@ inline constexpr auto default_missing_events_limit = std::size_t{10U};
 // authorisation events (ADR-0364). The default of `security.federation.backfill.max_auth_chain_ids`,
 // so this server never serves a chain it would refuse to read.
 inline constexpr auto max_state_auth_chain_events = std::size_t{65536U};
-
-// The state of `room_id` BEFORE `at_event_id`, as this server recorded it (ADR-0363, F-25, F-26).
-struct StateAtEvent final
-{
-    // False when the event is unknown, is in another room, or this server has no state it can serve
-    // whole for it: an outlier, a missing or broken state-group chain, a group naming an event this
-    // store lacks or a rejected one, a resolution over its budget (ADR-0365). The federation
-    // endpoints answer 404. Nothing is ever substituted from a walk of the graph or the current state.
-    bool known{false};
-    // The state event IDs, in no order. Empty with `known` true only for the room's first event.
-    std::vector<std::string> event_ids{};
-    // What the answer cost, so a test can show that it does not grow with the room's history: the
-    // stored events whose JSON was parsed here (the requested event's, once), and whether the state
-    // of several prev_events had to be resolved (which parses the entries of their groups, nothing else).
-    std::size_t events_parsed{0U};
-    bool resolved{false};
-};
 
 // The limits a read-path resolution of the state before an event runs under. Only the auth-chain
 // walk is tighter than ingestion's: the per-group and total state caps already bound the rest by the

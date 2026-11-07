@@ -5,6 +5,7 @@
 #include "merovingian/core/folded_substring.hpp"
 #include "merovingian/database/PersistentProfile.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/UserDirectorySearchStats.hpp" // split-shim
 
 #include <cstddef>
 #include <vector>
@@ -15,16 +16,6 @@ namespace merovingian::homeserver
 // The most results POST /user_directory/search returns whatever `limit` asks for (ADR-0334). The spec
 // defaults `limit` to 10 and sets no maximum; the response's `limited` says the list was cut.
 inline constexpr std::size_t max_user_directory_results = 100U;
-
-// What one user directory search did, so a test can hold it to a bound that does not grow with the number of
-// profiles that match.
-struct UserDirectorySearchStats final
-{
-    // Whole passes over the account table (`store.users`): 1 however many profiles match.
-    std::size_t user_table_walks{0U};
-    // Profiles whose display name or user ID was searched.
-    std::size_t profiles_examined{0U};
-};
 
 // The profiles whose display name or user ID holds the matcher's term, in the store's order, leaving out
 // those of a deactivated account (0.12.13 audit item 5: it can never log in again, so it is not offered as

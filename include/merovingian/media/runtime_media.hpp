@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/MediaAcceptancePolicy.hpp"
 
 #include <cstdint>
 #include <string>

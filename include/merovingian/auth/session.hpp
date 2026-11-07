@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/RegistrationPolicy.hpp"
+#include "merovingian/auth/RegistrationPolicyDecision.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/token.hpp"
 
@@ -11,19 +13,6 @@
 
 namespace merovingian::auth
 {
-
-struct RegistrationPolicy final
-{
-    bool enabled{false};
-    bool require_token{true};
-    bool token_present{false};
-};
-
-struct RegistrationPolicyDecision final
-{
-    bool allowed{false};
-    std::string reason{};
-};
 
 [[nodiscard]] auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecision;
 

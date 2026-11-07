@@ -2,19 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/Linkage.hpp"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace merovingian::core
 {
-
-// How a library reached the running process.
-enum class Linkage : std::uint8_t
-{
-    static_linked, // compiled into this executable: changes only with a rebuild
-    dynamic,       // a shared object the loader opened: an OS update can replace it under the binary
-};
 
 // One library an executable depends on, as logged at startup (0.12.45). Each module that owns a
 // library reports it (crypto: libsodium, database: SQLite and libpq, http: libcurl, canonicaljson:

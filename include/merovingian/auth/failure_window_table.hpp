@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/FailureKey.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -18,18 +20,6 @@ namespace merovingian::auth
 // counters one FailureWindowTable keeps. A counter is a few dozen bytes, so the
 // bound is a few megabytes per table whatever an unauthenticated client sends.
 inline constexpr auto max_failure_window_entries = std::size_t{100000U};
-
-// Fixed-size identity of a counted subject: an unkeyed BLAKE2b-256 digest of the
-// subject kind and its parts. Fixed size means a client-chosen 60 KiB user ID
-// costs the same as a short one. Unkeyed is enough: the table lives in process
-// memory, and a 256-bit collision-resistant digest means a client cannot choose
-// a name that lands on somebody else's counter.
-struct FailureKey final
-{
-    std::array<std::uint8_t, 32U> digest{};
-
-    [[nodiscard]] friend auto operator==(FailureKey const&, FailureKey const&) noexcept -> bool = default;
-};
 
 // Builds the key for `kind` (a short fixed label, e.g. "source") applied to
 // `account` and `qualifier` (a client source, or a device ID). The account is

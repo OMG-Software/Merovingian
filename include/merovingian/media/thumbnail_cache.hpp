@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/CachedThumbnail.hpp"
+#include "merovingian/media/ThumbnailCacheKey.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,25 +13,6 @@
 
 namespace merovingian::media
 {
-
-// Which thumbnail of which stored bytes. `media_id` and `storage_id` are the
-// local record that authorised the decode (for remote media, the cached local
-// record), so a replaced blob or a re-admitted remote file never hits an old
-// entry.
-struct ThumbnailCacheKey final
-{
-    std::string media_id{};
-    std::string storage_id{};
-    std::uint32_t width{0U};
-    std::uint32_t height{0U};
-    ThumbnailMethod method{ThumbnailMethod::scale};
-};
-
-struct CachedThumbnail final
-{
-    std::string content_type{};
-    std::string bytes{};
-};
 
 // MED-4, ADR-0152: generated thumbnails, bounded by bytes and evicted least
 // recently used first. Not thread-safe: it lives in LocalMediaRepository under

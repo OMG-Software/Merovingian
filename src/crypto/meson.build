@@ -14,6 +14,7 @@ crypto_sources = files(
   'runtime_multikey_ed25519_provider.cpp',
   'secret_box.cpp',
   'signing_service.cpp',
+  'SigningKeyStore.cpp',
   'token_key.cpp',
 )
 

@@ -2,8 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/error.hpp"
 #include "merovingian/core/library_version.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp" // split-shim
+#include "merovingian/media/ThumbnailRequest.hpp"
+#include "merovingian/media/ThumbnailResult.hpp"
+#include "merovingian/media/ThumbnailSourceFormat.hpp"
+#include "merovingian/media/ThumbnailWorkerLibraries.hpp"
+#include "merovingian/media/ThumbnailWorkerRequest.hpp"
+#include "merovingian/media/ThumbnailWorkerResponse.hpp"
+#include "merovingian/media/ThumbnailWorkerStatus.hpp" // split-shim
+#include "merovingian/media/ThumbnailerConfig.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,92 +29,6 @@ namespace merovingian::media
 // The largest thumbnail axis the sandboxed worker produces. A larger request
 // is clamped to it, so every size past it yields the same bytes.
 inline constexpr auto max_thumbnail_dimension = std::uint32_t{4096U};
-
-// Resampling method requested by the client (Matrix CS API §thumbnails).
-// `scale` fits the image within the box preserving aspect ratio; `crop`
-// fills the box and trims the overflow, also preserving aspect ratio.
-enum class ThumbnailMethod : std::uint8_t
-{
-    scale = 0U,
-    crop = 1U,
-};
-
-// Source pixel format the worker should decode. Only the still-image formats
-// the resampler supports are represented; animated/unsupported types never
-// reach the worker.
-enum class ThumbnailSourceFormat : std::uint8_t
-{
-    png = 0U,
-    jpeg = 1U,
-};
-
-// Status the sandboxed worker reports back for a single request. Anything other
-// than `ok` means no thumbnail bytes were produced.
-enum class ThumbnailWorkerStatus : std::uint8_t
-{
-    ok = 0U,
-    decode_failed = 1U,
-    too_large = 2U,
-    unsupported = 3U,
-    internal_error = 4U,
-};
-
-// A decode+resample job handed to the worker over its stdin pipe.
-struct ThumbnailWorkerRequest final
-{
-    ThumbnailSourceFormat format{ThumbnailSourceFormat::png};
-    ThumbnailMethod method{ThumbnailMethod::scale};
-    std::uint32_t target_width{0U};
-    std::uint32_t target_height{0U};
-    std::uint32_t max_pixels{0U}; // decode guard: reject images above this area
-    std::string source_bytes{};
-};
-
-// The worker's reply, read from its stdout pipe.
-struct ThumbnailWorkerResponse final
-{
-    ThumbnailWorkerStatus status{ThumbnailWorkerStatus::internal_error};
-    std::uint32_t width{0U};
-    std::uint32_t height{0U};
-    std::string png_bytes{};
-};
-
-// Parent-facing request: the original media bytes plus the requested geometry.
-struct ThumbnailRequest final
-{
-    std::string source_bytes{};
-    std::string source_content_type{};
-    std::uint32_t width{0U};
-    std::uint32_t height{0U};
-    ThumbnailMethod method{ThumbnailMethod::scale};
-};
-
-// Parent-facing result. `ok` thumbnails always carry `image/png` bytes.
-struct ThumbnailResult final
-{
-    bool ok{false};
-    std::uint16_t status{500U};
-    std::string content_type{};
-    std::string bytes{};
-    std::uint32_t width{0U};
-    std::uint32_t height{0U};
-    std::string reason{};
-};
-
-// Configuration for spawning the out-of-process worker.
-struct ThumbnailerConfig final
-{
-    std::string worker_path{};          // absolute path to the worker executable
-    std::uint32_t timeout_seconds{10U}; // wall-clock cap on a single decode
-    std::uint64_t max_input_bytes{0U};  // 0 = unbounded; reject larger sources
-    std::uint64_t max_output_bytes{0U}; // 0 = unbounded; reject larger results
-    std::uint32_t max_pixels{4096000U}; // decode-bomb guard handed to the worker
-    std::uint32_t max_target_dimension{2048U};
-    // Pre-opened fd for the worker binary (FreeBSD Capsicum only). When >= 0 the
-    // child process calls fexecve(fd,...) instead of execv(path,...) so the exec
-    // succeeds after cap_enter() has forbidden opening files by path. -1 disables.
-    int worker_binary_fd{-1};
-};
 
 // --- Wire protocol (shared by parent and worker; pure, no I/O) ---------------
 // The framing is deliberately tiny and fixed so both ends agree byte-for-byte
@@ -153,14 +75,6 @@ inline constexpr std::size_t max_library_report_entries{8U};
 // non-200 status; callers decide whether to fall back to the original bytes.
 [[nodiscard]] auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const& request)
     -> ThumbnailResult;
-
-// The worker's library report, or why there is none. Not std::expected: this project's toolchain
-// does not build <expected> cleanly (see AppserviceRegistrationParseResult).
-struct ThumbnailWorkerLibraries final
-{
-    std::optional<std::vector<core::LibraryVersion>> libraries{};
-    core::Error error{};
-};
 
 // Spawns the worker as for a thumbnail and asks it for its library report. Without one, `error`
 // says why: no worker configured, the worker could not run, or its answer was malformed.

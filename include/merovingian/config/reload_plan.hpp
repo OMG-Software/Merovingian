@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/ReloadChange.hpp" // split-shim
 #include "merovingian/config/reload_policy.hpp"
 
 #include <cstddef>
@@ -11,12 +12,6 @@
 
 namespace merovingian::config
 {
-
-struct ReloadChange final
-{
-    std::string key{};
-    ReloadPolicy policy{ReloadPolicy::reloadable};
-};
 
 class ReloadPlan final
 {

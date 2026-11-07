@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/TokenHmacKey.hpp"
+#include "merovingian/crypto/TokenHmacKeys.hpp"
 #include "merovingian/crypto/secure_key_bytes.hpp"
+
+#include <sodium.h>
 
 #include <array>
 #include <cstddef>
@@ -12,29 +16,8 @@
 #include <span>
 #include <string_view>
 
-#include <sodium.h>
-
 namespace merovingian::crypto
 {
-
-// 32-byte HMAC key derived from operator-supplied master key material using a
-// domain-separated libsodium generic hash. This key is used for access-token
-// hashing and must never be reused for signing-secret encryption.
-//
-// Secret material must not survive past its scope (core/AGENTS.md): the
-// destructor zeroises `bytes` with sodium_memzero, and copies/moves zeroise
-// whichever instance is left behind rather than relying on the caller.
-struct TokenHmacKey final
-{
-    SecureKeyBytes bytes{};
-
-    TokenHmacKey() = default;
-    TokenHmacKey(TokenHmacKey const&) = default;
-    auto operator=(TokenHmacKey const&) -> TokenHmacKey& = default;
-    TokenHmacKey(TokenHmacKey&&) noexcept = default;
-    auto operator=(TokenHmacKey&&) noexcept -> TokenHmacKey& = default;
-    ~TokenHmacKey() = default;
-};
 
 // Derive an independent access-token HMAC key from master key material.
 // The same input material always produces the same derived key so tokens hashed
@@ -53,13 +36,6 @@ struct TokenHmacKey final
     -> std::optional<TokenHmacKey>;
 
 static_assert(SecureKeyBytes::key_bytes == crypto_generichash_KEYBYTES);
-
-// Both access-token HMAC keys, derived together from one read of the master key.
-struct TokenHmacKeys final
-{
-    std::optional<TokenHmacKey> v3{};
-    std::optional<TokenHmacKey> v4{};
-};
 
 // The token HMAC keys derived from the master key file at `path`, cached
 // against that file's identity (ISO-7: identity and bytes from one open).

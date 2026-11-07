@@ -4,6 +4,11 @@
 #pragma once
 
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditSinkFields.hpp"        // split-shim
+#include "merovingian/observability/DropEpisodePolicy.hpp"      // split-shim
+#include "merovingian/observability/LogEventSeverity.hpp"       // split-shim
+#include "merovingian/observability/LogLevel.hpp"               // split-shim
+#include "merovingian/observability/LowSeverityFlushPolicy.hpp" // split-shim
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/log_file_sink.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -35,145 +40,6 @@ namespace merovingian::observability
 {
 
 constexpr auto max_log_queue_size = 4096U;
-
-enum class LogLevel
-{
-    trace = 100,
-    debug = 200,
-    info = 300,
-    notice = 400,
-    warning = 500,
-    error = 600,
-    critical = 700,
-    off = 1000,
-};
-enum class LogEventSeverity
-{
-    // Per-event severity. Mirrors LogLevel so the threshold check is
-    // uniform across the diagnostic and audit-routing paths. The
-    // `log_diagnostic` free function takes one as its fourth arg with
-    // a default of `LogEventSeverity::debug`, so the 40+ existing
-    // call sites continue to compile unchanged.
-    trace = 100,
-    debug = 200,
-    info = 300,
-    notice = 400,
-    warning = 500,
-    error = 600,
-    critical = 700,
-};
-
-class LowSeverityFlushPolicy final
-{
-public:
-    using Clock = std::chrono::steady_clock;
-
-    [[nodiscard]] static constexpr auto message_interval() noexcept -> std::size_t
-    {
-        return 100U;
-    }
-
-    [[nodiscard]] static constexpr auto time_interval() noexcept -> Clock::duration
-    {
-        return std::chrono::seconds{1};
-    }
-
-    [[nodiscard]] auto observe_message(bool immediate_flush, Clock::time_point now) noexcept -> bool
-    {
-        if (immediate_flush)
-        {
-            mark_flushed();
-            return true;
-        }
-
-        if (m_pending_count == 0U)
-        {
-            m_next_deadline = now + time_interval();
-        }
-
-        ++m_pending_count;
-        if (m_pending_count >= message_interval() || flush_due(now))
-        {
-            mark_flushed();
-            return true;
-        }
-
-        return false;
-    }
-
-    [[nodiscard]] auto flush_due(Clock::time_point now) const noexcept -> bool
-    {
-        return m_next_deadline.has_value() && now >= *m_next_deadline;
-    }
-
-    auto mark_flushed() noexcept -> void
-    {
-        m_pending_count = 0U;
-        m_next_deadline.reset();
-    }
-
-    [[nodiscard]] auto pending_count() const noexcept -> std::size_t
-    {
-        return m_pending_count;
-    }
-
-    [[nodiscard]] auto next_deadline() const noexcept -> std::optional<Clock::time_point>
-    {
-        return m_next_deadline;
-    }
-
-private:
-    std::size_t m_pending_count{0U};
-    std::optional<Clock::time_point> m_next_deadline{};
-};
-
-// L-10 / L-13 (security-audit-report-2026-09.md): tracks bounded-resource
-// drop episodes so a caller can emit exactly one warning per contiguous run
-// of drops rather than one per dropped item -- flooding a log/audit sink
-// during an incident must not itself become the flood. Shared by
-// `SingleLog::console_log`/`file_log` (a bounded queue silently discarding
-// entries once full) and `local_audit_sink` in
-// `src/homeserver/local_services.cpp` (silently no-opping while the
-// thread-local database is unset/closed): both are "keep working, but tell
-// the operator once" backpressure signals.
-class DropEpisodePolicy final
-{
-public:
-    // Call once per attempt. `accepted` is whether the attempt succeeded
-    // (the queue had room / the audit sink persisted the event). Returns
-    // true exactly once per drop episode: the first failed attempt after a
-    // run of successes (or since construction). Every subsequent failed
-    // attempt in the same episode returns false, so the caller emits at
-    // most one warning per flood; a later success resets the episode so a
-    // fresh flood warns again.
-    [[nodiscard]] auto observe(bool accepted) noexcept -> bool
-    {
-        if (accepted)
-        {
-            m_in_drop_episode = false;
-            return false;
-        }
-
-        ++m_dropped_total;
-        auto const entering_episode = !m_in_drop_episode;
-        m_in_drop_episode = true;
-        return entering_episode;
-    }
-
-    [[nodiscard]] auto dropped_total() const noexcept -> std::size_t
-    {
-        return m_dropped_total;
-    }
-
-    [[nodiscard]] auto in_drop_episode() const noexcept -> bool
-    {
-        return m_in_drop_episode;
-    }
-
-private:
-    std::size_t m_dropped_total{0U};
-    bool m_in_drop_episode{false};
-};
 
 class SingleLog final
 {
@@ -875,15 +741,6 @@ inline auto log_diagnostic(std::string_view logger, std::string_view event,
 // |  helper in the lower layer without dragging `LocalDatabase` into every  |
 // |  module that wants audit routing.                                       |
 // +-------------------------------------------------------------------------+
-
-struct AuditSinkFields final
-{
-    AuditCategory category{AuditCategory::auth};
-    std::string_view event_type{};
-    std::string_view actor{};
-    std::string_view target{};
-    std::string_view reason{};
-};
 
 using AuditSink = auto (*)(AuditSinkFields const&) -> void;
 
