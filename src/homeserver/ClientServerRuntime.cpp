@@ -20109,10 +20109,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 });
                 // The replacement room exists and nothing points to it. Matrix has no room deletion, so the upgrader
                 // leaves it and it is abandoned (ADR-0534); the refusal below is what the client is told.
-                auto const abandoned = [&] {
+                auto const abandoned = std::invoke([&] {
                     auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
                     return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, new_room_id);
-                }();
+                });
                 log_diagnostic("room.upgrade.replacement_abandoned",
                                {
                                    {"actor",       *user,                           false},
