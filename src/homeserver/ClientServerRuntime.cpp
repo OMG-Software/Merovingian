@@ -75,6 +75,7 @@
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
@@ -1953,6 +1954,37 @@ namespace
             query.remove_prefix(amp + 1U);
         }
         return std::nullopt;
+    }
+
+    // Every value of the query parameter `key`, percent-decoded, in order; at most `max_values` are read
+    // and the rest ignored, so a long query string cannot make a handler do work in proportion to it.
+    [[nodiscard]] auto query_param_values(std::string_view target, std::string_view key, std::size_t max_values)
+        -> std::vector<std::string>
+    {
+        auto values = std::vector<std::string>{};
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos || query_pos + 1U >= target.size())
+        {
+            return values;
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty() && values.size() < max_values)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            if (pair.substr(0U, equals) == key)
+            {
+                values.push_back(core::percent_decode(equals == std::string_view::npos ? std::string_view{}
+                                                                                       : pair.substr(equals + 1U)));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return values;
     }
 
     // Every query parameter on the request target, percent-decoded, in
@@ -11638,6 +11670,31 @@ namespace
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
     }
 
+    // GET /room_summary/{roomIdOrAlias}[?via=...]. Spec: `via` lists "the servers to attempt to request the
+    // summary from when the local server cannot generate it". At most `max_room_summary_via` values are
+    // read; each must be a server name (grammar checked here, never used as a target otherwise), else
+    // 400 M_INVALID_PARAM before anything is looked up or sent. A 429 is the client-outbound budget
+    // refusing the federation call (ADR-0079).
+    [[nodiscard]] auto room_summary_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                             std::string_view user_id, std::string const& target) -> DispatchResult
+    {
+        auto constexpr max_room_summary_via = std::size_t{8U};
+        auto const via = query_param_values(req.target, "via", max_room_summary_via);
+        if (!std::ranges::all_of(via, [](std::string const& server) {
+                return federation::server_name_is_valid(server);
+            }))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "via must be a list of server names");
+        }
+        auto const result = handle_client_room_summary(rt.homeserver, user_id, target, via,
+                                                       rate_limit_client_key(req, rt.homeserver.config.server()));
+        if (result.status == 429U)
+        {
+            return client_proxy_refused(req, rt);
+        }
+        return dispatch_resp(req, rt, result.status, result.body);
+    }
+
     // The event GET /rooms/{roomId}/timestamp_to_event found in this server's own history.
     struct LocalTimestampEvent final
     {
@@ -15810,8 +15867,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const target = room_summary_target(request_path); target.has_value())
         {
-            auto const result = handle_client_room_summary(rt.homeserver, {}, *target);
-            return dispatch_resp(req, rt, result.status, result.body);
+            return room_summary_response(rt, req, {}, *target);
         }
     }
 
@@ -21368,8 +21424,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const target = room_summary_target(request_path); target.has_value())
         {
-            auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
-            return dispatch_resp(req, rt, result.status, result.body);
+            return room_summary_response(rt, req, *user, *target);
         }
     }
 
