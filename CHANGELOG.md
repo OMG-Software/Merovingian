@@ -1,3 +1,12 @@
+## 0.12.82
+
+Sonar and CodeQL take a CI runner as soon as a pull request is pushed (ADR-0580). No behaviour changes.
+
+### Changed
+
+- Every job in `ci.yml` and `packages.yml` that needed no other job now waits for a few-second gate job, `queue-after-analyses` ("Queue after Sonar and CodeQL"). A pull request now starts 15 jobs at once instead of 34, under the account's limit of 20, so `sonarcloud` (about an hour) and CodeQL no longer queue behind the OS and package builds, which take runners as they free up. The jobs that wait carry `if: ${{ !cancelled() }}`, so a failed gate cannot skip a required check, and GitHub would count a skipped one as passed. No check is renamed.
+- `tests/tooling/test_ci_runner_order.py` (`ci-runner-order-tooling`) fails when the jobs a pull request starts at once exceed 20, when a job in those two workflows needs nothing, or when an analysis waits for another job.
+
 ## 0.12.80
 
 Every header the first split (0.12.79) left now holds at most one type, and every file named after a type holds that type (ADR-0466, ADR-0467). No behaviour changes.

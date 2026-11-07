@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.80
+Version:        0.12.82
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Nov 07 2026 James Chapman <claude@ping.me.uk> - 0.12.82-1
+- Long CI jobs wait for a gate so Sonar and CodeQL start first.
+
 * Sat Nov 07 2026 James Chapman <claude@ping.me.uk> - 0.12.80-1
 - Split the remaining multi-type files into one file per type
 

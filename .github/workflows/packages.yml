@@ -6,7 +6,21 @@ on:
   pull_request:
     branches: [main]
 jobs:
+  # ADR-0580: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
+  # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
+  # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
+  queue-after-analyses:
+    name: Queue after Sonar and CodeQL
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Let the long jobs queue
+        run: "true"
+
   deb:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: Debian package
     runs-on: ubuntu-latest
     container: ubuntu:latest
@@ -63,6 +77,8 @@ jobs:
           retention-days: 30
 
   static-linux-fallback:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: Static Linux fallback binary
     runs-on: ubuntu-latest
     container: alpine:latest
@@ -124,6 +140,8 @@ jobs:
           retention-days: 30
 
   rpm:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: Fedora RPM package (${{ matrix.image }})
     runs-on: ubuntu-latest
     # An RPM installs only on the Fedora release it was built on (ADR-0376).
@@ -224,6 +242,8 @@ jobs:
         run: test "${RESULT}" = success
 
   freebsd-pkg:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: FreeBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -257,6 +277,8 @@ jobs:
           path: merovingian-*.pkg
 
   openbsd-pkg:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: OpenBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -282,6 +304,8 @@ jobs:
           path: merovingian-*.tgz
 
   netbsd-pkg:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: NetBSD package
     runs-on: ubuntu-latest
     permissions:
@@ -330,6 +354,8 @@ jobs:
           path: merovingian-*.tgz
 
   debian-pkg:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: Debian trixie package
     runs-on: ubuntu-latest
     container: debian:trixie
@@ -391,6 +417,8 @@ jobs:
           retention-days: 30
 
   docker-image:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: Docker image startup gate
     runs-on: ubuntu-latest
     permissions:
@@ -517,6 +545,8 @@ jobs:
         run: docker logs hs1 || true
 
   rhel-rpm:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: RHEL-compatible (AlmaLinux 10) RPM
     runs-on: ubuntu-latest
     container: almalinux:10
@@ -594,6 +624,8 @@ jobs:
           retention-days: 30
 
   opensuse-rpm:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: OpenSUSE Tumbleweed RPM
     runs-on: ubuntu-latest
     container: opensuse/tumbleweed

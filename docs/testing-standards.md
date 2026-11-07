@@ -326,6 +326,16 @@ went one way only. Cover it with a test of the other outcome, not an exclusion m
 `LCOV_EXCL`/`GCOVR_EXCL` are for code that is genuinely unreachable, with the reason
 beside them.
 
+## CI job order
+
+GitHub Actions has no job priority, and the account runs at most 20 jobs at once. Every job in `ci.yml` and
+`packages.yml` that needs no other job `needs:` the gate job `queue-after-analyses` and carries
+`if: ${{ !cancelled() }}`, so a pull request starts few enough jobs at once that `sonarcloud` and CodeQL, the two longest,
+never queue ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)). The
+condition matters: without it a failed gate skips the jobs, and a skipped required check counts as passed.
+`tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when an analysis waits for anything, or
+when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
+
 ## Catch2 example
 
 ```cpp

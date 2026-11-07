@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-runner-order-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_runner_order.py'],
+  )
+
+  test(
     'password-hash-override-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_password_hash_override.py'],

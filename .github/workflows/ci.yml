@@ -15,8 +15,22 @@ on:
 
 jobs:
 
+  # ADR-0580: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
+  # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
+  # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
+  queue-after-analyses:
+    name: Queue after Sonar and CodeQL
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Let the long jobs queue
+        run: "true"
+
   # ── Linux ──────────────────────────────────────────────────────────────────
   ubuntu-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       CC: clang
@@ -133,6 +147,8 @@ jobs:
   #      the runner (no `container:`) so it is non-root, satisfying the
   #      privilege-drop check on its own.
   ubuntu-hardened-listener-coverage:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       CC: clang
@@ -204,6 +220,8 @@ jobs:
 
   # -- Fedora / Red Hat family -----------------------------------------------
   fedora-suite:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     name: fedora-suite (${{ matrix.image }})
     runs-on: ubuntu-latest
     permissions:
@@ -297,6 +315,8 @@ jobs:
   # Minimum Debian version per platform-support.md: Debian 13 (trixie),
   # which provides glibc ≥ 2.39 and a C++26-capable clang 18+ toolchain.
   debian-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
@@ -368,6 +388,8 @@ jobs:
   # clang 18 in AppStream). AlmaLinux 10 is the community rebuild used in CI;
   # EPEL 10 provides libsodium and turbojpeg.
   rhel-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     container:
       image: almalinux:10
@@ -453,6 +475,8 @@ jobs:
   # Tumbleweed (rolling release) carries a current glibc and clang 18+, making
   # it the supported OpenSUSE target per platform-support.md.
   opensuse-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     container:
       image: opensuse/tumbleweed
@@ -541,6 +565,8 @@ jobs:
 
   # ── FreeBSD ────────────────────────────────────────────────────────────────
   freebsd-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
@@ -594,6 +620,8 @@ jobs:
   # which exercises the platform-specific runtime tests (hardening self-check
   # unit/integration/smoke tests) on OpenBSD itself.
   openbsd-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
@@ -646,6 +674,8 @@ jobs:
   # ── NetBSD ─────────────────────────────────────────────────────────────────
   # Tier 1 platform. Same full build+test path as the other BSDs.
   netbsd-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
