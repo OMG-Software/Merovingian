@@ -53,7 +53,7 @@ SCENARIO("security.login_token.enabled is a reloadable boolean that defaults to 
             THEN("the parser reports the key")
             {
                 REQUIRE_FALSE(parsed.findings.empty());
-                REQUIRE(parsed.findings.front().key == "security.login_token.enabled");
+                REQUIRE(parsed.findings.front().field == "security.login_token.enabled");
                 REQUIRE_FALSE(parsed.config.security().login_token.enabled);
             }
         }
