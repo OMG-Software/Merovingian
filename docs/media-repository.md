@@ -148,8 +148,10 @@ current in-process runtime path.
   after SSRF-safe resolution and address pinning via
   `resolve_media_redirect_url()` and
   `federation::resolve_federation_destination()`; only when the redirect itself
-  cannot be resolved safely does the homeserver fall back. Only on a `404` (or
-  an unusable `200`) does the homeserver fall back to the deprecated,
+  cannot be resolved safely does the homeserver fall back. On a `404`, an
+  unusable `200`, a transport failure (no usable answer from the request), or
+  when no server signing key is available to sign it, the homeserver
+  falls back (while time remains) to the deprecated,
   unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
   endpoint with `allow_remote=false` (`remote_media_download_url()`,
   percent-encoding both segments so a reserved character in either cannot be
@@ -269,9 +271,14 @@ Every "scanner verdict" mentioned in this document and in
 about the plaintext of an encrypted attachment. With
 `security.media.clamd_socket_path` set, an encrypted attachment is scanned as
 opaque ciphertext. A clean verdict says nothing about the plaintext, so
-scanning cannot protect users of end-to-end encrypted rooms. Without clamd,
-`allow-after-scan` behaves identically to `allow` for these attachments,
-since no scanner is given a verdict to render.
+scanning cannot protect users of end-to-end encrypted rooms. clamd is invoked
+only for media whose applicable policy (`local_upload_policy` for uploads,
+`remote_fetch_media_policy` for remote fetches) is `allow-after-scan`; `allow`
+and `quarantine` never call it. Without clamd, the outcome of
+`allow-after-scan` differs by source. A remote fetch has no verdict, so it is
+`scanner_clean=false` and is quarantined (with `security.media.enable_av_scanner=true`).
+A local upload gets only the EICAR test-signature check and keeps its clean result,
+so an ordinary local upload passes like `allow`.
 
 ## Thumbnailing
 

@@ -68,10 +68,12 @@ Implemented now:
   skips rejected own-auth fallback entries without truncating auth-chain walks;
   `soft_failed` and `outlier` are not rejection. This does not blanket-remove
   rejected state-resolution candidates, which the spec can reauthorize.
-- **Legacy floating power levels (EVT-12(d)), fixed.** v3-v5 permit finite
+- **Legacy floating power levels (EVT-12(d)), auth rules only.** v3-v5 permit finite
   floating power levels with truncation. `RoomVersionPolicy::power_levels_accept_floats`
   is set for those versions and `src/events/authorization.cpp` truncates
-  accordingly ([ADR-0150](adr/0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)).
+  accordingly, but only for values that are already parsed. Hashing and parsing stay
+  strict, so a received event that contains a float still fails parsing before
+  authorization and cannot be accepted over federation ([ADR-0150](adr/0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)).
 - **rule 1 (`m.room.create`)**, complete since 0.12.4: no `prev_events`; the
   `room_id`/`sender` domain relationship for v1-v11 and the absence of
   `room_id` for v12 (MSC4291); a recognised `content.room_version`; and the
@@ -394,9 +396,10 @@ defaulted version: an ID computed under the wrong room version does not match
 the one other servers derive.
 
 `verify_pdu_content_hash` extracts the claimed `hashes.sha256` field from an
-inbound PDU and compares it against the result of `make_content_hash`. Inbound
-federation PDUs are rejected before reaching the `pdu_sink` when this check
-fails, as required by Matrix Server-Server API v1.19.
+inbound PDU and compares it against the result of `make_content_hash`. A
+mismatch does not reject an inbound federation PDU: the event is redacted and
+processing continues with the redacted form, as Matrix Server-Server API v1.19
+requires (see "Checks performed on receipt of a PDU" below).
 
 For room version 12 (MSC4291) the room ID is the `m.room.create` event's
 reference hash with a `!` sigil — the same hash as the create event ID, which

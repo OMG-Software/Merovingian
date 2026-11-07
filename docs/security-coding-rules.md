@@ -690,9 +690,11 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (F-74, ADR-0395; refines ADR-0142).
   Source: `src/ipc/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
-- **The worker IPC key exchange is mutually authenticated, and the module holds no libsodium.** Both peers derive
-  the same `crypto::IpcAuthKey` from the operator master key and MAC each other's ephemeral `crypto_kx` public keys
-  before deriving session keys; a peer that cannot prove possession of the master key is rejected. The AEAD stream
+- **The worker IPC key exchange is mutually authenticated, and the module holds no libsodium.** Main derives the
+  `crypto::IpcAuthKey` from the operator master key and hands the worker only that derived key over an inherited
+  fd (`--ipc-key-fd`); the worker never holds the master key. Both peers MAC each other's ephemeral `crypto_kx`
+  public keys with it before deriving session keys; a peer that cannot prove possession of the derived IPC key is
+  rejected. The AEAD stream
   cipher is `crypto::IpcStreamCipher` in `src/crypto/IpcStreamCipher.cpp`; `scripts/reject-unsafe.sh` rejects direct
   libsodium use in `src/ipc/`.
   Why: confidentiality alone does not stop another local process that can reach the socketpair fd or a
@@ -702,8 +704,11 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **No IPC frame signs, and none carries the signing secret or a client credential.** A worker never signs and never
   asks main to sign for it; main answers a `sign_request` with an error and no signature
   (`homeserver::refuse_forbidden_worker_request`, no runtime lock). Never add a generic "sign these bytes" frame:
-  a worker that needs a signature gets a narrowly typed request in which main builds the payload. No access token,
-  `Authorization` / `X-Matrix` header or Ed25519 secret key goes into a frame body.
+  a worker that needs a signature gets a narrowly typed request in which main builds the payload. No Ed25519 secret
+  key, client access token or inbound `Authorization` / `X-Matrix` credential goes into a frame body. The one
+  exception is direction-specific: an outbound request frame carries this server's own request-bound
+  `Authorization: X-Matrix` signature (`serialize_outbound_http_request`; see `docs/crypto-boundary.md`), which is
+  not a reusable peer or client credential.
   Why: a generic signing frame makes a compromised worker a signing oracle for the server's identity (ADR-0078,
   superseding the signing-oracle part of ADR-0015).
   Source: `src/ipc/AGENTS.md`, `docs/hardening.md`.

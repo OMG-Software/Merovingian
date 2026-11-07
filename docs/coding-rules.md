@@ -134,7 +134,11 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   });
   ```
 
-- Format C++ with the root `.clang-format`, by running `scripts/format_code.py`.
+- Format C++ with the root `.clang-format`, by running `scripts/format_code.py`
+  on a project directory (`scripts/format_code.py src`; `--dry-run` lists the
+  files first). The script walks its directory recursively with no exclusions,
+  so run from the repository root with no argument it also rewrites `.worktrees/`,
+  `build*/` and `subprojects/`. Never run it unscoped.
   Formatting is manual: no hook or CI job runs the formatter. Let the formatter
   control spacing, line wrapping, and include grouping.
 - Use quotes for project includes: `"merovingian/module/name.hpp"`.

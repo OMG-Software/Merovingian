@@ -157,7 +157,8 @@ older persisted rows, never to issue new tokens.
   computing a fixed-size digest, removing a timing side-channel on secret size.
 - Signing secret material is held in a `core::SecretBuffer` while in process memory
   and is wiped when the buffer is destroyed. The allocation comes from `sodium_malloc`
-  and is locked with `sodium_mlock`; `sodium_free` wipes it and unlocks it on release.
+  and locking with `sodium_mlock` is attempted, not guaranteed (a failure is recorded, not fatal; see "Locking
+  guarantees" below); `sodium_free` wipes it and unlocks it on release.
   The move constructor and move assignment transfer the allocation to the destination
   and leave the source empty (size 0, not locked), so no bytes are copied or wiped on a
   move, the secret is never duplicated in memory, and the moved-from object owns nothing. The outbound federation

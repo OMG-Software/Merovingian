@@ -169,10 +169,11 @@ merovingian-server
   - main pool (`server.http.request_threads`, default 32): all non-sync
     requests; a worker is given a connection only once it is readable, and one
     client address may hold at most a quarter of the pool (ADR-0077)
-  - sync pool (`server.http.sync_threads`, default 128): runs the first pass of
-    every classic and sliding-sync request and each resumed long-poll. A
-    long-poll with nothing to return does not hold a thread here: it parks
-    (ADR-0569)
+  - sync pool (`server.http.sync_threads`, default 128): runs a classic or
+    sliding-sync request only after the main pool's first `route_request`
+    returned `needs_wait`, and each resumed long-poll. A request that can be
+    answered at once never reaches it. A long-poll with nothing to return does
+    not hold a thread here: it parks (ADR-0569)
   - long-poll registry thread (`sync::ParkedPollRegistry`, owned by
     `SyncNotifier`, started by the connection dispatcher after hardening): holds
     the parked polls, keeps their deadlines in one ordered map, and on a
@@ -195,8 +196,10 @@ merovingian-thumbnail-worker  [built only when libpng and libturbojpeg are found
   Not a long-lived process: the server spawns one per thumbnail request (and
   once at start-up for the library report) through `media::generate_thumbnail`,
   with a fixed environment, pipes on stdin/stdout, and no inherited descriptors.
-  It applies rlimits, no-new-privs and the seccomp filter before reading any
-  input, decodes the PNG or JPEG, and exits. The parent enforces a wall-clock
+  It applies rlimits and its platform sandbox before reading any input, decodes
+  the PNG or JPEG, and exits. The sandbox is no-new-privs plus a seccomp filter
+  on Linux (sanitizer builds skip the seccomp filter), pledge on OpenBSD and
+  Capsicum on FreeBSD; NetBSD has no primitive, so the worker refuses to decode. The parent enforces a wall-clock
   timeout and kills an overrunning worker. It holds no secrets. See
   `docs/media-repository.md` ("Thumbnailing").
 

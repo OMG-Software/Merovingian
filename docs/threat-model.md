@@ -792,7 +792,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   prior behaviour) and remote fetches
   (`security.media.remote_fetch_media_policy`, default `quarantine`, since
   federated content has no accountable local uploader, and without a configured
-  ClamAV daemon no scan occurs). `decoder_marked_safe` is deliberately left `true` for remote
+  ClamAV daemon no scan occurs). Without ClamAV the two sources differ: a remote
+  fetch has `scanner_clean=false`, so `allow-after-scan` quarantines it, while a
+  local upload gets only the EICAR test-signature check and keeps its clean
+  result, so an ordinary local upload passes `allow-after-scan` with no general
+  antivirus scan. `decoder_marked_safe` is deliberately left `true` for remote
   content: `unsafe_decoders_disabled` has no config knob today, so flipping it
   would hard-reject every remote fetch in every deployment rather than fail
   safely — still a follow-up (the scanner itself landed in 0.12.81).

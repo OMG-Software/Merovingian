@@ -91,9 +91,12 @@ Use this checklist for every release candidate.
 - The gateway host resolves through `federation::CachedServerDiscovery`'s
   pinned-address/`deny_ip_ranges` path, the same as federation and identity
   outbound calls.
-- Delivery, not registration, is bounded: at most
+- Registration is bounded: `POST /pushers/set` refuses a new pusher past
+  `server.push.max_pushers_per_user` (default 20); updating an existing one is allowed.
+- Delivery is bounded too: at most
   `server.push.max_pushers_per_delivery` (default 25) pushers are contacted per
-  event, and at most `server.push.max_in_flight_deliveries` (default 256)
+  recipient of an event (the cap applies to each recipient's pusher list, so one
+  event can contact more across its recipients), and at most `server.push.max_in_flight_deliveries` (default 256)
   deliveries run concurrently process-wide. Both are configuration values
   (`config/PushConfig.hpp`), validated at load in `src/config/Config.cpp`.
 - `notify()` and the delivery scheduler both re-check `server.push.enabled`

@@ -347,8 +347,10 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 
 The `coverage` workflow measures line and branch coverage over the whole suite (unit,
 conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov, which
-requires 50% on a pull request's own lines, with a 5% patch threshold, and 60% overall line coverage, with a 2%
-threshold, so a drop of up to 2% from the base does not fail (`.codecov.yml`; both statuses are non-informational). gcovr runs with
+requires a fixed 50% target on a pull request's own lines (patch) and a fixed 60% target on overall line coverage
+(project). Each target has a tolerance below it, not a limit on the drop from the base: the patch status passes
+down to 45% (5% threshold) and the project status down to 58% (2% threshold), whatever the base was
+(`.codecov.yml`; both statuses are non-informational). gcovr runs with
 `--exclude-throw-branches` (ADR-0217): the unwinding edge the compiler adds to a call that
 may throw is not counted, because only an injected allocation failure reaches it and it
 holds no code of ours. The flag works only with GCC's gcov (clang's `llvm-cov gcov` does not

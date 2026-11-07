@@ -120,6 +120,9 @@ carry a job-level `continue-on-error`; a failure there fails the run
 
 `ci.yml` also runs `ubuntu-hardened-listener-coverage` on the Ubuntu runner. It is not a platform row:
 it runs the real binary-startup hardening scenario with the file capability the self-check needs.
+The scenario still warns and returns success when the hardening self-check refuses startup (and when
+the server binary or worker is not set, or it runs as root), so a green job does not by itself prove
+the listener ran; check the job log for a "skipped" warning.
 
 All Tier 1 jobs build through the shared wrappers (`scripts/build-linux.sh`,
 `scripts/build-bsd.sh`) with `--wrap-mode=forcefallback`, so the core

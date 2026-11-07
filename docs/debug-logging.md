@@ -110,7 +110,8 @@ line shows.
 
 The `media_service` module logs `media.scan_infected` (warning, with `actor`, `subject`, `verdict` and
 `signature`) and `media.scan_failed` (error, with `reason`) when the clamd scan of an upload finds malware
-or cannot give a clean verdict. Both also append a moderation audit row.
+or cannot give a clean verdict. Both also append a moderation audit row. The `signature` field is always
+rendered `<redacted>` (the logger treats the key as sensitive); the signature name is in the audit row's `reason`.
 
 The `persistent_store` module logs `sync_stream.watermark_persist_failed` (error, with `watermark`) when
 the sync stream high-water mark could not be written. The id is still issued (ADR-0540), and the next
