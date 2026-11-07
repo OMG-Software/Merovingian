@@ -35,11 +35,14 @@ report any unresolved conflict or unmet requirement. See
   rejected alternative that looks better in isolation, or a rule about how to
   write future code. A choice with no rejected alternative is a fact, not a
   decision, and anything the Matrix spec mandates is not a decision either.
-  Copy `docs/adr/template.md`, number it next, fill in status and date (both
-  mandatory), and add a line to `docs/adr/index.md` in the same commit. Never
-  renumber or delete an entry — mark it superseded. See
-  [ADR-0000](docs/adr/0000-record-architecture-decisions.md) and
-  [ADR-0001](docs/adr/0001-use-markdown-architectural-decision-records.md).
+  Copy `docs/adr/template.md`, number it next (above every existing number;
+  gaps from branches that never landed are allowed, but a number is never
+  reused and nothing may cite a number that has no file), fill in status and
+  date (both mandatory), and add a line to `docs/adr/index.md` in the same
+  commit. Never renumber or delete an entry — mark it superseded. See
+  [ADR-0000](docs/adr/0000-record-architecture-decisions.md),
+  [ADR-0001](docs/adr/0001-use-markdown-architectural-decision-records.md) and
+  [ADR-0543](docs/adr/0543-adr-numbers-are-assigned-in-order-gaps-are-allowed-and-a-number-is-never-reused.md).
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Ignore directories starting with `build` in the project root (Meson build output).

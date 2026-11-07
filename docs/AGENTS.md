@@ -46,7 +46,8 @@ new documents.
 ### The one exception
 
 Architecture Decision Records are the exception: each decision gets its own
-immutable file under `docs/adr/`, numbered and never renumbered. Copy
+immutable file under `docs/adr/`, numbered in order and never renumbered or
+reused; gaps are allowed ([ADR-0543](adr/0543-adr-numbers-are-assigned-in-order-gaps-are-allowed-and-a-number-is-never-reused.md)). Copy
 [`adr/template.md`](adr/template.md), fill in status and date (both mandatory),
 and add a line to [`adr/index.md`](adr/index.md) in the same commit. The format
 is MADR 2.1.2; see [ADR-0001](adr/0001-use-markdown-architectural-decision-records.md)
