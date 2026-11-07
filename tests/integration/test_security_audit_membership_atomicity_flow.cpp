@@ -687,3 +687,54 @@ SCENARIO("DB-4 on PostgreSQL the federation worker's load profile never writes m
         }
     }
 }
+
+// C13 (ADR-0535): the join event commits before its roster and device-list bookkeeping. A bookkeeping failure
+// after the commit must not turn a durable join into a 500 that skips federation and the sync notification.
+SCENARIO("C13 a join whose device-list bookkeeping fails after the commit is still answered 200",
+         "[c13][integration][database][homeserver]")
+{
+    GIVEN("alice's room on a real SQLite store that refuses every device-list change, and bob invited")
+    {
+        auto const fixture = MembershipSqliteFixture{};
+        auto const config = sqlite_config(fixture.database_path());
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = register_and_login(runtime, "alice", "CorrectHorse7!");
+        auto const bob_token = register_and_login(runtime, "bob", "CorrectHorse8!");
+        auto const created = request(runtime, "POST", "/_matrix/client/v3/createRoom", alice_token, "{}");
+        REQUIRE(created.status == 200U);
+        auto const created_body = merovingian::tests::parse_object(created.body);
+        auto const* created_room_id = merovingian::tests::string_member(created_body, "room_id");
+        REQUIRE(created_room_id != nullptr);
+        auto const room_id = *created_room_id;
+        REQUIRE(
+            request(runtime, "POST", room_path(room_id, "/invite"), alice_token, R"({"user_id":"@bob:example.org"})")
+                .status == 200U);
+        {
+            auto const trigger = SqliteConnection{fixture.database_path()};
+            REQUIRE(trigger.execute("CREATE TRIGGER c13_reject_device_list BEFORE INSERT ON device_list_changes "
+                                    "BEGIN SELECT RAISE(ABORT, 'injected device-list write failure'); END;"));
+        }
+
+        WHEN("bob joins")
+        {
+            auto const joined = request(runtime, "POST", "/_matrix/client/v3/join/" + room_id, bob_token, "{}");
+
+            THEN("the join is answered 200 with the room ID, and it is durable")
+            {
+                CAPTURE(joined.body);
+                CHECK(joined.status == 200U);
+                CHECK(joined.body.find(room_id) != std::string::npos);
+                auto const after = durable_membership_of_bob(fixture.database_path(), room_id);
+                CHECK(after.row == std::optional<std::string>{"join"});
+                CHECK(after.current_member_event_json.find(R"("membership":"join")") != std::string::npos);
+            }
+
+            THEN("bob is in the room's roster and can speak")
+            {
+                send_text(runtime, bob_token, room_id, "after-join", "said-after-the-join");
+            }
+        }
+    }
+}

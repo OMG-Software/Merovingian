@@ -11335,8 +11335,7 @@ namespace
 
     // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` (admit_client_outbound_proxy_waiting).
     [[nodiscard]] auto admit_client_proxy_waiting(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                  RuntimeLock& guard,
-                                                  OutboundDeadline const& deadline)
+                                                  RuntimeLock& guard, OutboundDeadline const& deadline)
         -> std::optional<http::InFlightBudget::Slot>
     {
         return admit_client_outbound_proxy_waiting(
@@ -11450,8 +11449,8 @@ namespace
     // OutboundDeadline and releases the runtime lock for each exchange. With a local answer in hand a refused slot
     // costs only the remote improvement; without one the client is told 429.
     [[nodiscard]] auto handle_timestamp_to_event(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                 RuntimeLock& guard, std::string_view user_id,
-                                                 std::string_view room_id) -> DispatchResult
+                                                 RuntimeLock& guard, std::string_view user_id, std::string_view room_id)
+        -> DispatchResult
     {
         auto const ts_text = query_param_value(req.target, "ts");
         auto const dir_text = query_param_value(req.target, "dir");
@@ -11702,9 +11701,8 @@ namespace
     // src/federation/AGENTS.md). It is a client request that calls another server, so it holds an ADR-0079
     // slot, runs under the directory deadline and releases the runtime lock for the call (src/homeserver/
     // AGENTS.md, "Client requests that call another server"). The remote's 404 is this server's 404.
-    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                               RuntimeLock& guard, std::string const& target_user,
-                                               std::string_view field) -> DispatchResult
+    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req, RuntimeLock& guard,
+                                               std::string const& target_user, std::string_view field) -> DispatchResult
     {
         auto const proxy_slot = admit_client_proxy(rt, req);
         if (!proxy_slot.has_value())
@@ -20073,7 +20071,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // released before calling create_room (which self-locks).
             auto const create_result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return create_room(rt.homeserver, req.access_token, upgrade_options);
+                auto created = create_room(rt.homeserver, req.access_token, upgrade_options);
+                if (created.ok && rt.homeserver.test_after_upgrade_room_created)
+                {
+                    rt.homeserver.test_after_upgrade_room_created();
+                }
+                return created;
             }();
             if (!create_result.ok)
             {
@@ -20104,6 +20107,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                             {"new_room_id", new_room_id,             false},
                                                             {"reason",      "tombstone was refused", false}
                 });
+                // The replacement room exists and nothing points to it. Matrix has no room deletion, so the upgrader
+                // leaves it and it is abandoned (ADR-0534); the refusal below is what the client is told.
+                auto const abandoned = [&] {
+                    auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+                    return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, new_room_id);
+                }();
+                log_diagnostic("room.upgrade.replacement_abandoned",
+                               {
+                                   {"actor",       *user,                           false},
+                                   {"old_room_id", room_id,                         false},
+                                   {"new_room_id", new_room_id,                     false},
+                                   {"left",        abandoned.ok ? "true" : "false", false}
+                },
+                               abandoned.ok ? observability::LogEventSeverity::warning
+                                            : observability::LogEventSeverity::error);
                 return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
             // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
