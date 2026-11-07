@@ -18,6 +18,7 @@ sync_sources = files(
   'SyncFilter.cpp',
   'SyncNotifier.cpp',
   'ThreadNotificationCounts.cpp',
+  'type_pattern.cpp',
   'ViewerEventUnsigned.cpp',
 )
 

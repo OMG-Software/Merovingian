@@ -82,6 +82,28 @@ SCENARIO("HTTP method token validation follows strict token characters", "[http]
     }
 }
 
+SCENARIO("HTTP method tokens may use lowercase letters", "[http][limits]")
+{
+    // RFC 9110 5.6.2: tchar includes ALPHA, and RFC 9110 9.1 makes methods case-sensitive tokens, so
+    // "get" is a well-formed (unknown) method, not a malformed request line.
+    GIVEN("lowercase and mixed-case method tokens")
+    {
+        WHEN("they are validated")
+        {
+            THEN("they are accepted, and a lowercase request line is within the limit")
+            {
+                REQUIRE(merovingian::http::method_token_is_valid("get"));
+                REQUIRE(merovingian::http::method_token_is_valid("Get"));
+                REQUIRE(merovingian::http::method_token_is_valid("m-search"));
+                REQUIRE_FALSE(merovingian::http::method_token_is_valid("ge t"));
+                REQUIRE_FALSE(merovingian::http::method_token_is_valid("get\n"));
+                REQUIRE(
+                    merovingian::http::request_line_is_within_limit("get", "/", merovingian::http::RequestLimits{}));
+            }
+        }
+    }
+}
+
 SCENARIO("HTTP request target validation rejects empty and control-space targets", "[http][limits]")
 {
     GIVEN("valid and invalid request targets")

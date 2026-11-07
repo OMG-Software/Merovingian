@@ -4,6 +4,7 @@
 #include "merovingian/sync/PreparedRoomEventFilter.hpp"
 
 #include "merovingian/sync/RoomFilter.hpp"
+#include "merovingian/sync/type_pattern.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -32,19 +33,24 @@ namespace
 PreparedRoomEventFilter::TypePatterns::TypePatterns(std::vector<std::string> const& patterns)
     : any{!patterns.empty()}
 {
-    // The same patterns matches_type_pattern knows: one ending in '*' (the bare "*" included) matches every
-    // type that starts with the rest of it; every other pattern is an exact type. The spec lets '*' stand
-    // for any sequence of characters anywhere in a pattern; neither this class nor matches_type_pattern
-    // supports a '*' in the middle, and the two must stay in step.
+    // A pattern whose only '*' is its last character (the bare "*" included) matches every type that starts
+    // with the rest of it; a pattern with no '*' is an exact type. A '*' anywhere else makes it a general
+    // glob, kept whole and judged by type_pattern_matches, the matcher event_passes_filter uses, so the two
+    // agree on every pattern.
     for (auto const& pattern : patterns)
     {
-        if (pattern.ends_with('*'))
+        auto const star = pattern.find('*');
+        if (star == std::string::npos)
         {
-            prefixes.push_back(pattern.substr(0U, pattern.size() - 1U));
+            exact.insert(pattern);
+        }
+        else if (star == pattern.size() - 1U)
+        {
+            prefixes.push_back(pattern.substr(0U, star));
         }
         else
         {
-            exact.insert(pattern);
+            globs.push_back(pattern);
         }
     }
     std::ranges::sort(prefixes);
@@ -64,6 +70,13 @@ PreparedRoomEventFilter::TypePatterns::TypePatterns(std::vector<std::string> con
 auto PreparedRoomEventFilter::TypePatterns::matches(std::string_view event_type) const noexcept -> bool
 {
     if (exact.contains(event_type))
+    {
+        return true;
+    }
+    // Each glob costs O(n * s) (type_pattern_matches); only patterns with an interior '*' land here.
+    if (std::ranges::any_of(globs, [event_type](std::string const& glob) noexcept {
+            return type_pattern_matches(glob, event_type);
+        }))
     {
         return true;
     }

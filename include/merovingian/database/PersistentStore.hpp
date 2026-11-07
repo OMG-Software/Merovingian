@@ -1330,7 +1330,9 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // sync-surface ID allocation must flow through this helper so a restart
 // cannot roll the counter backward behind a client's since-token. Throws
 // std::overflow_error, leaving the counter unchanged, rather than pass
-// INT64_MAX (ADR-0315). Nothing else moves the counter upward, client input
+// INT64_MAX (ADR-0315). Also throws std::overflow_error when the watermark write fails (ADR-0540):
+// no id is issued, and the counter stays advanced so the id is never reissued. Callers that catch the ceiling case
+// handle it the same way; the rest let it fail the request. Nothing else moves the counter upward, client input
 // least of all.
 // ADR-0315: writes that a sync position must follow stop this far below the counter's ceiling. Far more
 // positions than one request takes, and the margin covers requests between this check and their allocation.

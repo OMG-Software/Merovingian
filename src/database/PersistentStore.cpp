@@ -5738,7 +5738,16 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     // found in durable rows. This prevents fresh upgrades from starting the
     // counter at the table default ('0') and keeps restarts monotonic even if
     // no new sync-surface allocation happens immediately after startup.
-    std::ignore = persist_sync_stream_watermark(store, observed);
+    // A failure here costs nothing: next_sync_stream_id is already at `observed`, and the next restart derives
+    // the same floor from the same durable rows. It is logged because the watermark is then behind the rows.
+    if (!persist_sync_stream_watermark(store, observed))
+    {
+        log_diagnostic("sync_stream.watermark_restore_failed",
+                       {
+                           {"watermark", std::to_string(observed), false}
+        },
+                       observability::LogEventSeverity::error);
+    }
 }
 
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t
@@ -5752,8 +5761,19 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     store.next_sync_stream_id += 1U;
     auto const new_id = store.next_sync_stream_id;
     // Persist the new high-water mark immediately so ephemeral sync surfaces
-    // (typing, receipts) cannot roll the counter backward across a restart.
-    std::ignore = persist_sync_stream_watermark(store, new_id);
+    // (typing, receipts) cannot roll the counter backward across a restart. If it cannot be persisted the id
+    // is not issued: a client could hold it in a since token, and a restart would hand it out again
+    // (ADR-0540). The counter stays advanced, so this id is burned, never reissued, even if the write did
+    // commit without the store hearing of it.
+    if (!persist_sync_stream_watermark(store, new_id))
+    {
+        log_diagnostic("sync_stream.watermark_persist_failed",
+                       {
+                           {"watermark", std::to_string(new_id), false}
+        },
+                       observability::LogEventSeverity::error);
+        throw std::overflow_error{"the sync stream watermark could not be persisted"};
+    }
     return new_id;
 }
 

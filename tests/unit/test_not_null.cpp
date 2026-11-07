@@ -38,6 +38,7 @@ SCENARIO("not_null preserves valid pointer", "[core][not_null]")
 
             THEN("the wrapped pointer dereferences to the original value")
             {
+                REQUIRE(ptr.get() == &value);
                 REQUIRE(*ptr.get() == 42);
             }
         }

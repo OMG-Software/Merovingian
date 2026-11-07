@@ -257,6 +257,41 @@ SCENARIO("Clients holding tokens from before a database restore still get their 
     }
 }
 
+// ADR-0540: a watermark that cannot be persisted must not be issued as a position. A restart would
+// restore the counter from the stale watermark and hand the same position out again.
+SCENARIO("A sync stream id whose watermark cannot be persisted is not issued", "[database][sync-stream][security]")
+{
+    GIVEN("a running store whose watermark write is made to fail once")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& store = started.runtime.homeserver.database.persistent_store;
+        auto const before = store.next_sync_stream_id;
+        merovingian::database::force_persist_failure_for_statement(store, "upsert_sync_stream_watermark");
+
+        WHEN("a stream id is requested")
+        {
+            THEN("the allocation fails and the counter is not rolled back")
+            {
+                REQUIRE_THROWS_AS(std::ignore = merovingian::database::allocate_sync_stream_id(store),
+                                  std::overflow_error);
+                REQUIRE(store.next_sync_stream_id == before + 1U);
+            }
+            AND_WHEN("the next stream id is requested")
+            {
+                REQUIRE_THROWS_AS(std::ignore = merovingian::database::allocate_sync_stream_id(store),
+                                  std::overflow_error);
+                auto const next = merovingian::database::allocate_sync_stream_id(store);
+
+                THEN("it is a new position, never the one whose write failed")
+                {
+                    REQUIRE(next == before + 2U);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("The sync stream counter refuses to pass its ceiling rather than wrap", "[database][sync-stream][security]")
 {
     GIVEN("a store whose counter is at the ceiling")
