@@ -168,7 +168,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 │   ├── config/            #   Config model, parser, runtime config, reload plan/policy
 │   ├── core/              #   Error, file_descriptor, socket_handle, not_null, query_params, secret_buffer
 │   ├── crypto/            #   Ed25519, signing service, secret box, master key, IPC cipher, constant-time ops
-│   ├── database/          #   Connection, statement, schema, migrations, persistent_store, postgresql/sqlite
+│   ├── database/          #   Connection, statement, frozen v1 schema definitions, migrations, persistent_store, postgresql/sqlite
 │   ├── email/             #   SMTP client (libcurl), mailbox-address and relay-URL checks, notification email
 │   ├── events/            #   Event, event_id, event_signer, authorization, state_resolution, redaction, limits
 │   ├── federation/        #   Inbound/outbound, transactions, key cache/query, server_discovery, membership, ACLs
@@ -194,7 +194,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 │   ├── smoke/             #   Smoke tests
 │   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
-│   ├── fixtures/          #   Test fixtures (complement)
+│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; no cross-release database fixture until 1.1)
 │   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
 │   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter
