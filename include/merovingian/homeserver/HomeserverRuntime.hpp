@@ -15,6 +15,7 @@
 #include "merovingian/federation/DispatchWorker.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
@@ -300,6 +301,9 @@ struct HomeserverRuntime final
     // (origin, message_id). In memory only: a restart forgets it (see
     // federation/EduIdempotenceWindow.hpp). Guarded by `mutex` like the state above.
     federation::EduIdempotenceWindow inbound_to_device_window{};
+    // Device lists of remote users who share a joined room with a local user (G14, ADR-0560, ADR-0561).
+    // Guarded by `mutex`.
+    federation::RemoteDeviceListCache remote_device_lists{};
     // Per-room monotonic cursor advanced whenever the set of typing users in
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
     // the current (possibly empty) typing list on every change.

@@ -155,6 +155,103 @@ namespace
         return dropped;
     }
 
+    [[nodiscard]] auto string_value(canonicaljson::Value const* value) -> std::string const*
+    {
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto integer_value(canonicaljson::Value const* value) -> std::optional<std::int64_t>
+    {
+        auto const* number = value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+        return number == nullptr ? std::nullopt : std::optional<std::int64_t>{*number};
+    }
+
+    constexpr auto max_cached_device_id_bytes = std::size_t{255U};
+
+    [[nodiscard]] auto cached_device_id_is_usable(std::string const* device_id) -> bool
+    {
+        return device_id != nullptr && !device_id->empty() && device_id->size() <= max_cached_device_id_bytes;
+    }
+
+    // A device's keys as the remote device-list cache keeps them: canonical JSON without `unsigned`, which would
+    // otherwise carry the remote server's own `unsigned` into every answer. std::nullopt when the keys are not filed
+    // under `user_id` and `device_id`, or cannot be serialised.
+    [[nodiscard]] auto cacheable_device_keys(canonicaljson::Object const& keys, std::string_view user_id,
+                                             std::string_view device_id) -> std::optional<std::string>
+    {
+        if (!string_member_equals(keys, "user_id", user_id) || !string_member_equals(keys, "device_id", device_id))
+        {
+            return std::nullopt;
+        }
+        auto kept = canonicaljson::Object{};
+        for (auto const& member : keys)
+        {
+            if (member.key != "unsigned")
+            {
+                kept.push_back(member);
+            }
+        }
+        auto serialized = serialize(std::move(kept));
+        return serialized.empty() ? std::nullopt : std::optional<std::string>{std::move(serialized)};
+    }
+
+    // The `unsigned.device_display_name` of a device's keys, when it is a string.
+    [[nodiscard]] auto unsigned_display_name(canonicaljson::Object const& keys) -> std::optional<std::string>
+    {
+        auto const* unsigned_data = as_object(member_value(keys, "unsigned"));
+        auto const* name =
+            unsigned_data == nullptr ? nullptr : string_value(member_value(*unsigned_data, "device_display_name"));
+        return name == nullptr ? std::nullopt : std::optional<std::string>{*name};
+    }
+
+    // `root[member]` as canonical JSON when it is the user's cross-signing key for `usage`; sets `refused` when the
+    // member is present but is not.
+    [[nodiscard]] auto cacheable_cross_signing_key(canonicaljson::Object const& root, std::string_view member,
+                                                   std::string_view user_id, std::string_view usage, bool& refused)
+        -> std::optional<std::string>
+    {
+        auto const* value = member_value(root, member);
+        if (value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* key = as_object(value);
+        if (key == nullptr || !remote_cross_signing_key_is_valid(*key, user_id, usage))
+        {
+            refused = true;
+            return std::nullopt;
+        }
+        auto serialized = serialize(*key);
+        if (serialized.empty())
+        {
+            refused = true;
+            return std::nullopt;
+        }
+        return serialized;
+    }
+
+    auto log_refused_user_devices(std::string_view origin, std::string_view user_id, std::string_view reason) -> void
+    {
+        log_diagnostic("remote_user_devices.rejected",
+                       {
+                           {"origin",  std::string{origin},  false},
+                           {"user_id", std::string{user_id}, false},
+                           {"reason",  std::string{reason},  false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+
+    [[nodiscard]] auto parsed_object_json(std::string const& json) -> std::optional<canonicaljson::Object>
+    {
+        auto const value = parsed_value(json);
+        auto const* object = value.has_value() ? std::get_if<canonicaljson::Object>(&value->storage()) : nullptr;
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        return *object;
+    }
+
 } // namespace
 
 auto build_device_keys_query_response(database::PersistentStore const& store, std::string_view request_body)
@@ -646,6 +743,169 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
         response.push_back(canonicaljson::make_member("self_signing_key", std::move(*member.value)));
     }
     return serialize(std::move(response));
+}
+
+auto accept_remote_user_devices_response(std::string_view origin, std::string_view user_id,
+                                         std::string_view response_body) -> std::optional<RemoteDeviceList>
+{
+    auto const response = parsed_value(response_body);
+    auto const* root = response.has_value() ? std::get_if<canonicaljson::Object>(&response->storage()) : nullptr;
+    if (root == nullptr)
+    {
+        log_refused_user_devices(origin, user_id, "response is not a JSON object");
+        return std::nullopt;
+    }
+    auto const stream_id = integer_value(member_value(*root, "stream_id"));
+    auto const* devices = member_value(*root, "devices");
+    auto const* device_list = devices == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&devices->storage());
+    if (!string_member_equals(*root, "user_id", user_id) || !stream_id.has_value() || device_list == nullptr)
+    {
+        log_refused_user_devices(origin, user_id, "user_id, stream_id or devices missing or wrong");
+        return std::nullopt;
+    }
+    auto list = RemoteDeviceList{};
+    list.stream_id = *stream_id;
+    for (auto const& entry : *device_list)
+    {
+        auto const* device = std::get_if<canonicaljson::Object>(&entry.storage());
+        auto const* device_id = device == nullptr ? nullptr : string_value(member_value(*device, "device_id"));
+        if (!cached_device_id_is_usable(device_id) || list.devices.contains(*device_id))
+        {
+            log_refused_user_devices(origin, user_id, "a device entry has no usable or a repeated device_id");
+            return std::nullopt;
+        }
+        auto cached = RemoteCachedDevice{};
+        if (auto const* keys_value = member_value(*device, "keys"); keys_value != nullptr)
+        {
+            auto const* keys = as_object(keys_value);
+            auto kept = keys == nullptr ? std::nullopt : cacheable_device_keys(*keys, user_id, *device_id);
+            if (!kept.has_value())
+            {
+                log_refused_user_devices(origin, user_id, "a device's keys are not filed under it");
+                return std::nullopt;
+            }
+            cached.keys_json = std::move(*kept);
+            cached.display_name = unsigned_display_name(*keys);
+        }
+        if (auto const* name_value = member_value(*device, "device_display_name"); name_value != nullptr)
+        {
+            auto const* name = string_value(name_value);
+            if (name == nullptr)
+            {
+                log_refused_user_devices(origin, user_id, "a device_display_name is not a string");
+                return std::nullopt;
+            }
+            cached.display_name = *name;
+        }
+        list.devices.emplace(*device_id, std::move(cached));
+    }
+    auto refused = false;
+    list.master_key_json = cacheable_cross_signing_key(*root, "master_key", user_id, "master", refused);
+    list.self_signing_key_json =
+        cacheable_cross_signing_key(*root, "self_signing_key", user_id, "self_signing", refused);
+    if (refused)
+    {
+        log_refused_user_devices(origin, user_id, "a cross-signing key is not the user's key for its usage");
+        return std::nullopt;
+    }
+    return list;
+}
+
+auto parse_remote_device_list_update(canonicaljson::Object const& content) -> std::optional<RemoteDeviceListUpdate>
+{
+    auto const* user_id = string_value(member_value(content, "user_id"));
+    auto const* device_id = string_value(member_value(content, "device_id"));
+    auto const stream_id = integer_value(member_value(content, "stream_id"));
+    if (user_id == nullptr || !cached_device_id_is_usable(device_id) || !stream_id.has_value())
+    {
+        return std::nullopt;
+    }
+    auto update = RemoteDeviceListUpdate{};
+    update.user_id = *user_id;
+    update.device_id = *device_id;
+    update.stream_id = *stream_id;
+    if (auto const* prev = member_value(content, "prev_id"); prev != nullptr)
+    {
+        auto const* prev_ids = std::get_if<canonicaljson::Array>(&prev->storage());
+        if (prev_ids == nullptr)
+        {
+            return std::nullopt;
+        }
+        for (auto const& entry : *prev_ids)
+        {
+            auto const* number = std::get_if<std::int64_t>(&entry.storage());
+            if (number == nullptr)
+            {
+                return std::nullopt;
+            }
+            update.prev_ids.push_back(*number);
+        }
+    }
+    if (auto const* deleted = member_value(content, "deleted"); deleted != nullptr)
+    {
+        auto const* flag = std::get_if<bool>(&deleted->storage());
+        if (flag == nullptr)
+        {
+            return std::nullopt;
+        }
+        update.deleted = *flag;
+    }
+    if (auto const* keys_value = member_value(content, "keys"); keys_value != nullptr)
+    {
+        auto const* keys = as_object(keys_value);
+        auto kept = keys == nullptr ? std::nullopt : cacheable_device_keys(*keys, *user_id, *device_id);
+        if (!kept.has_value())
+        {
+            return std::nullopt;
+        }
+        update.device.keys_json = std::move(*kept);
+        update.device.display_name = unsigned_display_name(*keys);
+    }
+    if (auto const* name_value = member_value(content, "device_display_name"); name_value != nullptr)
+    {
+        auto const* name = string_value(name_value);
+        if (name == nullptr)
+        {
+            return std::nullopt;
+        }
+        update.device.display_name = *name;
+    }
+    return update;
+}
+
+auto remote_key_query_keys_from_cache(std::string_view user_id, RemoteDeviceList const& list) -> RemoteKeyQueryKeys
+{
+    auto keys = RemoteKeyQueryKeys{};
+    auto devices = canonicaljson::Object{};
+    for (auto const& [device_id, device] : list.devices)
+    {
+        auto device_keys = device.keys_json.empty() ? std::nullopt : parsed_object_json(device.keys_json);
+        if (!device_keys.has_value())
+        {
+            continue;
+        }
+        if (device.display_name.has_value())
+        {
+            auto unsigned_data = canonicaljson::Object{};
+            unsigned_data.push_back(
+                canonicaljson::make_member("device_display_name", canonicaljson::Value{*device.display_name}));
+            device_keys->push_back(
+                canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_data)}));
+        }
+        devices.push_back(canonicaljson::make_member(device_id, canonicaljson::Value{std::move(*device_keys)}));
+    }
+    keys.device_keys.push_back(
+        canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(devices)}));
+    auto const add_cross_signing = [user_id](std::optional<std::string> const& json, canonicaljson::Object& into) {
+        auto key = json.has_value() ? parsed_object_json(*json) : std::nullopt;
+        if (key.has_value())
+        {
+            into.push_back(canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(*key)}));
+        }
+    };
+    add_cross_signing(list.master_key_json, keys.master_keys);
+    add_cross_signing(list.self_signing_key_json, keys.self_signing_keys);
+    return keys;
 }
 
 } // namespace merovingian::federation

@@ -27,6 +27,7 @@ This is the largest and most complex module — read this file carefully before 
 | `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
+| `remote_device_list_scope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
@@ -240,6 +241,15 @@ the main pool's threads for the round trip. Every such call therefore:
    `remote_timeout`;
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+`POST /keys/query` answers a remote user who shares a joined room with a local user from `remote_device_lists` when it
+holds a current list (ADR-0560): no slot, no call. An uncached one is filled with `GET /user/devices/{userId}`
+(`key_query.user_devices`, at most `max_device_list_fills_per_key_query` (4) per request, under the same slot, server
+admission and deadline as the batched query); a failed fill falls back to the batched `/user/keys/query`. Take the
+fill's ticket (`begin_resync`) before the lock is released and store the answer with it; never store a snapshot
+without one. A user outside the shared-room scope (`remote_users_sharing_a_room_with_local_users`, one pass per
+request) is erased and asked for as before. Cached keys go through the same merge as an answer (devices asked for,
+the viewer's signatures on the master key).
 
 `POST /keys/query` and `POST /keys/claim` are the same kind of request for each remote server they name (F-17, ADR-0350). `RemoteKeyCalls`
 takes one slot for all of them, and every call is `perform_bounded_outbound_call` on the remaining time of one

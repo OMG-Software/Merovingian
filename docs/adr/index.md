@@ -492,5 +492,7 @@
 * [0546 - CI fails on a Catch2 skip its job does not list](0546-ci-fails-on-a-catch2-skip-its-job-does-not-list.md)
 * [0548 - Login tokens are opt-in, single-use, held in memory and always ask for the password](0548-login-tokens-are-opt-in-single-use-and-held-in-memory.md)
 * [0556 - GET /room_summary with a via asks the federation hierarchy endpoint and refuses a malformed via](0556-room-summary-via-asks-the-federation-hierarchy-endpoint.md)
+* [0560 - Remote device lists are cached in memory for users who share a room, and filled from GET /user/devices](0560-remote-device-lists-are-cached-in-memory-for-shared-room-users-and-filled-from-user-devices.md)
+* [0561 - Device-list updates apply in stream order, a gap marks the list stale, and the cache is bounded](0561-device-list-updates-apply-in-stream-order-a-gap-marks-the-list-stale-and-the-cache-is-bounded.md)
 * [0569 - A long-poll with nothing to return parks in a registry and gives up its sync-pool thread](0569-a-long-poll-with-nothing-to-return-parks-in-a-registry-and-gives-up-its-sync-pool-thread.md)
 * [0570 - sync_max_in_flight bounds parked waits, not sync-pool threads](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
