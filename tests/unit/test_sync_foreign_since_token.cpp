@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/ConsoleLogCapture.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -19,6 +20,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -257,9 +259,11 @@ SCENARIO("Clients holding tokens from before a database restore still get their 
     }
 }
 
-// ADR-0540: a watermark that cannot be persisted must not be issued as a position. A restart would
-// restore the counter from the stale watermark and hand the same position out again.
-SCENARIO("A sync stream id whose watermark cannot be persisted is not issued", "[database][sync-stream][security]")
+// ADR-0540: a failed watermark write must not fail the allocation (callers allocate after their own commit),
+// and the next successful write must record the counter past the id whose write failed, so a restart cannot
+// hand it out again.
+SCENARIO("A sync stream id whose watermark write fails is issued and covered by the next write",
+         "[database][sync-stream][security]")
 {
     GIVEN("a running store whose watermark write is made to fail once")
     {
@@ -267,26 +271,36 @@ SCENARIO("A sync stream id whose watermark cannot be persisted is not issued", "
         REQUIRE(started.started);
         auto& store = started.runtime.homeserver.database.persistent_store;
         auto const before = store.next_sync_stream_id;
+        merovingian::database::enable_statement_capture(store, 8U);
         merovingian::database::force_persist_failure_for_statement(store, "upsert_sync_stream_watermark");
 
-        WHEN("a stream id is requested")
+        WHEN("two stream ids are requested, the first while the write fails")
         {
-            THEN("the allocation fails and the counter is not rolled back")
-            {
-                REQUIRE_THROWS_AS(std::ignore = merovingian::database::allocate_sync_stream_id(store),
-                                  std::overflow_error);
-                REQUIRE(store.next_sync_stream_id == before + 1U);
-            }
-            AND_WHEN("the next stream id is requested")
-            {
-                REQUIRE_THROWS_AS(std::ignore = merovingian::database::allocate_sync_stream_id(store),
-                                  std::overflow_error);
-                auto const next = merovingian::database::allocate_sync_stream_id(store);
+            auto const [failed, next, logged] = std::invoke([&store] {
+                auto const capture = merovingian::tests::ConsoleLogCapture{};
+                auto const first = merovingian::database::allocate_sync_stream_id(store);
+                auto const second = merovingian::database::allocate_sync_stream_id(store);
+                return std::tuple{first, second, capture.has_line("ERROR", "sync_stream.watermark_persist_failed")};
+            });
 
-                THEN("it is a new position, never the one whose write failed")
-                {
-                    REQUIRE(next == before + 2U);
-                }
+            THEN("the failed write is logged at error level")
+            {
+                REQUIRE(logged);
+            }
+
+            THEN("both are issued, in order, and never the same position")
+            {
+                REQUIRE(failed == before + 1U);
+                REQUIRE(next == before + 2U);
+            }
+            THEN("the watermark the second write commits is past the id whose write failed")
+            {
+                REQUIRE_FALSE(store.captured_statements.empty());
+                auto const& written = store.captured_statements.back();
+                REQUIRE(written.name == "upsert_sync_stream_watermark");
+                REQUIRE(written.parameters.size() == 1U);
+                REQUIRE(written.parameters[0].value == std::to_string(next));
+                REQUIRE(next > failed);
             }
         }
     }

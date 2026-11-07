@@ -5761,10 +5761,10 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     store.next_sync_stream_id += 1U;
     auto const new_id = store.next_sync_stream_id;
     // Persist the new high-water mark immediately so ephemeral sync surfaces
-    // (typing, receipts) cannot roll the counter backward across a restart. If it cannot be persisted the id
-    // is not issued: a client could hold it in a since token, and a restart would hand it out again
-    // (ADR-0540). The counter stays advanced, so this id is burned, never reissued, even if the write did
-    // commit without the store hearing of it.
+    // (typing, receipts) cannot roll the counter backward across a restart. A failed write is logged and the
+    // id is still issued (ADR-0540): most callers allocate after their own commit, so refusing here would answer
+    // an error for work that is done. Every allocation writes the counter's current value, so the next write
+    // that succeeds covers this id too; only a restart before any write succeeds can reissue it.
     if (!persist_sync_stream_watermark(store, new_id))
     {
         log_diagnostic("sync_stream.watermark_persist_failed",
@@ -5772,7 +5772,6 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
                            {"watermark", std::to_string(new_id), false}
         },
                        observability::LogEventSeverity::error);
-        throw std::overflow_error{"the sync stream watermark could not be persisted"};
     }
     return new_id;
 }
