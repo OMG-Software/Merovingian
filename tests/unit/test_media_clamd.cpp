@@ -302,15 +302,18 @@ SCENARIO("scans beyond the concurrency bound wait for capacity until their deadl
 
         WHEN("a second scan arrives while the first holds the only place")
         {
+            auto const started = std::chrono::steady_clock::now();
             auto const second = scanner.scan("two");
+            auto const waited = std::chrono::steady_clock::now() - started;
             first_scan.join();
 
-            THEN("the second failed for lack of capacity without reaching clamd, and the first timed out")
+            THEN("the second waited for the first's place instead of running beside it, and both failed")
             {
+                // The waiter's deadline is only a moment later than the holder's, so it takes the place just as the
+                // holder times out and has no time left: it fails, and never gets a verdict.
+                REQUIRE(waited >= std::chrono::milliseconds{250});
                 REQUIRE(second.verdict == ClamdVerdict::failed);
-                REQUIRE(second.detail.find("capacity") != std::string::npos);
                 REQUIRE(first.verdict == ClamdVerdict::failed);
-                REQUIRE(server.connections() == 1U);
                 REQUIRE(scanner.in_flight() == 0U);
             }
         }
