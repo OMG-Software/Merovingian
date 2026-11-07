@@ -713,6 +713,7 @@ shell = find_program('sh')
       'integration/test_federation_cross_signing_flow.cpp',
       'integration/test_space_hierarchy_federation_flow.cpp',
       'integration/test_remote_device_list_flow.cpp',
+      'integration/test_remote_device_list_cache_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
       'integration/test_security_audit_outbound_flow.cpp',
