@@ -166,7 +166,8 @@ SCENARIO("Configured request body limits remain separate from federation transac
     }
 }
 
-SCENARIO("Sync admission follows configured caps but never exceeds its pool size", "[http][sync][limits][config]")
+SCENARIO("Sync admission follows the configured cap with a sync pool and the thread count without one",
+         "[http][sync][limits][config][p15a]")
 {
     GIVEN("sync limits configured above and below a pool's worker count")
     {
@@ -176,9 +177,9 @@ SCENARIO("Sync admission follows configured caps but never exceeds its pool size
         {
             auto const caps = merovingian::homeserver::sync_admission_caps(config, 32U);
 
-            THEN("global admission is bounded by the actual worker pool and per-user/device caps are retained")
+            THEN("global admission is still the configured cap, because a parked wait holds no thread (ADR-0570)")
             {
-                REQUIRE(caps.global == 32U);
+                REQUIRE(caps.global == 2048U);
                 REQUIRE(caps.per_user == 4U);
                 REQUIRE(caps.per_device == 2U);
             }
@@ -190,7 +191,18 @@ SCENARIO("Sync admission follows configured caps but never exceeds its pool size
 
             THEN("the configured admission limit is applied")
             {
-                REQUIRE(caps.global == 128U);
+                REQUIRE(caps.global == 2048U);
+            }
+        }
+
+        WHEN("there is no sync pool")
+        {
+            config.sync_threads = 16U;
+            auto const caps = merovingian::homeserver::sync_admission_caps(config, 0U);
+
+            THEN("a wait holds the calling thread, so the cap is the configured thread count")
+            {
+                REQUIRE(caps.global == 16U);
             }
         }
     }

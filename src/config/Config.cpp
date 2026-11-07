@@ -937,7 +937,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.client_api.sliding_sync_connections_per_device",
                    config.server().client_api.sliding_sync_connections_per_device, 64U);
     validate_count("server.http.sync_threads", config.server().http.sync_threads, 512U);
-    validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 512U);
+    validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 16384U);
     validate_count("server.http.sync_max_per_user", config.server().http.sync_max_per_user, 64U);
     validate_count("server.http.sync_max_per_device", config.server().http.sync_max_per_device, 16U);
     validate_count("server.http.media_fetch_threads", config.server().http.media_fetch_threads, 256U);

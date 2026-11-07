@@ -187,7 +187,8 @@ auto SyncNotifier::wait_for_change(WaitCursor const& cursor, std::chrono::millis
 auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t since_stream_ordering,
                     std::uint64_t since_sync_stream_id, std::chrono::steady_clock::time_point deadline,
                     std::chrono::milliseconds slice, std::function<bool()> const& running,
-                    std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle) -> LongPollOutcome
+                    std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle,
+                    std::optional<WaitCursor> initial_cursor) -> LongPollOutcome
 {
     auto outcome = LongPollOutcome{};
     auto const run = [&] {
@@ -227,8 +228,9 @@ auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t
         return outcome;
     }
     // (a) The cursor first, then (b) the positions, then the rerun's own snapshot: each later than the one before.
-    auto cursor = notifier.observe(user);
-    if (notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, std::chrono::milliseconds{0}) && run())
+    auto cursor = initial_cursor.has_value() ? std::move(*initial_cursor) : notifier.observe(user);
+    if (!initial_cursor.has_value() &&
+        notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, std::chrono::milliseconds{0}) && run())
     {
         return outcome;
     }

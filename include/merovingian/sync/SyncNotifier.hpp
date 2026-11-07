@@ -164,11 +164,13 @@ private:
 // loop: wait on the cursor for at most `slice`; on a change take a new cursor and THEN rerun, in that order; on a
 // quiet slice call `idle`, which returns false to stop because the client is gone. A publish for other users never
 // reruns it, however far the positions move. With no user the wait is on the positions, as it always was. The
-// loop ends when `running` is false, at `deadline`, on a completed rerun or when the client is gone.
+// loop ends when `running` is false, at `deadline`, on a completed rerun or when the client is gone. A caller that
+// already holds a cursor from before its last rerun (a refused park, ADR-0569) passes it as `initial_cursor`: the
+// cursor and positions steps are then skipped, because that rerun is already later than the cursor.
 [[nodiscard]] auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t since_stream_ordering,
                                   std::uint64_t since_sync_stream_id, std::chrono::steady_clock::time_point deadline,
                                   std::chrono::milliseconds slice, std::function<bool()> const& running,
-                                  std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle)
-    -> LongPollOutcome;
+                                  std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle,
+                                  std::optional<WaitCursor> initial_cursor = std::nullopt) -> LongPollOutcome;
 
 } // namespace merovingian::sync

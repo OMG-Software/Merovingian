@@ -732,7 +732,7 @@ server.client_api.max_body_size=1MiB
 
 # server.http
 server.http.sync_threads=128
-server.http.sync_max_in_flight=128
+server.http.sync_max_in_flight=2048
 server.http.sync_max_per_user=4
 server.http.sync_max_per_device=2
 # Remote media fetch pool (ADR-0121): a remote media download or thumbnail that

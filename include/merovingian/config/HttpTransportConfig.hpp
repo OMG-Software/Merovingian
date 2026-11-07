@@ -49,7 +49,7 @@ struct HttpTransportConfig final
     std::uint8_t ipv6_client_prefix_length{64U};
     std::uint32_t request_threads{32U};
     std::uint32_t sync_threads{128U};
-    std::uint32_t sync_max_in_flight{128U};
+    std::uint32_t sync_max_in_flight{2048U};
     std::uint32_t sync_max_per_user{4U};
     std::uint32_t sync_max_per_device{2U};
     // Remote media fetch pool (ADR-0121). A remote media download or
