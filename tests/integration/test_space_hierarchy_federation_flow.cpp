@@ -16,6 +16,14 @@
 //       request the information over federation with the GET /hierarchy API.")
 // Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/hierarchy/{roomId}
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1hierarchyroomid
+//
+// The same federation route answers GET /_matrix/client/v1/room_summary/{roomIdOrAlias}?via=... for
+// a room this server holds no state for (G13); Matrix v1.19 defines no federation summary
+// endpoint, so the hierarchy's `room` chunk is the summary.
+// Spec: Matrix Client-Server API v1.19, GET /_matrix/client/v1/room_summary/{roomIdOrAlias}
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1room_summaryroomidoralias
+//       (`via`: "The servers to attempt to request the summary from when the local server cannot
+//       generate it")
 
 #include "../support/TlsTestCertificate.hpp"
 #include "../support/json_test_support.hpp"
@@ -502,6 +510,335 @@ SCENARIO("A space on another server is walked and its children are not asked for
             AND_THEN("a room the remote server listed but no space links to is not shown")
             {
                 REQUIRE_FALSE(contains(room_ids(response), "!smuggled:remote.example.org"));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto room_summary(ClientServerRuntime& runtime, std::string const& token, std::string_view room_id,
+                                std::string const& query = {}) -> merovingian::homeserver::LocalHttpResponse
+{
+    return request(
+        runtime, "GET",
+        "/_matrix/client/v1/room_summary/" + merovingian::core::percent_encode_path_component(room_id) + query, token);
+}
+
+constexpr auto summary_room = std::string_view{"!remoteroom:remote.example.org"};
+constexpr auto summary_via = std::string_view{"?via=remote.example.org"};
+
+[[nodiscard]] auto errcode_of(merovingian::homeserver::LocalHttpResponse const& response) -> std::string
+{
+    auto const body = parse_object(response.body);
+    auto const* errcode = string_member(body, "errcode");
+    return errcode == nullptr ? std::string{} : *errcode;
+}
+
+} // namespace
+
+SCENARIO("A room summary for a room on another server is asked for from the via servers",
+         "[integration][room-summary][federation][g13]")
+{
+    GIVEN("alice, who is in no room, and a public room on another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+
+        WHEN("alice asks for its summary with a via naming that server")
+        {
+            auto remote = RemoteServer{runtime,
+                                       {{"remoteroom", hierarchy_response(summary_json(summary_room, "public", false,
+                                                                                       R"("topic":"Remote topic")"))}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            auto const& seen = remote.finish();
+
+            THEN("the summary is the remote room's chunk, with no children_state and no membership")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                REQUIRE(*string_member(body, "room_id") == summary_room);
+                REQUIRE(*string_member(body, "name") == "Remote Room");
+                REQUIRE(*string_member(body, "topic") == "Remote topic");
+                REQUIRE(object_member(body, "children_state") == nullptr);
+                REQUIRE(object_member(body, "membership") == nullptr);
+            }
+
+            AND_THEN("one request was made, to the federation hierarchy endpoint")
+            {
+                REQUIRE(seen.size() == 1U);
+                REQUIRE(seen.front().find("GET /_matrix/federation/v1/hierarchy/") == 0U);
+            }
+        }
+
+        WHEN("a caller without a token asks for the same public room")
+        {
+            auto remote = RemoteServer{
+                runtime, {{"remoteroom", hierarchy_response(summary_json(summary_room, "public", false))}}};
+            auto const response = room_summary(runtime, {}, summary_room, std::string{summary_via});
+            auto const& seen = remote.finish();
+
+            THEN("it is served, because a public room may be read without authentication")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(seen.size() == 1U);
+            }
+        }
+
+        WHEN("the remote server answers a summary for a different room")
+        {
+            auto remote = RemoteServer{
+                runtime,
+                {{"remoteroom", hierarchy_response(summary_json("!other:remote.example.org", "public", true))}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("nothing is shown")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("other") == std::string::npos);
+            }
+        }
+
+        WHEN("the remote server does not know the room")
+        {
+            auto remote = RemoteServer{runtime, {{"remoteroom", not_found_response()}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("the answer is 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+SCENARIO("A remote room summary is shown only to a caller who may see the room",
+         "[integration][room-summary][federation][restricted][g13]")
+{
+    GIVEN("an invite-only room on another server that the remote server describes anyway")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const answer = hierarchy_response(summary_json(summary_room, "invite", false));
+
+        WHEN("alice asks for its summary")
+        {
+            auto remote = RemoteServer{runtime, {{"remoteroom", answer}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("it is 404 and the body does not carry the room's data")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+                REQUIRE(response.body.find("Remote Room") == std::string::npos);
+            }
+        }
+
+        WHEN("a caller without a token asks for its summary")
+        {
+            auto remote = RemoteServer{runtime, {{"remoteroom", answer}}};
+            auto const response = room_summary(runtime, {}, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("it is the 401 M_MISSING_TOKEN any private room gets, without the room's data")
+            {
+                REQUIRE(response.status == 401U);
+                REQUIRE(errcode_of(response) == "M_MISSING_TOKEN");
+                REQUIRE(response.body.find("Remote Room") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a restricted room on another server whose join rule names alice's space, and bob who is not in it")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const bob = register_user(runtime, "bob");
+        auto const space = create_space(runtime, alice);
+        auto const restricted = hierarchy_response(
+            summary_json(summary_room, "restricted", false, R"("allowed_room_ids":[")" + space + R"("])"));
+
+        WHEN("alice, who is joined to the allowed room, asks for its summary")
+        {
+            auto remote = RemoteServer{runtime, {{"remoteroom", restricted}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("the summary is shown, with the allowed room IDs")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("allowed_room_ids") != std::string::npos);
+            }
+        }
+
+        WHEN("bob asks for its summary")
+        {
+            auto remote = RemoteServer{runtime, {{"remoteroom", restricted}}};
+            auto const response = room_summary(runtime, bob, summary_room, std::string{summary_via});
+            std::ignore = remote.finish();
+
+            THEN("it is 404 and the room's data is not revealed")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("Remote Room") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Local state beats a remote answer for a room summary", "[integration][room-summary][federation][g13]")
+{
+    GIVEN("a room this server holds, and a via server that would describe it differently")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const space = create_space(runtime, alice);
+
+        WHEN("alice asks for the summary with a via")
+        {
+            auto remote = RemoteServer{runtime, {{"%21", hierarchy_response(summary_json(space, "public", false))}}};
+            auto const response = room_summary(runtime, alice, space, std::string{summary_via});
+            auto const& seen = remote.finish();
+
+            THEN("the local state answers and no server is asked")
+            {
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object(response.body);
+                REQUIRE(*string_member(body, "name") == "Space");
+                REQUIRE(*string_member(body, "membership") == "join");
+                REQUIRE(seen.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A room summary request that calls another server is bounded", "[integration][room-summary][federation][g13]")
+{
+    GIVEN("a client whose outbound budget is already in use")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+        auto const held =
+            merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, std::string{client_address});
+        REQUIRE(held.has_value());
+
+        WHEN("alice asks for a room on another server")
+        {
+            auto remote = RemoteServer{
+                runtime, {{"remoteroom", hierarchy_response(summary_json(summary_room, "public", false))}}};
+            auto const response = room_summary(runtime, alice, summary_room, std::string{summary_via});
+            auto const& seen = remote.finish();
+
+            THEN("it is 429 M_LIMIT_EXCEEDED at once and no outbound call is made")
+            {
+                REQUIRE(response.status == 429U);
+                REQUIRE(errcode_of(response) == "M_LIMIT_EXCEEDED");
+                REQUIRE(seen.empty());
+            }
+        }
+
+        WHEN("a caller without a token asks for a room on another server")
+        {
+            auto remote = RemoteServer{
+                runtime, {{"remoteroom", hierarchy_response(summary_json(summary_room, "public", false))}}};
+            auto const response = room_summary(runtime, {}, summary_room, std::string{summary_via});
+            auto const& seen = remote.finish();
+
+            THEN("it is 429 M_LIMIT_EXCEEDED at once and no outbound call is made")
+            {
+                REQUIRE(response.status == 429U);
+                REQUIRE(errcode_of(response) == "M_LIMIT_EXCEEDED");
+                REQUIRE(seen.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A room summary refuses a via that is not a server name", "[integration][room-summary][federation][g13]")
+{
+    GIVEN("alice and a remote server that would answer")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+
+        WHEN("a via entry is not a valid server name")
+        {
+            auto remote = RemoteServer{
+                runtime, {{"remoteroom", hierarchy_response(summary_json(summary_room, "public", false))}}};
+            auto const response =
+                room_summary(runtime, alice, summary_room, "?via=remote.example.org&via=evil.example.org%2Fpath%3Fx");
+            auto const& seen = remote.finish();
+
+            THEN("the request is 400 M_INVALID_PARAM and no server is asked")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE(errcode_of(response) == "M_INVALID_PARAM");
+                REQUIRE(seen.empty());
+            }
+        }
+
+        WHEN("the only via is this server's own name")
+        {
+            auto remote = RemoteServer{runtime, {}};
+            auto const response = room_summary(runtime, alice, summary_room,
+                                               "?via=" + std::string{runtime.homeserver.config.server().server_name});
+            auto const& seen = remote.finish();
+
+            THEN("this server is never its own remote target: 404, no outbound call")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(seen.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A room summary for an unknown room with no via is still not found",
+         "[integration][room-summary][federation][g13]")
+{
+    GIVEN("a room this server holds no state for")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+
+        WHEN("alice and a caller without a token ask for it without a via")
+        {
+            auto remote = RemoteServer{runtime, {}};
+            auto const authenticated = room_summary(runtime, alice, summary_room);
+            auto const anonymous = room_summary(runtime, {}, summary_room);
+            auto const& seen = remote.finish();
+
+            THEN("alice gets 404, the other caller 401, and no server is asked")
+            {
+                REQUIRE(authenticated.status == 404U);
+                REQUIRE(anonymous.status == 401U);
+                REQUIRE(seen.empty());
             }
         }
     }
