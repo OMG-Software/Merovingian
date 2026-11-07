@@ -24,11 +24,14 @@ The script supports these package managers:
 The package set intentionally avoids Boost. It installs C++ toolchains, Meson,
 Ninja, pkg-config/pkgconf, Git, Python, Perl, Bison, Flex, M4, OpenSSL,
 LibSodium, PostgreSQL client headers, Catch2, clang tooling, and cppcheck.
-Merovingian pins libcurl, SQLite, Catch2, and yyjson through committed Meson
-wraps so the default build path does not depend on host copies of those
-libraries. OpenSSL, LibSodium, and PostgreSQL libpq are resolved from
+Merovingian pins SQLite, Catch2, and yyjson through committed Meson wraps so
+the default build path does not depend on host copies of those libraries.
+OpenSSL, LibSodium, PostgreSQL libpq, and libcurl are resolved from
 operating-system packages so security updates can be delivered by the host
-package manager. `yyjson` is used for strict JSON
+package manager. The libcurl wrap is used only when the build sets
+`-Dstatic_curl_wrap=true` (the static musl build). The thumbnail worker also
+uses the optional host libraries `libpng16` and `libturbojpeg`; it is built only
+when both are found. `yyjson` is used for strict JSON
 parsing; its wrap exposes third-party headers as system includes so
 warning-as-error still applies to project code rather than inline C headers
 from the dependency checkout. C++ sources include a project-owned adapter rather
@@ -42,8 +45,10 @@ CI, because it relies on strict shell options and portable grep behavior.
 OpenSSL is the selected TLS provider and is intentionally resolved through the
 host package manager. The Linux, BSD, and WSL wrappers still run Meson with
 `--wrap-mode=forcefallback` by default, but the top-level OpenSSL, LibSodium,
-and libpq dependencies disallow fallback so clean builds use OS-provided shared
-libraries for those boundaries.
+libpq, and libcurl dependencies disallow fallback (libcurl allows it only with
+`-Dstatic_curl_wrap=true`), and the optional `libpng16` and `libturbojpeg`
+have no wrap, so clean builds use OS-provided shared libraries for those
+boundaries.
 Dependency reviews live under `docs/dependencies/`; new direct dependencies
 should add or update a review there before they are wired into Meson.
 
@@ -294,8 +299,9 @@ inside the default WSL distro unless `-Distro` overrides it.
 
 All wrappers use Meson `forcefallback` mode by default so pinned dependency
 wraps are used even when the host has system copies installed. OpenSSL,
-LibSodium, and PostgreSQL libpq are excluded from that policy and are resolved
-from the host package manager.
+LibSodium, PostgreSQL libpq, and libcurl (except with `-Dstatic_curl_wrap=true`)
+are excluded from that policy and are resolved from the host package manager,
+as are the optional `libpng16` and `libturbojpeg` for the thumbnail worker.
 
 Meson launches repository shell-based source gates through `sh`, which keeps
 WSL builds on `/mnt/c` independent of Windows executable-bit metadata.

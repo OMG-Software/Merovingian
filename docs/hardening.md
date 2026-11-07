@@ -638,8 +638,11 @@ filesystem-mutating calls because SQLite requires them for correct operation:
 | `fstatfs`, `statfs` | Device sector-size probe during WAL-mode open. |
 | `fallocate` | `posix_fallocate(3)` path: SQLite pre-allocates database and WAL file space; glibc maps this to `fallocate(2)` on filesystems that support it. |
 
-The path-based `truncate` and permission-mutation calls (`chmod`, `fchmod`,
-`fchmodat`, `umask`, `mkdir`) remain blocked. The service-manager sandbox
+The path-based `truncate`, `chmod`, `fchmodat` and plain `mkdir` calls remain
+blocked. `fchmod` and `umask` are not on the unconditional allowlist either:
+main alone admits `fchmod(fd, 0600)` and `umask(0077)` (ADR-0129, ADR-0130), and
+every other mode or mask is denied. `mkdirat` is allowed for
+`std::filesystem::create_directories`. The service-manager sandbox
 (`ProtectSystem=strict`, writable paths limited to `/var/lib/merovingian` and
 `/run/merovingian`) bounds what `unlink`/`rename`/`ftruncate`/`fallocate` can
 actually reach.
@@ -855,7 +858,8 @@ Hardening is exercised by automated tests:
 
 * `tests/unit/test_seccomp_hardening.cpp` asserts the fail-closed default action,
   the architecture guard, that SQLite journal syscalls are allowed, that
-  privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied,
+  privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) are not
+  unconditionally allowed (`fchmod` and `umask` are argument-restricted, ADR-0129/ADR-0130),
   and that `clone3` (435), `close_range` (436), and `faccessat2` (439) are always present in
   the compiled filter regardless of build-time `__NR_*` macro availability.
 * `tests/unit/test_file_descriptor.cpp` exercises `FileDescriptor::set_cloexec()`

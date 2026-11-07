@@ -110,7 +110,9 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   them. This is especially important for errors and resource handles.
 - Do not discard an error result merely to silence a warning. When a non-void
   result can safely be ignored, write `std::ignore = expression;`. Do not use `(void)expression` or
-  `static_cast<void>(expression)`. See the [warning policy](build-warning-policy.md).
+  `static_cast<void>(expression)`. `scripts/reject-unsafe.sh` rejects both forms
+  (GCC, unlike clang, does not let a void cast silence `warn_unused_result`); see the
+  [warning policy](build-warning-policy.md).
 - Mark a function `noexcept` only when it cannot let an exception escape.
   Check its callees and cleanup paths. The annotation does not prove that the
   body cannot throw; an escaping exception terminates the process.
@@ -132,8 +134,9 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   });
   ```
 
-- Format C++ with the root `.clang-format`. Let the formatter control spacing,
-  line wrapping, and include grouping.
+- Format C++ with the root `.clang-format`, by running `scripts/format_code.py`.
+  Formatting is manual: no hook or CI job runs the formatter. Let the formatter
+  control spacing, line wrapping, and include grouping.
 - Use quotes for project includes: `"merovingian/module/name.hpp"`.
   Use angle brackets for standard library and third-party includes.
   Do not add bare relative project includes such as `"name.hpp"`.
@@ -151,7 +154,7 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
 ## Concurrency and portability
 
 - Do not hold `HomeserverRuntime::mutex` across a blocking network call. Use a
-  `homeserver::RuntimeLockRelease` scope from `homeserver/RequestLockScope.hpp`.
+  `homeserver::RuntimeLockRelease` scope from `homeserver/RuntimeLockRelease.hpp`.
   It releases every recursion level held by the caller and restores the lock
   when the scope ends. Do not access protected runtime state while it is released.
 - Lock `HomeserverRuntime::mutex` through `homeserver::RuntimeLock` (a
@@ -246,7 +249,19 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 | `scripts/check-catch2-bdd-tests.sh` | Required BDD macro patterns in unit test files |
 | `scripts/check-unit-test-registration.sh` | Unit test source registration |
 | `scripts/rewrite_merovingian_includes.py --check` | Project include quoting |
-| `clang-format` with `.clang-format` | C++ formatting and include grouping |
+| `include-order-tooling` (`tests/tooling/test_include_order.py`) | Include grouping and ordering. Nothing else checks formatting, and no tool enforces `.clang-format` |
+| `scripts/check-conformance-gate.sh` | Runs `meson test conformance-tests` in a given build directory (CI, per build). It does not detect a removed conformance test |
+| `scripts/check_expected_skips.py` | Fails a CI job when a Catch2 test case skipped that the job's `jobs` entry in `tests/expected_skips.json` does not list; unusable reports fail closed (ADR-0546; covered by `expected-skips-tooling`) |
+| `scripts/check-elf-hardening.sh` | Reads a built ELF binary's headers with `readelf` and fails if PIE, RELRO, `BIND_NOW` or a non-executable stack is missing |
+| `scripts/check-startup-hardening-gate.sh` | Boots a packaged `merovingian-server` and fails unless every startup hardening self-check reports `enabled` and the server stops cleanly on SIGTERM |
+| `scripts/check-release-readiness.sh` | Required release, packaging and dependency files exist; legacy hash strings and project-local hashing are absent from the sources; the release workflow produces attestations, checksums and GPG signatures; wraps are pinned; the licence summary generates |
+| `scripts/check-staged-changelog-docs.sh` | Pre-commit: a staged change under code, tests, packaging, scripts or build files also stages `CHANGELOG.md` and a `docs/*.md` file (`MEROVINGIAN_SKIP_CHANGE_DOC_CHECK=1` skips it) |
+| `scripts/verify-wrap-pins.sh` | Every `subprojects/*.wrap` is an immutable `[wrap-file]` with a 64-character lowercase hex `source_hash`; `[wrap-git]` is refused |
+| `ci-run-scope-tooling`, `ci-runner-order-tooling` | Each workflow runs once per pull request head and the PostgreSQL job runs only what uses PostgreSQL (ADR-0511); Sonar and CodeQL start before queued jobs behind the gate (ADR-0580) |
+| `workflow-pip-locking-tooling` | Every workflow `pip install` uses hash-locked wheels from a requirements file (ADR-0313) |
+| `security-workflow-tooling` | The security workflows (secret scan, dependency review and triage, SBOM, sanitizers, CodeQL) and their configuration files keep the settings the release gate relies on |
+| `docs-site-tooling` | The documentation site builds strictly on every branch, only `main` deploys it, its dependencies are hash-locked, and every published document has a `mkdocs.yml` nav entry |
+| `catch-report-capture-tooling` | A test binary writing its CI skip report still lets a test capture `std::cout` (ADR-0546) |
 | `tests/tooling/test_packages_workflow.py` | Version consistency and packaging requirements |
 | `workflow-action-pinning-tooling` | The GitHub Action pinning policy |
 

@@ -61,8 +61,8 @@ severity.
 | `auth` | `login.rejected` | `auth` |
 | `auth` | `access_token.rejected` | `auth` |
 | `client_server` | `request.rejected` | `policy` |
-| `client_server` | `request.user_locked` | `auth` |
-| `client_server` | `request.user_suspended` | `auth` |
+| `auth` | `request.user_locked` | `auth` |
+| `auth` | `request.user_suspended` | `auth` |
 | `auth` | `registration_policy.denied` | `policy` |
 | `federation` | `federation.acl_rejected` | `policy` (in-memory only — see below) |
 
@@ -103,7 +103,8 @@ A malformed `category=` value returns 400 with
 The `log_modules.<name>` keys accept any string — the bootstrap
 forwards the name to `SingleLog::set_module_log_level(name, level)`
 without a registry. This is a non-exhaustive list of common module names
-used as the first argument to `observability::log_diagnostic` in `src/`:
+used as the first argument to `observability::log_diagnostic` and `log_diagnostic_audit` in `src/`
+(`rate_limit` is used only with `log_diagnostic_audit`):
 
 | Module | What it logs |
 |--------|--------------|
@@ -119,6 +120,17 @@ used as the first argument to `observability::log_diagnostic` in `src/`:
 | `rooms` | Room creation, membership writes, event composition and persistence |
 | `event_auth` | Matrix event-auth rule rejection step and reason |
 | `persistent_store` | Membership, room-membership, and event/state persistence outcomes |
+| `outbound_client` | Outbound HTTP requests: success, failure, error, rejected redirect |
+| `worker_pool` | Relay of federation worker requests into main (runtime lock wait) |
+| `presence` | Presence service decisions |
+| `federation_proxy` | Main-side proxying of federation requests: policy denials, worker bypass, room-sync fallback |
+| `media_service` | Media create, download and remote fetch decisions, URL previews and the clamd scan |
+| `media_repository` | Local media repository upload, download and admin quarantine, release and removal |
+| `media_security` | MIME and quarantine rejections, thumbnail decoder rejections, remote fetch rejections |
+| `key_query` | Key query and one-time-key claim, local and remote, accepted or rejected |
+| `server_discovery` | Federation server discovery: well-known, SRV and direct, and rejections |
+| `sync_notifier` | Sync stream publish, change wake-up and long-poll timeout |
+| `tls` | TLS context set-up and handshake accept or reject |
 
 Unrecognised module names are accepted and the level is recorded —
 there is no error. Restart the server to apply.

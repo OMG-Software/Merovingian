@@ -90,5 +90,3 @@ and is resolved from the operating-system package.
   is intentionally deferred.
 - Connection pooling and keep-alive across requests is deferred until the
   federation outbound transaction flow demands it.
-- Per-platform integration tests against a local TLS test server land with
-  the federation wiring slice.

@@ -240,9 +240,6 @@ body can appear only if main believed the hook (`[f-43]` in
 
 ### Test-only environment variables
 
-* `MEROVINGIAN_TEST_FEDERATION_WORKER` — absolute path to the
-  `merovingian-fed-worker` binary. Required by the live federation-worker
-  integration tests; when unset those scenarios are skipped.
 * `MEROVINGIAN_TEST_DISABLE_HARDENING` — when set to any value,
   `start_runtime()` skips applying seccomp/pledge/unveil sandbox controls.
   The build scripts (`build-linux.sh`, `build-bsd.sh`, `build-wsl.sh`) export
@@ -250,6 +247,13 @@ body can appear only if main believed the hook (`[f-43]` in
   restrictions are permanent in-process and would break the Catch2 runner that
   executes many scenarios in one process. Direct invocations of a test binary
   (for example a focused PostgreSQL integration run) must set it manually.
+
+### The federation worker path (compile-time macro)
+
+`MEROVINGIAN_TEST_FEDERATION_WORKER` is not an environment variable. `tests/meson.build` defines it as a
+compile-time macro (`-DMEROVINGIAN_TEST_FEDERATION_WORKER="<path>"`) holding the build-tree path of the built
+`merovingian-fed-worker`, for the live federation-worker integration tests. When the macro is not defined,
+`tests/integration/test_federation_worker_flow.cpp` defaults it to `""` and those scenarios skip.
 
 ### Freezing the event clock
 
@@ -303,7 +307,9 @@ would pass with the test silently not run. Each CI job that runs Catch2 therefor
 - `tests/expected_skips.json` holds `groups` (lists of `{test, message?, reason, unverified?}`) and `jobs` (a job
   name mapped to the groups it combines). `test` is the scenario name without the `Scenario: ` prefix;
   `message` is an optional substring the SKIP message must contain; `reason` says why this runner skips it.
-- The build scripts take `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`). They set
+- `<name>` is a key of the `jobs` object in `tests/expected_skips.json`. The build scripts take
+  `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`); `build-wsl.sh` has no `--skip-job`, so WSL runs are not
+  skip-gated. They set
   `MEROVINGIAN_CATCH_REPORT_DIR`, so every test binary also writes an XML report there, and run
   `scripts/check_expected_skips.py` after the suite. A skip that is not listed for the job fails the job and is
   printed with the test name, message and source line. No report, a truncated report or a bad list also fails.
@@ -341,7 +347,8 @@ Never list `MEROVINGIAN_TEST_FEDERATION_WORKER is not defined`: on CI that skip 
 
 The `coverage` workflow measures line and branch coverage over the whole suite (unit,
 conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov, which
-requires 50% on a pull request's own lines (`.codecov.yml`). gcovr runs with
+requires 50% on a pull request's own lines, with a 5% patch threshold, and 60% overall line coverage, with a 2%
+threshold, so a drop of up to 2% from the base does not fail (`.codecov.yml`; both statuses are non-informational). gcovr runs with
 `--exclude-throw-branches` (ADR-0217): the unwinding edge the compiler adds to a call that
 may throw is not counted, because only an injected allocation failure reaches it and it
 holds no code of ours. The flag works only with GCC's gcov (clang's `llvm-cov gcov` does not

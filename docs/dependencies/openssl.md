@@ -59,4 +59,3 @@ operating-system package.
 ## Current limitations
 
 - Certificate reload remains restart-bound.
-- Remote federation TLS verification and key discovery are still separate work.

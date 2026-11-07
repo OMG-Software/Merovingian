@@ -143,7 +143,7 @@ The full parameter reference (server identity, CORS, TURN, listeners, database, 
    ```
 8. **Smoke test**:
    ```sh
-   curl -s http://127.0.0.1:8008/_matrix/client/v3/version
+   curl -s http://127.0.0.1:8008/_matrix/client/versions
    ```
    Expect a JSON response listing supported Matrix client-server versions.
 

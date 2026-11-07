@@ -9,6 +9,14 @@ This capability note describes runtime-wired trust-and-safety behavior.
   logout, `M_USER_SUSPENDED` outside the spec's allowlist) and the lock check in `/refresh` (`auth_service.cpp`). The
   engine's `evaluate_account_policy` and `evaluate_invite_policy` had no caller and were removed; there is no
   invite-scope policy.
+- Invite permission (0.12.81, SS7, [ADR-0552](adr/0552-invite-permission-is-decided-where-account-data-is-held-and-createroom-drops-only-a-remote-block.md)).
+  This is account data, not a policy-engine surface: a local user whose `m.invite_permission_config` has
+  `default_action: "block"` is sent no invites. Every invite to them is refused with `403 M_INVITE_BLOCKED` and
+  nothing is stored: federation `PUT /v1/invite` and `/v2/invite` (decided on main before signing), `POST /invite`,
+  `PUT /state/m.room.member` with membership `invite`, and `POST /createRoom` (which creates nothing when a local
+  invitee blocks). A remote server's `M_INVITE_BLOCKED` makes `POST /invite` answer the same, and in `createRoom`
+  drops only that invite. Invites already stored are withheld from `/sync` and sliding sync while the block lasts
+  (`src/homeserver/invite_permission.cpp`).
 - Room policy checks in the runtime room creation path.
 - Media policy checks in the runtime client and federation download paths and
   persisted moderation rules in the admin workflow. Federation's production
@@ -22,7 +30,8 @@ This capability note describes runtime-wired trust-and-safety behavior.
   The bounded admission repair passes independent review and a fresh normal
   full suite (56 OK, all return codes zero, 1,026 unchanged frozen files).
   Live remote-hook responses and strict mid-request policy revocation are not
-  claimed, nor is whole-audit or release acceptance.
+  claimed, nor is whole-audit or release acceptance. Media whose policy is `allow-after-scan` can be scanned by a local ClamAV
+  daemon before it is admitted (G15, ADR-0565); see [media-repository.md](media-repository.md) and the user manual.
 - Federation request policy checks in the runtime federation path. Main makes the decision, never a worker
   (F-21, ADR-0358): `FederationProxy::handle` applies the origin's scope-`federation` policy rule after the X-Matrix signature
   verifies and before any branch, including the forward to a worker (`403 M_FORBIDDEN`), and asks the policy server once,
@@ -89,7 +98,8 @@ This capability note describes runtime-wired trust-and-safety behavior.
   action**: unlike the policy-engine controls above (which are operator- or
   admin-driven and block content server-wide), an ignore list is set by the
   ignoring user themselves and only changes what *that user's* clients are
-  shown. See "Deliberately not included" below for what it does not protect
+  shown. Ignored users' events also do not raise that user's unread or highlight counts
+  (`unread_notifications`, sliding-sync room counts, Push Gateway `counts.unread`; 0.12.76, F-64). See "Deliberately not included" below for what it does not protect
   against.
 
 ## Security posture

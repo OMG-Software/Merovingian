@@ -544,7 +544,7 @@ Uploaded keys and room tags are bounded by fixed limits rather than configuratio
 
 Six per-user caps bound end-to-end key material, filters, account data and push rules. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
 
-The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
+The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. `sync_max_in_flight` bounds parked, queued and running sync long-polls together and is not limited by `sync_threads`, because a parked wait holds no thread (ADR-0569, ADR-0570); each parked wait keeps its socket open, so a high value needs file-descriptor headroom. The per-device and per-user caps cannot exceed the global cap.
 
 `security.federation.backfill.max_state_ids` and `max_auth_chain_ids` bound advertised lists, including events already in local storage. `max_snapshot_events` bounds their unique union. `max_outbound_calls` bounds general recovery calls, `max_snapshot_outbound_calls` bounds event/auth-chain materialisation, and `max_total_outbound_calls` plus `timeout` are shared across the entire incoming PDU recovery. The deadline prevents new work and shortens HTTP timeouts; synchronous discovery, verification or database work already in progress is not preempted. Failed requests consume calls too; remote timeouts are shortened to the remaining deadline. None of these controls bypass signature, hash, authorization or server-ACL checks.
 
@@ -1615,8 +1615,8 @@ client-server request:
 
 The longest matching `<target>` prefix wins; path parameters such as
 `roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so a
-single cap covers all rooms/devices/media. Every entry rejects a zero-window
-or zero-cap policy at startup. Changes require a server restart.
+single cap covers all rooms/devices/media. Every entry rejects a zero cap, a
+zero window or a window over 3600 seconds at startup. Changes require a server restart.
 
 | Key | Default | When to change |
 |---|---|---|
@@ -1636,6 +1636,9 @@ Default route-aware policies applied when no override is configured:
 | Search (`/_matrix/client/v3/search`) | 20/60s per IP |
 | Classic sync (`/_matrix/client/v3/sync`) and unstable sliding-sync aliases | 3000/60s per IP |
 | Stable sliding sync (`/_matrix/client/v4/sync`) | 600/60s generic per-IP default |
+| Login token minting (`/_matrix/client/v1/login/get_token`) | 4/60s per user |
+| URL previews (`/_matrix/client/v1/media/preview_url`, `/_matrix/media/v3/preview_url`) | 30/60s per user |
+| Asynchronous upload reservations (`/_matrix/media/v1/create`) | 30/60s per user |
 | Generic client APIs | 600/60s per IP fallback |
 
 Example overrides:
@@ -1731,7 +1734,13 @@ take effect.
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |
-| `security.media.*` | Reloadable |
+| `security.media.thumbnail_cache_size` / `security.media.thumbnail_max_concurrent_per_user` | Restart required |
+| `security.media.url_preview_*` | Restart required |
+| `security.media.pending_upload_ttl_seconds` / `security.media.pending_upload_max_wait_ms` / `security.media.max_pending_uploads` / `security.media.max_pending_uploads_per_user` | Restart required |
+| `security.media.clamd_*` | Restart required |
+| Other `security.media.*` keys | Reloadable |
+| `security.password_policy.*` | Restart required |
+| `security.password_hashing.max_concurrent` | Restart required |
 | `security.logging.*` | Reloadable |
 | `server.oidc.*` | Reloadable |
 | `server.sso.*` | Reloadable |
@@ -1964,7 +1973,7 @@ The unit runs as the `merovingian` user, restricts filesystem access to
 After starting:
 
 ```sh
-curl -s http://127.0.0.1:8008/_matrix/client/v3/version
+curl -s http://127.0.0.1:8008/_matrix/client/versions
 ```
 
 Expect a JSON response listing supported Matrix client-server versions.

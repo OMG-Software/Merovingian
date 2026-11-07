@@ -156,8 +156,11 @@ Ignore these dirs:
 
 ## Project Layout
 Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module and file name.
-Some headers have no `.cpp` (header-only types, such as all of `bootstrap/`), and two sources have no header of the
-same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
+Some headers have no `.cpp` (header-only types, such as all of `bootstrap/`), and five sources in module directories have no header of
+the same name in `include/`: `src/appservice/registration_yaml.cpp`, `src/database/sqlite_store.cpp`,
+`src/federation_worker/WorkerEventLoop.cpp` (its header, `WorkerEventLoop.hpp`, sits beside it in `src/`),
+`src/federation_worker/main.cpp`, and `src/media/thumbnail_worker_main.cpp`. The top-level `src/main.cpp` and
+`src/db_migrate.cpp` are the other two executables' entry points.
 
 ```
 ├── include/merovingian/   # Public headers (same module dirs as src/)
@@ -201,7 +204,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 ├── migrations/            #   Numbered SQL migrations (001_*.sql …)
 ├── docs/                  #   All project docs (see list below)
 ├── scripts/               #   Build, format, lint, dev-setup scripts
-├── packaging/             #   OS packages: deb, rpm, freebsd, netbsd, openbsd, systemd, openrc
+├── packaging/             #   OS packages: deb, rpm, rhel, opensuse, freebsd, netbsd, openbsd; systemd, openrc, rc.d; postgresql role SQL
 ├── security/              #   Security coding rules
 ├── config/                #   Runtime config examples
 ├── subprojects/           #   Meson wrap dependencies
@@ -323,8 +326,9 @@ Base: docs/matrix-v1.19-spec/index.md
 # Build and test Windows
 python build.py wsl
 
-# Full build via unified CLI (Linux/BSD/WSL)
-python build.py
+# Development build via the unified CLI; a target is required
+# (linux, bsd, wsl, deb, rpm, pkg, static)
+python build.py linux
 
 # Documentation site (see docs/dev-environment.md#documentation-site)
 pip install --require-hashes -r requirements-docs.txt

@@ -17,8 +17,8 @@ same thing:
 **Toolchain floor (all platforms):**
 
 - **Clang ≥ 18** (`-std=c++26`) or **GCC ≥ 14**, with the matching
-  `libc++` / `libstdc++` C++26 runtime. CI builds with clang everywhere except the
-  `coverage` job, which builds with GCC 14 (ADR-0217).
+  `libc++` / `libstdc++` C++26 runtime. CI (`ci.yml`, `packages.yml`) builds with clang everywhere. The separate
+  `coverage.yml` and `sonarcloud.yml` workflows build with GCC 14 (ADR-0217).
 - **Meson ≥ 1.1.0** and Ninja.
 - Core dependencies are vendored and built from subprojects
   (`--wrap-mode=forcefallback`); only the base toolchain and the optional image
@@ -118,6 +118,9 @@ carry a job-level `continue-on-error`; a failure there fails the run
 | OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
 | NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |
 
+`ci.yml` also runs `ubuntu-hardened-listener-coverage` on the Ubuntu runner. It is not a platform row:
+it runs the real binary-startup hardening scenario with the file capability the self-check needs.
+
 All Tier 1 jobs build through the shared wrappers (`scripts/build-linux.sh`,
 `scripts/build-bsd.sh`) with `--wrap-mode=forcefallback`, so the core
 dependencies are built from vendored subprojects and only the platform's image
@@ -191,7 +194,8 @@ Runtime hardening is platform-specific and reported by the startup self-check
 | ELF RELRO / BIND_NOW / noexec stack probe | enabled | enabled | enabled | enabled |
 | pledge / unveil | n/a | n/a | enabled (wired in 0.10.7) | n/a |
 | Capsicum | n/a | enabled (wired in 0.10.7) | n/a | n/a |
-| Resource limits, no-new-privs, core-dump policy | enabled / alpha exception | partial | partial | partial |
+| Core-dump policy (`RLIMIT_CORE`) | probed, plus `PR_GET_DUMPABLE` | probed | probed | probed |
+| `no_new_privs`, capability bounding set | probed | n/a | n/a | n/a |
 
 Landlock applies only to the federation worker (`merovingian-fed-worker`), not
 the main `merovingian-server` process — see [hardening.md](hardening.md),
@@ -206,6 +210,13 @@ Capsicum on FreeBSD. It refuses to decode on a platform with none of these
 comes from outside the server process; thumbnail requests are answered `404`
 ([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)). NetBSD is also refused at server startup
 ([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+
+ClamAV scanning (`security.media.clamd_socket_path`) is refused at startup on
+FreeBSD and OpenBSD, because Capsicum and unveil stop the main process from
+connecting to the clamd socket
+([ADR-0566](adr/0566-the-clamd-socket-is-refused-at-startup-where-the-sandbox-forbids-connecting-to-it.md)).
+The check (`media::clamd_supported_on_this_platform`) returns false only on
+those two; NetBSD is refused at startup for other reasons (above).
 
 ## Changing a platform's tier
 

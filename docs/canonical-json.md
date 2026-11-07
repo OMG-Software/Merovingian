@@ -114,4 +114,4 @@ body so that one PDU's number costs that PDU alone (ADR-0398).
 keys (per the spec's Signing JSON procedure) and serializes the result with
 `serialize_canonical_strict` — it is a signing-scoped entry point, so a
 `Value` tree containing a float fails closed rather than being serialized.
-Signing-key metadata layering remains future event-signing work.
+Signing-key identifiers are not part of the signable view: `events::event_signer` (`src/events/event_signer.cpp`) files each signature under the server name and key ID in `signatures`.

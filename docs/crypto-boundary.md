@@ -5,6 +5,12 @@ implementing custom cryptographic primitives.
 
 ## Included now
 
+- Libsodium boundary rule: direct libsodium calls and `<sodium.h>` includes are
+  permitted only in `src/crypto/`, `src/events/`, `src/auth/` and
+  `src/core/SecretBuffer.cpp` (and the matching `include/merovingian/crypto/`,
+  `events/` and `auth/` directories). Everything else goes through the crypto
+  and auth wrappers. `scripts/reject-unsafe.sh` fails the build on any other
+  use ([ADR-0014](adr/0014-confine-cryptographic-primitives-behind-providers.md)).
 - Generic hashing (`generic_hash.cpp`) and hex/base64 encoding (`encoding.cpp`)
   wrapping libsodium's `crypto_generichash`/`sodium_bin2hex`/`sodium_bin2base64`.
 - Constant-time comparison boundary (fixed and variable-length inputs).
@@ -134,10 +140,11 @@ hashing, media deduplication hashes, and Matrix event hashes use LibSodium.
 Event signing and verification now flow through the Ed25519 provider interface.
 Runtime-created local room events use the persisted server signing-key record
 and fail closed if the signing key cannot be materialized.
-Access-token and refresh-token hashes now use a keyed BLAKE2b (`token-hash:v3`)
-construction seeded from runtime secret material; the previous unkeyed
-`token-hash:v2` form remains accepted only for lookup compatibility with older
-persisted rows.
+Access-token and refresh-token hashes are minted with a keyed BLAKE2b
+(`token-hash:v4`) construction seeded from runtime secret material
+(`hash_access_token_v4`, `src/auth/token.cpp`). The older `token-hash:v3` (keyed,
+legacy-label key) and unkeyed `token-hash:v2` forms are accepted only to look up
+older persisted rows, never to issue new tokens.
 - Every Ed25519 provider validates the secret key's size before handing it to
   libsodium. For `RuntimeEd25519Provider` the check is at *construction* — the
   trust boundary where forgery-capable material enters — so a `SecretBuffer`
@@ -149,10 +156,11 @@ persisted rows.
 - Variable-length secret comparison does not branch on input length before
   computing a fixed-size digest, removing a timing side-channel on secret size.
 - Signing secret material is held in a `core::SecretBuffer` while in process memory
-  and is zeroised when the buffer is destroyed or moved-from. The wipe is non-elidable
-  (`sodium_munlock`/`sodium_memzero`), and custom move-ctor/move-assign transfer the
-  mlock to the destination while wiping the source, so the secret is never duplicated
-  in memory and never left pinned in a moved-from object. The outbound federation
+  and is wiped when the buffer is destroyed. The allocation comes from `sodium_malloc`
+  and is locked with `sodium_mlock`; `sodium_free` wipes it and unlocks it on release.
+  The move constructor and move assignment transfer the allocation to the destination
+  and leave the source empty (size 0, not locked), so no bytes are copied or wiped on a
+  move, the secret is never duplicated in memory, and the moved-from object owns nothing. The outbound federation
   signing path (`make_federation_signature`, `OutboundCall`, `DispatchWorkerConfig`,
   `perform_sync_outbound_call`) consumes the key as a borrowing span off the
   `SecretBuffer` (or an owned `SecretBuffer` copy in the dispatch worker), so the key
@@ -242,7 +250,9 @@ The boundary provides these guarantees:
 ## IPC channel key exchange
 
 The encrypted channel between `merovingian-server` and `merovingian-fed-worker`
-(`src/ipc/IpcChannel.cpp`) uses libsodium key exchange and authenticated encryption:
+uses libsodium key exchange and authenticated encryption. The primitives
+(`crypto_kx`, `crypto_secretstream`) live in `src/crypto/IpcStreamCipher.cpp`;
+`src/ipc/IpcChannel.cpp` only frames and carries the messages:
 
 - **Ephemeral key pair**: each side generates a fresh `crypto_kx_keypair` on
   every connection. Neither party persists the IPC key material; compromise of
