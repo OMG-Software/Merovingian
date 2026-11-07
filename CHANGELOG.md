@@ -1,3 +1,9 @@
+## 0.12.81
+
+Fixes the low findings of the November 2026 project analysis.
+
+### Fixed
+
 ## 0.12.80
 
 Every header the first split (0.12.79) left now holds at most one type, and every file named after a type holds that type (ADR-0466, ADR-0467). No behaviour changes.
