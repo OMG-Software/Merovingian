@@ -78,6 +78,7 @@ client_rate_limits.tier.federation=1000000000/1s
 client_rate_limits.tier.admin=1000000000/1s
 client_rate_limits.tier.generic=1000000000/1s
 client_rate_limits.per_user./_matrix/client/v3/login=1000000000/1s
+client_rate_limits.per_user./_matrix/client/v1/login/get_token=1000000000/1s
 client_rate_limits.per_user./_matrix/client/v1/media/preview_url=1000000000/1s
 client_rate_limits.per_user./_matrix/media/v3/preview_url=1000000000/1s
 client_rate_limits.per_user./_matrix/media/v1/create=1000000000/1s
