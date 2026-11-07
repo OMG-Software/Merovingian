@@ -13,7 +13,12 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `migration_files.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
 | `connection.cpp` | Connection lifecycle and pool management |
 | `PreparedStatement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
-| `schema.cpp` | Schema introspection helpers |
+| `schema.cpp` | The frozen v1 schema: `core_tables` and `core_indexes`, the `SchemaTableDefinition`/`SchemaIndexDefinition` lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0224: a schema change is a new numbered migration, never an edit to v1) |
+| `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
+| `redaction_view.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
+| `PersistentServerSigningKey.cpp` | A stored server signing-key row; wipes the secret on destruction and on overwrite |
+| `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
+| `library_versions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `state_group_table_support.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 

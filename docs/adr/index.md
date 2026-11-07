@@ -29,13 +29,10 @@
 * [0025 - Return not found rather than the original on thumbnail failure](0025-return-not-found-rather-than-the-original-on-thumbnail-failure.md)
 * [0026 - Refuse media uploads at capacity rather than evicting](0026-refuse-media-uploads-at-capacity-rather-than-evicting.md)
 * [0028 - Drop push deliveries at the concurrency cap](0028-drop-push-deliveries-at-the-concurrency-cap.md)
-* [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md)
 * [0030 - Key the pre-auth key resolution budget on source address](0030-key-the-pre-auth-key-resolution-budget-on-source-address.md)
 * [0031 - Store narrow purpose tokens in separate tables](0031-store-narrow-purpose-tokens-in-separate-tables.md)
-* [0032 - Throttle failed logins per claimed account](0032-throttle-failed-logins-per-claimed-account.md)
 * [0033 - Leave SSO protocol integration to an operator gateway](0033-leave-sso-protocol-integration-to-an-operator-gateway.md)
 * [0034 - Use a longer login token window than the spec suggests](0034-use-a-longer-login-token-window-than-the-spec-suggests.md)
-* [0035 - Parse appservice registrations as a bounded YAML subset](0035-parse-appservice-registrations-as-a-bounded-yaml-subset.md)
 * [0036 - Match appservice namespaces against whole identifiers](0036-match-appservice-namespaces-against-whole-identifiers.md)
 * [0037 - Detect namespace conflicts by comparing pattern strings](0037-detect-namespace-conflicts-by-comparing-pattern-strings.md)
 * [0038 - Degrade third party lookups instead of failing them](0038-degrade-third-party-lookups-instead-of-failing-them.md)
@@ -64,12 +61,9 @@
 * [0061 - Proxy remote cross-signing keys rather than caching them](0061-proxy-remote-cross-signing-keys-rather-than-caching-them.md)
 * [0062 - Federation worker holds no secret files; secrets arrive over inherited fds](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
 * [0063 - Fail closed when the state-res v2/v2.1 auth-chain walk cannot reach an event](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
-* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)
 * [0065 - Cap in-flight IPC requests per channel](0065-cap-in-flight-ipc-requests-per-channel.md)
-* [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md)
 * [0067 - Enforce federation PDU size and field-count limits before hashing](0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md)
 * [0068 - Random media IDs and a per-row legacy-endpoint freeze marker](0068-random-media-ids-and-legacy-endpoint-freeze.md)
-* [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — amended by ADR-0070
 * [0070 - Events verified only against their auth_events carry no state](0070-event-auth-outliers-carry-no-state.md)
 * [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
 * [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md) — amended by ADR-0077 for the worker-share bound
@@ -79,7 +73,6 @@
 * [0076 - Room versions 1 and 2 are not supported](0076-room-versions-1-and-2-are-not-supported.md)
 * [0077 - No worker waits on a quiet connection: a dispatcher thread holds idle connections, with a per-client worker share](0077-no-worker-waits-on-a-quiet-connection.md)
 * [0078 - The federation worker never signs](0078-the-federation-worker-never-signs.md)
-* [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md)
 * [0080 - Rate-cap audit rows for unauthenticated rejections](0080-rate-cap-audit-rows-for-unauthenticated-rejections.md)
 * [0081 - Failed inbound signatures are never charged to the claimed origin](0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md)
 * [0082 - No thread may start before process hardening; seccomp filters are installed with TSYNC](0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)
@@ -90,9 +83,7 @@
 * [0087 - Critical logs are written synchronously](0087-critical-logs-are-written-synchronously.md)
 * [0088 - Limit stripped invite and knock state to room summaries](0088-limit-stripped-state-to-room-summaries.md)
 * [0089 - Defer unsolicited PDUs during outbound joins in bounded transient queues](0089-defer-pdus-during-outbound-joins.md)
-* [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md)
 * [0091 - Bound sync waits before handing off the connection](0091-bound-sync-waits-with-admission.md)
-* [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md)
 * [0093 - Require explicit selection of the test-only memory database](0093-require-explicit-test-memory-database.md)
 * [0094 - Revive removed media storage identities](0094-revive-removed-media-storage-identities.md)
 * [0095 - Bound conflicted state traversal by distinct auth events](0095-bound-state-resolution-by-distinct-auth-events.md)
@@ -125,7 +116,6 @@
 * [0123 - 3PID ownership is proven only by a trusted identity server](0123-3pid-ownership-is-proven-only-by-a-trusted-identity-server.md)
 * [0124 - Application services assert only registered, active users, and never on Account Management](0124-application-services-assert-only-registered-active-users.md)
 * [0125 - Redactions are applied once, at the store, and destroy the original content](0125-redactions-are-applied-once-at-the-store-and-destroy-the-original.md)
-* [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md)
 * [0127 - Room directory and alias changes need canonical-alias power; aliases record their creator](0127-room-directory-and-alias-changes-need-canonical-alias-power.md)
 * [0128 - Lock derived-key storage without changing persisted derivations](0128-lock-derived-key-storage-without-changing-persisted-derivations.md)
 * [0129 - Restrict main's fchmod to owner-only database mode](0129-restrict-main-fchmod-to-owner-only-database-mode.md)
@@ -162,7 +152,6 @@
 * [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
 * [0161 - A room reload reads one snapshot; the worker's whole-store load does not](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md)
 * [0162 - Plan every unveil(2) call before making the first, and make none if one would fail](0162-plan-every-unveil-call-before-making-the-first.md)
-* [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md)
 * [0164 - Send-to-device commits its local messages and its transaction ID together](0164-send-to-device-commits-its-local-messages-and-txn-id-together.md)
 * [0165 - Retain unresolved federation PDUs and retry them](0165-retain-unresolved-federation-pdus-and-retry-them.md)
 * [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
@@ -172,7 +161,6 @@
 * [0170 - A user's own non-state event reads its own thread](0170-a-users-own-non-state-event-reads-its-thread.md)
 * [0171 - Every PDU ingestion path verifies a restricted join's authorising-server signature](0171-every-pdu-ingestion-path-verifies-the-authorising-servers-signature.md)
 * [0172 - Sliding-sync sort keys are computed once per request, and the shape of the lists is capped](0172-sliding-sync-sort-keys-are-computed-once-and-list-shape-is-capped.md)
-* [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md)
 * [0174 - Sliding-sync extension room lists share the room_subscriptions cap and are classified through one index](0174-sliding-sync-extension-room-lists-share-the-room-subscriptions-cap.md)
 * [0175 - Push glob matching is a hand-written linear matcher, never std::regex](0175-push-glob-matching-is-linear-and-never-uses-std-regex.md)
 * [0176 - Federation media multipart is parsed under the lock, with a linear delimiter scan](0176-federation-media-multipart-is-parsed-under-the-lock-with-a-linear-scan.md)
@@ -191,7 +179,6 @@
 * [0197 - Room account data needs a membership in the room and is capped per room](0197-room-account-data-needs-a-membership-and-is-capped-per-room.md)
 * [0198 - A registration without a username gets a random hexadecimal localpart](0198-a-registration-without-username-gets-a-random-hex-localpart.md)
 * [0199 - Typing expires on a periodic job, with a ceiling for clients and a timeout for federation](0199-typing-expires-on-a-periodic-job-with-a-ceiling-and-a-federation-timeout.md)
-* [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md)
 * [0205 - Count unread notifications by the user's push rules at read time, from the start of their join](0205-count-unread-notifications-by-push-rules-at-read-time.md)
 * [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md) — Its one-at-a-time delay is bounded by ADR-0410
 * [0207 - Count the push badge in one bounded walk of the store, and saturate it](0207-saturate-the-push-badge-unread-count.md)
@@ -200,7 +187,6 @@
 * [0213 - URL previews are off by default and fetch only through one SSRF gate](0213-url-previews-fetch-through-one-ssrf-gate.md)
 * [0214 - The URL preview cache is keyed by URL alone and caches failures](0214-url-preview-cache-is-keyed-by-url-and-caches-failures.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
-* [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md)
 * [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md) — Refined by ADR-0253: branches on lines without code (a function's closing brace) are excluded too
 * [0218 - OS-supplied dependencies carry no wrap file](0218-os-supplied-dependencies-carry-no-wrap.md)
 * [0219 - Email pushers mail only the account's own addresses, an unread count, in a delayed digest](0219-email-pushers-mail-only-the-accounts-own-addresses-an-unread-count-in-a-delayed-digest.md)
@@ -209,21 +195,17 @@
 * [0222 - Library linkage is read from the loader at runtime, not from the build](0222-library-linkage-is-read-from-the-loader-at-runtime.md)
 * [0223 - The documentation site wears the OMG Software theme, dark first, with system fonts](0223-the-documentation-site-wears-the-omg-software-theme-dark-first-with-system-fonts.md)
 * [0224 - Pre-1.0 migrations collapse into one v1 schema, frozen at 1.0.0, and an unknown ledger is refused](0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)
-* [0225 - A local event falls back to the newest forward extremity when their state cannot be resolved](0225-a-local-event-falls-back-to-the-newest-forward-extremity-when-their-state-cannot-be-resolved.md)
 * [0226 - CodeQL drops cpp/unused-static-function on Catch2 tests before upload, and nowhere else](0226-codeql-drops-unused-static-function-on-catch2-tests-before-upload.md)
 * [0227 - A scenario that asserts on every store write runs on a PostgreSQL database of its own](0227-a-scenario-that-asserts-on-every-store-write-runs-on-its-own-postgresql-database.md)
 * [0228 - An event this server places commits with its bookkeeping in one transaction](0228-an-event-this-server-places-commits-with-its-bookkeeping-in-one-transaction.md)
-* [0229 - SonarQube Cloud ignores tests and tooling, and keeps the server, packaging and workflows](0229-sonarqube-cloud-ignores-tests-and-tooling-and-keeps-the-server-packaging-and-workflows.md)
 * [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md) — Refined by ADR-0313: every workflow, not only the SonarQube Cloud job, installs its Python tools from hash-locked wheels
 * [0230 - Unknown client-server endpoints answer 404 M_UNRECOGNIZED before authentication](0230-unknown-client-endpoints-answer-404-before-authentication.md)
 * [0231 - Federation may reach operator-named private networks, and nothing else](0231-federation-may-reach-operator-named-private-networks-and-nothing-else.md)
 * [0232 - Open registration needs an explicit acknowledgement, and still uses UIA](0232-open-registration-needs-an-explicit-acknowledgement-and-still-uses-uia.md)
 * [0233 - Complement runs the shipped trixie package, in an image that drops its own privileges](0233-complement-runs-the-shipped-trixie-package-in-an-image-that-drops-its-own-privileges.md)
-* [0234 - A Complement run is judged by a summariser over a checked-in skip list](0234-a-complement-run-is-judged-by-a-summariser-over-a-checked-in-skip-list.md)
 * [0235 - Complement evidence is a maintainer-signed record tied to the shipped binary](0235-complement-evidence-is-a-maintainer-signed-record-tied-to-the-shipped-binary.md)
 * [0236 - The password policy is configurable, strict by default](0236-the-password-policy-is-configurable-strict-by-default.md)
 * [0237 - Complement runs only its federation and client-server packages](0237-complement-runs-only-its-federation-and-client-server-packages.md)
-* [0238 - The key resolver uses the key it fetched, not a cache read-back](0238-the-key-resolver-uses-the-key-it-fetched-not-a-cache-read-back.md)
 * [0239 - A room upgrade to version 12 omits predecessor.event_id](0239-a-room-upgrade-to-version-12-omits-predecessor-event-id.md)
 * [0240 - power_level_content_override replaces top-level keys](0240-power-level-content-override-replaces-top-level-keys.md)
 * [0241 - A federated join verifies and persists all returned state before it returns](0241-a-federated-join-verifies-and-persists-all-returned-state-before-it-returns.md)
@@ -233,7 +215,6 @@
 * [0245 - Login matches a user ID exactly, then downcased](0245-login-matches-a-user-id-exactly-then-downcased.md)
 * [0246 - The password-hashing concurrency cap is configurable](0246-the-password-hashing-concurrency-cap-is-configurable.md)
 * [0247 - No sync position passes a stream ordering still being committed](0247-no-sync-position-passes-a-stream-ordering-still-being-committed.md)
-* [0250 - SonarQube Cloud analysis runs in CI against the build's compilation database](0250-sonarqube-cloud-analysis-runs-in-ci-against-the-build-s-compilation-database.md)
 * [0251 - A knock is withdrawn through the resident that accepted it](0251-a-knock-is-withdrawn-through-the-resident-that-accepted-it.md)
 * [0252 - One membership exchange per user and room at a time](0252-one-membership-exchange-per-user-and-room-at-a-time.md)
 * [0253 - Branch coverage excludes branches on lines without code](0253-branch-coverage-excludes-branches-on-lines-without-code.md)
@@ -369,7 +350,6 @@
 
 ## Records with non-standard statuses
 
-* None
 * [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md) — Superseded by ADR-0122: UIA password checks have their own (account, device) counter, which login failures never touch
 * [0032 - Throttle failed logins per claimed account](0032-throttle-failed-logins-per-claimed-account.md) — Refined by ADR-0122: failures are counted per (account, source) with an account-wide ceiling
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
