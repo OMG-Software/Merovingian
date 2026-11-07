@@ -13,7 +13,9 @@ namespace merovingian::homeserver
 
 auto LoginTokenStore::sweep(std::uint64_t now_ms) -> void
 {
-    std::erase_if(m_entries, [now_ms](Entry const& entry) { return entry.expires_at_ms <= now_ms; });
+    std::erase_if(m_entries, [now_ms](Entry const& entry) {
+        return entry.expires_at_ms <= now_ms;
+    });
 }
 
 auto LoginTokenStore::issue(std::string_view user_id, std::string token_hash, std::uint64_t now_ms,
@@ -67,7 +69,9 @@ auto LoginTokenStore::redeem(std::string_view token_hash, std::uint64_t now_ms) 
 
 auto LoginTokenStore::erase_user(std::string_view user_id) -> void
 {
-    std::erase_if(m_entries, [user_id](Entry const& entry) { return entry.user_id == user_id; });
+    std::erase_if(m_entries, [user_id](Entry const& entry) {
+        return entry.user_id == user_id;
+    });
 }
 
 auto LoginTokenStore::size() const noexcept -> std::size_t
@@ -77,8 +81,9 @@ auto LoginTokenStore::size() const noexcept -> std::size_t
 
 auto LoginTokenStore::count_for_user(std::string_view user_id) const noexcept -> std::size_t
 {
-    return static_cast<std::size_t>(std::ranges::count_if(
-        m_entries, [user_id](Entry const& entry) { return entry.user_id == user_id; }));
+    return static_cast<std::size_t>(std::ranges::count_if(m_entries, [user_id](Entry const& entry) {
+        return entry.user_id == user_id;
+    }));
 }
 
 } // namespace merovingian::homeserver

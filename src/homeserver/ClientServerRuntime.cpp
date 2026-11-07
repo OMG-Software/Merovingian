@@ -3851,6 +3851,15 @@ namespace
             return operator_route.matched ? operator_route.route.path_template : std::string{unmatched};
         }
 
+        // CS8: GET /admin/whois/{userId}, one bucket whatever the user.
+        if (auto constexpr whois_template_prefix = std::string_view{"/_matrix/client/v3/admin/whois/"};
+            starts_with(out, whois_template_prefix))
+        {
+            return has_one_segment(std::string_view{out}.substr(whois_template_prefix.size()))
+                       ? std::string{whois_template_prefix} + "{userId}"
+                       : std::string{unmatched};
+        }
+
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
         if (starts_with(out, review_prefix))
         {
@@ -3897,6 +3906,7 @@ namespace
             "/_matrix/client/v3/register",
             "/_matrix/client/v3/login",
             "/_matrix/client/v3/login/sso/redirect",
+            "/_matrix/client/v1/login/get_token",
             "/_matrix/client/v3/refresh",
             "/_matrix/client/v3/logout",
             "/_matrix/client/v3/logout/all",
@@ -3991,6 +4001,7 @@ namespace
             {"/_matrix/client/v3/register",                                                 "POST"            },
             {"/_matrix/client/v3/login",                                                    "GET, POST"       },
             {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
+            {"/_matrix/client/v1/login/get_token",                                          "POST"            },
             {"/_matrix/client/v3/refresh",                                                  "POST"            },
             {"/_matrix/client/v3/logout",                                                   "POST"            },
             {"/_matrix/client/v3/logout/all",                                               "POST"            },
@@ -4307,6 +4318,175 @@ namespace
             json_member("params", json_obj({})),
             json_member("session", json_str(session_id)),
         }));
+    }
+
+    constexpr auto get_login_token_path = std::string_view{"/_matrix/client/v1/login/get_token"};
+    constexpr auto whois_prefix = std::string_view{"/_matrix/client/v3/admin/whois/"};
+
+    // CS8 (ADR-0548): whether this server mints login tokens. The operator switch, read per request.
+    [[nodiscard]] auto login_tokens_enabled(ClientServerRuntime const& rt) -> bool
+    {
+        return rt.homeserver.config.security().login_token.enabled;
+    }
+
+    // Hash of a login token as `LoginTokenStore` keeps it. The token is 256 random bits, so an unkeyed hash suffices.
+    [[nodiscard]] auto login_token_hash(std::string_view token) -> std::optional<std::string>
+    {
+        auto const pieces = std::array<std::string_view, 1U>{token};
+        return crypto::generic_hash(pieces);
+    }
+
+    // POST /_matrix/client/v1/login/get_token (spec "POST /login/get_token"; CS8, ADR-0548). Runs under
+    // runtime.mutex; the Argon2id check inside verify_local_user_password releases it itself. UIA with the account
+    // password is required on EVERY call: the spec says servers "MUST always re-prompt", and a UIA session id
+    // carries no authority here, so nothing from an earlier call is honoured.
+    [[nodiscard]] auto handle_get_login_token(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                              std::string_view user_id) -> DispatchResult
+    {
+        if (!login_tokens_enabled(rt))
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        auto const challenge = [&] {
+            return device_delete_uia_challenge(issue_uia_session(rt, "login_get_token"));
+        };
+        auto const body_obj = parsed_json_object(req.body);
+        if (!body_obj.has_value())
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* auth = object_member_object(*body_obj, "auth");
+        if (auth == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* supplied_session = string_member(*auth, "session");
+        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session))
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* auth_type = string_member(*auth, "type");
+        auto const* current_password = string_member(*auth, "password");
+        if (auth_type == nullptr || *auth_type != "m.login.password" || current_password == nullptr ||
+            current_password->empty())
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
+        {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many password attempts. Please try again later.", retry_after);
+            }
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(challenge()));
+        }
+        // The password was just proved: the session that carried it is spent.
+        if (supplied_session != nullptr)
+        {
+            auto const spent = *supplied_session;
+            std::erase_if(rt.uia_sessions, [&spent](UiaSession const& session) {
+                return session.session_id == spent;
+            });
+        }
+        auto const token = crypto::secure_random_hex(32U);
+        auto const token_hash = token.has_value() ? login_token_hash(*token) : std::nullopt;
+        if (!token_hash.has_value())
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a login token");
+        }
+        auto const issued =
+            rt.login_tokens.issue(user_id, *token_hash, wall_clock_milliseconds(), rt.limits.login_token_lifetime_ms,
+                                  rt.limits.max_login_tokens_per_user, rt.limits.max_login_tokens);
+        if (issued.outcome != LoginTokenStore::IssueOutcome::issued)
+        {
+            auto const retry_after = static_cast<std::uint32_t>(
+                std::clamp<std::uint64_t>(issued.retry_after_ms, 1U, std::numeric_limits<std::uint32_t>::max()));
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                issued.outcome == LoginTokenStore::IssueOutcome::user_cap_reached
+                                    ? "Too many unused login tokens. Use one or wait for one to expire."
+                                    : "The server holds too many unused login tokens. Please try again later.",
+                                retry_after);
+        }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "auth.login_token.issued",
+                           user_id, {}, "issued");
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("login_token", json_str(*token)),
+                                 json_member("expires_in_ms", json_int(rt.limits.login_token_lifetime_ms)),
+                             })));
+    }
+
+    // Consumes a login token minted by get_token, answering the user it was minted for. A token is spent by the
+    // attempt that names it, so this is called once per login. Empty when the feature is off.
+    [[nodiscard]] auto redeem_minted_login_token(ClientServerRuntime& rt, std::string_view token)
+        -> std::optional<std::string>
+    {
+        if (!login_tokens_enabled(rt) || token.empty())
+        {
+            return std::nullopt;
+        }
+        auto const token_hash = login_token_hash(token);
+        if (!token_hash.has_value())
+        {
+            return std::nullopt;
+        }
+        auto user = rt.login_tokens.redeem(*token_hash, wall_clock_milliseconds());
+        if (user.has_value())
+        {
+            append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "auth.login_token.redeemed",
+                               *user, {}, "redeemed");
+        }
+        return user;
+    }
+
+    // GET /_matrix/client/v3/admin/whois/{userId} (spec "GET /admin/whois/{userId}"; CS8). The spec leaves
+    // server-admin privileges open and says the API "may be restricted to only be called by the user being looked
+    // up, or by a server admin"; so an admin may look up any local user and anyone else only themselves. The
+    // refusal comes before any lookup, so a non-admin learns nothing about other accounts. Only what the server
+    // holds is reported: its devices. It records no source address, user agent or last-seen time, so each device's
+    // one session has no connections, and this endpoint does not start recording them.
+    [[nodiscard]] auto handle_admin_whois(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                          std::string_view request_path, std::string_view caller) -> DispatchResult
+    {
+        auto const target = core::percent_decode_path_component(request_path.substr(whois_prefix.size()));
+        auto const is_admin = authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!is_admin && target != caller)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Only a server administrator may look up another user.");
+        }
+        if (!auth::user_id_is_valid(target) ||
+            server_name_from_user_id(target) != rt.homeserver.config.server().server_name)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "User does not belong to the local server.");
+        }
+        auto const found = std::ranges::find_if(rt.homeserver.database.users, [&target](LocalUser const& current) {
+            return current.user_id == target && !current.deactivated;
+        });
+        if (found == rt.homeserver.database.users.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "User not found.");
+        }
+        auto devices = canonicaljson::Object{};
+        for (auto const& device : rt.devices)
+        {
+            if (device.user_id != target)
+            {
+                continue;
+            }
+            auto sessions = canonicaljson::Array{};
+            sessions.emplace_back(json_obj({json_member("connections", json_arr(canonicaljson::Array{}))}));
+            devices.push_back(
+                json_member(device.device_id, json_obj({json_member("sessions", json_arr(std::move(sessions)))})));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("user_id", json_str(target)),
+                                 json_member("devices", json_obj(std::move(devices))),
+                             })));
     }
 
     enum class NotifyOwnDevices : std::uint8_t
@@ -14893,6 +15073,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // as_token; harmless to advertise unconditionally, mirroring
         // m.login.password's advertisement.
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.application_service"))}));
+        // CS8 (ADR-0548): offered only when this server mints login tokens (spec: `get_login_token` says the
+        // homeserver supports POST /login/get_token).
+        if (login_tokens_enabled(rt))
+        {
+            flows.emplace_back(json_obj({
+                json_member("type", json_str("m.login.token")),
+                json_member("get_login_token", json_bool(true)),
+            }));
+        }
         // Matrix v1.19 CS API §"Client login via SSO": advertise m.login.sso
         // only when server.sso.* is fully configured (sso_is_configured
         // shares the same fail-closed condition the redirect endpoints use
@@ -14990,7 +15179,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // "unknown user" and "bad password" into the same external result.
         if (body->type == "m.login.token")
         {
-            auto const redeemed = redeem_login_token(rt.homeserver, body->login_token);
+            // A token get_token minted (CS8) first, then an SSO-minted one.
+            auto redeemed = redeem_minted_login_token(rt, body->login_token);
+            if (!redeemed.has_value())
+            {
+                redeemed = redeem_login_token(rt.homeserver, body->login_token);
+            }
             if (!redeemed.has_value())
             {
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "invalid login token");
@@ -15585,6 +15779,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // not be told to find an access token it cannot have yet (ADR-0230).
     // A fixed path used with a method it does not serve is 405 M_UNRECOGNIZED, also before
     // authentication ("implemented, but the incorrect HTTP method is used").
+    // CS8 (ADR-0548): with the feature off this endpoint is not served at all, so it is 404 whatever the method or
+    // credentials, as before it was implemented.
+    if (request_path == get_login_token_path && !login_tokens_enabled(rt))
+    {
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+    }
     if (auto const allow = client_static_route_allow(request_path);
         !allow.empty() && !allow_lists_method(allow, req.method))
     {
@@ -17019,6 +17219,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto capabilities = canonicaljson::Object{
             json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
             json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
+            // Spec (m.get_login_token, v1.7): whether the user may use POST /login/get_token.
+            json_member("m.get_login_token", json_obj({json_member("enabled", json_bool(login_tokens_enabled(rt)))})),
             // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
             // no allowed or disallowed list.
             json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
@@ -17880,6 +18082,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const device_id = authenticated_request_device_id(rt, req.access_token);
         return complete(handle_key_api_route(rt, key_route.route, *user, device_id, req));
+    }
+    if (req.method == "POST" && request_path == get_login_token_path)
+    {
+        return handle_get_login_token(rt, req, *user);
+    }
+    if (req.method == "GET" && starts_with(request_path, whois_prefix))
+    {
+        return handle_admin_whois(rt, req, request_path, *user);
     }
     if (req.method == "GET" && request_path == "/_matrix/client/v3/devices")
     {

@@ -69,8 +69,8 @@ constexpr auto get_token_path = "/_matrix/client/v1/login/get_token";
 [[nodiscard]] auto send(hs::ClientServerRuntime& runtime, std::string method, std::string target, std::string token,
                         std::string body = {}) -> hs::LocalHttpResponse
 {
-    return hs::handle_client_server_request(runtime, {std::move(method), std::move(target), std::move(token),
-                                                      std::move(body)})
+    return hs::handle_client_server_request(runtime,
+                                            {std::move(method), std::move(target), std::move(token), std::move(body)})
         .response;
 }
 
@@ -413,10 +413,10 @@ SCENARIO("A login token logs in exactly once", "[cs8][login-token][client-server
 
         WHEN("the login names another user in its body")
         {
-            auto const response =
-                send(started.runtime, "POST", "/_matrix/client/v3/login", {},
-                     R"({"type":"m.login.token","identifier":{"type":"m.id.user","user":"@bob:example.org"},"token":")" +
-                         minted + R"(","device_id":"NEWDEV"})");
+            auto const response = send(
+                started.runtime, "POST", "/_matrix/client/v3/login", {},
+                R"({"type":"m.login.token","identifier":{"type":"m.id.user","user":"@bob:example.org"},"token":")" +
+                    minted + R"(","device_id":"NEWDEV"})");
 
             THEN("the session is still for the user the token was minted for")
             {
@@ -493,10 +493,10 @@ SCENARIO("A login token expires and is spent by a failed attempt", "[cs8][login-
         WHEN("the token is used and, separately, the password")
         {
             auto const by_token = login_with_token(started.runtime, minted, "AFTER");
-            auto const by_password =
-                send(started.runtime, "POST", "/_matrix/client/v3/login", {},
-                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":")" +
-                         std::string{password} + R"(","device_id":"PWDEV"})");
+            auto const by_password = send(
+                started.runtime, "POST", "/_matrix/client/v3/login", {},
+                R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":")" +
+                    std::string{password} + R"(","device_id":"PWDEV"})");
 
             THEN("both are refused the same way")
             {

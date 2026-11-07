@@ -54,8 +54,7 @@ auto rate_limit_tier_for(std::string_view target) noexcept -> RateLimitTier
     // so it is matched by suffix.
     if (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/refresh") ||
         starts_with(target, "/_matrix/client/v3/register") || starts_with(target, "/_matrix/client/v1/register") ||
-        target.find("/requestToken") != std::string_view::npos ||
-        target.find("/submitToken") != std::string_view::npos)
+        target.find("/requestToken") != std::string_view::npos || target.find("/submitToken") != std::string_view::npos)
     {
         return RateLimitTier::auth_sensitive;
     }
@@ -194,6 +193,9 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
         .builtin_per_user =
             {
                              {"/_matrix/client/v3/login", {5U, 60U}},
+                             // CS8 (ADR-0548): a login token hands a session to another device. A UIA flow is two
+                // requests (challenge, then password), so 4 a minute is one flow and one retry.
+                {"/_matrix/client/v1/login/get_token", {4U, 60U}},
                              // ADR-0213: every uncached preview is an outbound fetch the
                 // user causes, so previews have their own per-user cap.
                 {"/_matrix/client/v1/media/preview_url", {30U, 60U}},
