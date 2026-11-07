@@ -4,13 +4,17 @@
 
 #include "merovingian/sync/LongPollOutcome.hpp"
 #include "merovingian/sync/LongPollStep.hpp"
+#include "merovingian/sync/ParkedPoll.hpp"
+#include "merovingian/sync/ParkedPollRegistry.hpp"
 #include "merovingian/sync/WaitCursor.hpp"
 
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -93,6 +97,23 @@ public:
     // cursor. A generation that moved before the call returns true at once, with no position check.
     [[nodiscard]] auto wait_for_change(WaitCursor const& cursor, std::chrono::milliseconds timeout) -> bool;
 
+    // Park `poll` for `cursor`'s user until `deadline` instead of blocking a thread (ADR-0569). The caller took
+    // `cursor` BEFORE the rerun that found nothing. The registry insert comes first and the cursor comparison after
+    // it, with no lock held across the two, so a publish either finds the entry or moved a generation the
+    // comparison sees; when it has moved the entry is woken at once. On success `poll` is moved from; on refusal it
+    // is untouched and the caller keeps the wait (see long_poll_wait).
+    [[nodiscard]] auto park(WaitCursor const& cursor, std::chrono::steady_clock::time_point deadline,
+                            std::unique_ptr<ParkedPoll>& poll) -> std::expected<std::uint64_t, core::Error>;
+
+    // The registry of parked polls. A publish wakes it after releasing mutex_; the transport starts and stops it.
+    [[nodiscard]] auto parking() noexcept -> ParkedPollRegistry&
+    {
+        return parked_;
+    }
+
+    // Whether either generation has moved past `cursor`, without waiting.
+    [[nodiscard]] auto moved_since(WaitCursor const& cursor) -> bool;
+
     // Read the current sync_stream_id without blocking. Mostly useful
     // for tests that want to drive the notifier deterministically.
     [[nodiscard]] auto current_sync_stream_id() const -> std::uint64_t;
@@ -125,6 +146,8 @@ private:
     };
 
     mutable std::mutex mutex_{};
+    // Parked long-polls (ADR-0569). Its own leaf mutex, never held together with mutex_.
+    ParkedPollRegistry parked_{};
     // Waiters that named no user.
     std::condition_variable anyone_{};
     std::unordered_map<std::string, UserWaiters, UserHash, std::equal_to<>> by_user_{};

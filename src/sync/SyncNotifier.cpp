@@ -89,6 +89,15 @@ auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_
             }
         }
     }
+    // After mutex_ is released: the registry's mutex is a leaf and never nests with it (ADR-0569).
+    if (scope.has_value())
+    {
+        parked_.wake_users(*scope);
+    }
+    else
+    {
+        parked_.wake_all();
+    }
     if (changed)
     {
         log_diagnostic("stream.published", {
@@ -247,6 +256,26 @@ auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t
         }
     }
     return outcome;
+}
+
+auto SyncNotifier::moved_since(WaitCursor const& cursor) -> bool
+{
+    auto lock = std::lock_guard{mutex_};
+    auto const entry = by_user_.find(cursor.user);
+    auto const user_generation = entry == by_user_.end() ? std::uint64_t{0U} : entry->second.generation;
+    return user_generation != cursor.user_generation || broadcast_generation_ != cursor.broadcast_generation;
+}
+
+auto SyncNotifier::park(WaitCursor const& cursor, std::chrono::steady_clock::time_point deadline,
+                        std::unique_ptr<ParkedPoll>& poll) -> std::expected<std::uint64_t, core::Error>
+{
+    // Insert first, compare second: a publish before the insert moved a generation before the comparison.
+    auto ticket = parked_.park(cursor.user, deadline, poll);
+    if (ticket.has_value() && moved_since(cursor))
+    {
+        parked_.wake(*ticket);
+    }
+    return ticket;
 }
 
 auto SyncNotifier::current_sync_stream_id() const -> std::uint64_t
