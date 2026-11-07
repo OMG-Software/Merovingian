@@ -608,15 +608,18 @@ SCENARIO("make_join version negotiation rejects incompatible room versions",
     }
 }
 
-SCENARIO("send_join response carries the room_version from the membership acceptor",
-         "[federation][callbacks][membership][version-negotiation]")
+// Spec: SS API v1.19 PUT /v2/send_join, PUT /v2/send_leave and PUT /v1/send_knock, "200 response". Each answer
+// holds exactly the fields the spec defines for its endpoint: send_join's auth_chain / event / members_omitted /
+// servers_in_room / state (no room_version, no origin), send_leave's empty object, send_knock's knock_room_state.
+SCENARIO("A membership answer carries exactly the fields the spec defines for its endpoint",
+         "[federation][callbacks][membership][version-negotiation][spec][low-ss5]")
 {
-    GIVEN("a runtime where the membership acceptor reports room_version 11")
+    GIVEN("a runtime whose membership acceptor reports room_version 11 and accepts every request")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
-        auto const token = std::string{"send-join-version-token"};
+        auto const token = std::string{"membership-shape-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
         runtime.membership_acceptor =
@@ -629,51 +632,47 @@ SCENARIO("send_join response carries the room_version from the membership accept
             return result;
         };
 
-        WHEN("the send_join request is handled")
+        WHEN("a send_join request is handled")
         {
             auto const join_pdu = signed_json_pdu(origin, key_id, token);
             auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, token, target, join_pdu.json));
 
-            THEN("the response body carries room_version 11, not the hardcoded default")
+            THEN("the body holds the documented fields and neither room_version nor origin")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(R"("room_version":"11")") != std::string::npos);
-                REQUIRE(response.body.find(R"("room_version":"12")") == std::string::npos);
+                REQUIRE(response.body == R"({"auth_chain":[],"members_omitted":false,"state":[]})");
             }
         }
-    }
 
-    GIVEN("a runtime where the membership acceptor omits room_version")
-    {
-        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin = std::string{"matrix.example.org"};
-        auto const key_id = std::string{"ed25519:auto"};
-        auto const token = std::string{"send-join-default-version-token"};
-        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-
-        runtime.membership_acceptor =
-            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
-               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
-            auto result = merovingian::federation::MembershipAcceptResult{};
-            result.accepted = true;
-            result.status = 200U;
-            // room_version intentionally left empty to exercise the fallback path
-            return result;
-        };
-
-        WHEN("the send_join request is handled")
+        WHEN("a send_leave request is handled")
         {
-            auto const join_pdu = signed_json_pdu(origin, key_id, token);
-            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
+            auto const leave_pdu = signed_json_pdu(origin, key_id, token, "leave");
+            auto const target =
+                std::string{"/_matrix/federation/v2/send_leave/!room:example.org/"} + leave_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, token, target, join_pdu.json));
+                runtime, signed_put_request(origin, key_id, token, target, leave_pdu.json));
 
-            THEN("the response body falls back to room_version 12")
+            THEN("the body is the empty object")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(R"("room_version":"12")") != std::string::npos);
+                REQUIRE(response.body == "{}");
+            }
+        }
+
+        WHEN("a send_knock request is handled")
+        {
+            auto const knock_pdu = signed_json_pdu(origin, key_id, token, "knock");
+            auto const target =
+                std::string{"/_matrix/federation/v1/send_knock/!room:example.org/"} + knock_pdu.event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, token, target, knock_pdu.json));
+
+            THEN("the body holds knock_room_state alone")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == R"({"knock_room_state":[]})");
             }
         }
     }

@@ -1105,8 +1105,11 @@ auto WorkerEventLoop::run() -> void
                 {
                     LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
                 }
-                channel_ptr->send_notification(
-                    ipc::serialize_room_sync_result(room_id, ok ? "ok" : "failed", generation));
+                if (!channel_ptr->send_notification(
+                        ipc::serialize_room_sync_result(room_id, ok ? "ok" : "failed", generation)))
+                {
+                    LOG_WARNING("Federation worker: room_sync result could not be sent for room_id=" + room_id);
+                }
             });
             if (!sync_enqueued)
             {

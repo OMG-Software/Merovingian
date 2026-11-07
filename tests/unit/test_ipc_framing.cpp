@@ -368,7 +368,7 @@ SCENARIO("IpcChannel delivers a notification without expecting a reply", "[ipc][
 
         WHEN("the client sends a notification")
         {
-            pair.client->send_notification(R"({"type":"event"})");
+            std::ignore = pair.client->send_notification(R"({"type":"event"})");
 
             auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
             while (!notified.load() && std::chrono::steady_clock::now() < deadline)
@@ -571,7 +571,7 @@ SCENARIO("IpcChannel routes responses while a request handler is blocked on a ca
         // then replies — the poke frame precedes the response frame on the
         // wire, exactly as notify_room_changed precedes send_response.
         pair.client->set_request_handler([client = pair.client.get()](std::uint64_t id, std::string /*json*/) {
-            client->send_notification(R"({"type":"poke"})");
+            std::ignore = client->send_notification(R"({"type":"poke"})");
             client->send_response(id, R"({"type":"query_result"})");
         });
         pair.server->start();
@@ -627,7 +627,7 @@ SCENARIO("IpcChannel dispatches request frames in arrival order", "[ipc][channel
             auto const sent = std::vector<std::string>{"n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7"};
             for (auto const& type : sent)
             {
-                pair.client->send_notification(std::string{R"({"type":")"} + type + R"("})");
+                std::ignore = pair.client->send_notification(std::string{R"({"type":")"} + type + R"("})");
             }
 
             THEN("the server handles every notification in the order it was sent")
@@ -896,7 +896,7 @@ SCENARIO("IpcChannel marks the channel unhealthy when the dispatch queue count c
             for (auto i = 0; i < 5; ++i)
             {
                 auto body = std::string{R"({"type":"flood","i":)"} + std::to_string(i) + "}";
-                pair.client->send_notification(body);
+                std::ignore = pair.client->send_notification(body);
             }
 
             auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
@@ -949,7 +949,7 @@ SCENARIO("IpcChannel marks the channel unhealthy when the dispatch queue byte ca
 
         WHEN("the client sends a frame larger than the byte cap")
         {
-            pair.client->send_notification(R"({"type":"flood","pad":"0123456789abcdef"})");
+            std::ignore = pair.client->send_notification(R"({"type":"flood","pad":"0123456789abcdef"})");
 
             auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
             while (pair.server->healthy() && std::chrono::steady_clock::now() < deadline)
@@ -1516,7 +1516,7 @@ SCENARIO("A request with an out-of-range integer is dropped and the channel keep
 
         WHEN("the client sends a request carrying an out-of-range integer, then an ordinary one")
         {
-            pair.client->send_notification(out_of_range_frame_body);
+            std::ignore = pair.client->send_notification(out_of_range_frame_body);
             auto const reply = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
 
             THEN("only the ordinary request reaches the handler and is answered")
@@ -1554,7 +1554,7 @@ SCENARIO("An authenticated frame that is not valid UTF-8 does not end the channe
             auto bad = std::string{R"({"type":"x","v":")"};
             bad += static_cast<char>(0xFF);
             bad += "\"}";
-            pair.client->send_notification(bad);
+            std::ignore = pair.client->send_notification(bad);
             auto const reply = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
 
             THEN("the normal request is answered and the bad frame never reached the handler")
@@ -1737,6 +1737,87 @@ SCENARIO("A response over the frame cap releases the requester at once and the c
                 auto const second = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{10});
                 REQUIRE(second.has_value());
                 CHECK(second->find("\"ok\":true") != std::string::npos);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+// A body under the cap still builds a frame over it once the id/reply_to header is added; that edge was
+// written, refused by write_frame and ignored, so the requester waited out its timeout.
+SCENARIO("A body just under the frame cap whose frame is over it fails the send at once",
+         "[ipc][channel][request_response][low-f6]")
+{
+    auto constexpr cap = 64U * 1024U;
+    // Exactly 5 bytes under the cap: the "id":N header makes the built frame larger than the cap.
+    auto const edge_body = [](std::size_t total) {
+        auto const fixed = std::string{R"({"type":"edge","pad":""})"}.size();
+        return R"({"type":"edge","pad":")" + std::string(total - fixed, 'x') + R"("})";
+    }(cap - 5U);
+
+    GIVEN("a channel pair whose server answers the first request with a body just under the cap")
+    {
+        auto pair = make_channel_pair(cap);
+        REQUIRE(edge_body.size() < cap);
+        auto handled = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&pair, &handled, &edge_body](std::uint64_t id, std::string /*json*/) {
+            if (handled.fetch_add(1U) == 0U)
+            {
+                pair.server->send_response(id, edge_body);
+            }
+            else
+            {
+                pair.server->send_response(id, R"({"type":"reply","ok":true})");
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends a request with a long timeout")
+        {
+            auto first = std::async(std::launch::async, [&] {
+                return pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{120});
+            });
+            auto const released = first.wait_for(std::chrono::seconds{30}) == std::future_status::ready;
+
+            THEN("the requester is released at once with no response")
+            {
+                REQUIRE(released);
+                CHECK_FALSE(first.get().has_value());
+                CHECK(pair.client->healthy());
+            }
+        }
+
+        WHEN("the client sends a request body just under the cap")
+        {
+            auto const result = pair.client->send_request(edge_body, std::chrono::seconds{120});
+
+            THEN("the send fails at once and the channel stays usable")
+            {
+                CHECK_FALSE(result.has_value());
+                CHECK(pair.client->healthy());
+            }
+        }
+
+        WHEN("the client sends a notification just under the cap")
+        {
+            auto const sent = pair.client->send_notification(edge_body);
+
+            THEN("the failure is reported to the caller")
+            {
+                CHECK_FALSE(sent);
+            }
+        }
+
+        WHEN("the client sends a small notification")
+        {
+            auto const sent = pair.client->send_notification(R"({"type":"event"})");
+
+            THEN("the send is reported as made")
+            {
+                CHECK(sent);
             }
         }
 

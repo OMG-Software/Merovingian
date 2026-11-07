@@ -1243,8 +1243,8 @@ events for many users and an abusive remote can rotate sender IDs.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`; higher values are rejected. |
-| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`; higher values are rejected. |
+| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`, and a lower limit would refuse legal transactions, so `50` is the only accepted value. |
+| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`, and a lower limit would refuse legal transactions, so `100` is the only accepted value. |
 | `security.federation.per_origin_transaction_rate` | `600/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
 | `security.federation.per_origin_pdu_rate` | `6000/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
 | `security.federation.per_origin_edu_rate` | `12000/60s` | Weighted EDU budget per verified remote origin per window. |

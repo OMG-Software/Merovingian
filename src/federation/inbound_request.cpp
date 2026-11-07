@@ -48,6 +48,7 @@
 #include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/VerifiedFederationIdentity.hpp"
 #include "merovingian/federation/XMatrixCredentials.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -984,10 +985,16 @@ namespace
         }
         for (auto const& pdu_value : *pdus_array)
         {
-            if (auto serialized = serialize_canonical_value(pdu_value); !serialized.empty())
+            auto serialized = serialize_canonical_value(pdu_value);
+            if (serialized.empty())
             {
-                parsed_body.pdus.push_back(std::move(serialized));
+                // No event ID can be computed for this PDU, so the answer could not name it: the sender would see
+                // no result for it. Refuse the transaction, as for a `pdus` that is not an array.
+                parsed_body.error = "transaction pdus holds an entry that cannot be serialised as canonical JSON";
+                parsed_body.pdus.clear();
+                return parsed_body;
             }
+            parsed_body.pdus.push_back(std::move(serialized));
         }
 
         auto const* edus_value = find_canonical_member(*root, "edus");
@@ -1401,19 +1408,15 @@ namespace
             return refusal_response(acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status,
                                     acceptance.reason);
         }
-        // Matrix v2 send_join/send_leave/send_knock responses are a JSON object
-        // with `auth_chain` and `state` arrays of signed PDUs. v1 send_join
-        // historically used a [status, body] tuple; we always emit the v2 shape
-        // which the v1 path tolerates because clients ignore unknown wrappers.
+        // Each answer carries exactly what the spec defines for its endpoint, and nothing else:
+        //   v2 send_join  200: auth_chain, event, members_omitted, servers_in_room, state
+        //   v2 send_leave 200: "An empty response" ({})
+        //   v1 send_knock 200: knock_room_state
+        // v1 send_join historically used a [status, body] tuple; we always emit the v2 shape.
         auto response = canonicaljson::Object{};
-        // Echo the room's actual version from the acceptor; fall back to "12" only
-        // if the acceptor did not populate it (e.g. in legacy test stubs).
-        auto const resp_room_version = acceptance.room_version.empty() ? std::string{"12"} : acceptance.room_version;
-        response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{resp_room_version}));
         if (route.endpoint == FederationEndpoint::send_join)
         {
-            response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
-            // Spec §11.5.1 (PUT /send_join): members_omitted is a REQUIRED field.
+            // Spec (PUT /send_join): members_omitted is a REQUIRED field.
             // Without it Synapse raises a parse error and returns 500 to its
             // joining client, causing an infinite make_join/send_join retry loop.
             // True only when the request set omit_members and membership events were left out of
@@ -1430,22 +1433,19 @@ namespace
                 response.push_back(
                     canonicaljson::make_member("servers_in_room", canonicaljson::Value{std::move(servers)}));
             }
-        }
-        response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
-        response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
-        // Per Matrix federation spec §11.5.1, the send_join v2 response MUST
-        // include the accepted event under the "event" key. send_leave and
-        // send_knock do not carry this field.
-        if (route.endpoint == FederationEndpoint::send_join && !acceptance.signed_event_json.empty())
-        {
-            auto parsed_event = canonicaljson::parse_lossless(acceptance.signed_event_json);
-            if (parsed_event.error == canonicaljson::ParseError::none)
+            response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
+            response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
+            // The accepted event under the "event" key, with the resident server's signature.
+            if (!acceptance.signed_event_json.empty())
             {
-                response.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
+                auto parsed_event = canonicaljson::parse_lossless(acceptance.signed_event_json);
+                if (parsed_event.error == canonicaljson::ParseError::none)
+                {
+                    response.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
+                }
             }
         }
-        // Per Matrix federation spec §PUT /send_knock, the send_knock response
-        // MUST include knock_room_state — stripped state events shown to the
+        // PUT /send_knock: the response MUST include knock_room_state, the stripped state shown to the
         // knocking user while waiting for the knock answer.
         if (route.endpoint == FederationEndpoint::send_knock)
         {
@@ -1627,9 +1627,25 @@ namespace
             auto body = serialize_response_object(std::move(response));
             return {200U, body.empty() ? std::string{"{}"} : std::move(body)};
         }
-        // v1 invite response is the bare event JSON wrapped in [200, event].
-        // Modern peers accept the bare event; emit it directly.
-        return {200U, result.signed_event_json};
+        // Spec (PUT /v1/invite, 200 response): "Array of `integer, Event Container`", that is
+        // [200, {"event": <invite event>}], with the signed event under the container's `event` key.
+        auto container = canonicaljson::Object{};
+        auto signed_event_value = canonicaljson::Value{};
+        auto parsed_event = canonicaljson::parse_lossless(result.signed_event_json);
+        if (parsed_event.error == canonicaljson::ParseError::none)
+        {
+            signed_event_value = std::move(parsed_event.value);
+        }
+        container.push_back(canonicaljson::make_member("event", std::move(signed_event_value)));
+        auto tuple = canonicaljson::Array{};
+        tuple.push_back(canonicaljson::Value{static_cast<std::int64_t>(200)});
+        tuple.push_back(canonicaljson::Value{std::move(container)});
+        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tuple)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {500U, "failed to serialize invite response"};
+        }
+        return {200U, serialized.output};
     }
 
     [[nodiscard]] auto handle_backfill(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -2503,10 +2519,30 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
     return events::matrix_base64_from_bytes(signed_bytes->bytes);
 }
 
+auto has_x_matrix_scheme(std::string_view header_value) noexcept -> bool
+{
+    auto constexpr prefix = std::string_view{"X-Matrix "};
+    if (header_value.size() < prefix.size())
+    {
+        return false;
+    }
+    auto const lower = [](char ch) noexcept {
+        return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
+    };
+    for (auto index = std::size_t{0U}; index < prefix.size(); ++index)
+    {
+        if (lower(header_value[index]) != lower(prefix[index]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 auto parse_x_matrix_authorization_header(std::string_view header_value) -> std::optional<XMatrixCredentials>
 {
     auto constexpr prefix = std::string_view{"X-Matrix "};
-    if (header_value.size() < prefix.size() || header_value.substr(0U, prefix.size()) != prefix)
+    if (!has_x_matrix_scheme(header_value))
     {
         return std::nullopt;
     }
@@ -3244,7 +3280,7 @@ auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& v
         }
         auto id = events::make_reference_hash_event_id(parsed.value, *room_version);
         return {id.event_id,
-                envelope.event.room_id,
+                room_id_for_received_event(envelope.event.room_id, envelope.event.event_type, id.event_id),
                 envelope.event.event_type,
                 envelope.event.sender,
                 envelope.event.signatures,
