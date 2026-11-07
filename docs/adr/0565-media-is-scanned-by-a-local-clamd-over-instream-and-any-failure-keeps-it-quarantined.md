@@ -16,7 +16,7 @@ Before this the only scan was the EICAR test-signature check on local uploads, a
 
 The scan runs only for media whose acceptance policy is `allow-after-scan` (local uploads: `local_upload_policy`; remote media: `remote_fetch_media_policy`). Under `allow` the repository ignores the verdict by definition, and under `quarantine` and `deny` the outcome is fixed, so asking clamd would only cost time. Remote media keeps `scanner_clean=false` when no scanner applies, exactly as before; with the default `quarantine` policy remote media stays held for review, and clamd matters only once an operator relaxes that to `allow-after-scan`. The EICAR check stays and is tried first: a file it refuses is not sent to clamd.
 
-The scan always runs with `runtime.mutex` released (`RuntimeLockRelease`), in `homeserver::clamd_media_cleared`. At most `clamd_max_concurrent` scans are in flight; a further scan waits for a place until its own deadline and then fails closed. `clamd_socket_path` requires `enable_av_scanner=true`, because with it off the repository forces the verdict clean.
+The scan always runs with `runtime.mutex` released (`RuntimeLockRelease`), in `homeserver::clamd_media_cleared`. At most `clamd_max_concurrent` scans are in flight; a further scan waits for a place until its own deadline and then fails closed. The in-flight counter uses the default (sequentially consistent) ordering, as [ADR-0520](0520-statistics-counters-use-the-default-memory-order.md) chose for counters: it changes once per scan, beside a socket round trip, and orders no other memory. `clamd_socket_path` requires `enable_av_scanner=true`, because with it off the repository forces the verdict clean.
 
 ## Rejected alternatives
 

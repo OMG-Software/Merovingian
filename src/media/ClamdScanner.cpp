@@ -267,7 +267,7 @@ namespace
         auto operator=(ScanSlot&&) -> ScanSlot& = delete;
         ~ScanSlot()
         {
-            m_counter.fetch_sub(1U, std::memory_order_acq_rel);
+            m_counter.fetch_sub(1U);
         }
 
     private:
@@ -293,7 +293,7 @@ auto ClamdScanner::settings() const noexcept -> ClamdScannerSettings const&
 
 auto ClamdScanner::in_flight() const noexcept -> std::uint32_t
 {
-    return m_in_flight.load(std::memory_order_acquire);
+    return m_in_flight.load();
 }
 
 auto ClamdScanner::scan(std::string_view const bytes) -> ClamdScanResult
@@ -313,10 +313,10 @@ auto ClamdScanner::scan(std::string_view const bytes) -> ClamdScanResult
     auto const limit = std::max(1U, m_settings.max_concurrent);
     while (true)
     {
-        auto current = m_in_flight.load(std::memory_order_acquire);
+        auto current = m_in_flight.load();
         if (current < limit)
         {
-            if (m_in_flight.compare_exchange_weak(current, current + 1U, std::memory_order_acq_rel))
+            if (m_in_flight.compare_exchange_weak(current, current + 1U))
             {
                 break;
             }

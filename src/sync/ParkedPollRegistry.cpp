@@ -255,7 +255,10 @@ auto ParkedPollRegistry::run() -> void
         }
         if (m_deadlines.empty())
         {
-            m_signal.wait(lock);
+            // Every notify follows one of these three changes; a spurious wake-up finds none and sleeps again.
+            m_signal.wait(lock, [this] {
+                return m_stopping || !m_ready.empty() || !m_deadlines.empty();
+            });
         }
         else
         {

@@ -28,6 +28,7 @@ Fixes the low findings of the November 2026 project analysis.
 
 ### Changed
 
+- The long-poll registry thread waits on its condition variable with a predicate naming the three changes that wake it (stop, a ready poll, a deadline), and the clamd in-flight counter uses the default memory ordering (ADR-0520, ADR-0565). No behaviour changes; SonarCloud flagged both.
 - On SQLite, a media download larger than 256 KiB is streamed from the database one chunk at a time instead of being read whole (P15b, ADR-0574, superseding that part of ADR-0113). Each chunk is read on a short-lived read-only connection with no lock held while it is written, so memory per transfer no longer grows with the file. A file removed during a transfer fails the next chunk and closes the connection. PostgreSQL downloads, thumbnails, uploads and the federation media download are still buffered: on PostgreSQL every chunk of a compressed `bytea` would decompress the whole value.
 - The server refuses to start on FreeBSD and OpenBSD when `security.media.clamd_socket_path` is set, because the sandbox there forbids connecting to the socket (G15, ADR-0566).
 - `server.http.sync_max_in_flight` now bounds parked, queued and running waits together, and is no longer clamped to `sync_threads` (ADR-0570). The default is 512 (was 128) and the range is 1..16384 (was 1..512). Each parked wait keeps its socket open, so a higher value needs file-descriptor headroom. The systemd unit allows 65536.
