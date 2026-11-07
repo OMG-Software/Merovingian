@@ -14,10 +14,10 @@ namespace
 
     [[nodiscard]] auto is_tchar(char value) noexcept -> bool
     {
-        return (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '!' || value == '#' ||
-               value == '$' || value == '%' || value == '&' || value == '\'' || value == '*' || value == '+' ||
-               value == '-' || value == '.' || value == '^' || value == '_' || value == '`' || value == '|' ||
-               value == '~';
+        return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') ||
+               value == '!' || value == '#' || value == '$' || value == '%' || value == '&' || value == '\'' ||
+               value == '*' || value == '+' || value == '-' || value == '.' || value == '^' || value == '_' ||
+               value == '`' || value == '|' || value == '~';
     }
 
     [[nodiscard]] auto contains_control_or_space(std::string_view value) noexcept -> bool

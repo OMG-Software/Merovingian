@@ -1713,7 +1713,11 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
         return next;
     }();
 
-    ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation));
+    if (!ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation)))
+    {
+        LOG_WARNING("Federation worker pool: room_sync notification could not be sent for room_id=" +
+                    std::string{room_id});
+    }
 }
 
 auto WorkerPool::healthy() const noexcept -> bool

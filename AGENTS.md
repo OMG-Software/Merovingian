@@ -35,11 +35,14 @@ report any unresolved conflict or unmet requirement. See
   rejected alternative that looks better in isolation, or a rule about how to
   write future code. A choice with no rejected alternative is a fact, not a
   decision, and anything the Matrix spec mandates is not a decision either.
-  Copy `docs/adr/template.md`, number it next, fill in status and date (both
-  mandatory), and add a line to `docs/adr/index.md` in the same commit. Never
-  renumber or delete an entry — mark it superseded. See
-  [ADR-0000](docs/adr/0000-record-architecture-decisions.md) and
-  [ADR-0001](docs/adr/0001-use-markdown-architectural-decision-records.md).
+  Copy `docs/adr/template.md`, number it next (above every existing number;
+  gaps from branches that never landed are allowed, but a number is never
+  reused and nothing may cite a number that has no file), fill in status and
+  date (both mandatory), and add a line to `docs/adr/index.md` in the same
+  commit. Never renumber or delete an entry — mark it superseded. See
+  [ADR-0000](docs/adr/0000-record-architecture-decisions.md),
+  [ADR-0001](docs/adr/0001-use-markdown-architectural-decision-records.md) and
+  [ADR-0543](docs/adr/0543-adr-numbers-are-assigned-in-order-gaps-are-allowed-and-a-number-is-never-reused.md).
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Ignore directories starting with `build` in the project root (Meson build output).
@@ -165,7 +168,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 │   ├── config/            #   Config model, parser, runtime config, reload plan/policy
 │   ├── core/              #   Error, file_descriptor, socket_handle, not_null, query_params, secret_buffer
 │   ├── crypto/            #   Ed25519, signing service, secret box, master key, IPC cipher, constant-time ops
-│   ├── database/          #   Connection, statement, schema, migrations, persistent_store, postgresql/sqlite
+│   ├── database/          #   Connection, statement, frozen v1 schema definitions, migrations, persistent_store, postgresql/sqlite
 │   ├── email/             #   SMTP client (libcurl), mailbox-address and relay-URL checks, notification email
 │   ├── events/            #   Event, event_id, event_signer, authorization, state_resolution, redaction, limits
 │   ├── federation/        #   Inbound/outbound, transactions, key cache/query, server_discovery, membership, ACLs
@@ -191,7 +194,7 @@ same name: `src/database/sqlite_store.cpp` and `src/federation_worker/main.cpp`.
 │   ├── smoke/             #   Smoke tests
 │   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
-│   ├── fixtures/          #   Test fixtures (complement)
+│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; no cross-release database fixture until 1.1)
 │   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
 │   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter

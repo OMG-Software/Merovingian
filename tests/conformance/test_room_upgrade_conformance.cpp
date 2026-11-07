@@ -29,6 +29,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -253,6 +254,66 @@ SCENARIO("An upgrade by a user who cannot change the old room's power levels sti
             {
                 REQUIRE(reply.status == 200U);
                 REQUIRE(power_level(rt, alice, room_id, "events_default", 0) == 0);
+            }
+        }
+    }
+}
+
+// Spec: Room Upgrades, Server behaviour: "Sends a m.room.tombstone event to the old room". ADR-0534: when the
+// tombstone is refused because the upgrader's power was taken away while the replacement room was being
+// created, the upgrader leaves the replacement room so it is abandoned, and the refusal is what the client is told.
+SCENARIO("An upgrade whose tombstone is refused leaves the upgrader out of the replacement room",
+         "[room-upgrade][conformance][c21]")
+{
+    GIVEN("a room where bob may send the tombstone, and alice takes that power away while the new room is created")
+    {
+        auto started = merovingian::homeserver::start_client_server(upgrade_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room(
+            rt, alice,
+            R"({"preset":"public_chat","room_version":"10","power_level_content_override":{"users":{"@bob:example.org":50,"@alice:example.org":100},)"
+            R"("events":{"m.room.tombstone":50}}})");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        rt.homeserver.test_after_upgrade_room_created = [&] {
+            auto const demoted =
+                call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.power_levels", alice,
+                     R"({"users":{"@alice:example.org":100,"@bob:example.org":0},"events":{"m.room.tombstone":50}})");
+            REQUIRE(demoted.status == 200U);
+        };
+
+        WHEN("bob upgrades the room")
+        {
+            auto const reply = upgrade(rt, bob, room_id);
+            rt.homeserver.test_after_upgrade_room_created = nullptr;
+
+            THEN("bob is refused, and he has left the replacement room")
+            {
+                CAPTURE(reply.body);
+                REQUIRE(reply.status == 403U);
+                auto replacement = std::string{};
+                auto bob_membership = std::string{};
+                {
+                    auto const lock = std::lock_guard{rt.homeserver.mutex};
+                    for (auto const& room : rt.homeserver.database.rooms)
+                    {
+                        if (room.room_id != room_id)
+                        {
+                            replacement = room.room_id;
+                        }
+                    }
+                    for (auto const& row : rt.homeserver.database.persistent_store.memberships)
+                    {
+                        if (row.room_id == replacement && row.user_id == "@bob:example.org")
+                        {
+                            bob_membership = row.membership;
+                        }
+                    }
+                }
+                REQUIRE_FALSE(replacement.empty());
+                REQUIRE(bob_membership == "leave");
             }
         }
     }

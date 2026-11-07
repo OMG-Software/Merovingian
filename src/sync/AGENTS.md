@@ -13,7 +13,9 @@ Spec authority:
 |---|---|
 | `StreamToken.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
 | `SyncFilter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
+| `type_pattern.cpp` | `type_pattern_matches`: the `*` wildcard (anywhere, any number of times) of `types` / `not_types`, iterative with no backtracking (ADR-0541); the one matcher both filter paths use |
 | `SyncNotifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
+| `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `sliding_sync_parser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
 | `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
@@ -376,9 +378,13 @@ three transports run `long_poll_wait`: cursor, then the positions check, then th
 before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when
 its last waiter leaves: a publish between two slices must be seen. The audience reads the room's rows through
 `for_each_room_membership_row` (ADR-0437).
-- On the `sync_pool` path the wait is polled in 1-second slices (`http_server.cpp`), which bounds
-  shutdown and dropped-client detection to one second; the no-pool fallback and the sliding-sync
-  re-wait loop wait for the full remaining timeout in a single call
+- A long-poll on the `sync_pool` path does not wait on a pool thread (ADR-0569): it parks in `ParkedPollRegistry`
+  (owned by `SyncNotifier`) and is resumed on the pool by a publish for its user or by its deadline. Park with a cursor
+  taken before the last rerun (`SyncNotifier::park` inserts, then compares the cursor), keep the registry mutex a leaf
+  (publishers call `wake_users` / `wake_all` after releasing the notifier mutex), and never answer from the registry.
+  A client that disconnects while parked is found when it resumes or at its deadline. When the registry refuses (full,
+  stopping) or there is no dispatcher, the old in-thread wait runs: 1-second slices with a peer peek, from the cursor
+  already held. The no-pool fallback and the sliding-sync re-wait loop wait for the full remaining timeout in a single call
 - The sync thread pool (`sync_pool`) is separate from the main thread pool to prevent
   long-polling clients from starving federation and other short-lived requests
 

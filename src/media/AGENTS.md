@@ -13,6 +13,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `ThumbnailCache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
 | `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
+| `ClamdScanner.cpp` | `ClamdScanner` (ADR-0565): clamd `zINSTREAM` over an AF_UNIX socket, one deadline, a bounded number of concurrent scans, fail closed (`ClamdVerdict`: clean / infected / failed / oversize; only clean clears). No logging: `homeserver/clamd_media_scan.cpp` logs and audits |
 | `RuntimeMediaConfig.cpp` | Wires the media service into the runtime |
 | `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
 
@@ -36,7 +37,7 @@ declared_mime|sniffed_mime|scanner_verdict|<raw binary body>
 This format is built by `homeserver/ClientServerRuntime.cpp` before calling `call_local()`.
 `sniffed_mime` comes from `media::sniff_mime_type()` and `scanner_verdict` (`clean` / `dirty`)
 from `media::content_matches_eicar_test_signature()`. There is no real AV engine; the check
-recognises the EICAR test file.
+recognises the EICAR test file; with `security.media.clamd_socket_path` set, `homeserver/media_service.cpp` also asks clamd (`homeserver::clamd_media_cleared`) after the authenticated user is known and only for `allow-after-scan` media, so the pipe verdict stays the EICAR one.
 **Never** construct this format outside of `ClientServerRuntime.cpp`.
 
 The 4th field is split on the 3rd `|` — binary bodies containing `|` are safe.

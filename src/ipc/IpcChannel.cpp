@@ -465,6 +465,12 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
     }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
+    // A body just under the cap plus the id header is over it: fail now, before a pending entry is registered.
+    if (frame.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "request");
+        return std::nullopt;
+    }
 
     auto entry = std::make_shared<PendingEntry>();
     entry->verified_origin = verified_origin;
@@ -541,30 +547,36 @@ auto IpcChannel::consume_pending_edu(std::uint64_t parent_request_id, std::strin
 
 auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void
 {
-    if (json_body.size() > max_frame_bytes_)
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto frame = build_frame(id, reply_to, json_body);
+    // The cap is on the whole frame, which is the body plus the id/reply_to header: a body under the cap can still
+    // build a frame over it. Either way the requester is waiting for this answer, so tell it there will not be one,
+    // in a frame that cannot itself be over the cap, so it fails now and not at its timeout (F-23, ADR-0368).
+    if (json_body.size() > max_frame_bytes_ || frame.size() > max_frame_bytes_)
     {
         report_oversize_drop(json_body, "response");
-        // The requester is waiting for this answer: tell it there will not be one, in a frame
-        // that cannot itself be over the cap, so it fails now and not at its timeout (F-23).
-        json_body = failed_response_body;
+        frame = build_frame(id, reply_to, failed_response_body);
     }
-    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
-    auto const frame = build_frame(id, reply_to, json_body);
     auto const lk = std::lock_guard{write_mu_};
     std::ignore = write_frame(frame);
 }
 
-auto IpcChannel::send_notification(std::string_view json_body) -> void
+auto IpcChannel::send_notification(std::string_view json_body) -> bool
 {
     if (json_body.size() > max_frame_bytes_)
     {
         report_oversize_drop(json_body, "notification");
-        return;
+        return false;
     }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
+    if (frame.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "notification");
+        return false;
+    }
     auto const lk = std::lock_guard{write_mu_};
-    std::ignore = write_frame(frame);
+    return write_frame(frame);
 }
 
 auto IpcChannel::set_max_in_flight(std::size_t const cap) noexcept -> void

@@ -89,6 +89,15 @@ auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_
             }
         }
     }
+    // After mutex_ is released: the registry's mutex is a leaf and never nests with it (ADR-0569).
+    if (scope.has_value())
+    {
+        parked_.wake_users(*scope);
+    }
+    else
+    {
+        parked_.wake_all();
+    }
     if (changed)
     {
         log_diagnostic("stream.published", {
@@ -178,7 +187,8 @@ auto SyncNotifier::wait_for_change(WaitCursor const& cursor, std::chrono::millis
 auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t since_stream_ordering,
                     std::uint64_t since_sync_stream_id, std::chrono::steady_clock::time_point deadline,
                     std::chrono::milliseconds slice, std::function<bool()> const& running,
-                    std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle) -> LongPollOutcome
+                    std::function<LongPollStep()> const& rerun, std::function<bool()> const& idle,
+                    std::optional<WaitCursor> initial_cursor) -> LongPollOutcome
 {
     auto outcome = LongPollOutcome{};
     auto const run = [&] {
@@ -218,8 +228,9 @@ auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t
         return outcome;
     }
     // (a) The cursor first, then (b) the positions, then the rerun's own snapshot: each later than the one before.
-    auto cursor = notifier.observe(user);
-    if (notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, std::chrono::milliseconds{0}) && run())
+    auto cursor = initial_cursor.has_value() ? std::move(*initial_cursor) : notifier.observe(user);
+    if (!initial_cursor.has_value() &&
+        notifier.wait_for_change(since_stream_ordering, since_sync_stream_id, std::chrono::milliseconds{0}) && run())
     {
         return outcome;
     }
@@ -247,6 +258,26 @@ auto long_poll_wait(SyncNotifier& notifier, std::string_view user, std::uint64_t
         }
     }
     return outcome;
+}
+
+auto SyncNotifier::moved_since(WaitCursor const& cursor) -> bool
+{
+    auto lock = std::lock_guard{mutex_};
+    auto const entry = by_user_.find(cursor.user);
+    auto const user_generation = entry == by_user_.end() ? std::uint64_t{0U} : entry->second.generation;
+    return user_generation != cursor.user_generation || broadcast_generation_ != cursor.broadcast_generation;
+}
+
+auto SyncNotifier::park(WaitCursor const& cursor, std::chrono::steady_clock::time_point deadline,
+                        std::unique_ptr<ParkedPoll>& poll) -> ParkOutcome
+{
+    // Insert first, compare second: a publish before the insert moved a generation before the comparison.
+    auto ticket = parked_.park(cursor.user, deadline, poll);
+    if (ticket.parked && moved_since(cursor))
+    {
+        parked_.wake(ticket.ticket);
+    }
+    return ticket;
 }
 
 auto SyncNotifier::current_sync_stream_id() const -> std::uint64_t

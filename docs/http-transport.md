@@ -1036,12 +1036,19 @@ conventions.
 Both v3 and sliding-sync waits share admission budgets keyed by authenticated
 account and device, rather than bearer token or IP address: four waits per
 account and two per device by default (`sync_max_per_user`, `sync_max_per_device`). The configured global cap defaults to
-128 and is clamped to the sync pool's worker count; per-account and per-device
+512 and counts parked waits too (it is not clamped to the pool, ADR-0570). Each parked wait keeps its socket
+open, so raising the cap needs file-descriptor headroom (the systemd unit sets `LimitNOFILE=65536`); per-account and per-device
 caps cannot exceed that global cap. All three caps are `server.http` settings. Queued tasks count against these limits. Excess
 waits get 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`, and a refused sync-pool
 submission also returns 429 immediately instead of waiting on a main worker.
 Slots are released on response, disconnect, exception and failed handoff.
 Timeouts are capped at 120 seconds. See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
+
+A long-poll that finds nothing parks in the notifier's `ParkedPollRegistry` and holds no sync-pool thread while it waits
+(ADR-0569); `sync_max_in_flight` (default 512, 1..16384) now caps parked, queued and running waits together and is no
+longer clamped to `sync_threads` (ADR-0570), the registry also caps parked waits per user at `sync_max_per_user`.
+Shutdown closes parked connections without answering; a disconnected parked client is released when it resumes or at its
+deadline.
 
 A waiting sync is run again after each wake-up and once more when its timeout
 expires (on the sync pool, in the no-pool fallback and in
@@ -1113,6 +1120,7 @@ The paths under the budget:
 | `POST /_matrix/client/v3/keys/query` and `/keys/claim`, for a user of another server | federation `POST /user/keys/query` and `/user/keys/claim`: one slot and one 30 s deadline (`remote_keys_deadline_seconds`) for all of the request's remote servers, at most 16 distinct servers (`remote_keys_max_servers`); a server not asked is reported in `failures` and the local answer is still returned, so no slot is not a 429 (F-17, ADR-0350) |
 | `GET /_matrix/client/v3/profile/{userId}[/{keyName}]` for a user of another server | federation `GET /query/profile`, 10 s directory deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |
+| `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}?via=...`, for a room not held locally (with or without a token, ADR-0556) | federation `GET /hierarchy/{roomId}` to at most 3 of the `via` servers: one slot (never the waiting form; 429 `M_LIMIT_EXCEEDED` at once without one) and one 10 s deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event`, when the local answer is missing or sits at a gap (ADR-0299) | federation `GET /timestamp_to_event` and `GET /event` to at most 3 servers with joined members: one slot and one 10 s deadline; the request waits for the slot within that deadline (ADR-0306) |
 | `POST /_matrix/client/v3/rooms/{roomId}/invite` and createRoom's `invite` list, for a user of another server | federation `PUT /v2/invite`: one slot per request, one deadline (30 s, or `remote_timeout`) for all offers (ADR-0307) |
 | `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |

@@ -235,6 +235,12 @@ security.login_throttle.max_failures_per_source=5
 security.login_throttle.max_failures_per_account=50
 security.login_throttle.window=15m
 
+# Login tokens (CS8, ADR-0548). When true, POST /_matrix/client/v1/login/get_token lets a signed-in user, after
+# re-entering the password on every call, mint a single-use token (valid 2 minutes) that logs another device in as
+# that user with the m.login.token flow. A login token hands a full session to whoever holds it, so it is off by
+# default. Tokens are held in memory only: a restart drops the unredeemed ones. Reloadable.
+security.login_token.enabled=false
+
 # Token lifetimes. Values are in milliseconds; 0 disables expiry for that token
 # kind. The advertised expires_in_ms matches access_token_lifetime_ms so the
 # TTL the client receives equals the TTL the server enforces.
@@ -282,7 +288,8 @@ security.federation.remote_timeout=60s
 # Inbound transaction caps and per-origin budgets.
 # max_transaction_pdus/edus bound a single PUT /send transaction; the spec caps
 # PDUs at 50 and EDUs at 100 per transaction, and a sender exceeding either is
-# rejected rather than silently truncated.
+# rejected rather than silently truncated. A lower value would refuse legal
+# transactions, so the only accepted values are 50 and 100.
 # The per_origin_* budgets are the abuse controls for inbound federation: they
 # are counted per originating server, so one noisy or hostile peer cannot spend
 # the whole server's capacity. transaction/pdu/edu rates bound /send volume;
@@ -488,6 +495,18 @@ security.media.quarantine_unknown_mime=true
 # (encrypted-room attachments) is unscannable ciphertext no matter what this
 # flag is set to.
 #security.media.enable_av_scanner=true
+# Optional malware scanning through a local ClamAV daemon (off while the socket
+# path is empty). Media is sent to clamd over its AF_UNIX socket with INSTREAM
+# and served only after `stream: OK`; infected media, any clamd failure or
+# timeout, and media above clamd_max_scan_size stay quarantined. Applies to
+# media whose policy is allow-after-scan. Needs enable_av_scanner=true. Not
+# available on FreeBSD or OpenBSD (the server refuses to start). Keep
+# clamd_max_scan_size at or above max_upload_size, and equal to clamd's
+# StreamMaxLength, or larger uploads are never scanned.
+#security.media.clamd_socket_path=/run/clamav/clamd.ctl
+#security.media.clamd_timeout_ms=10000
+#security.media.clamd_max_scan_size=25MiB
+#security.media.clamd_max_concurrent=4
 # Acceptance disposition for authenticated local uploads: allow,
 # allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
 # accepts a clean scanner verdict and quarantines/rejects otherwise — the only
@@ -731,7 +750,7 @@ server.client_api.max_body_size=1MiB
 
 # server.http
 server.http.sync_threads=128
-server.http.sync_max_in_flight=128
+server.http.sync_max_in_flight=512
 server.http.sync_max_per_user=4
 server.http.sync_max_per_device=2
 # Remote media fetch pool (ADR-0121): a remote media download or thumbnail that

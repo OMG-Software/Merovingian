@@ -937,7 +937,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.client_api.sliding_sync_connections_per_device",
                    config.server().client_api.sliding_sync_connections_per_device, 64U);
     validate_count("server.http.sync_threads", config.server().http.sync_threads, 512U);
-    validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 512U);
+    validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 16384U);
     validate_count("server.http.sync_max_per_user", config.server().http.sync_max_per_user, 64U);
     validate_count("server.http.sync_max_per_device", config.server().http.sync_max_per_device, 16U);
     validate_count("server.http.media_fetch_threads", config.server().http.media_fetch_threads, 256U);
@@ -1589,17 +1589,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.max_transaction_size",
                             "federation transaction size must be a positive byte size no greater than 64MiB"});
     }
-    if (config.security().federation.max_transaction_pdus == 0U ||
-        config.security().federation.max_transaction_pdus > 50U)
+    // The spec allows a transaction of up to 50 PDUs and 100 EDUs (SS API "Transactions"), so a lower limit makes
+    // /send refuse a legal transaction. The keys stay, but the only value they take is the spec's own (owner decision
+    // 2026-11-07).
+    if (config.security().federation.max_transaction_pdus != 50U)
     {
-        findings.push_back(
-            {"security.federation.max_transaction_pdus", "federation transaction PDU limit must be between 1 and 50"});
+        findings.push_back({"security.federation.max_transaction_pdus",
+                            "federation transaction PDU limit must be 50, the Matrix limit; a lower value would "
+                            "refuse legal transactions"});
     }
-    if (config.security().federation.max_transaction_edus == 0U ||
-        config.security().federation.max_transaction_edus > 100U)
+    if (config.security().federation.max_transaction_edus != 100U)
     {
-        findings.push_back(
-            {"security.federation.max_transaction_edus", "federation transaction EDU limit must be between 1 and 100"});
+        findings.push_back({"security.federation.max_transaction_edus",
+                            "federation transaction EDU limit must be 100, the Matrix limit; a lower value would "
+                            "refuse legal transactions"});
     }
     if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_transaction_rate))
     {
@@ -1742,6 +1745,48 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (media.pending_upload_max_wait_ms > 60000U)
     {
         findings.push_back({"security.media.pending_upload_max_wait_ms", "must be between 0 and 60000"});
+    }
+    // G15, ADR-0565: the clamd scanner. The socket path is an absolute filesystem path that fits
+    // sockaddr_un::sun_path on every supported platform (104 bytes on the BSDs, NUL included), and
+    // scanning needs the scanner switch on: with it off the repository ignores the verdict, so a
+    // configured daemon would be a silent no-op.
+    if (!media.clamd_socket_path.empty())
+    {
+        auto const& socket_path = media.clamd_socket_path;
+        if (socket_path.front() != '/')
+        {
+            findings.push_back({"security.media.clamd_socket_path", "must be an absolute path"});
+        }
+        else if (socket_path.size() > 103U)
+        {
+            findings.push_back({"security.media.clamd_socket_path", "must be at most 103 bytes"});
+        }
+        else if (std::ranges::any_of(socket_path, [](char const c) {
+                     return static_cast<unsigned char>(c) < 0x20U || static_cast<unsigned char>(c) == 0x7FU;
+                 }))
+        {
+            findings.push_back({"security.media.clamd_socket_path", "must not contain control characters"});
+        }
+        if (!media.enable_av_scanner)
+        {
+            findings.push_back({"security.media.clamd_socket_path",
+                                "requires security.media.enable_av_scanner=true, or the verdict is ignored"});
+        }
+    }
+    if (media.clamd_timeout_ms < 100U || media.clamd_timeout_ms > 120000U)
+    {
+        findings.push_back({"security.media.clamd_timeout_ms", "must be between 100 and 120000"});
+    }
+    if (media.clamd_max_concurrent == 0U || media.clamd_max_concurrent > 64U)
+    {
+        findings.push_back({"security.media.clamd_max_concurrent", "must be between 1 and 64"});
+    }
+    if (auto const scan_limit = parse_size_limit(media.clamd_max_scan_size);
+        !scan_limit.valid || scan_limit.bytes == 0U || scan_limit.bytes > 1024ULL * 1024ULL * 1024ULL)
+    {
+        findings.push_back({"security.media.clamd_max_scan_size",
+                            "must be a positive size no larger than 1GiB, such as 25MiB (clamd's default "
+                            "StreamMaxLength); accepted suffixes are B, KiB, MiB and GiB"});
     }
     // ADR-0213: URL preview fetches are bounded in bytes, time and hops.
     for (auto const& [field, value] : {

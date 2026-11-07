@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/RemoteDeviceList.hpp"
+#include "merovingian/federation/RemoteDeviceListUpdate.hpp"
 #include "merovingian/federation/RemoteKeyClaimKeys.hpp"
 #include "merovingian/federation/RemoteKeyQueryKeys.hpp"
 
@@ -91,5 +94,29 @@ namespace merovingian::federation
 // 404 M_NOT_FOUND per Matrix SS API v1.19).
 [[nodiscard]] auto build_user_devices_response(database::PersistentStore const& store, std::string_view user_id)
     -> std::string;
+
+// Accepts `origin`'s answer to `GET /_matrix/federation/v1/user/devices/{userId}` for `user_id` (a user of `origin`)
+// as the remote device-list cache's snapshot of that user (ADR-0560). Refused whole (std::nullopt, logged) unless it is
+// an object naming `user_id`, with an integer `stream_id`, a `devices` array whose every entry has a distinct
+// non-empty `device_id` of at most 255 bytes and `keys` (when present) filed under that user and device, and
+// `master_key` / `self_signing_key` (when present) valid for the user and their usage. A cache must not hold half a
+// list: one bad entry means the list is not cached and the user is asked for with `/user/keys/query` instead.
+// The display name is the entry's `device_display_name`, else the keys' `unsigned.device_display_name`.
+[[nodiscard]] auto accept_remote_user_devices_response(std::string_view origin, std::string_view user_id,
+                                                       std::string_view response_body)
+    -> std::optional<RemoteDeviceList>;
+
+// Reads the content of an `m.device_list_update` EDU (ADR-0561). std::nullopt unless `user_id` and `device_id` are
+// strings (the device ID non-empty, at most 255 bytes), `stream_id` is an integer, `prev_id` (when present) an array
+// of integers, `deleted` (when present) a boolean, `device_display_name` (when present) a string and `keys` (when
+// present) an object filed under that user and device. The caller binds `user_id` to the sending origin.
+[[nodiscard]] auto parse_remote_device_list_update(canonicaljson::Object const& content)
+    -> std::optional<RemoteDeviceListUpdate>;
+
+// The keys of a cached list as a `/user/keys/query` answer for `user_id` would carry them: `device_keys` holds every
+// device with keys, each with `unsigned.device_display_name` when it has a name, and `master_keys` /
+// `self_signing_keys` the user's cross-signing keys. Ready for the same merge as an answer from the user's server.
+[[nodiscard]] auto remote_key_query_keys_from_cache(std::string_view user_id, RemoteDeviceList const& list)
+    -> RemoteKeyQueryKeys;
 
 } // namespace merovingian::federation

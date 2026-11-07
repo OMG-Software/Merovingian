@@ -49,6 +49,7 @@
 #include "merovingian/federation/KeyMirrorRefresh.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
+#include "merovingian/federation/RemoteDeviceListOutcome.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -84,6 +85,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
@@ -495,6 +497,7 @@ namespace
             // in a field, never a header; the client API builds
             // Content-Disposition from it.
             out.media_filename = result.media_filename;
+            out.body_stream = result.body_stream;
         }
         if (result.retry_after_ms > 0U)
         {
@@ -2099,9 +2102,8 @@ namespace
             // m.device_list_update (a device changed) and m.signing_key_update
             // (the user's cross-signing keys changed) both mean the same thing
             // to a local client: that remote user's keys must be re-queried.
-            // Nothing is cached here — /keys/query always asks the remote
-            // server — so the whole job is to put the user in
-            // device_lists.changed.
+            // The update is applied to the remote device-list cache first (ADR-0561):
+            // one that changes nothing a client sees is not reported again.
             case federation::EduType::device_list_update:
             case federation::EduType::signing_key_update: {
                 auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
@@ -2130,8 +2132,32 @@ namespace
                     // (the watermark, then the rows).
                     // A repeat replaces the pair's earlier row, so the table is
                     // bounded by observers x subjects that share a room.
+                    auto observers = local_users_sharing_a_joined_room_with(*rt, *user_id);
+                    auto& device_lists = rt->remote_device_lists;
+                    if (observers.empty())
+                    {
+                        // Nobody here shares a room with them, so no later update need reach this server.
+                        device_lists.erase(*user_id);
+                    }
+                    else if (envelope.type == federation::EduType::device_list_update)
+                    {
+                        auto const update = federation::parse_remote_device_list_update(*root);
+                        if (!update.has_value())
+                        {
+                            device_lists.mark_stale(*user_id);
+                        }
+                        else if (device_lists.apply_update(*update) == federation::RemoteDeviceListOutcome::unchanged)
+                        {
+                            return {federation::EduDispositionStatus::accepted, {}};
+                        }
+                    }
+                    else
+                    {
+                        // The next fill reads the cross-signing keys with the devices, through one reader.
+                        device_lists.mark_stale(*user_id);
+                    }
                     auto changes = std::vector<database::PersistentDeviceListChange>{};
-                    for (auto& observer : local_users_sharing_a_joined_room_with(*rt, *user_id))
+                    for (auto& observer : observers)
                     {
                         auto change = database::PersistentDeviceListChange{};
                         change.observer_user_id = std::move(observer);
@@ -2933,6 +2959,16 @@ namespace
             if (!invite.origin.empty() && server_name_from_user_id(*sender) != invite.origin)
             {
                 return {false, 400U, "invite event sender is not on the origin server", {}};
+            }
+            // SS7, Server-Server API PUT /v1/invite and /v2/invite: an invite for a user who blocks invites is
+            // 403 M_INVITE_BLOCKED, decided here on main (the federation worker relays invites to this handler,
+            // and only main holds account data) and before anything is signed or stored.
+            if (invite_permission_blocks(rt->database.persistent_store, *target_user))
+            {
+                return {false,
+                        403U,
+                        matrix_error(std::string{invite_blocked_errcode}, "the invited user is not accepting invites"),
+                        {}};
             }
             // Audit FED-5: a room whose current state we hold (we have its
             // create event) is authorised against that state before we sign

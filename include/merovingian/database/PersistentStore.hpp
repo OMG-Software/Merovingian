@@ -973,6 +973,11 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead;
 // The blob's bytes, or nullopt when it is not referenced or cannot be read.
 [[nodiscard]] auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>;
+
+// ADR-0574: reads `length` bytes at `offset` of a blob that must still be referenced and exactly `expected_size`
+// bytes long, on a connection that is closed before this returns. nullopt on any mismatch or failure.
+[[nodiscard]] auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_size, std::uint64_t offset,
+                                         std::size_t length) -> std::optional<std::string>;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 // Commit moderation metadata, optional blob removal and both audit records
@@ -1330,8 +1335,9 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // sync-surface ID allocation must flow through this helper so a restart
 // cannot roll the counter backward behind a client's since-token. Throws
 // std::overflow_error, leaving the counter unchanged, rather than pass
-// INT64_MAX (ADR-0315). Nothing else moves the counter upward, client input
-// least of all.
+// INT64_MAX (ADR-0315). A failed watermark write is logged at error level, not thrown, and the id is
+// still issued: the next successful write records the counter past it (ADR-0540). Nothing else moves the
+// counter upward, client input least of all.
 // ADR-0315: writes that a sync position must follow stop this far below the counter's ceiling. Far more
 // positions than one request takes, and the margin covers requests between this check and their allocation.
 inline constexpr auto sync_stream_write_reserve = std::uint64_t{1U} << 20U;
@@ -1423,6 +1429,15 @@ namespace detail
     // ADR-0119: one referenced media blob's bytes. nullopt on a missing or
     // unreferenced blob and on a connection or query failure.
     [[nodiscard]] auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id)
+        -> std::optional<std::string>;
+    // ADR-0574: `length` bytes of a referenced blob from `offset`. nullopt unless the blob is still referenced,
+    // is exactly `expected_size` bytes long, and the whole range exists.
+    [[nodiscard]] auto read_media_blob_chunk_from_sqlite(std::string const& path, std::string_view storage_id,
+                                                         std::uint64_t expected_size, std::uint64_t offset,
+                                                         std::size_t length) -> std::optional<std::string>;
+    [[nodiscard]] auto read_media_blob_chunk_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                             std::string_view storage_id, std::uint64_t expected_size,
+                                                             std::uint64_t offset, std::size_t length)
         -> std::optional<std::string>;
     [[nodiscard]] auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                        std::string_view storage_id) -> std::optional<std::string>;

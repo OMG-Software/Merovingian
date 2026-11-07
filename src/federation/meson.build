@@ -8,6 +8,8 @@ federation_sources = files(
   'inbound_request.cpp',
   'invite_room_state.cpp',
   'key_query.cpp',
+  'RemoteDeviceList.cpp',
+  'RemoteDeviceListCache.cpp',
   'key_signatures.cpp',
   'membership_endpoints.cpp',
   'outbound_membership.cpp',

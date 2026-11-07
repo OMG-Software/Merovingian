@@ -224,7 +224,6 @@ SCENARIO("Integrated client-server flow covers auth devices rooms state joined r
             {
                 REQUIRE(result.ok);
                 REQUIRE(result.value.find("next_batch") != std::string::npos);
-                REQUIRE(result.value.find("event_count") != std::string::npos);
                 // Matrix E2EE: m.room.encrypted events are relayed opaquely
                 // through /sync — clients decrypt locally.
                 REQUIRE(result.value.find("m.room.encrypted") != std::string::npos);

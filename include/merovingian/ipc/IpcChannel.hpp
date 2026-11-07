@@ -170,8 +170,9 @@ public:
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
 
-    // Sends a one-way notification (no response expected). json_body: without "id"/"reply_to".
-    auto send_notification(std::string_view json_body) -> void;
+    // Sends a one-way notification (no response expected). json_body: without "id"/"reply_to". False when the frame
+    // (body plus header) is over the cap or could not be written; nothing was sent then.
+    [[nodiscard]] auto send_notification(std::string_view json_body) -> bool;
 
     // Set the maximum number of in-flight requests this channel will accept from
     // the peer. 0 means unbounded (the default). Must be called before start();

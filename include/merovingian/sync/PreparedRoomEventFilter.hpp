@@ -20,7 +20,8 @@ namespace merovingian::sync
 // every room the user has been in with lists a client sized (security audit run 2, F-30; ADR-0332).
 // Rooms and senders become hash sets; `types` and `not_types` become a hash set of exact types and a
 // sorted list of the `prefix*` patterns with any pattern covered by a shorter one dropped (so at most one
-// can match an event type, found by binary search). Answers are those of `room_passes_filter` and
+// can match an event type, found by binary search); a pattern with a `*` before its last character is kept
+// whole and judged by `type_pattern_matches`. Answers are those of `room_passes_filter` and
 // `event_passes_filter` for the same RoomFilter (its `timeline` lists), entry for entry.
 class PreparedRoomEventFilter final
 {
@@ -49,6 +50,8 @@ private:
         StringSet exact{};
         // Sorted; none is a prefix of another.
         std::vector<std::string> prefixes{};
+        // Patterns with a '*' before their last character; scanned one by one.
+        std::vector<std::string> globs{};
 
         explicit TypePatterns(std::vector<std::string> const& patterns);
         [[nodiscard]] auto matches(std::string_view event_type) const noexcept -> bool;

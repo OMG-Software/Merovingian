@@ -85,6 +85,12 @@ SCENARIO("a prepared filter answers as the scanning functions do", "[sync][filte
         }
         {
             auto filter = RoomFilter{};
+            filter.timeline.types = list_of({"m.*.message", "*.name", "o*r*x", "m.room.*"});
+            filter.timeline.not_types = list_of({"*thing", "m.r*.m*e"});
+            filters.push_back(filter);
+        }
+        {
+            auto filter = RoomFilter{};
             filter.timeline.senders = list_of({"@a:x", "@b:x"});
             filter.timeline.not_senders = list_of({"@b:x", "@c:x"});
             filters.push_back(filter);

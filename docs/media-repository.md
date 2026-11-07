@@ -95,6 +95,12 @@ current in-process runtime path.
   federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
+- A download of a file larger than one chunk (256 KiB, `database::media_blob_chunk_bytes`) on SQLite is
+  streamed (ADR-0574): the response carries a `MediaBodyStream` instead of body bytes, `Content-Length` is the stored
+  size, and `http_server.cpp` reads one chunk at a time on a short-lived connection and writes it before reading the
+  next, with no lock held. A removal during the transfer fails the next chunk and closes the connection. Thumbnails,
+  uploads, the federation media download and every PostgreSQL download are still buffered: `substring()` of a
+  compressed TOASTed `bytea` decompresses the whole value for each chunk.
 - Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
   64 MiB, least recently used first out; empty or `0` disables it), keyed by the source
   record, size and method, with each axis past the decoder's largest (4096) keyed as
@@ -181,6 +187,7 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
   `docs/user-manual.md`), which defaults remote-fetched media to
   `quarantine` rather than blindly trusting it.
+  **clamd (G15, ADR-0565, ADR-0566):** with `security.media.clamd_socket_path` set, media whose policy is `allow-after-scan` is also sent to a local ClamAV daemon (`media::ClamdScanner`, `homeserver::clamd_media_cleared`) before it is admitted: local uploads (`POST /upload`, `PUT /upload/{server}/{id}`), URL-preview images, and remote media after fetch (so `remote_fetch_media_policy=allow-after-scan` now clears a clean file instead of always quarantining). Only `stream: OK` clears; infected, error, timeout, unreachable socket, no scan capacity and oversize (`clamd_max_scan_size`) all leave `scanner_clean=false` and the media quarantined. The scan runs with `runtime.mutex` released, at most `clamd_max_concurrent` at once. Infected and failed scans log and audit `media.scan_infected` / `media.scan_failed`. With the socket empty (the default) nothing changes: remote media keeps `scanner_clean=false`, which under the default `quarantine` policy means it is held for review. Not available on FreeBSD or OpenBSD.
   **Local uploads (issue #418):** `ClientServerRuntime.cpp` previously hardcoded
   `scanner_clean` to the literal `"clean"` in the internal pipe body
   regardless of upload content, making the quarantine-on-infection path

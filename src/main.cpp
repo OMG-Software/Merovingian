@@ -36,6 +36,7 @@
 #include "merovingian/homeserver/retention_sweep.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/RuntimeMediaConfig.hpp"
 #include "merovingian/media/ThumbnailerConfig.hpp"
 #include "merovingian/media/thumbnailer.hpp"
@@ -79,7 +80,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.80"};
+constexpr auto version = std::string_view{"0.12.81"};
 
 struct BootstrapConfigResult final
 {
@@ -372,6 +373,17 @@ struct BootstrapConfigResult final
     {
         return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, "server.email.smtp_url",
                              "the libcurl this server is built with cannot speak this relay's protocol");
+    }
+
+    // ADR-0566: the main process cannot connect to a clamd socket under FreeBSD Capsicum or OpenBSD unveil.
+    // Refuse to start rather than quarantine every file at run time.
+    if (!result.parsed.config.security().media.clamd_socket_path.empty() &&
+        !merovingian::media::clamd_supported_on_this_platform())
+    {
+        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error,
+                             "security.media.clamd_socket_path",
+                             "the clamd scanner is not supported on this platform: the sandbox forbids connecting to "
+                             "its socket from the main process");
     }
 
     result.config_path = path;
@@ -699,6 +711,17 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
     // ADR-0246: the memory budget behind a 429 "too many concurrent authentication attempts".
     LOG_INFO("Concurrent password hashes: " + std::to_string(config.security().password_hashing.max_concurrent));
+    if (runtime_media.clamd.enabled())
+    {
+        LOG_INFO("Malware scanning: clamd at " + runtime_media.clamd.socket_path + ", timeout " +
+                 std::to_string(runtime_media.clamd.timeout_ms) + " ms, scans up to " +
+                 std::to_string(runtime_media.clamd.max_scan_bytes) + " bytes");
+        if (runtime_media.clamd.max_scan_bytes < runtime_media.max_upload_bytes)
+        {
+            LOG_WARNING("security.media.clamd_max_scan_size is below security.media.max_upload_size: media between "
+                        "the two is never scanned and stays quarantined");
+        }
+    }
     log_library_versions(runtime_media);
 }
 

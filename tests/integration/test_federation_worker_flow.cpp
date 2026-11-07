@@ -3703,7 +3703,8 @@ SCENARIO("WorkerSupervisor restarts a live worker whose main-side channel has fa
         {
             auto const channel = supervisor.channel_snapshot();
             REQUIRE(channel != nullptr);
-            channel->send_notification(merovingian::ipc::serialize_room_sync_notification("!f08:example.org", 1U));
+            std::ignore =
+                channel->send_notification(merovingian::ipc::serialize_room_sync_notification("!f08:example.org", 1U));
 
             THEN("the supervisor replaces the still-running worker and the shard is healthy again")
             {

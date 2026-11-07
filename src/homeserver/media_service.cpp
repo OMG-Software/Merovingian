@@ -29,6 +29,7 @@
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/clamd_media_scan.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -547,6 +548,35 @@ namespace
         return bytes;
     }
 
+    // ADR-0574: the answer for a download of media already resolved under the runtime mutex. A file larger than one
+    // chunk, on SQLite, is not read here at all: the result carries a MediaBodyStream and the HTTP layer reads it
+    // chunk by chunk as it writes, so no request holds the file. PostgreSQL stays buffered: a substring() of a
+    // compressed TOASTed bytea decompresses the whole value for every chunk. Anything else is read whole, as
+    // before. Runs with the runtime mutex held. nullopt when the bytes cannot be read or the media is no longer
+    // servable.
+    [[nodiscard]] auto serve_servable_media(HomeserverRuntime& runtime, std::string_view media_id,
+                                            std::string_view storage_id, bool legacy_endpoint,
+                                            std::string_view content_type) -> std::optional<OperationResult>
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const* blob = media::find_local_media_blob(runtime.media_repository, storage_id);
+        if (blob != nullptr && store.backend == database::PersistentStoreBackend::sqlite &&
+            blob->size_bytes > database::media_blob_chunk_bytes &&
+            media::local_media_still_servable(runtime.media_repository, media_id, storage_id, legacy_endpoint))
+        {
+            auto streamed = make_operation_result(true, std::string{content_type} + "|", {}, 200U);
+            streamed.body_stream =
+                MediaBodyStream{database::prepare_media_blob_read(store, storage_id), blob->size_bytes};
+            return streamed;
+        }
+        auto bytes = read_servable_media_bytes(runtime, media_id, storage_id, legacy_endpoint);
+        if (!bytes.has_value())
+        {
+            return std::nullopt;
+        }
+        return make_operation_result(true, std::string{content_type} + "|" + *bytes, {}, 200U);
+    }
+
     // DB-5 / ADR-0119: makes media the repository has just admitted durable,
     // record and blob in one transaction. `new_blob` writes `bytes`; otherwise
     // only the shared blob's reference count changes. On failure the admission
@@ -670,8 +700,13 @@ namespace
         // verdict for attacker-controlled content; media::fetch_remote_media() decides the
         // real disposition (allow/allow-after-scan/quarantine/deny) via
         // RuntimeMediaConfig::remote_fetch_media_policy, so this must reflect that no scan
-        // actually happened.
-        remote_req.scanner_clean = false;
+        // actually happened. With the clamd scanner on (G15, ADR-0565, and the remote policy
+        // `allow-after-scan`) the bytes are scanned here, and only a clean verdict clears them; a
+        // failed or oversize scan leaves scanner_clean false, so they stay quarantined.
+        remote_req.scanner_clean =
+            clamd_media_cleared(runtime, true, "server", std::string{origin_server} + '/' + std::string{media_id},
+                                remote_req.bytes)
+                .value_or(false);
         remote_req.decoder_marked_safe = true;
 
         auto const now = media::remote_media_cache_now_ms();
@@ -958,8 +993,8 @@ namespace
         auto const storage_id = cached->storage_id;
         auto const content_type = cached->content_type;
         auto const upload_name = cached->upload_name;
-        auto const bytes = read_servable_media_bytes(runtime, local_media_id, storage_id, false);
-        if (!bytes.has_value())
+        auto served = serve_servable_media(runtime, local_media_id, storage_id, false, content_type);
+        if (!served.has_value())
         {
             return std::nullopt;
         }
@@ -967,8 +1002,7 @@ namespace
                                                      {"origin_server", std::string{origin_server}, false},
                                                      {"media_id",      std::string{media_id},      false}
         });
-        auto served = make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
-        served.media_filename = upload_name;
+        served->media_filename = upload_name;
         return served;
     }
 
@@ -1627,6 +1661,11 @@ namespace
     {
         return invalid_upload_filename_result();
     }
+    // G15, ADR-0565: a file the EICAR check already refused is not sent to clamd.
+    if (scanner_clean)
+    {
+        scanner_clean = clamd_media_cleared(runtime, false, *user_id, "upload", bytes).value_or(true);
+    }
 
     auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
                                                   std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean};
@@ -1688,9 +1727,14 @@ namespace
                                                 std::string_view declared_mime_type, std::string_view bytes)
     -> OperationResult
 {
-    auto request = media::LocalMediaUploadRequest{
-        std::string{owner_user_id}, strip_mime_parameters(std::string{declared_mime_type}),
-        media::sniff_mime_type(bytes), std::string{bytes}, !media::content_matches_eicar_test_signature(bytes)};
+    auto scanner_clean = !media::content_matches_eicar_test_signature(bytes);
+    if (scanner_clean)
+    {
+        scanner_clean = clamd_media_cleared(runtime, false, owner_user_id, "fetched-media", bytes).value_or(true);
+    }
+    auto request = media::LocalMediaUploadRequest{std::string{owner_user_id},
+                                                  strip_mime_parameters(std::string{declared_mime_type}),
+                                                  media::sniff_mime_type(bytes), std::string{bytes}, scanner_clean};
     auto const result =
         media::upload_local_media(runtime.media_repository, runtime.config.server().server_name, request);
     if (!result.ok)
@@ -1783,20 +1827,42 @@ namespace
         refused.errcode = std::string{errcode};
         return refused;
     };
-    switch (media::admit_pending_media_upload(repository, media_id, *user_id, media::remote_media_cache_now_ms()))
+    // The refusal for this ID, or nothing when the upload may proceed. Asked again after a clamd scan, which
+    // runs with runtime.mutex released: the reservation may have changed meanwhile.
+    auto const admission_refusal = [&]() -> std::optional<OperationResult> {
+        switch (media::admit_pending_media_upload(repository, media_id, *user_id, media::remote_media_cache_now_ms()))
+        {
+        case media::PendingUploadAdmission::already_uploaded:
+            return refuse(409U, "M_CANNOT_OVERWRITE_MEDIA", "Media already uploaded");
+        case media::PendingUploadAdmission::not_found:
+            return refuse(404U, "M_NOT_FOUND", "Unknown media ID");
+        case media::PendingUploadAdmission::forbidden:
+            return refuse(403U, "M_FORBIDDEN", "This media ID was not created by you");
+        case media::PendingUploadAdmission::accepted:
+            break;
+        }
+        return std::nullopt;
+    };
+    if (auto refusal = admission_refusal(); refusal.has_value())
     {
-    case media::PendingUploadAdmission::already_uploaded:
-        return refuse(409U, "M_CANNOT_OVERWRITE_MEDIA", "Media already uploaded");
-    case media::PendingUploadAdmission::not_found:
-        return refuse(404U, "M_NOT_FOUND", "Unknown media ID");
-    case media::PendingUploadAdmission::forbidden:
-        return refuse(403U, "M_FORBIDDEN", "This media ID was not created by you");
-    case media::PendingUploadAdmission::accepted:
-        break;
+        return *refusal;
     }
     if (!upload_name.empty() && !media::media_filename_is_valid(upload_name))
     {
         return invalid_upload_filename_result();
+    }
+    // G15, ADR-0565: see upload_local_media.
+    if (scanner_clean)
+    {
+        auto const cleared = clamd_media_cleared(runtime, false, *user_id, std::string{media_id}, bytes);
+        if (cleared.has_value())
+        {
+            scanner_clean = *cleared;
+            if (auto refusal = admission_refusal(); refusal.has_value())
+            {
+                return *refusal;
+            }
+        }
     }
 
     auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
@@ -1890,8 +1956,8 @@ namespace
         auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
         return record == nullptr ? std::string{} : record->upload_name;
     }();
-    auto const bytes = read_servable_media_bytes(runtime, media_id, target.storage_id, legacy_endpoint);
-    if (!bytes.has_value())
+    auto served = serve_servable_media(runtime, media_id, target.storage_id, legacy_endpoint, target.content_type);
+    if (!served.has_value())
     {
         log_diagnostic("download.unavailable", {
                                                    {"media_id", std::string{media_id}, false}
@@ -1903,9 +1969,8 @@ namespace
                        {"media_id",     std::string{media_id}, false},
                        {"content_type", target.content_type,   false}
     });
-    auto served = make_operation_result(true, target.content_type + "|" + *bytes, {}, 200U);
-    served.media_filename = upload_name;
-    return served;
+    served->media_filename = upload_name;
+    return std::move(*served);
 }
 
 [[nodiscard]] auto download_local_media_for_federation(HomeserverRuntime& runtime, std::string_view media_id)

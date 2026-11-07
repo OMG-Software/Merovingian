@@ -75,6 +75,7 @@
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
@@ -111,12 +112,14 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/password_reset.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
+#include "merovingian/homeserver/remote_device_list_scope.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
@@ -1811,6 +1814,29 @@ namespace
         return body_out;
     }
 
+    // Spec (POST /ban, /kick, /unban): `user_id` is required. These three reuse the /invite body parser,
+    // which also accepts the third-party triple with no `user_id`; that shape has no target here, so a
+    // missing `user_id` is M_BAD_JSON and a malformed one M_INVALID_PARAM, before any room state is read.
+    struct MembershipTargetRefusal final
+    {
+        std::string_view errcode{};
+        std::string message{};
+    };
+
+    [[nodiscard]] auto membership_target_refusal(std::optional<MembershipActionBody> const& body,
+                                                 std::string_view action) -> std::optional<MembershipTargetRefusal>
+    {
+        if (!body.has_value() || body->user_id.empty())
+        {
+            return MembershipTargetRefusal{"M_BAD_JSON", std::string{action} + " body must contain user_id"};
+        }
+        if (!auth::user_id_is_valid(body->user_id))
+        {
+            return MembershipTargetRefusal{"M_INVALID_PARAM", "user_id is not a valid Matrix user ID"};
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Object const*
     {
@@ -1930,6 +1956,37 @@ namespace
             query.remove_prefix(amp + 1U);
         }
         return std::nullopt;
+    }
+
+    // Every value of the query parameter `key`, percent-decoded, in order; at most `max_values` are read
+    // and the rest ignored, so a long query string cannot make a handler do work in proportion to it.
+    [[nodiscard]] auto query_param_values(std::string_view target, std::string_view key, std::size_t max_values)
+        -> std::vector<std::string>
+    {
+        auto values = std::vector<std::string>{};
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos || query_pos + 1U >= target.size())
+        {
+            return values;
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty() && values.size() < max_values)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            if (pair.substr(0U, equals) == key)
+            {
+                values.push_back(core::percent_decode(equals == std::string_view::npos ? std::string_view{}
+                                                                                       : pair.substr(equals + 1U)));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return values;
     }
 
     // Every query parameter on the request target, percent-decoded, in
@@ -3030,8 +3087,9 @@ namespace
     // Validates the body. A kind:null request deletes the pusher and only
     // requires app_id and pushkey. Non-null kinds require the full set of
     // display-name, data, and lang fields; http pushers additionally require a
-    // valid HTTPS notify URL. Merovingian does not yet deliver notifications,
-    // so the handler only validates and returns 200 {}.
+    // valid HTTPS notify URL. Delivery to the registered gateway is done by the
+    // push gateway client (src/push/PushGatewayClient.cpp); this handler only
+    // validates and stores the pusher.
     [[nodiscard]] auto matrix_pusher_url_is_valid(std::string_view url) noexcept -> bool
     {
         auto const scheme_end = url.find("://");
@@ -3827,6 +3885,15 @@ namespace
             return operator_route.matched ? operator_route.route.path_template : std::string{unmatched};
         }
 
+        // CS8: GET /admin/whois/{userId}, one bucket whatever the user.
+        if (auto constexpr whois_template_prefix = std::string_view{"/_matrix/client/v3/admin/whois/"};
+            starts_with(out, whois_template_prefix))
+        {
+            return has_one_segment(std::string_view{out}.substr(whois_template_prefix.size()))
+                       ? std::string{whois_template_prefix} + "{userId}"
+                       : std::string{unmatched};
+        }
+
         auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
         if (starts_with(out, review_prefix))
         {
@@ -3873,6 +3940,7 @@ namespace
             "/_matrix/client/v3/register",
             "/_matrix/client/v3/login",
             "/_matrix/client/v3/login/sso/redirect",
+            "/_matrix/client/v1/login/get_token",
             "/_matrix/client/v3/refresh",
             "/_matrix/client/v3/logout",
             "/_matrix/client/v3/logout/all",
@@ -3967,6 +4035,7 @@ namespace
             {"/_matrix/client/v3/register",                                                 "POST"            },
             {"/_matrix/client/v3/login",                                                    "GET, POST"       },
             {"/_matrix/client/v3/login/sso/redirect",                                       "GET"             },
+            {"/_matrix/client/v1/login/get_token",                                          "POST"            },
             {"/_matrix/client/v3/refresh",                                                  "POST"            },
             {"/_matrix/client/v3/logout",                                                   "POST"            },
             {"/_matrix/client/v3/logout/all",                                               "POST"            },
@@ -4196,6 +4265,15 @@ namespace
         return it == rt.devices.end() ? nullptr : &(*it);
     }
 
+    // The percent-decoded {deviceId} of a /devices/{deviceId} request path. The request
+    // dispatcher has already refused a path holding NUL, so the decode cannot throw; a
+    // decoded ID that is not a valid device ID matches no device and answers 404.
+    [[nodiscard]] auto device_id_from_device_path(std::string_view request_path) -> std::string
+    {
+        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        return core::percent_decode_path_component(request_path.substr(dev_prefix.size()));
+    }
+
     [[nodiscard]] auto authenticated_request_device_id(ClientServerRuntime const& rt, std::string_view access_token)
         -> std::string
     {
@@ -4274,6 +4352,175 @@ namespace
             json_member("params", json_obj({})),
             json_member("session", json_str(session_id)),
         }));
+    }
+
+    constexpr auto get_login_token_path = std::string_view{"/_matrix/client/v1/login/get_token"};
+    constexpr auto whois_prefix = std::string_view{"/_matrix/client/v3/admin/whois/"};
+
+    // CS8 (ADR-0548): whether this server mints login tokens. The operator switch, read per request.
+    [[nodiscard]] auto login_tokens_enabled(ClientServerRuntime const& rt) -> bool
+    {
+        return rt.homeserver.config.security().login_token.enabled;
+    }
+
+    // Hash of a login token as `LoginTokenStore` keeps it. The token is 256 random bits, so an unkeyed hash suffices.
+    [[nodiscard]] auto login_token_hash(std::string_view token) -> std::optional<std::string>
+    {
+        auto const pieces = std::array<std::string_view, 1U>{token};
+        return crypto::generic_hash(pieces);
+    }
+
+    // POST /_matrix/client/v1/login/get_token (spec "POST /login/get_token"; CS8, ADR-0548). Runs under
+    // runtime.mutex; the Argon2id check inside verify_local_user_password releases it itself. UIA with the account
+    // password is required on EVERY call: the spec says servers "MUST always re-prompt", and a UIA session id
+    // carries no authority here, so nothing from an earlier call is honoured.
+    [[nodiscard]] auto handle_get_login_token(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                              std::string_view user_id) -> DispatchResult
+    {
+        if (!login_tokens_enabled(rt))
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        auto const challenge = [&] {
+            return device_delete_uia_challenge(issue_uia_session(rt, "login_get_token"));
+        };
+        auto const body_obj = parsed_json_object(req.body);
+        if (!body_obj.has_value())
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* auth = object_member_object(*body_obj, "auth");
+        if (auth == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* supplied_session = string_member(*auth, "session");
+        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session))
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const* auth_type = string_member(*auth, "type");
+        auto const* current_password = string_member(*auth, "password");
+        if (auth_type == nullptr || *auth_type != "m.login.password" || current_password == nullptr ||
+            current_password->empty())
+        {
+            return dispatch_resp(req, rt, 401U, challenge());
+        }
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
+        {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many password attempts. Please try again later.", retry_after);
+            }
+            return dispatch_resp(req, rt, 401U, uia_password_failure_body(challenge()));
+        }
+        // The password was just proved: the session that carried it is spent.
+        if (supplied_session != nullptr)
+        {
+            auto const spent = *supplied_session;
+            std::erase_if(rt.uia_sessions, [&spent](UiaSession const& session) {
+                return session.session_id == spent;
+            });
+        }
+        auto const token = crypto::secure_random_hex(32U);
+        auto const token_hash = token.has_value() ? login_token_hash(*token) : std::nullopt;
+        if (!token_hash.has_value())
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a login token");
+        }
+        auto const issued =
+            rt.login_tokens.issue(user_id, *token_hash, wall_clock_milliseconds(), rt.limits.login_token_lifetime_ms,
+                                  rt.limits.max_login_tokens_per_user, rt.limits.max_login_tokens);
+        if (issued.outcome != LoginTokenStore::IssueOutcome::issued)
+        {
+            auto const retry_after = static_cast<std::uint32_t>(
+                std::clamp<std::uint64_t>(issued.retry_after_ms, 1U, std::numeric_limits<std::uint32_t>::max()));
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                issued.outcome == LoginTokenStore::IssueOutcome::user_cap_reached
+                                    ? "Too many unused login tokens. Use one or wait for one to expire."
+                                    : "The server holds too many unused login tokens. Please try again later.",
+                                retry_after);
+        }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "auth.login_token.issued",
+                           user_id, {}, "issued");
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("login_token", json_str(*token)),
+                                 json_member("expires_in_ms", json_int(rt.limits.login_token_lifetime_ms)),
+                             })));
+    }
+
+    // Consumes a login token minted by get_token, answering the user it was minted for. A token is spent by the
+    // attempt that names it, so this is called once per login. Empty when the feature is off.
+    [[nodiscard]] auto redeem_minted_login_token(ClientServerRuntime& rt, std::string_view token)
+        -> std::optional<std::string>
+    {
+        if (!login_tokens_enabled(rt) || token.empty())
+        {
+            return std::nullopt;
+        }
+        auto const token_hash = login_token_hash(token);
+        if (!token_hash.has_value())
+        {
+            return std::nullopt;
+        }
+        auto user = rt.login_tokens.redeem(*token_hash, wall_clock_milliseconds());
+        if (user.has_value())
+        {
+            append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "auth.login_token.redeemed",
+                               *user, {}, "redeemed");
+        }
+        return user;
+    }
+
+    // GET /_matrix/client/v3/admin/whois/{userId} (spec "GET /admin/whois/{userId}"; CS8). The spec leaves
+    // server-admin privileges open and says the API "may be restricted to only be called by the user being looked
+    // up, or by a server admin"; so an admin may look up any local user and anyone else only themselves. The
+    // refusal comes before any lookup, so a non-admin learns nothing about other accounts. Only what the server
+    // holds is reported: its devices. It records no source address, user agent or last-seen time, so each device's
+    // one session has no connections, and this endpoint does not start recording them.
+    [[nodiscard]] auto handle_admin_whois(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                          std::string_view request_path, std::string_view caller) -> DispatchResult
+    {
+        auto const target = core::percent_decode_path_component(request_path.substr(whois_prefix.size()));
+        auto const is_admin = authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!is_admin && target != caller)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Only a server administrator may look up another user.");
+        }
+        if (!auth::user_id_is_valid(target) ||
+            server_name_from_user_id(target) != rt.homeserver.config.server().server_name)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "User does not belong to the local server.");
+        }
+        auto const found = std::ranges::find_if(rt.homeserver.database.users, [&target](LocalUser const& current) {
+            return current.user_id == target && !current.deactivated;
+        });
+        if (found == rt.homeserver.database.users.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "User not found.");
+        }
+        auto devices = canonicaljson::Object{};
+        for (auto const& device : rt.devices)
+        {
+            if (device.user_id != target)
+            {
+                continue;
+            }
+            auto sessions = canonicaljson::Array{};
+            sessions.emplace_back(json_obj({json_member("connections", json_arr(canonicaljson::Array{}))}));
+            devices.push_back(
+                json_member(device.device_id, json_obj({json_member("sessions", json_arr(std::move(sessions)))})));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("user_id", json_str(target)),
+                                 json_member("devices", json_obj(std::move(devices))),
+                             })));
     }
 
     enum class NotifyOwnDevices : std::uint8_t
@@ -6113,6 +6360,9 @@ namespace
         // reused for every room's timeline/ephemeral events and the invite
         // list below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+        // Invite permission (SS7, ADR-0552): invites already stored "MUST NOT be served over client synchronisation
+        // endpoints" while the user blocks them. Read once per request, never per invite.
+        auto const invites_blocked = invite_permission_blocks(store, user);
 
         // m.room.history_visibility (CSAZ-3): one filter for the request, shared by every
         // joined room's timeline.
@@ -6230,7 +6480,6 @@ namespace
                 timeline_events.push_back(
                     aggregations.apply(**it, viewer_unsigned.apply(**it, client_event_with_id(store, **it))));
             }
-            auto const event_count = timeline_events.size();
 
             // prev_batch lets clients backfill older history via
             // /rooms/{roomId}/messages?from=<prev_batch>&dir=b, which returns
@@ -6344,13 +6593,11 @@ namespace
 
             ++join_count;
             auto joined_room = canonicaljson::Object{
-                json_member("timeline",
-                            json_obj({
-                                json_member("events", json_arr(std::move(timeline_events))),
-                                json_member("limited", json_bool(limited)),
-                                json_member("prev_batch", json_str(prev_batch)),
-                                json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
-                            })),
+                json_member("timeline", json_obj({
+                                            json_member("events", json_arr(std::move(timeline_events))),
+                                            json_member("limited", json_bool(limited)),
+                                            json_member("prev_batch", json_str(prev_batch)),
+                                        })),
                 json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
                 json_member("account_data", json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
                 json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
@@ -6392,6 +6639,10 @@ namespace
             }
             if (membership.membership == "invite")
             {
+                if (invites_blocked)
+                {
+                    continue;
+                }
                 // Ignoring Users: "Servers must not send room invites from
                 // ignored users to clients." An invite whose inviter cannot
                 // be resolved (no matching PersistentInvite row) is passed
@@ -7319,7 +7570,12 @@ namespace
         // room itself should the invite later be accepted. An invite from an ignored user is
         // withheld entirely ("Servers must not send room invites from ignored users to clients").
         // An invite this server holds the room state of is withheld until that state has it, as /sync does
-        // (ADR-0301).
+        // (ADR-0301). Every invite is withheld while the user blocks invites (SS7, ADR-0552), and no `invite:`
+        // entry is recorded, so the connection reports it once the block is lifted.
+        if (invite_permission_blocks(store, user))
+        {
+            invited_subscription_ids.clear();
+        }
         auto invites_reported = std::vector<std::string>{};
         auto const invite_room_state = invited_subscription_ids.empty()
                                            ? std::optional<InviteRoomStateIndex>{}
@@ -8435,6 +8691,10 @@ namespace
     // timeouts. A server this does not let through is reported in `failures`, as the spec has it for a server
     // that could not be reached (client-server-api.md, POST /keys/query and /keys/claim, `failures`); the
     // local half of the answer is unaffected, so a one-time key already claimed here is still returned.
+    // How many remote users' device lists one /keys/query may fill with GET /user/devices (ADR-0560). The rest are
+    // asked with the batched /user/keys/query, as before the cache.
+    constexpr auto max_device_list_fills_per_key_query = std::size_t{4U};
+
     class RemoteKeyCalls final
     {
     public:
@@ -8483,6 +8743,37 @@ namespace
                                                 }));
     }
 
+    // A remote server may ignore the device list it was sent, so drop from one user's answer every device
+    // the client did not ask for. An empty requested list asks for every device and keeps them all.
+    // `requested_by_user` maps each user asked of this server to the device IDs asked for. Both lookups are
+    // hashed: the client chooses the request and the remote server the answer, and this runs under
+    // runtime.mutex, so the cost must stay linear in both (src/homeserver/AGENTS.md).
+    auto keep_requested_devices(
+        canonicaljson::ObjectMember& user_devices,
+        std::unordered_map<std::string_view, std::vector<std::string> const*> const& requested_by_user) -> void
+    {
+        auto const requested = requested_by_user.find(user_devices.key);
+        if (requested == requested_by_user.end() || requested->second->empty() || user_devices.value == nullptr)
+        {
+            return;
+        }
+        auto const* devices = std::get_if<canonicaljson::Object>(&user_devices.value->storage());
+        if (devices == nullptr)
+        {
+            return;
+        }
+        auto const wanted = std::unordered_set<std::string_view>{requested->second->begin(), requested->second->end()};
+        auto kept = canonicaljson::Object{};
+        for (auto const& device : *devices)
+        {
+            if (wanted.contains(device.key))
+            {
+                kept.push_back(device);
+            }
+        }
+        user_devices.value = std::make_unique<canonicaljson::Value>(json_obj(std::move(kept)));
+    }
+
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
                                         std::string_view body, std::string client_key) -> LocalHttpResponse
     {
@@ -8500,9 +8791,9 @@ namespace
         auto const& local_server = rt.homeserver.config.server().server_name;
         auto const& store = rt.homeserver.database.persistent_store;
 
-        // remote_by_server accumulates remote user IDs grouped by their home
-        // server so we can make a single federation key query per server.
-        auto remote_by_server = std::map<std::string, std::vector<std::string>>{};
+        // remote_by_server accumulates remote user IDs, each with the device IDs asked for (empty: every
+        // device), grouped by their home server so we can make a single federation key query per server.
+        auto remote_by_server = std::map<std::string, std::vector<std::pair<std::string, std::vector<std::string>>>>{};
 
         // The display names of every queried user's devices, read from the device table once.
         auto const display_names = [&] {
@@ -8529,7 +8820,17 @@ namespace
             auto const user_server = std::string{auth::user_id_server_name(user_request.key)};
             if (!user_server.empty() && user_server != local_server)
             {
-                remote_by_server[user_server].push_back(user_request.key);
+                auto remote_device_ids = std::vector<std::string>{};
+                for (auto const& requested_device : *requested_devices)
+                {
+                    auto const* requested_device_id = std::get_if<std::string>(&requested_device.storage());
+                    if (requested_device_id == nullptr)
+                    {
+                        return err(400U, "M_BAD_JSON", "device_keys entries must be device IDs");
+                    }
+                    remote_device_ids.push_back(*requested_device_id);
+                }
+                remote_by_server[user_server].emplace_back(user_request.key, std::move(remote_device_ids));
                 continue;
             }
 
@@ -8580,7 +8881,7 @@ namespace
             local_users.push_back(user_request.key);
         }
         // Collect cross-signing keys for the queried local users. Remote
-        // users' keys come from their own server below; none are cached here.
+        // users' keys come from the cache or their own server below.
         auto master_keys = canonicaljson::Object{};
         auto self_signing_keys = canonicaljson::Object{};
         auto user_signing_keys = canonicaljson::Object{};
@@ -8608,66 +8909,31 @@ namespace
             }
         }
 
-        // Federation proxy: POST /_matrix/federation/v1/user/keys/query for
-        // each remote server. Unreachable servers appear in the failures object.
+        // Remote users: answered from the remote device-list cache when it holds them (ADR-0560), else asked of
+        // their own server. Unreachable servers appear in the failures object.
         auto failures = canonicaljson::Object{};
         if (!remote_by_server.empty())
         {
-            wire_federation_callbacks(rt.homeserver);
-            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
-            for (auto const& [server, uid_list] : remote_by_server)
-            {
-                if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+            using RemoteRequests = std::vector<std::pair<std::string, std::vector<std::string>>>;
+            // Merges the keys one server may speak for (its answer, or the cache's copy of it) for the users asked of
+            // it: only the devices asked for, and the master key with the viewer's own signatures merged back in.
+            auto const merge_remote_keys = [&](federation::RemoteKeyQueryKeys& accepted, RemoteRequests const& asked) {
+                auto requested_by_user = std::unordered_map<std::string_view, std::vector<std::string> const*>{};
+                requested_by_user.reserve(asked.size());
+                for (auto const& [uid, device_ids] : asked)
                 {
-                    failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
-                    continue;
+                    requested_by_user.emplace(uid, &device_ids);
                 }
-                auto remote_dk = canonicaljson::Object{};
-                for (auto const& uid : uid_list)
+                for (auto& user_devices : accepted.device_keys)
                 {
-                    remote_dk.push_back(json_member(uid, json_arr(canonicaljson::Array{})));
-                }
-                auto q_body_obj = canonicaljson::Object{};
-                q_body_obj.push_back(json_member("device_keys", json_obj(std::move(remote_dk))));
-                auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
-                auto const tx = federation::make_outbound_transaction(
-                    server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
-                // Each outbound call must own the key because the network path can
-                // release runtime.mutex and the runtime key may be rotated.
-                auto call_secret = core::SecretBuffer{signing_secret.bytes()};
-                // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
-                auto const [ok, resp_body] = perform_bounded_outbound_call(
-                    rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
-                    "key_query.remote", remote_calls.remaining_seconds());
-                if (!ok)
-                {
-                    failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
-                    continue;
-                }
-                // Keep only what the server may speak for: its own requested
-                // users, with keys that describe the user they are filed under.
-                auto accepted = federation::accept_remote_key_query_response(server, resp_body, uid_list);
-                if (!accepted.has_value())
-                {
-                    failures.push_back(json_member(
-                        server, json_obj({
-                                    json_member("errcode", json_str("M_UNKNOWN")),
-                                    json_member("error", json_str("remote key query response is not a JSON object")),
-                                })));
-                    continue;
-                }
-                for (auto& user_devices : accepted->device_keys)
-                {
+                    keep_requested_devices(user_devices, requested_by_user);
                     users.push_back(std::move(user_devices));
                 }
                 // The master key is what a client checks its own user-signing
                 // signature against to show the user as verified. That
                 // signature was uploaded here, not to the remote server, so
                 // merge it back in for the user who made it.
-                for (auto const& master : accepted->master_keys)
+                for (auto const& master : accepted.master_keys)
                 {
                     auto const* key_object = std::get_if<canonicaljson::Object>(&master.value->storage());
                     if (key_object == nullptr)
@@ -8683,9 +8949,159 @@ namespace
                     }
                     master_keys.push_back(json_member(master.key, json_obj(std::move(merged))));
                 }
-                for (auto& self_signing : accepted->self_signing_keys)
+                for (auto& self_signing : accepted.self_signing_keys)
                 {
                     self_signing_keys.push_back(std::move(self_signing));
+                }
+            };
+
+            // Only a user who shares a joined room with a local user is cached: nobody else's updates reach this
+            // server. One pass over the memberships for the whole request.
+            auto& device_lists = rt.homeserver.remote_device_lists;
+            auto const cacheable = [&] {
+                auto candidates = std::unordered_set<std::string_view>{};
+                for (auto const& [server, remote_requests] : remote_by_server)
+                {
+                    for (auto const& request : remote_requests)
+                    {
+                        candidates.insert(request.first);
+                    }
+                }
+                return remote_users_sharing_a_room_with_local_users(store, local_server, candidates);
+            }();
+            auto fill_by_server = std::map<std::string, RemoteRequests, std::less<>>{};
+            auto batch_by_server = std::map<std::string, RemoteRequests, std::less<>>{};
+            auto fills_left = max_device_list_fills_per_key_query;
+            for (auto& [server, remote_requests] : remote_by_server)
+            {
+                for (auto& request : remote_requests)
+                {
+                    if (!cacheable.contains(request.first))
+                    {
+                        device_lists.erase(request.first);
+                        batch_by_server[server].push_back(std::move(request));
+                    }
+                    else if (auto const* list = device_lists.find_current(request.first); list != nullptr)
+                    {
+                        auto cached = federation::remote_key_query_keys_from_cache(request.first, *list);
+                        merge_remote_keys(cached, RemoteRequests{std::move(request)});
+                    }
+                    else if (fills_left > 0U)
+                    {
+                        --fills_left;
+                        fill_by_server[server].push_back(std::move(request));
+                    }
+                    else
+                    {
+                        batch_by_server[server].push_back(std::move(request));
+                    }
+                }
+            }
+
+            if (!fill_by_server.empty() || !batch_by_server.empty())
+            {
+                wire_federation_callbacks(rt.homeserver);
+                auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+                auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+                auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+                auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
+                for (auto const& server_requests : remote_by_server)
+                {
+                    auto const& server = server_requests.first;
+                    auto fill = RemoteRequests{};
+                    if (auto const found = fill_by_server.find(server); found != fill_by_server.end())
+                    {
+                        fill = std::move(found->second);
+                    }
+                    auto batch = RemoteRequests{};
+                    if (auto const found = batch_by_server.find(server); found != batch_by_server.end())
+                    {
+                        batch = std::move(found->second);
+                    }
+                    if (fill.empty() && batch.empty())
+                    {
+                        continue;
+                    }
+                    if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
+                    {
+                        failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
+                        continue;
+                    }
+                    // Fill the cache from GET /user/devices, the answer whose stream_id later updates are matched
+                    // against (ADR-0560). A failed or refused fill falls back to the batched query below.
+                    for (auto& request : fill)
+                    {
+                        auto const ticket = device_lists.begin_resync(request.first);
+                        auto const tx = federation::make_outbound_transaction(
+                            server, "GET",
+                            "/_matrix/federation/v1/user/devices/" + core::percent_encode_path_component(request.first),
+                            local_server, {});
+                        auto call_secret = core::SecretBuffer{signing_secret.bytes()};
+                        // Unverified (ADR-0349): the device list is the remote server's word.
+                        auto const [ok, resp_body] = perform_bounded_outbound_call(
+                            rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                            "key_query.user_devices", remote_calls.remaining_seconds());
+                        auto list =
+                            ok ? federation::accept_remote_user_devices_response(server, request.first, resp_body)
+                               : std::nullopt;
+                        if (!list.has_value())
+                        {
+                            batch.push_back(std::move(request));
+                            continue;
+                        }
+                        auto cached = federation::remote_key_query_keys_from_cache(request.first, *list);
+                        // Not kept if an update for the user arrived while the lock was released (ADR-0561).
+                        std::ignore = device_lists.store_snapshot(request.first, ticket, std::move(*list));
+                        merge_remote_keys(cached, RemoteRequests{std::move(request)});
+                    }
+                    if (batch.empty())
+                    {
+                        continue;
+                    }
+                    auto uid_list = std::vector<std::string>{};
+                    auto remote_dk = canonicaljson::Object{};
+                    for (auto const& [uid, device_ids] : batch)
+                    {
+                        uid_list.push_back(uid);
+                        // Spec (POST /keys/query, `device_keys`): an empty list asks for every device.
+                        auto device_array = canonicaljson::Array{};
+                        for (auto const& device_id : device_ids)
+                        {
+                            device_array.push_back(json_str(device_id));
+                        }
+                        remote_dk.push_back(json_member(uid, json_arr(std::move(device_array))));
+                    }
+                    auto q_body_obj = canonicaljson::Object{};
+                    q_body_obj.push_back(json_member("device_keys", json_obj(std::move(remote_dk))));
+                    auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
+                    auto const tx = federation::make_outbound_transaction(
+                        server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
+                    // Each outbound call must own the key because the network path can
+                    // release runtime.mutex and the runtime key may be rotated.
+                    auto call_secret = core::SecretBuffer{signing_secret.bytes()};
+                    // Unverified (ADR-0349): the keys are the remote server's word, so the call is main's own.
+                    auto const [ok, resp_body] = perform_bounded_outbound_call(
+                        rt.homeserver, OutboundAnswerTrust::unverified, {}, tx, key_id, std::move(call_secret),
+                        "key_query.remote", remote_calls.remaining_seconds());
+                    if (!ok)
+                    {
+                        failures.push_back(key_failure_member(server, "M_UNKNOWN", resp_body));
+                        continue;
+                    }
+                    // Keep only what the server may speak for: its own requested
+                    // users, with keys that describe the user they are filed under.
+                    auto accepted = federation::accept_remote_key_query_response(server, resp_body, uid_list);
+                    if (!accepted.has_value())
+                    {
+                        failures.push_back(json_member(
+                            server,
+                            json_obj({
+                                json_member("errcode", json_str("M_UNKNOWN")),
+                                json_member("error", json_str("remote key query response is not a JSON object")),
+                            })));
+                        continue;
+                    }
+                    merge_remote_keys(*accepted, batch);
                 }
             }
         }
@@ -8720,6 +9136,25 @@ namespace
         if (requests == nullptr)
         {
             return err(400U, "M_BAD_JSON", "key claim body must contain one_time_keys");
+        }
+
+        // Validate the whole body before any key is claimed: a claim burns a one-time key, so a malformed
+        // entry found after earlier devices were served would answer 400 for keys already consumed.
+        for (auto const& user_request : *requests)
+        {
+            auto const* requested_devices = std::get_if<canonicaljson::Object>(&user_request.value->storage());
+            if (requested_devices == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "one_time_keys values must be device maps");
+            }
+            for (auto const& device_request : *requested_devices)
+            {
+                auto const* algorithm = std::get_if<std::string>(&device_request.value->storage());
+                if (algorithm == nullptr || algorithm->empty())
+                {
+                    return err(400U, "M_BAD_JSON", "one_time_keys entries must name a key algorithm");
+                }
+            }
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
@@ -10113,8 +10548,8 @@ namespace
                                      std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
-        auto const dir = messages_query_value(target, "dir");
-        auto const backwards = dir != "f"; // both default and "b" walk backward
+        // The route has already refused a `dir` that is missing or not "b" or "f".
+        auto const backwards = messages_query_value(target, "dir") != "f";
         auto const from_text = messages_query_value(target, "from");
         // `from` "can be obtained from a prev_batch or next_batch token returned by the /sync
         // endpoint, or from an end token returned by a previous request to this endpoint". A
@@ -11335,8 +11770,7 @@ namespace
 
     // ADR-0306: admit_client_proxy, but waiting for a slot until `deadline` (admit_client_outbound_proxy_waiting).
     [[nodiscard]] auto admit_client_proxy_waiting(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                  RuntimeLock& guard,
-                                                  OutboundDeadline const& deadline)
+                                                  RuntimeLock& guard, OutboundDeadline const& deadline)
         -> std::optional<http::InFlightBudget::Slot>
     {
         return admit_client_outbound_proxy_waiting(
@@ -11352,6 +11786,31 @@ namespace
         });
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly",
                             rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
+    }
+
+    // GET /room_summary/{roomIdOrAlias}[?via=...]. Spec: `via` lists "the servers to attempt to request the
+    // summary from when the local server cannot generate it". At most `max_room_summary_via` values are
+    // read; each must be a server name (grammar checked here, never used as a target otherwise), else
+    // 400 M_INVALID_PARAM before anything is looked up or sent. A 429 is the client-outbound budget
+    // refusing the federation call (ADR-0079).
+    [[nodiscard]] auto room_summary_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                             std::string_view user_id, std::string const& target) -> DispatchResult
+    {
+        auto constexpr max_room_summary_via = std::size_t{8U};
+        auto const via = query_param_values(req.target, "via", max_room_summary_via);
+        if (!std::ranges::all_of(via, [](std::string const& server) {
+                return federation::server_name_is_valid(server);
+            }))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "via must be a list of server names");
+        }
+        auto const result = handle_client_room_summary(rt.homeserver, user_id, target, via,
+                                                       rate_limit_client_key(req, rt.homeserver.config.server()));
+        if (result.status == 429U)
+        {
+            return client_proxy_refused(req, rt);
+        }
+        return dispatch_resp(req, rt, result.status, result.body);
     }
 
     // The event GET /rooms/{roomId}/timestamp_to_event found in this server's own history.
@@ -11450,8 +11909,8 @@ namespace
     // OutboundDeadline and releases the runtime lock for each exchange. With a local answer in hand a refused slot
     // costs only the remote improvement; without one the client is told 429.
     [[nodiscard]] auto handle_timestamp_to_event(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                 RuntimeLock& guard, std::string_view user_id,
-                                                 std::string_view room_id) -> DispatchResult
+                                                 RuntimeLock& guard, std::string_view user_id, std::string_view room_id)
+        -> DispatchResult
     {
         auto const ts_text = query_param_value(req.target, "ts");
         auto const dir_text = query_param_value(req.target, "dir");
@@ -11702,9 +12161,8 @@ namespace
     // src/federation/AGENTS.md). It is a client request that calls another server, so it holds an ADR-0079
     // slot, runs under the directory deadline and releases the runtime lock for the call (src/homeserver/
     // AGENTS.md, "Client requests that call another server"). The remote's 404 is this server's 404.
-    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                               RuntimeLock& guard, std::string const& target_user,
-                                               std::string_view field) -> DispatchResult
+    [[nodiscard]] auto remote_profile_response(ClientServerRuntime& rt, LocalHttpRequest const& req, RuntimeLock& guard,
+                                               std::string const& target_user, std::string_view field) -> DispatchResult
     {
         auto const proxy_slot = admit_client_proxy(rt, req);
         if (!proxy_slot.has_value())
@@ -11860,6 +12318,8 @@ namespace
             filename = local_response.media_filename;
         }
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
+        // ADR-0574: a streamed download carries no bytes here; the HTTP layer reads them in chunks as it writes.
+        response.body_stream = local_response.body_stream;
         apply_media_security_headers(response, content_type, filename);
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
@@ -12831,8 +13291,7 @@ namespace
         // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
         // display name and notify all local users who share a room with
         // this user that their device list has changed.
-        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-        auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
+        auto const device_id_from_path = device_id_from_device_path(target_path(req.target));
         auto* device = find_device(rt, user, device_id_from_path);
         if (device == nullptr)
         {
@@ -14791,6 +15250,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // as_token; harmless to advertise unconditionally, mirroring
         // m.login.password's advertisement.
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.application_service"))}));
+        // CS8 (ADR-0548): offered only when this server mints login tokens (spec: `get_login_token` says the
+        // homeserver supports POST /login/get_token).
+        if (login_tokens_enabled(rt))
+        {
+            flows.emplace_back(json_obj({
+                json_member("type", json_str("m.login.token")),
+                json_member("get_login_token", json_bool(true)),
+            }));
+        }
         // Matrix v1.19 CS API §"Client login via SSO": advertise m.login.sso
         // only when server.sso.* is fully configured (sso_is_configured
         // shares the same fail-closed condition the redirect endpoints use
@@ -14888,7 +15356,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // "unknown user" and "bad password" into the same external result.
         if (body->type == "m.login.token")
         {
-            auto const redeemed = redeem_login_token(rt.homeserver, body->login_token);
+            // A token get_token minted (CS8) first, then an SSO-minted one.
+            auto redeemed = redeem_minted_login_token(rt, body->login_token);
+            if (!redeemed.has_value())
+            {
+                redeemed = redeem_login_token(rt.homeserver, body->login_token);
+            }
             if (!redeemed.has_value())
             {
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "invalid login token");
@@ -15483,6 +15956,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // not be told to find an access token it cannot have yet (ADR-0230).
     // A fixed path used with a method it does not serve is 405 M_UNRECOGNIZED, also before
     // authentication ("implemented, but the incorrect HTTP method is used").
+    // CS8 (ADR-0548): with the feature off this endpoint is not served at all, so it is 404 whatever the method or
+    // credentials, as before it was implemented.
+    if (request_path == get_login_token_path && !login_tokens_enabled(rt))
+    {
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+    }
     if (auto const allow = client_static_route_allow(request_path);
         !allow.empty() && !allow_lists_method(allow, req.method))
     {
@@ -15508,8 +15987,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const target = room_summary_target(request_path); target.has_value())
         {
-            auto const result = handle_client_room_summary(rt.homeserver, {}, *target);
-            return dispatch_resp(req, rt, result.status, result.body);
+            return room_summary_response(rt, req, {}, *target);
         }
     }
 
@@ -16914,22 +17392,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             available_versions.push_back(json_member(std::string{policy.id}, json_str("stable")));
         }
+        auto capabilities = canonicaljson::Object{
+            json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
+            json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
+            // Spec (m.get_login_token, v1.7): whether the user may use POST /login/get_token.
+            json_member("m.get_login_token", json_obj({json_member("enabled", json_bool(login_tokens_enabled(rt)))})),
+            // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
+            // no allowed or disallowed list.
+            json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
+            json_member("m.room_versions", json_obj({
+                                               json_member("default", json_str("12")),
+                                               json_member("available", json_obj(std::move(available_versions))),
+                                           })),
+        };
+        // Spec (m.account_moderation, v1.18): whether the caller can lock and suspend accounts, "omitted
+        // altogether if `suspend` and `lock` would be `false`". Both endpoints need a server admin, so
+        // the two flags are always equal.
+        if (authenticated_admin_user(rt.homeserver, req.access_token).has_value())
+        {
+            capabilities.push_back(json_member("m.account_moderation", json_obj({
+                                                                           json_member("lock", json_bool(true)),
+                                                                           json_member("suspend", json_bool(true)),
+                                                                       })));
+        }
         return dispatch_resp(
-            req, rt, 200U,
-            json_serialize(json_obj(
-                {json_member("capabilities",
-                             json_obj({
-                                 json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
-                                 json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
-                                 // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
-                                 // no allowed or disallowed list.
-                                 json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
-                                 json_member("m.room_versions",
-                                             json_obj({
-                                                 json_member("default", json_str("12")),
-                                                 json_member("available", json_obj(std::move(available_versions))),
-                                             })),
-                             }))})));
+            req, rt, 200U, json_serialize(json_obj({json_member("capabilities", json_obj(std::move(capabilities)))})));
     }
     // GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},location,
     // location/{p},user,user/{p}} — Matrix v1.19 CS API "Third-party
@@ -17772,6 +18259,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const device_id = authenticated_request_device_id(rt, req.access_token);
         return complete(handle_key_api_route(rt, key_route.route, *user, device_id, req));
     }
+    if (req.method == "POST" && request_path == get_login_token_path)
+    {
+        return handle_get_login_token(rt, req, *user);
+    }
+    if (req.method == "GET" && starts_with(request_path, whois_prefix))
+    {
+        return handle_admin_whois(rt, req, request_path, *user);
+    }
     if (req.method == "GET" && request_path == "/_matrix/client/v3/devices")
     {
         return dispatch_resp(req, rt, 200U, devices_json(rt, *user));
@@ -17779,7 +18274,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
     if (req.method == "GET" && starts_with(req.target, dev_prefix))
     {
-        auto const device_id = request_path.substr(dev_prefix.size());
+        auto const device_id = device_id_from_device_path(request_path);
         auto const* device = find_device(rt, *user, device_id);
         if (device == nullptr)
         {
@@ -17832,7 +18327,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
-        auto const device_id = request_path.substr(dev_prefix.size());
+        auto const device_id = device_id_from_device_path(request_path);
         // The servers to tell, read before the device is removed.
         auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -18090,6 +18585,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
+        // SS7: a local invitee who blocks invites refuses the request whole, before the room exists. A remote
+        // invitee's server is asked after the room is made and can only drop its own invite (see below).
+        for (auto const& invitee : invitees)
+        {
+            if (server_name_from_user_id(invitee) == rt.homeserver.config.server().server_name &&
+                merovingian::homeserver::invite_permission_blocks(rt.homeserver.database.persistent_store, invitee))
+            {
+                return dispatch_err(req, rt, 403U, std::string{merovingian::homeserver::invite_blocked_errcode},
+                                    "an invited user is not accepting invites");
+            }
+        }
+
         auto options = CreateRoomOptions{};
         options.directory_public = visibility_value != nullptr && *visibility_value == "public";
         options.room_version = room_version;
@@ -18229,6 +18736,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"invitee_server", std::string{invitee_server}, false}
                 },
                                observability::LogEventSeverity::warning);
+            }
+            else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused &&
+                     delivery.errcode == merovingian::homeserver::invite_blocked_errcode)
+            {
+                // SS7: the invitee's server blocks invites. That one invite is dropped (not queued) and the
+                // room, already made, is kept: createRoom still answers 200.
+                log_diagnostic("room.create.invite_blocked",
+                               {
+                                   {"actor",   *user,   false},
+                                   {"room_id", room_id, false},
+                                   {"invitee", invitee, false}
+                });
             }
             else if (delivery.outcome == merovingian::homeserver::RemoteInviteOutcome::refused)
             {
@@ -19591,6 +20110,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
+                // Spec (GET /messages, `dir`): required, "One of: [b, f]". A missing value is
+                // M_MISSING_PARAM and any other M_INVALID_PARAM, as on /timestamp_to_event, never a
+                // silent backward page.
+                if (auto const dir_text = messages_query_value(req.target, "dir"); dir_text.empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "dir query parameter is required");
+                }
+                else if (dir_text != "f" && dir_text != "b")
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "dir must be f or b");
+                }
                 // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
                 // /context, never silently dropped for an unfiltered page.
                 if (!sync::parse_room_event_filter_argument(messages_query_value(req.target, "filter")).has_value())
@@ -19659,9 +20189,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - ban_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "ban"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "ban body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result = merovingian::homeserver::ban_user(rt.homeserver, req.access_token, room_id,
                                                                   body->user_id, body->reason);
@@ -19676,9 +20206,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - kick_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "kick"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "kick body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result = merovingian::homeserver::kick_user(rt.homeserver, req.access_token, room_id,
                                                                    body->user_id, body->reason);
@@ -19693,9 +20223,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - unban_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "unban"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "unban body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result =
                 merovingian::homeserver::unban_user(rt.homeserver, req.access_token, room_id, body->user_id);
@@ -20073,7 +20603,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // released before calling create_room (which self-locks).
             auto const create_result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return create_room(rt.homeserver, req.access_token, upgrade_options);
+                auto created = create_room(rt.homeserver, req.access_token, upgrade_options);
+                if (created.ok && rt.homeserver.test_after_upgrade_room_created)
+                {
+                    rt.homeserver.test_after_upgrade_room_created();
+                }
+                return created;
             }();
             if (!create_result.ok)
             {
@@ -20104,6 +20639,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                             {"new_room_id", new_room_id,             false},
                                                             {"reason",      "tombstone was refused", false}
                 });
+                // The replacement room exists and nothing points to it. Matrix has no room deletion, so the upgrader
+                // leaves it and it is abandoned (ADR-0534); the refusal below is what the client is told.
+                auto const abandoned = std::invoke([&] {
+                    auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+                    return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, new_room_id);
+                });
+                log_diagnostic("room.upgrade.replacement_abandoned",
+                               {
+                                   {"actor",       *user,                           false},
+                                   {"old_room_id", room_id,                         false},
+                                   {"new_room_id", new_room_id,                     false},
+                                   {"left",        abandoned.ok ? "true" : "false", false}
+                },
+                               abandoned.ok ? observability::LogEventSeverity::warning
+                                            : observability::LogEventSeverity::error);
                 return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
             // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
@@ -21018,8 +21568,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const target = room_summary_target(request_path); target.has_value())
         {
-            auto const result = handle_client_room_summary(rt.homeserver, *user, *target);
-            return dispatch_resp(req, rt, result.status, result.body);
+            return room_summary_response(rt, req, *user, *target);
         }
     }
 

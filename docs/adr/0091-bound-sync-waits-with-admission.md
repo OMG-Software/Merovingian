@@ -1,6 +1,6 @@
 # Bound sync waits before handing off the connection
 
-* Status: accepted
+* Status: accepted; the global cap is no longer clamped to the pool by [ADR-0570](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
 * Date: 2026-10-04
 
 ## Context and Problem Statement

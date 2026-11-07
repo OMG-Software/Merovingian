@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'expected-skips-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_expected_skips.py'],
+  )
+
+  test(
     'password-hash-override-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_password_hash_override.py'],
@@ -243,6 +249,10 @@ shell = find_program('sh')
       'unit/test_failure_window_table.cpp',
       'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
+      'unit/test_login_token.cpp',
+      'unit/test_login_token_store.cpp',
+      'unit/test_config_login_token.cpp',
+      'unit/test_client_server_input_validation.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_email.cpp',
       'unit/test_token_lifetime_policy.cpp',
@@ -252,6 +262,7 @@ shell = find_program('sh')
       'unit/test_configurable_federation_limits.cpp',
       'unit/test_configurable_http_limits.cpp',
       'unit/test_config_media_timeout.cpp',
+      'unit/test_config_media_clamd.cpp',
       'unit/test_config_federation_join.cpp',
       'unit/test_config_private_range_allowlist.cpp',
       'unit/test_config_appservice_cleartext_hosts.cpp',
@@ -330,6 +341,7 @@ shell = find_program('sh')
       'unit/test_remote_key_read_through.cpp',
       'unit/test_remote_old_verify_keys.cpp',
       'unit/test_federation_edu_idempotence.cpp',
+      'unit/test_federation_remote_device_list_cache.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',
       'unit/test_federation_transactions.cpp',
@@ -379,6 +391,7 @@ shell = find_program('sh')
       'unit/test_key_api.cpp',
       'unit/test_log_severity_routing.cpp',
       'unit/test_local_database_scope.cpp',
+      'unit/test_media_clamd.cpp',
       'unit/test_media_decoder_hardening.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_upload_notifier.cpp',
@@ -399,8 +412,10 @@ shell = find_program('sh')
       'unit/test_create_room_power_level_override.cpp',
       'unit/test_create_room_entry_caps.cpp',
       'unit/test_create_room_invite_3pid.cpp',
+      'unit/test_invite_permission.cpp',
       'unit/test_relations_recursion.cpp',
       'unit/test_review_regressions.cpp',
+      'unit/test_receipt_thread_uniqueness.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
       'unit/test_runtime_database.cpp',
@@ -436,9 +451,20 @@ shell = find_program('sh')
       'unit/test_search_room_index.cpp',
       'unit/test_user_directory_search.cpp',
       'unit/test_sync_filter.cpp',
+      'unit/test_type_pattern.cpp',
+      'unit/test_unsigned_data.cpp',
+      'unit/test_portable_semaphore.cpp',
+      'unit/test_worker_ipc_limits.cpp',
+      'unit/test_room_residency.cpp',
+      'unit/test_receipt_content_builder.cpp',
+      'unit/test_redaction_view.cpp',
+      'unit/test_viewer_event_unsigned.cpp',
+      'unit/test_invite_room_state.cpp',
+      'unit/test_redaction_service.cpp',
       'unit/test_sync_handler.cpp',
       'unit/test_sync_history_visibility.cpp',
       'unit/test_sync_notifier.cpp',
+      'unit/test_parked_poll_registry.cpp',
       'unit/test_lazy_member_tracker.cpp',
       'unit/test_sync_pool_liveness.cpp',
       'unit/test_to_device_queue.cpp',
@@ -471,6 +497,7 @@ shell = find_program('sh')
       'unit/test_homeserver_weakened_settings_log.cpp',
       'unit/test_homeserver_room_service.cpp',
       'unit/test_homeserver_media_service.cpp',
+      'unit/test_streamed_body.cpp',
       'unit/test_client_outbound_proxy.cpp',
       'unit/test_federation_server_name.cpp',
       'unit/test_event_signer.cpp',
@@ -511,6 +538,15 @@ shell = find_program('sh')
   )
 
   test('unit-tests', unit_tests, timeout: 600)
+
+  # The CI skip report must not capture the stdout the logger tests swap (ADR-0546).
+  test(
+    'catch-report-capture-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_catch_report_capture.py', unit_tests.full_path()],
+    depends: unit_tests,
+    timeout: 300,
+  )
 
   # Linked without the override above, to see the cost the shipped server hashes at.
   password_cost_tests = executable(
@@ -682,6 +718,7 @@ shell = find_program('sh')
       'integration/test_federation_cross_signing_flow.cpp',
       'integration/test_space_hierarchy_federation_flow.cpp',
       'integration/test_remote_device_list_flow.cpp',
+      'integration/test_remote_device_list_cache_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
       'integration/test_security_audit_outbound_flow.cpp',
@@ -696,6 +733,7 @@ shell = find_program('sh')
       'integration/test_postgresql_retention_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_http_worker_fairness_flow.cpp',
+      'integration/test_parked_long_poll_flow.cpp',
       'integration/test_join_room_flow.cpp',
       'integration/test_third_party_invite_flow.cpp',
       'integration/test_restricted_join_fallback_flow.cpp',
@@ -703,8 +741,10 @@ shell = find_program('sh')
       'integration/test_identity_service_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_media_on_demand_flow.cpp',
+      'integration/test_media_streaming_flow.cpp',
       'integration/test_remote_media_cache_flow.cpp',
       'integration/test_media_upload_flow.cpp',
+      'integration/test_media_clamd_flow.cpp',
       'integration/test_url_preview_flow.cpp',
       'integration/test_remote_media_fetch_pool_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',

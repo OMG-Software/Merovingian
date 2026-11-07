@@ -6,6 +6,7 @@
 #include "merovingian/config/FederationSecurityConfig.hpp"
 #include "merovingian/config/LoggingSecurityConfig.hpp"
 #include "merovingian/config/LoginThrottleSecurityConfig.hpp"
+#include "merovingian/config/LoginTokenSecurityConfig.hpp"
 #include "merovingian/config/MediaSecurityConfig.hpp"
 #include "merovingian/config/PasswordHashingConfig.hpp"
 #include "merovingian/config/PasswordPolicyConfig.hpp"
@@ -24,6 +25,7 @@ struct SecurityConfig final
     PasswordPolicyConfig password_policy{};
     PasswordHashingConfig password_hashing{};
     LoginThrottleSecurityConfig login_throttle{};
+    LoginTokenSecurityConfig login_token{};
     EncryptionSecurityConfig encryption{};
     FederationSecurityConfig federation{};
     MediaSecurityConfig media{};

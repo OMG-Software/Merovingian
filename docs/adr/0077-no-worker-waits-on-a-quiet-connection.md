@@ -1,6 +1,6 @@
 # No worker waits on a quiet connection: a dispatcher thread holds idle connections, with a per-client worker share
 
-* Status: accepted; amends [ADR-0072](0072-per-ip-connection-cap-at-accept-time.md) (the per-IP connection cap no longer stands for a bound on one client's worker threads, and its slot is no longer carried by a shared pointer)
+* Status: accepted; a parked long-poll registry is a fourth owner of a connection (ADR-0569); amends [ADR-0072](0072-per-ip-connection-cap-at-accept-time.md) (the per-IP connection cap no longer stands for a bound on one client's worker threads, and its slot is no longer carried by a shared pointer)
 * Deciders: James Chapman
 * Date: 2026-09-30
 

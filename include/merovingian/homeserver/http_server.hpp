@@ -30,9 +30,9 @@ namespace merovingian::homeserver
 [[nodiscard]] auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                HttpDispatchMode mode) -> LocalHttpResponse;
 
-// Resolve the configured long-poll admission budgets against the actual pool
-// size. The global cap includes queued and active waits and cannot exceed the
-// number of sync workers available to serve them.
+// Resolve the configured long-poll admission budgets. The global cap counts every admitted wait: parked, queued
+// and running (ADR-0570). With a sync pool (`pool_worker_count` > 0) a wait parks and holds no thread, so the cap is
+// `sync_max_in_flight`; with none a wait holds the calling thread, so it cannot exceed `sync_threads`.
 [[nodiscard]] auto sync_admission_caps(config::HttpTransportConfig const& settings,
                                        std::size_t pool_worker_count) noexcept -> SyncAdmissionCaps;
 

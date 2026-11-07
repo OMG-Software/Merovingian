@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -221,7 +222,7 @@ auto WorkerSupervisor::stop() noexcept -> void
         {
             try
             {
-                channel->send_notification(R"({"type":"shutdown"})");
+                std::ignore = channel->send_notification(R"({"type":"shutdown"})");
             }
             catch (...)
             {

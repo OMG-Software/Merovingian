@@ -15,6 +15,7 @@
 #include "merovingian/federation/DispatchWorker.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
@@ -39,6 +40,7 @@
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
+#include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/UrlPreviewCache.hpp"
 #include "merovingian/net/RuntimeListeners.hpp"
@@ -169,6 +171,10 @@ struct HomeserverRuntime final
     std::unique_ptr<LocalDatabaseScope> audit_sink_scope{};
     federation::FederationRuntimeState federation{};
     media::LocalMediaRepository media_repository{};
+    // G15, ADR-0565: the clamd malware scanner, null while security.media.clamd_socket_path is empty. Built once at
+    // start-up from the media repository's config; tests install one directly. Its own concurrency bound is atomic,
+    // so it is used with `mutex` released (a scan blocks), and held through a unique_ptr because it is not movable.
+    std::unique_ptr<media::ClamdScanner> clamd_scanner{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
     std::unique_ptr<http::OutboundClient> outbound_client{};
@@ -206,6 +212,10 @@ struct HomeserverRuntime final
     // clock that stands still, as two requests inside one millisecond see it,
     // or one stepped back. Always empty in production.
     std::optional<std::int64_t> test_frozen_event_clock_ms{};
+    // Test-only: called by POST /rooms/{roomId}/upgrade once the replacement room exists and before the
+    // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
+    // request would (C21). Always empty in production.
+    std::function<void()> test_after_upgrade_room_created{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,
@@ -296,6 +306,9 @@ struct HomeserverRuntime final
     // (origin, message_id). In memory only: a restart forgets it (see
     // federation/EduIdempotenceWindow.hpp). Guarded by `mutex` like the state above.
     federation::EduIdempotenceWindow inbound_to_device_window{};
+    // Device lists of remote users who share a joined room with a local user (G14, ADR-0560, ADR-0561).
+    // Guarded by `mutex`.
+    federation::RemoteDeviceListCache remote_device_lists{};
     // Per-room monotonic cursor advanced whenever the set of typing users in
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
     // the current (possibly empty) typing list on every change.
@@ -557,4 +570,3 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
                               std::string_view membership) -> void;
 
 } // namespace merovingian::homeserver
-
