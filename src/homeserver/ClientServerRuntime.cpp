@@ -8515,14 +8515,15 @@ namespace
 
     // A remote server may ignore the device list it was sent, so drop from one user's answer every device
     // the client did not ask for. An empty requested list asks for every device and keeps them all.
-    auto keep_requested_devices(canonicaljson::ObjectMember& user_devices,
-                                std::vector<std::pair<std::string, std::vector<std::string>>> const& remote_requests)
-        -> void
+    // `requested_by_user` maps each user asked of this server to the device IDs asked for. Both lookups are
+    // hashed: the client chooses the request and the remote server the answer, and this runs under
+    // runtime.mutex, so the cost must stay linear in both (src/homeserver/AGENTS.md).
+    auto keep_requested_devices(
+        canonicaljson::ObjectMember& user_devices,
+        std::unordered_map<std::string_view, std::vector<std::string> const*> const& requested_by_user) -> void
     {
-        auto const requested = std::ranges::find_if(remote_requests, [&user_devices](auto const& entry) {
-            return entry.first == user_devices.key;
-        });
-        if (requested == remote_requests.end() || requested->second.empty() || user_devices.value == nullptr)
+        auto const requested = requested_by_user.find(user_devices.key);
+        if (requested == requested_by_user.end() || requested->second->empty() || user_devices.value == nullptr)
         {
             return;
         }
@@ -8531,10 +8532,11 @@ namespace
         {
             return;
         }
+        auto const wanted = std::unordered_set<std::string_view>{requested->second->begin(), requested->second->end()};
         auto kept = canonicaljson::Object{};
         for (auto const& device : *devices)
         {
-            if (std::ranges::find(requested->second, device.key) != requested->second.end())
+            if (wanted.contains(device.key))
             {
                 kept.push_back(device);
             }
@@ -8736,9 +8738,15 @@ namespace
                                 })));
                     continue;
                 }
+                auto requested_by_user = std::unordered_map<std::string_view, std::vector<std::string> const*>{};
+                requested_by_user.reserve(remote_requests.size());
+                for (auto const& [uid, device_ids] : remote_requests)
+                {
+                    requested_by_user.emplace(uid, &device_ids);
+                }
                 for (auto& user_devices : accepted->device_keys)
                 {
-                    keep_requested_devices(user_devices, remote_requests);
+                    keep_requested_devices(user_devices, requested_by_user);
                     users.push_back(std::move(user_devices));
                 }
                 // The master key is what a client checks its own user-signing
