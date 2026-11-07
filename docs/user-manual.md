@@ -1075,6 +1075,12 @@ the file, changing it to an insecure mode/owner, or exhausting locked memory
 returns HTTP 503 rather than minting tokens with an unkeyed digest. Existing
 legacy validation formats are not a fallback for new issuance.
 
+#### Login tokens: `security.login_token.enabled`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.login_token.enabled` | `false` | Boolean. Turns on `POST /_matrix/client/v1/login/get_token` and the `m.login.token` flow it feeds. A signed-in user re-enters the account password on every call (a recent successful call is never reused) and gets a single-use token valid for 2 minutes; a client with no session logs in with it as that user and gets a new device. A token is spent by the first login attempt that names it, whether or not that attempt succeeds. Each user holds at most 4 live tokens and the server at most 1024 (over either: `429 M_LIMIT_EXCEEDED`), and a user is limited to 4 requests per minute to the endpoint. Tokens are held in memory only (no database table), so a restart drops every unredeemed token. Off: the endpoint answers `404 M_UNRECOGNIZED`, `GET /login` offers no `m.login.token` flow and `m.get_login_token` reports `enabled: false`. Reloadable. |
+
 #### Token lifetimes — `security.*_token_lifetime_ms`
 
 | Key | Default | When to change |
@@ -1717,6 +1723,7 @@ take effect.
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
+| `security.login_token.enabled` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |

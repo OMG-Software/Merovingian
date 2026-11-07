@@ -36,6 +36,12 @@ struct ClientApiLimits final
     std::uint32_t max_registration_validation_sessions{1024U};
     std::uint32_t max_registration_validation_sessions_per_remote{16U};
     std::uint32_t max_uia_sessions{2048U};
+    // CS8 (ADR-0548): login tokens minted by POST /login/get_token and not yet redeemed. A token lives
+    // `login_token_lifetime_ms` (the spec's recommended two minutes); a user holds at most
+    // `max_login_tokens_per_user` and the server `max_login_tokens`. Over either, get_token answers 429.
+    std::uint32_t max_login_tokens{1024U};
+    std::uint32_t max_login_tokens_per_user{4U};
+    std::uint32_t login_token_lifetime_ms{120000U};
     std::uint32_t max_safety_report_rows{1000U};
     std::uint32_t max_notifications_page_size{1000U};
     std::uint32_t max_relations_page_size{500U};

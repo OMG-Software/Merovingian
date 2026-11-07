@@ -86,6 +86,23 @@ using merovingian::tests::tls_mock::MockIdentityServer;
     };
 }
 
+// conformance_config() with POST /login/get_token turned on (security.login_token.enabled, CS8).
+[[nodiscard]] auto login_token_conformance_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    security.login_token.enabled = true;
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+    };
+}
+
 // Registers alice and logs her in, returning the access token.
 [[nodiscard]] auto logged_in_token(merovingian::homeserver::ClientServerRuntime& runtime) -> std::string
 {
@@ -4015,11 +4032,10 @@ SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED wh
 
 // --- POST /_matrix/client/v1/login/get_token ----------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv1loginget_token
-// IMPLEMENTATION GAP: login token generation not yet implemented.
-SCENARIO("POST /v1/login/get_token returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][session]")
+SCENARIO("POST /v1/login/get_token is 404 M_UNRECOGNIZED unless the operator enables it",
+         "[conformance][client-server][session][cs8]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with the default configuration and a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -4030,14 +4046,79 @@ SCENARIO("POST /v1/login/get_token returns 404 M_UNRECOGNIZED (implementation ga
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v1/login/get_token", token, "{}"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the optional endpoint is not served: 404 M_UNRECOGNIZED")
             {
-                // IMPLEMENTATION GAP: login token exchange not supported.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_UNRECOGNIZED");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /v1/login/get_token requires UIA on every call and mints a single-use token",
+         "[conformance][client-server][session][cs8]")
+{
+    GIVEN("a running client-server with login tokens enabled and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(login_token_conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const with_password = std::string{R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"};
+
+        WHEN("the call carries no authentication data")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v1/login/get_token", token, "{}"});
+
+            THEN("the server answers 401 with a User-Interactive Authentication challenge")
+            {
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(object_member_as_array(body, "flows") != nullptr);
+                REQUIRE(string_member(body, "session") != nullptr);
+            }
+        }
+
+        WHEN("the call completes UIA, and then is repeated without re-prompting")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v1/login/get_token", token, with_password});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v1/login/get_token", token, "{}"});
+
+            THEN("the first returns a token with expires_in_ms, and the second is challenged again (MUST re-prompt)")
+            {
+                REQUIRE(first.response.status == 200U);
+                auto const body = parse_object(first.response.body);
+                REQUIRE(string_member(body, "login_token") != nullptr);
+                REQUIRE(int_member(body, "expires_in_ms") != nullptr);
+                REQUIRE(*int_member(body, "expires_in_ms") == 120000);
+                REQUIRE(second.response.status == 401U);
+            }
+        }
+
+        WHEN("the token is used with m.login.token twice")
+        {
+            auto const minted = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v1/login/get_token", token, with_password});
+            REQUIRE(minted.response.status == 200U);
+            auto const minted_body = parse_object(minted.response.body);
+            auto const login_token = *string_member(minted_body, "login_token");
+            auto const login_body = R"({"type":"m.login.token","token":")" + login_token + R"("})";
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/login", {}, login_body});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/login", {}, login_body});
+
+            THEN("the token is valid for a single login only (MUST)")
+            {
+                REQUIRE(first.response.status == 200U);
+                auto const first_body = parse_object(first.response.body);
+                REQUIRE(string_member(first_body, "access_token") != nullptr);
+                REQUIRE(second.response.status == 403U);
             }
         }
     }
@@ -4208,29 +4289,57 @@ SCENARIO("GET /.well-known/matrix/support returns 404 M_UNRECOGNIZED (implementa
 
 // --- GET /_matrix/client/v3/admin/whois/{userId} ------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3adminwhoisuserid
-// IMPLEMENTATION GAP: admin whois not yet implemented.
-SCENARIO("GET /admin/whois/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][server-admin]")
+SCENARIO("GET /admin/whois/{userId} returns the user's devices to the user and to a server admin",
+         "[conformance][client-server][server-admin][cs8]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server, a logged-in user and a server administrator")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto const admin = admin_token(started.runtime, "root");
 
-        WHEN("GET /admin/whois/@alice:example.org is called")
+        WHEN("the user looks up herself")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the answer has user_id and a devices map keyed by device ID")
             {
-                // IMPLEMENTATION GAP: admin whois not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*string_member(body, "user_id") == "@alice:example.org");
+                auto const* devices = object_member_as_object(body, "devices");
+                REQUIRE(devices != nullptr);
+                auto const* device = object_member_as_object(*devices, "DEVICE1");
+                REQUIRE(device != nullptr);
+                REQUIRE(object_member_as_array(*device, "sessions") != nullptr);
+            }
+        }
+
+        WHEN("the server administrator looks up the user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", admin, {}});
+
+            THEN("the answer is the user's")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(*string_member(body, "user_id") == "@alice:example.org");
+            }
+        }
+
+        WHEN("the user looks up another user (the API may be restricted to the user or a server admin)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40root%3Aexample.org", token, {}});
+
+            THEN("the server answers 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(*string_member(body, "errcode") == "M_FORBIDDEN");
             }
         }
     }
@@ -14760,31 +14869,6 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
 // ============================================================================
 // Spec: Matrix v1.19 §18
 //       IMPLEMENTATION GAP: admin endpoints not yet implemented.
-
-SCENARIO("GET /admin/whois/{userId} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("GET /admin/whois/@alice:example.org is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
 
 SCENARIO("POST /admin/suspend/{userId} conformance")
 {

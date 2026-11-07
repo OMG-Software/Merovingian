@@ -373,7 +373,7 @@ lists have no server maximum (ADR-0332).
 | `PUT` | `/_matrix/client/v1/admin/lock/{userId}` | `setAdminLockUser` | access token | required application/json | 200, 400, 403, 404 |
 | `GET` | `/_matrix/client/v1/admin/suspend/{userId}` | `getAdminSuspendUser` | access token | - | 200, 400, 403, 404 |
 | `PUT` | `/_matrix/client/v1/admin/suspend/{userId}` | `setAdminSuspendUser` | access token | required application/json | 200, 400, 403, 404 |
-| `GET` | `/_matrix/client/v3/admin/whois/{userId}` | `getWhoIs` | access token | - | 200 |
+| `GET` | `/_matrix/client/v3/admin/whois/{userId}` | `getWhoIs` | access token | - | 200, 400, 403, 404 |
 | `GET` | `/_matrix/client/versions` | `getVersions` | optional | - | 200 |
 | `GET` | `/.well-known/matrix/client` | `getWellknown` | none | - | 200, 404 |
 | `GET` | `/.well-known/matrix/policy_server` | `getWellknownPolicy` | none | - | 200, 404 |
@@ -550,6 +550,8 @@ Room account data (`GET`/`PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
 - `GET`, `PUT` and `DELETE /devices/{deviceId}` percent-decode the device ID.
 - `POST /keys/claim` validates the whole body before it claims any one-time key. A remote `POST /keys/query` sends the requested
   device IDs to the remote server and returns only those devices.
+- **Admin whois (CS8, ADR-0548).** `GET /v3/admin/whois/{userId}`: a server admin may look up any local user, any other caller only themselves. A non-admin asking about someone else gets `403 M_FORBIDDEN` before any lookup (so it cannot probe for accounts). For an admin: a malformed or non-local ID is `400 M_INVALID_PARAM`, an unknown or deactivated local user `404 M_NOT_FOUND`. The answer holds `user_id` and one entry per device, each with one session whose `connections` is empty: the server records no IP address, user agent or last-seen time, and whois does not start recording them.
+- **Login tokens (CS8, ADR-0548).** Off unless `security.login_token.enabled`; off, `POST /v1/login/get_token` is `404 M_UNRECOGNIZED`, `GET /login` offers no `m.login.token` flow and `GET /capabilities` carries `m.get_login_token: {"enabled": false}`. On, the flow is offered as `{"type":"m.login.token","get_login_token":true}`, the capability is `enabled: true`, and `get_token` runs UIA with `m.login.password` on every call (never a recent session): no auth is a `401` challenge, a wrong password `401 M_FORBIDDEN`. Success is `{"login_token", "expires_in_ms": 120000}`. The token is 256 random bits, kept in memory as a hash, spent by the first `POST /login` that names it (success or not). A user holds 4 live tokens and the server 1024 (`429 M_LIMIT_EXCEEDED` with `retry_after_ms`), and the per-user rate limit is 4 requests a minute. `POST /login` with a token creates a device as password login does and refuses a locked, suspended or deactivated account the same way. The SSO `loginToken` redeemed through the same `type` is unchanged.
 - `GET /capabilities` carries `m.account_moderation` (`lock`, `suspend`) for server admins and omits it for other users.
 - A joined room's `/sync` timeline no longer carries the unspecified `event_count`.
 

@@ -94,6 +94,14 @@ UIAA session state is held **in memory** in the client-server runtime (`uia_sess
 and are capped at 512 entries. Each flow has exactly one stage, so there is no stage list to
 consult; adding a second stage would need persisted stage tracking. See ADR-0057.
 
+## Login tokens (CS8, ADR-0548)
+
+`POST /v1/login/get_token` (off unless `security.login_token.enabled`) asks for the account password on every call,
+then mints a token held only as a hash in `ClientServerRuntime::login_tokens` (`LoginTokenStore`). `POST /login`
+with `type: m.login.token` redeems it (constant-time, single use, spent by any attempt) and then goes through
+`login_local_user_by_id`, so the deactivated/locked/suspended gate is shared with password login. Never persist these
+tokens or add a path that redeems one without consuming it.
+
 ## Key spec sections
 
 - [Client Authentication](../../docs/matrix-v1.19-spec/client-server-api.md#client-authentication)

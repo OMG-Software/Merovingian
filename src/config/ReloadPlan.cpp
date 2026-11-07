@@ -679,6 +679,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.login_throttle.window");
     }
 
+    if (current.security().login_token.enabled != next.security().login_token.enabled)
+    {
+        add_change(plan, "security.login_token.enabled");
+    }
+
     if (current.security().access_token_lifetime_ms != next.security().access_token_lifetime_ms)
     {
         add_change(plan, "security.access_token_lifetime_ms");
