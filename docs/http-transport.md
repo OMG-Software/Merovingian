@@ -1313,7 +1313,7 @@ A release scope drops those levels through the mutex, never through a guard:
 the levels belong to `unique_lock` objects in frames it cannot reach. **Every
 `unique_lock` on the mutex therefore keeps reporting `owns_lock() == true` for
 the lifetime of the scope, the one passed in included.** That is sound only
-because nothing outside `request_lock.cpp` reads the flag and the depth is
+because nothing outside `RuntimeLockRelease.cpp` reads the flag and the depth is
 restored exactly before any guard can act on it. An earlier revision of this
 change released the named guard first and drained the rest through the mutex;
 review on #490 caught that an inner scope reaching for the thread's published

@@ -7,6 +7,7 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/media/thumbnail_cache.hpp"
+#include "merovingian/media/thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

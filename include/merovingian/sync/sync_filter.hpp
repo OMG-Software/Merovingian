@@ -18,6 +18,11 @@
 namespace merovingian::sync
 {
 
+// Parsed Matrix v1.19 sync filter. A filter selects which events appear in
+// each portion of the /sync response. The Matrix `Filter` JSON has nested
+// `room` / `presence` / `account_data` filters; we expose the subset the
+// alpha homeserver applies: per-event-type allow/deny lists, per-sender
+// allow/deny lists, room id allow/deny lists, and a `timeline.limit`.
 struct SyncFilter final
 {
     RoomFilter room{};

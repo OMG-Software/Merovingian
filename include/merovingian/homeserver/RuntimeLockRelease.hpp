@@ -45,7 +45,7 @@ namespace merovingian::homeserver
 // The levels being dropped belong to `unique_lock` objects in frames this
 // scope cannot reach, so the release necessarily goes through the mutex and no
 // guard's bookkeeping flag can be updated — the one passed in included. That
-// is sound only because nothing outside `request_lock.cpp` reads the flag
+// is sound only because nothing outside `RuntimeLockRelease.cpp` reads the flag
 // (`grep -rn owns_lock src include`) and the depth is restored exactly before
 // any guard can act on it. Read `RuntimeMutex::held_by_current_thread()`
 // instead if you need to know whether the mutex is held; a nested release
