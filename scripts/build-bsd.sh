@@ -297,12 +297,44 @@ run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 MEROVINGIAN_CATCH_REPORT_DIR="$skip
 
 gate_status=0
 if [ -n "$skip_job" ]; then
+    # FreeBSD and NetBSD install Python only as meson's dependency, as a versioned binary (python3.11) with no
+    # python3 or python link. Prefer python3, then the interpreter meson itself runs on, then any python3.N.
+    skip_python=
     if command -v python3 >/dev/null 2>&1; then
         skip_python=python3
     else
-        skip_python=python
+        meson_path=$(command -v meson 2>/dev/null || true)
+        if [ -n "$meson_path" ]; then
+            # "#!/usr/local/bin/python3.11" names it; "#!/usr/bin/env python3.11" names it second.
+            meson_interpreter=$(sed -n '1{
+                s/^#![[:space:]]*//
+                s/^[^[:space:]]*\/env[[:space:]][[:space:]]*//
+                s/[[:space:]].*$//
+                p
+            }' "$meson_path")
+            case "$meson_interpreter" in
+                /*) ;;
+                *) meson_interpreter=$(command -v "$meson_interpreter" 2>/dev/null || true) ;;
+            esac
+            if [ -n "$meson_interpreter" ] && [ -x "$meson_interpreter" ]; then
+                skip_python=$meson_interpreter
+            fi
+        fi
+        if [ -z "$skip_python" ]; then
+            for minor in 14 13 12 11 10 9; do
+                if command -v "python3.$minor" >/dev/null 2>&1; then
+                    skip_python=python3.$minor
+                    break
+                fi
+            done
+        fi
     fi
-    run "$skip_python" "$script_dir/check_expected_skips.py" --job "$skip_job" --reports "$skip_reports" || gate_status=$?
+    if [ -z "$skip_python" ]; then
+        echo "build-bsd.sh: no Python interpreter found for check_expected_skips.py" >&2
+        gate_status=2
+    else
+        run "$skip_python" "$script_dir/check_expected_skips.py" --job "$skip_job" --reports "$skip_reports" || gate_status=$?
+    fi
 fi
 
 if [ "$test_status" -ne 0 ]; then

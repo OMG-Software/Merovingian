@@ -119,9 +119,10 @@ SCENARIO("A parked poll is resumed by a publish that concerns its user and not b
 {
     GIVEN("two users with parked polls")
     {
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
         auto const far = std::chrono::steady_clock::now() + 60s;
         auto alice_poll = make_poll("alice", destroyed);
@@ -178,9 +179,10 @@ SCENARIO("Resuming the poll whose deadline the registry thread is waiting for le
 {
     GIVEN("one parked poll, so the registry thread waits until its deadline")
     {
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
         auto first = make_poll("first", destroyed);
         REQUIRE(notifier.park(notifier.observe("@alice:test"), std::chrono::steady_clock::now() + 60s, first).parked);
@@ -214,9 +216,10 @@ SCENARIO("A publish between taking the cursor and parking still resumes the poll
 {
     GIVEN("a cursor taken before a publish that lands before the park")
     {
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
         auto const cursor = notifier.observe("@alice:test");
         auto const scope = std::vector<std::string>{"@alice:test"};
@@ -240,9 +243,10 @@ SCENARIO("A parked poll whose deadline passes is resumed with the deadline reaso
 {
     GIVEN("polls parked with different deadlines")
     {
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
         auto const now = std::chrono::steady_clock::now();
         auto late = make_poll("late", destroyed);
@@ -270,9 +274,10 @@ SCENARIO("The registry refuses a park past its caps and leaves the poll with the
 {
     GIVEN("a registry of two polls, one per user")
     {
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{2U, 1U}));
         auto const far = std::chrono::steady_clock::now() + 60s;
         auto first = make_poll("a1", destroyed);
@@ -304,10 +309,11 @@ SCENARIO("Stopping the registry destroys every parked poll promptly and refuses 
 {
     GIVEN("a registry holding polls and a registry that was never started")
     {
+        // Declared before the notifiers, which destroy the polls still parked and stop their threads when they go.
+        auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
         auto notifier = SyncNotifier{};
         auto idle = SyncNotifier{};
-        auto recorder = Recorder{};
-        auto destroyed = std::atomic<std::size_t>{0U};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{16U, 4U}));
         for (auto index = 0; index < 5; ++index)
         {
@@ -351,9 +357,10 @@ SCENARIO("Many threads parking and publishing at once resume every poll exactly 
     {
         constexpr auto thread_count = std::size_t{16U};
         constexpr auto per_thread = std::size_t{8U};
-        auto notifier = SyncNotifier{};
-        auto recorder = Recorder{};
+        // Declared before the notifier, which destroys the polls still parked and stops its thread when it goes.
         auto destroyed = std::atomic<std::size_t>{0U};
+        auto recorder = Recorder{};
+        auto notifier = SyncNotifier{};
         REQUIRE(start_registry(notifier, recorder, ParkedPollLimits{thread_count * per_thread, per_thread}));
         auto cursors = std::vector<merovingian::sync::WaitCursor>{};
         for (auto index = std::size_t{0U}; index < thread_count; ++index)
