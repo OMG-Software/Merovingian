@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/RestrictedJoinDecision.hpp" // split-shim
-#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"  // split-shim
-#include "merovingian/homeserver/RestrictedJoinWork.hpp"     // split-shim
+#include "merovingian/homeserver/RestrictedJoinDecision.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
 
 #include <cstddef>
 #include <cstdint>

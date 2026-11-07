@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/appservice/Namespaces.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 
 #include <optional>
 #include <string>

@@ -4,6 +4,7 @@
 #include "merovingian/media/url_preview.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/media/OpenGraphData.hpp"
 
 #include <algorithm>
 #include <cstddef>

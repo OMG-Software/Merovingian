@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/ConnectionPool.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
-#include "merovingian/database/connection_pool.hpp"
 
 #include <cstdint>
 

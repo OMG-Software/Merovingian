@@ -38,7 +38,7 @@ Chosen option: "One primitive that releases every recursion level the calling
 thread holds", because it removes the choice that was itself the bug source.
 
 `homeserver::RuntimeLockRelease`
-([`request_lock.hpp`](../../include/merovingian/homeserver/request_lock.hpp))
+([`request_lock.hpp`](../../include/merovingian/homeserver/RuntimeLockRelease.hpp))
 has two constructors, and they say only which `std::unique_lock` to read the
 mutex address from:
 

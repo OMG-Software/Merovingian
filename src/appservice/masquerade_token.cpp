@@ -3,6 +3,8 @@
 
 #include "merovingian/appservice/masquerade_token.hpp"
 
+#include "merovingian/appservice/MasqueradeIdentity.hpp"
+
 #include <charconv>
 
 namespace merovingian::appservice

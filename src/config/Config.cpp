@@ -22,9 +22,10 @@
 #include "merovingian/config/SizeLimitParseResult.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/special_use_ip_ranges.hpp"
+#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/mailbox_address.hpp"
-#include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/http/keep_alive.hpp"
+#include "merovingian/http/rate_limit.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/socket_handle.hpp"
+#include "TlsTestCertificate.hpp"
+#include "merovingian/core/SocketHandle.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 #include "tls_mock_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>

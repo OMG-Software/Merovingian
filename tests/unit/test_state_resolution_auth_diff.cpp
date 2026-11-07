@@ -9,10 +9,16 @@
 // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md — Definitions ("Conflicted
 // state subgraph"), "State resolution" modifications 1-3.
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateGroup.hpp"
+#include "merovingian/events/StateKey.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/events/StateResolutionResult.hpp"
 #include "merovingian/events/state_resolution.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

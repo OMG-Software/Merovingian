@@ -17,10 +17,13 @@
 //   the server simply waits for a valid partner event to arrive where it can then re-check the above."
 // URL: ../../docs/matrix-v1.19-spec/rooms/v10.md#handling-redactions
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
@@ -28,7 +31,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/HistoryVisibility.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

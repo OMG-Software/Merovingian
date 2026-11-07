@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/events/EventHashResult.hpp" // split-shim
-#include "merovingian/events/EventIdResult.hpp"   // split-shim
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/EventHashResult.hpp"
+#include "merovingian/events/EventIdResult.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstdint>
 #include <string>

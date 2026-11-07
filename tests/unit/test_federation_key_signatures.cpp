@@ -14,8 +14,9 @@
 // public key for cross-signing keys (see the /keys/signatures/upload request
 // example). See ADR-0060 for the visibility rule.
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/key_signatures.hpp"

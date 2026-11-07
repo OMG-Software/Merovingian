@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/database/PersistentProfile.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/UserDirectorySearchStats.hpp" // split-shim
+#include "merovingian/homeserver/UserDirectorySearchStats.hpp"
 
 #include <cstddef>
 #include <vector>

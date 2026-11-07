@@ -4,7 +4,6 @@
 
 #include "merovingian/auth/RegistrationPolicy.hpp"
 #include "merovingian/auth/RegistrationPolicyDecision.hpp"
-#include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/token.hpp"
 
 #include <chrono>

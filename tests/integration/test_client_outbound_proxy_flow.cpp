@@ -20,7 +20,7 @@
 // answers". It counts the connections it is offered, which is how these tests
 // observe that no outbound call was made.
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -30,12 +30,15 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -44,7 +47,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>

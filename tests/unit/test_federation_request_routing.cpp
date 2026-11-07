@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 

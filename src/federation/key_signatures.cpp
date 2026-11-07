@@ -3,7 +3,9 @@
 
 #include "merovingian/federation/key_signatures.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/federation/DeviceDisplayNames.hpp"
 
 #include <algorithm>
 #include <array>

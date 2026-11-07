@@ -7,13 +7,14 @@
 // role has SELECT only on server_signing_keys. A resolver that read the key
 // back from the store after a failed write refused every server it had not
 // already cached when it started (Complement run 2, "remote is unknown").
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>

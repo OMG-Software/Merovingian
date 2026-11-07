@@ -3,6 +3,7 @@
 
 #include "merovingian/database/redaction_view.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 
 #include <algorithm>

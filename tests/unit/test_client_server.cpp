@@ -23,6 +23,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/MockIdentityServer.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -42,8 +43,9 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/http/request.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/http/Header.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -4767,7 +4769,7 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
 
             THEN("m.room_versions lists every server-supported version (3-12) as stable")
             {
-                // The server must advertise every version rooms::room_version_policy.cpp
+                // The server must advertise every version rooms::RoomVersionPolicy.cpp
                 // implements, not a hardcoded subset — a stale list here previously
                 // caused federation joins to fail against any room not on 10/11/12,
                 // since the outbound make_join ver= list came from the same source.

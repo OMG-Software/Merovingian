@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/appservice/MasqueradeIdentity.hpp" // split-shim
+#include "merovingian/appservice/MasqueradeIdentity.hpp"
 
 #include <optional>
 #include <string>

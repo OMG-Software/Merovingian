@@ -4,7 +4,6 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/ParseResult.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 
 #include <cstddef>
 #include <string_view>
@@ -16,7 +15,7 @@ namespace merovingian::canonicaljson
 // parsing as a defense-in-depth cap alongside the O(n) duplicate-key check:
 // an unauthenticated body of unique keys (e.g. to /login or /register)
 // previously drove an O(n^2) duplicate-key scan into billions of
-// comparisons. `max_body_bytes` (http/request_limits.hpp) is 1 MiB; the
+// comparisons. `max_body_bytes` (http/RequestLimits.hpp) is 1 MiB; the
 // smallest possible object member encoding (`"":0,`) is 5 bytes, so a body
 // filled edge-to-edge with members tops out around 200,000 of them. 65536
 // (2^16) sits far below that pathological ceiling while remaining far above

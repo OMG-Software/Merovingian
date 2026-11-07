@@ -5,8 +5,11 @@
 // the decoder again.
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/media/runtime_media.hpp"
-#include "merovingian/media/thumbnail_cache.hpp"
+#include "merovingian/media/CachedThumbnail.hpp"
+#include "merovingian/media/RuntimeMediaConfig.hpp"
+#include "merovingian/media/ThumbnailCache.hpp"
+#include "merovingian/media/ThumbnailCacheKey.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>

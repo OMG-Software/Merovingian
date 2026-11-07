@@ -8,7 +8,7 @@
 #include "merovingian/sync/RoomListResult.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
-#include "merovingian/sync/unread_event_classifier.hpp"
+#include "merovingian/sync/UnreadEventClassifier.hpp"
 
 #include <cstdint>
 #include <string>

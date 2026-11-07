@@ -10,7 +10,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 | `parser.cpp` | Parse JSON bytes into `Value` tree; validates structure and rejects non-canonical input |
 | `serializer.cpp` | Serialize `Value` tree to canonical JSON bytes (sorted keys, no insignificant whitespace) |
 | `signable.cpp` | Wraps a JSON object for signing — removes `signatures` and `unsigned` before hashing |
-| `value.cpp` | `Value` variant type: null, bool, integer, float, string, array, object |
+| `Value.cpp` | `Value` variant type: null, bool, integer, float, string, array, object |
 | `yyjson_adapter.c` | Thin C adapter over yyjson for raw parse speed |
 
 ## Canonical JSON rules (from spec)

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/FederationEndpoint.hpp"            // split-shim
-#include "merovingian/federation/FederationRoute.hpp"               // split-shim
-#include "merovingian/federation/FederationRouteMatch.hpp"          // split-shim
-#include "merovingian/federation/FederationTransaction.hpp"         // split-shim
-#include "merovingian/federation/FederationTransactionDecision.hpp" // split-shim
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationRoute.hpp"
+#include "merovingian/federation/FederationRouteMatch.hpp"
+#include "merovingian/federation/FederationTransaction.hpp"
+#include "merovingian/federation/FederationTransactionDecision.hpp"
 
 #include <cstdint>
 #include <string>

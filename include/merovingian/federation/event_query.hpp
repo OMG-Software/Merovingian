@@ -3,11 +3,13 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/event_table.hpp"
-#include "merovingian/events/state_resolution.hpp"
-#include "merovingian/federation/StateAtEvent.hpp" // split-shim
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/room_read_result.hpp"
+#include "merovingian/database/TimeDirection.hpp"
+#include "merovingian/events/StateResolutionLimits.hpp"
+#include "merovingian/federation/BackfillRequest.hpp"
+#include "merovingian/federation/BackfillResult.hpp"
+#include "merovingian/federation/FederationQueryPolicy.hpp"
+#include "merovingian/federation/RoomReadResult.hpp"
+#include "merovingian/federation/StateAtEvent.hpp"
 
 #include <cstddef>
 #include <cstdint>

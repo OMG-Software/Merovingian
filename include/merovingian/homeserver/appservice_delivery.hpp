@@ -4,7 +4,7 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
 
 #include <chrono>
 #include <cstdint>

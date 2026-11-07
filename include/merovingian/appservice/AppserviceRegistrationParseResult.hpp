@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/appservice/AppserviceRegistration.hpp"
-#include "merovingian/core/error.hpp"
+#include "merovingian/core/Error.hpp"
 
 #include <optional>
 

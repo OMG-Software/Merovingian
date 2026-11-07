@@ -47,5 +47,5 @@ Use quotes for project headers, angle brackets for standard library and third-pa
 ```
 
 Never use bare relative includes (`#include "name.hpp"` without the `merovingian/` path prefix).
-The one existing exception is `src/federation_worker/`, whose `worker_event_loop.hpp` lives beside
+The one existing exception is `src/federation_worker/`, whose `WorkerEventLoop.hpp` lives beside
 its `.cpp` and is included relatively; do not add others.

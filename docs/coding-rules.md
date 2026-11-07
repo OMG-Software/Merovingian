@@ -151,7 +151,7 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
 ## Concurrency and portability
 
 - Do not hold `HomeserverRuntime::mutex` across a blocking network call. Use a
-  `homeserver::RuntimeLockRelease` scope from `homeserver/request_lock.hpp`.
+  `homeserver::RuntimeLockRelease` scope from `homeserver/RequestLockScope.hpp`.
   It releases every recursion level held by the caller and restores the lock
   when the scope ends. Do not access protected runtime state while it is released.
 - Lock `HomeserverRuntime::mutex` through `homeserver::RuntimeLock` (a
@@ -170,7 +170,7 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   existing release scope. See [ADR-0004](adr/0004-release-the-runtime-lock-through-the-mutex-not-a-guard.md).
 - Do not use `std::jthread`, `std::stop_token`, or `std::stop_source` in production
   code or tests. Use `homeserver::PeriodicJob`, `homeserver::StopFlag`, or
-  `tests/support/joining_threads.hpp` as appropriate. The supported BSD standard
+  `tests/support/JoiningThreads.hpp` as appropriate. The supported BSD standard
   libraries do not all provide these facilities. See
   [ADR-0167](adr/0167-no-jthread-or-stop-token-use-std-thread-and-stop-flag.md).
 - Use `core::PortableSemaphore`, not `std::counting_semaphore`. Use

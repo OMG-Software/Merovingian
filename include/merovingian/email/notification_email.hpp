@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/email/PasswordResetEmail.hpp"      // split-shim
-#include "merovingian/email/UnreadNotificationEmail.hpp" // split-shim
+#include "merovingian/email/PasswordResetEmail.hpp"
+#include "merovingian/email/UnreadNotificationEmail.hpp"
 
 #include <optional>
 #include <string>

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/config/ConfigParseResult.hpp" // split-shim
+#include "merovingian/config/ConfigParseResult.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
 
 #include <cstddef>

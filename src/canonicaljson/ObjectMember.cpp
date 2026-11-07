@@ -3,7 +3,7 @@
 
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 
 #include <memory>
 #include <string>

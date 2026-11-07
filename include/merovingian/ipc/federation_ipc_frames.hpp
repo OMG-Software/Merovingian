@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/federation/MembershipEventTemplate.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
-#include "merovingian/ipc/MembershipTemplateIngest.hpp" // split-shim
+#include "merovingian/ipc/MembershipTemplateIngest.hpp"
 
 #include <cstdint>
 #include <optional>

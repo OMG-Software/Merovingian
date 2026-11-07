@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/Header.hpp"             // split-shim
-#include "merovingian/http/HttpVersion.hpp"        // split-shim
-#include "merovingian/http/RequestErrorCode.hpp"   // split-shim
-#include "merovingian/http/RequestHead.hpp"        // split-shim
-#include "merovingian/http/RequestParseResult.hpp" // split-shim
-#include "merovingian/http/request_limits.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
+#include "merovingian/http/RequestLimits.hpp"
+#include "merovingian/http/RequestParseResult.hpp"
 
 #include <cstdint>
 #include <string>

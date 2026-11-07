@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 
-#include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 
 namespace merovingian::homeserver
 {

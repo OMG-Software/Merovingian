@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/MigrationApplyResult.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
 #include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
-#include "merovingian/database/connection.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 
 #include <cstdint>
 #include <optional>

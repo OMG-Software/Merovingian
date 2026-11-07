@@ -8,24 +8,26 @@
 // that protected the main request pool (ADR-0079) refused all but the first
 // with 429, and Element does not retry, so the attachment stayed broken.
 
+#include "../support/ScopedThreadJoin.hpp"
+#include "../support/StallingTlsServerState.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
-#include "merovingian/net/shutdown_signal.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/net/thread_pool.hpp"
+#include "merovingian/net/ShutdownSignal.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>

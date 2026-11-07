@@ -1,0 +1,172 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/sync/HistoryVisibilityValue.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace merovingian::sync
+{
+
+// Maps the wire value to the enum. Spec (client-server-api.md, "Room History Visibility",
+// server behaviour): "if no `history_visibility` is set, or if the value is not understood,
+// the visibility is assumed to be `shared`", so anything unrecognised is `shared`.
+[[nodiscard]] auto parse_history_visibility(std::string_view value) noexcept -> HistoryVisibilityValue;
+
+// The room's CURRENT visibility, read from the current-state table. `shared` when the room
+// has no `m.room.history_visibility` event. Only for gating who may reach a read endpoint at
+// all (peeking a `world_readable` room); it never decides whether one event is visible.
+[[nodiscard]] auto current_history_visibility(database::PersistentStore const& store, std::string_view room_id)
+    -> HistoryVisibilityValue;
+
+// True when the room's current visibility is `world_readable`.
+[[nodiscard]] auto room_is_world_readable(database::PersistentStore const& store, std::string_view room_id) -> bool;
+
+// Decides, for one requesting user, which room events that user may see. This is THE rule
+// every client read path that returns room events applies (ADR-0084); do not re-derive it.
+//
+// Spec (client-server-api.md, "Room History Visibility", server behaviour): the rules depend
+// on the state of the room AT the event.
+//   1. `world_readable`: allow.
+//   2. the user's membership was `join`: allow.
+//   3. `shared`, and the user joined at any point after the event was sent: allow.
+//   4. the user's membership was `invite` and the visibility was `invited`: allow.
+//   5. otherwise deny.
+// Two special cases: an `m.room.history_visibility` event is visible if the visibility before
+// OR after it allows, and the user's own `m.room.member` event is visible if their membership
+// before OR after it allows.
+//
+// "State at the event" is the state group recorded for the event (ADR-0064), i.e. the state
+// immediately after it. "Before" for the two special cases is the predecessor recorded in
+// `state_transitions`. For rule 3 (`shared`), "after the event was sent" is the room's history: the
+// user's newest accepted join is deeper than the event (ADR-0308), never a later stream ordering. Rule 2
+// for an event with no state group still follows the user's membership timeline in stream order.
+//
+// One instance serves one request: it caches per state group, so a page of events costs one
+// state lookup per distinct group rather than one per event, and it builds its indexes over
+// the store lazily on first use. It is not thread-safe and must not outlive the store
+// reference or the runtime lock the caller holds.
+//
+// An event with NO state group (history stored before ADR-0064) cannot have its visibility at
+// the time proved, so only rule 2 applies, from the user's own membership timeline: it is
+// visible when their latest membership at or before the event was `join`. Rule 2 allows an event
+// under every visibility, so this only ever shows a subset of what the spec allows. Events that
+// have a state group get the full check.
+//
+// It fails closed: an event with a broken group chain, whose membership or visibility event
+// cannot be found, or (with no state group) whose user's membership timeline cannot be followed,
+// is not visible.
+class HistoryVisibility final
+{
+public:
+    HistoryVisibility(database::PersistentStore const& store, std::string_view user_id);
+
+    // True when the user may see `event`.
+    [[nodiscard]] auto can_see(database::PersistentEvent const& event) -> bool;
+
+    // The user's `m.room.member` membership at `event`: the `membership` of their member state in the
+    // state immediately after the event, "leave" when they have none yet (client-server-api.md,
+    // ClientEvent `unsigned.membership`). For an event with no state group it is the latest of the
+    // user's own membership events at or before the event. nullopt when it cannot be determined (a
+    // broken group chain, an unfollowable membership timeline); the spec lets a server omit it then.
+    [[nodiscard]] auto membership_at(database::PersistentEvent const& event) -> std::optional<std::string>;
+
+    // True when `event_id` names a stored event the user may see; false for an unknown ID.
+    [[nodiscard]] auto can_see_event_id(std::string_view event_id) -> bool;
+
+    // The stored event `event_id` names, or nullptr: a hash lookup through the store's event-ID
+    // index (ADR-0215), with no walk of the events.
+    [[nodiscard]] auto find_event(std::string_view event_id) -> database::PersistentEvent const*;
+
+    // True when `event_id` has a recorded state group (ADR-0064): its state was computed from its own
+    // prev_events, which is what separates an event placed in the graph from a state or auth-chain
+    // outlier (ADR-0290). An index lookup.
+    [[nodiscard]] auto has_state_group(std::string_view event_id) -> bool;
+
+private:
+    struct GroupView final
+    {
+        bool valid{false};
+        HistoryVisibilityValue visibility{HistoryVisibilityValue::shared};
+        std::string membership{};
+    };
+
+    enum class Lookup
+    {
+        found,
+        absent,
+        broken,
+    };
+
+    struct LookupResult final
+    {
+        Lookup outcome{Lookup::broken};
+        std::string_view event_id{};
+    };
+
+    [[nodiscard]] auto state_group_of(std::string_view event_id) -> std::optional<std::string_view>;
+    [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
+                                       std::string_view state_key) -> LookupResult;
+    [[nodiscard]] auto view_of_group(std::string_view group_id) -> GroupView const&;
+    [[nodiscard]] auto content_string(std::string_view event_id, std::string_view key) -> std::optional<std::string>;
+    // The depth of the user's newest accepted join in the room (ADR-0308): its place in the room's history.
+    [[nodiscard]] auto max_join_depth(std::string_view room_id) -> std::optional<std::uint64_t>;
+    // ADR-0320: the events the user's newest joins descend from at those joins' own depth, found by a bounded
+    // walk. An event left out is one the walk could not place, and it stays hidden.
+    [[nodiscard]] auto ancestors_of_newest_joins(std::string_view room_id)
+        -> std::unordered_set<std::string_view> const&;
+    // ADR-0311: the user's departure from a room they are no longer in: the stream ordering of their current
+    // `leave` or `ban` membership row, and that leave's event when it is held as their current member state.
+    struct Departure final
+    {
+        std::uint64_t ordering{0U};
+        std::optional<std::string> event_id{};
+    };
+    // The user's departure from `room_id`, or nullopt while their membership is anything but leave or ban.
+    [[nodiscard]] auto departure_of(std::string_view room_id) -> std::optional<Departure> const&;
+    // Whether `event` may descend from `departure` (ADR-0311): a walk back through its held prev_events that
+    // stops at events stored before the departure (none of them can descend from it) and at events not held.
+    // True when the walk reaches the leave, when the leave event is not held (nothing to walk to), or when it
+    // runs past max_departure_walk events (fail closed).
+    [[nodiscard]] auto may_descend_from_departure(database::PersistentEvent const& event, Departure const& departure)
+        -> bool;
+    // One entry of the user's own membership in a room: the stream ordering of an
+    // m.room.member event of theirs and the membership it set.
+    struct MembershipStep final
+    {
+        std::uint64_t ordering{0U};
+        std::string membership{};
+    };
+    // The user's membership timeline in `room_id`, oldest first, from the chain of their
+    // m.room.member events; nullopt when the chain cannot be followed.
+    [[nodiscard]] auto membership_timeline(std::string_view room_id)
+        -> std::optional<std::vector<MembershipStep>> const&;
+    // Rule 2 alone, for an event with no state group: was the user's latest membership at or
+    // before the event's position `join`?
+    [[nodiscard]] auto joined_when_sent(database::PersistentEvent const& event) -> bool;
+    [[nodiscard]] auto allows(HistoryVisibilityValue visibility, std::string_view membership,
+                              database::PersistentEvent const& event) -> bool;
+
+    database::PersistentStore const& store_;
+    std::string user_id_;
+
+    std::unordered_map<std::string, GroupView> group_views_{};
+    std::unordered_map<std::string, std::optional<std::string>> content_cache_{};
+    std::unordered_map<std::string, std::optional<std::uint64_t>> join_depths_{};
+    std::unordered_map<std::string, std::vector<std::string_view>> newest_join_ids_{};
+    std::unordered_map<std::string, std::unordered_set<std::string_view>> join_ancestors_{};
+    std::unordered_map<std::string, std::optional<Departure>> departures_{};
+    std::unordered_map<std::string, std::optional<std::vector<MembershipStep>>> membership_timelines_{};
+};
+
+} // namespace merovingian::sync

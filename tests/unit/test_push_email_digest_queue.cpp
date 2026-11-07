@@ -6,8 +6,12 @@
 // kind "email" "makes a pusher that emails the user with unread notifications". How often is the
 // server's choice; this server sends a delayed, throttled digest.
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/push/email_digest_queue.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/push/EmailDigestAdmission.hpp"
+#include "merovingian/push/EmailDigestKey.hpp"
+#include "merovingian/push/EmailDigestOutcome.hpp"
+#include "merovingian/push/EmailDigestPolicy.hpp"
+#include "merovingian/push/EmailDigestQueue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

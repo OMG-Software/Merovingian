@@ -3,10 +3,19 @@
 
 #include "merovingian/appservice/registration.hpp"
 
+#include "merovingian/appservice/AppserviceRegistration.hpp"
+#include "merovingian/appservice/AppserviceRegistrationFinding.hpp"
+#include "merovingian/appservice/AppserviceRegistrationParseResult.hpp"
+#include "merovingian/appservice/AppserviceRegistry.hpp"
+#include "merovingian/appservice/EventInterestFacts.hpp"
+#include "merovingian/appservice/LoadRegistrationsResult.hpp"
+#include "merovingian/appservice/Namespace.hpp"
 #include "merovingian/appservice/cleartext_policy.hpp"
 #include "merovingian/appservice/secret_view.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 
 #include <algorithm>

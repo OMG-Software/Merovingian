@@ -3,8 +3,8 @@
 #pragma once
 
 #include "merovingian/database/DatabaseExecutor.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/QueryResult.hpp"
-#include "merovingian/database/statement.hpp"
 
 #include <memory>
 #include <string_view>

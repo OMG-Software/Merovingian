@@ -5,9 +5,11 @@
 // bounded, keyed by a fixed-size identity, and expired from a time-ordered queue
 // rather than scanned in full on every failure.
 
-#include "merovingian/auth/failure_window_table.hpp"
+#include "merovingian/auth/FailureKey.hpp"
+#include "merovingian/auth/FailureWindowTable.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <chrono>
@@ -15,8 +17,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-
-#include <sodium.h>
 
 namespace
 {

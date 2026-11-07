@@ -6,8 +6,7 @@
 #include "merovingian/auth/KeyApiEndpoint.hpp"
 #include "merovingian/auth/KeyApiRoute.hpp"
 #include "merovingian/auth/KeyApiRouteMatch.hpp"
-#include "merovingian/database/statement.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 
 #include <string>
 #include <string_view>

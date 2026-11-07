@@ -12,44 +12,45 @@ This is the largest and most complex module — read this file carefully before 
 | `local_http_router.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
 | `local_services.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
 | `HomeserverRuntime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
-| `runtime_mutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
-| `request_lock.cpp` | `RequestLockScope` / `RuntimeLockRelease` — releases the runtime lock around blocking calls (see below) |
+| `RuntimeMutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
+| `RequestLockScope.cpp` | `RequestLockScope`: publishes the mutex of the request's runtime lock on its thread (see below) |
+| `RuntimeLockRelease.cpp` | `RuntimeLockRelease`: releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
-| `media_upload_notifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
+| `MediaUploadNotifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
 | `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `retention_sweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
-| `session_table.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488) |
+| `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
-| `search_room_index.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
+| `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
 | `public_rooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
 | `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
-| `remote_timestamp_event.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
+| `RemoteTimestampEvent.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`, local rooms only; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
-| `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
-| `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
-| `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
+| `PushRoomFacts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
+| `PushBadgeCount.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
+| `PushRuleUnreadClassifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
 | `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `ClientServerRuntime.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
-| `turn_credentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
+| `TurnCredentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
 | `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
-| `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
-| `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
+| `RuntimeSigningKeyStore.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
+| `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
-| `worker_pool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
-| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
-| `worker_env.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
+| `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
+| `WorkerSupervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
+| `MinimalWorkerEnv.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
 | `local_smoke_flow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
 
@@ -170,7 +171,7 @@ still blocks other clients and federation callbacks that need runtime state.
 
 Never make a blocking network call while holding it. Wrap the call — and only
 the call — in a `homeserver::RuntimeLockRelease` scope
-(`merovingian/homeserver/request_lock.hpp`):
+(`merovingian/homeserver/RequestLockScope.hpp`):
 
 ```cpp
 auto const result = [&]() {
@@ -459,7 +460,7 @@ another transaction by hand.
 
 A frame from the federation worker is input from the process most exposed to
 hostile traffic, not a verified fact. Every worker-to-main relay that carries a
-PDU (`pdu_ingest`, `membership_ingest`, `invite_ingest` in `worker_pool.cpp`)
+PDU (`pdu_ingest`, `membership_ingest`, `invite_ingest` in `WorkerPool.cpp`)
 re-verifies the sender server's signature with main's own
 `remote_key_resolver` and rebuilds the envelope from the verified event before
 anything is persisted (ADR-0071). It also verifies a restricted join's

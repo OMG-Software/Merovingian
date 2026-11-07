@@ -1,14 +1,14 @@
 http_sources = files(
   'client_address.cpp',
   'connection_guard.cpp',
-  'connection_limiter.cpp',
-  'in_flight_budget.cpp',
+  'ConnectionLimiter.cpp',
+  'InFlightBudget.cpp',
   'keep_alive.cpp',
   'library_versions.cpp',
   'OutboundClient.cpp',
   'rate_limit.cpp',
   'request.cpp',
-  'request_limits.cpp',
+  'RequestLimits.cpp',
 )
 
 http_lib = static_library(

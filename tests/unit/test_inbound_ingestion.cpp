@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/federation/EduType.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 
 #include <catch2/catch_test_macros.hpp>

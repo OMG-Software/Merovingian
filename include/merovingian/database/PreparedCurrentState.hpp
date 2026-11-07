@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentStateEvent.hpp"
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 
 #include <string>
 #include <vector>

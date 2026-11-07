@@ -355,7 +355,7 @@ class SiteHookLinkTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.repo = Path(self.temporary.name)
         for path in (
-            "include/merovingian/core/error.hpp",
+            "include/merovingian/core/Error.hpp",
             "src/sync/AGENTS.md",
             "docs/architecture.md",
             "docs/adr/0001-example.md",
@@ -382,7 +382,7 @@ class SiteHookLinkTests(unittest.TestCase):
 
     def test_link_to_source_outside_docs_points_at_the_repository(self) -> None:
         # GIVEN a document in docs/adr linking to a header outside docs/.
-        markdown = "See [error](../../include/merovingian/core/error.hpp#L10)."
+        markdown = "See [error](../../include/merovingian/core/Error.hpp#L10)."
 
         # WHEN its links are rewritten.
         rewritten = self.rewrite(markdown, origin_dir="docs/adr", page_dir="adr")
@@ -390,7 +390,7 @@ class SiteHookLinkTests(unittest.TestCase):
         # THEN the link opens that file on GitHub at the built commit.
         self.assertEqual(
             rewritten,
-            f"See [error]({self.REPO_URL}/blob/abc123/include/merovingian/core/error.hpp#L10).",
+            f"See [error]({self.REPO_URL}/blob/abc123/include/merovingian/core/Error.hpp#L10).",
         )
 
     def test_link_to_a_directory_outside_docs_opens_the_tree_view(self) -> None:

@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/auth/Argon2idAdmission.hpp" // split-shim
-#include "merovingian/auth/Argon2idSlot.hpp"      // split-shim
 
 #include <cstddef>
 #include <optional>

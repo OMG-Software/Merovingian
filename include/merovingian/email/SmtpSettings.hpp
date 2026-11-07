@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/SmtpTestResolution.hpp"
-#include "merovingian/email/smtp_endpoint.hpp"
 
 #include <cstdint>
 #include <optional>

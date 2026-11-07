@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/reload_policy.hpp"
+#include "merovingian/config/ReloadPolicy.hpp"
 
 #include <string>
 

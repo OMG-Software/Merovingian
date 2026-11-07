@@ -11,7 +11,7 @@ This module is security-critical. Changes here affect the server's attack surfac
 | `seccomp_hardening.cpp` | Builds and installs the seccomp-BPF syscall allow-list (always with `SECCOMP_FILTER_FLAG_TSYNC`), and probes every task's `Seccomp:`/`NoNewPrivs:` state |
 | `landlock_hardening.cpp` | ADR-0062 part 3: builds and installs the federation worker's Linux Landlock filesystem ruleset (`apply_worker_landlock`); real syscalls sit behind an injectable `LandlockHardeningOps` table, mirroring `media::DecoderHardeningOps` |
 | `signal_hardening.cpp` | `ignore_sigpipe()`: `sigaction(SIGPIPE, SIG_IGN)`, called first in every executable's `main()` (HTTP-5) |
-| `hardening_self_check.cpp` | Verifies that hardening controls are active; aborts if a required control failed |
+| `HardeningSelfCheck.cpp` | Verifies that hardening controls are active; aborts if a required control failed |
 | `elf_probe.cpp` | Checks ELF binary properties (PIE, stack canaries, RELRO, NX) at startup |
 | `file_metadata.cpp` | Safe file metadata helpers that avoid TOCTOU races |
 

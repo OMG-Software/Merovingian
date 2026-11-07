@@ -4,8 +4,8 @@
 #pragma once
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/SpaceHierarchyRequest.hpp" // split-shim
-#include "merovingian/homeserver/SpaceHierarchyResult.hpp"  // split-shim
+#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
+#include "merovingian/homeserver/SpaceHierarchyResult.hpp"
 
 #include <cstddef>
 #include <cstdint>

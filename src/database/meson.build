@@ -1,6 +1,6 @@
 database_sources = files(
   'connection.cpp',
-  'event_table.cpp',
+  'EventTable.cpp',
   'EventStateGroupTable.cpp',
   'library_versions.cpp',
   'migration_files.cpp',
@@ -10,13 +10,13 @@ database_sources = files(
   'PostgresqlConnectionDeleter.cpp',
   'redaction_view.cpp',
   'postgresql_store.cpp',
-  'runtime_database.cpp',
+  'RuntimeDatabaseConfig.cpp',
   'schema.cpp',
   'sqlite_store.cpp',
   'SqliteConnectionDeleter.cpp',
   'StateGroupEntryTable.cpp',
   'StateGroupTable.cpp',
-  'statement.cpp',
+  'PreparedStatement.cpp',
 )
 
 database_lib = static_library(

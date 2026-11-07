@@ -12,9 +12,12 @@
 
 #include "../support/process_tasks.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -32,9 +35,6 @@
 #include <system_error>
 #include <thread>
 #include <tuple>
-
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace
 {

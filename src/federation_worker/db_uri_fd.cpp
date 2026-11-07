@@ -3,7 +3,9 @@
 
 #include "merovingian/federation_worker/db_uri_fd.hpp"
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+
+#include <unistd.h>
 
 #include <array>
 #include <cerrno>
@@ -12,8 +14,6 @@
 #include <span>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 namespace merovingian::federation_worker
 {

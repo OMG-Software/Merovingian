@@ -13,6 +13,7 @@
 //   - parse_inbound_pdu_envelope: empty input, JSON array, JSON string literal,
 //                                 valid minimal PDU
 
+#include "merovingian/federation/RemoteServerRecord.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/security.hpp"
 

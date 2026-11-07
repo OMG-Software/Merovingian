@@ -3,15 +3,23 @@
 
 #include "merovingian/database/postgresql_store.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
 #include "merovingian/database/PostgresqlConnectionHandle.hpp"
+#include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
+#include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
 #include "merovingian/database/PostgresqlWritePool.hpp"
-#include "merovingian/database/connection_pool.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <arpa/inet.h>
 #include <libpq-fe.h>

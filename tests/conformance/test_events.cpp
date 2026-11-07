@@ -24,14 +24,21 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/SigningKeyLookupResult.hpp"
+#include "merovingian/crypto/SigningKeyRecord.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/events/SigningKeyId.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/redaction.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/EventIdFormat.hpp"
+#include "merovingian/rooms/RedactionRules.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

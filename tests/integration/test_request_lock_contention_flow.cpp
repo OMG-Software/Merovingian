@@ -25,6 +25,8 @@
 // (test_federation_runtime_callbacks.cpp) already does for the federation
 // path.
 
+#include "../support/ScopedThreadJoin.hpp"
+#include "../support/StallingTlsServerState.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -41,9 +43,10 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/http/request.hpp"
-#include "merovingian/identity/identity_client.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/http/Header.hpp"
+#include "merovingian/identity/IdentityServerClient.hpp"
+#include "merovingian/identity/TestForcedIdentityResolution.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
 #include "merovingian/trust_safety/PolicySurface.hpp"
 

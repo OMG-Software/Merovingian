@@ -28,7 +28,7 @@ Always use `event_id.hpp` — never construct an event ID manually.
 
 `event_id.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
 `EventIdFormat::reference_hash`). Room versions 1 and 2, whose `$localpart:server` format this
-is, are not supported and are absent from `rooms/room_version_policy.cpp` (ADR-0076).
+is, are not supported and are absent from `rooms/RoomVersionPolicy.cpp` (ADR-0076).
 
 ## Canonical JSON is required for signing and hashing
 
@@ -51,7 +51,7 @@ The signing payload removes what redaction removes, then `signatures` and `unsig
 ## Authorization rules
 
 `authorization.hpp` is room-version-aware. Always pass the correct `RoomVersionPolicy`
-(from `rooms/room_version_policy.hpp`). Do not assume v10 rules apply to all room versions.
+(from `rooms/RoomVersionPolicy.hpp`). Do not assume v10 rules apply to all room versions.
 
 Authorization must be checked:
 1. Before persisting any locally-created event

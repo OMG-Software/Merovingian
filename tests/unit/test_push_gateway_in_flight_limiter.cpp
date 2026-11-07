@@ -3,7 +3,7 @@
 // F-79 (ADR-0409): requests in flight to one push gateway host, and to one resolved address, are
 // capped, so many subdomains of one server cannot hold the whole delivery budget between them.
 
-#include "merovingian/push/gateway_in_flight_limiter.hpp"
+#include "merovingian/push/GatewayInFlightLimiter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/email/SmtpSendOutcome.hpp"    // split-shim
-#include "merovingian/email/SmtpSendResult.hpp"     // split-shim
-#include "merovingian/email/SmtpSettings.hpp"       // split-shim
-#include "merovingian/email/SmtpTestResolution.hpp" // split-shim
+#include "merovingian/email/SmtpSendOutcome.hpp"
+#include "merovingian/email/SmtpSettings.hpp"
 
 #include <string_view>
 

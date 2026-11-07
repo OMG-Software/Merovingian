@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

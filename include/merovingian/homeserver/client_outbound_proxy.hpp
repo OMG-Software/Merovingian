@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp" // split-shim
-#include "merovingian/homeserver/OutboundDeadline.hpp"          // split-shim
-#include "merovingian/homeserver/runtime_mutex.hpp"
-#include "merovingian/http/in_flight_budget.hpp"
+#include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
+#include "merovingian/http/InFlightBudget.hpp"
 
 #include <algorithm>
 #include <chrono>

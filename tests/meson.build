@@ -215,7 +215,7 @@ shell = find_program('sh')
   )
 
   # Nearly every scenario registers and logs in users, and Argon2id at the production cost was most of these
-  # binaries' CPU time. This sends their calls to tests/support/password_hash_cost.cpp, which refuses any other
+  # binaries' CPU time. This sends their calls to tests/support/RealPasswordHashCost.cpp, which refuses any other
   # cost and then hashes at the minimum. Nothing outside these three executables gets it (ADR-0510).
   password_hash_cost_link_args = ['-Wl,--wrap=crypto_pwhash_str']
 
@@ -223,7 +223,7 @@ shell = find_program('sh')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
-      'support/password_hash_cost.cpp',
+      'support/RealPasswordHashCost.cpp',
       'unit/test_password_hash_cost.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_power.cpp',
@@ -530,7 +530,7 @@ shell = find_program('sh')
     'merovingian-conformance-tests',
     sources: files(
       'conformance/test_main.cpp',
-      'support/password_hash_cost.cpp',
+      'support/RealPasswordHashCost.cpp',
       'conformance/test_account_data_conformance.cpp',
       'conformance/test_appservice_conformance.cpp',
       'conformance/test_appservice_assertion_conformance.cpp',
@@ -670,7 +670,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
-      'support/password_hash_cost.cpp',
+      'support/RealPasswordHashCost.cpp',
       'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_wave3_flow.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',

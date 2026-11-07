@@ -4,7 +4,7 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/SerializeResult.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 
 #include <string_view>
 #include <vector>

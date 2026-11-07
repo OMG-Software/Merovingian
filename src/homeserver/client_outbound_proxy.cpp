@@ -3,7 +3,8 @@
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
 
 #include <algorithm>
 #include <thread>

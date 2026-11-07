@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/auth/AccountState.hpp"   // split-shim
-#include "merovingian/auth/DeviceIdentity.hpp" // split-shim
 #include "merovingian/auth/LoginPolicyDecision.hpp"
 #include "merovingian/auth/PasswordPolicy.hpp"
 #include "merovingian/auth/UserIdentity.hpp"

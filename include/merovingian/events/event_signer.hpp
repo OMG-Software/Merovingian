@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/events/EventSigningDiagnosticField.hpp" // split-shim
-#include "merovingian/events/SignatureVerificationResult.hpp" // split-shim
-#include "merovingian/events/SignedEventResult.hpp"           // split-shim
-#include "merovingian/events/SigningKeyId.hpp"                // split-shim
-#include "merovingian/events/event.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/SerializeResult.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/events/EventSigningDiagnosticField.hpp"
+#include "merovingian/events/SignatureVerificationResult.hpp"
+#include "merovingian/events/SignedEventResult.hpp"
+#include "merovingian/events/SigningKeyId.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstddef>
 #include <string>

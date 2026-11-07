@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/database/PersistentFederationDestination.hpp"
 #include "merovingian/database/PersistentFederationTransaction.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/OutboundClient.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

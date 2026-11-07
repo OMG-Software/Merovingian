@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
 
 #include <cstdint>
 #include <string>

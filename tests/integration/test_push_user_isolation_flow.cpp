@@ -3,12 +3,15 @@
 // This covers cross-user delivery isolation only, not registration limits,
 // gateway circuits, retries, or fairness within a mixed-recipient event.
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "../support/StallingTlsServerState.hpp"
+#include "../support/TlsTestCertificate.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -18,7 +21,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
@@ -26,9 +29,11 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/TlsConnection.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/push/TestForcedPushGatewayResolution.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

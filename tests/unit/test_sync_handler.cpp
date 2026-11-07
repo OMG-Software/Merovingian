@@ -22,13 +22,16 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "../support/edu_relay_context.hpp"
+#include "../support/EduRelayContext.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/room_history_fixture.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -40,16 +43,18 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/dispatch_result.hpp"
+#include "merovingian/homeserver/DispatchResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/sync/stream_token.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -106,7 +111,7 @@ namespace
 
 // Mirrors ipc_escape_json_string in test_federation_worker_flow.cpp — escapes
 // a JSON string for embedding as a content_json value inside a hand-built
-// edu_ingest wire frame, the same shape worker_pool.cpp's
+// edu_ingest wire frame, the same shape WorkerPool.cpp's
 // deserialize_edu_ingest expects.
 [[nodiscard]] auto ipc_escape_json_string(std::string_view raw) -> std::string
 {
@@ -700,10 +705,10 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
 // used for same-server client-to-client sends) wakes a blocked long-poll.
 // A federation-received to-device message (e.g. an Olm-encrypted m.room_key
 // share relayed from a remote homeserver) takes a completely different route
-// to the same to_device_messages table: worker_pool.cpp's
+// to the same to_device_messages table: WorkerPool.cpp's
 // handle_edu_ingest_request(), the function main's request handler calls
 // when a federation worker relays an "edu_ingest" frame over IPC (see
-// worker_event_loop.cpp's edu_sink override). If that path ever stopped
+// WorkerEventLoop.cpp's edu_sink override). If that path ever stopped
 // publishing through the same SyncNotifier — for example if a future change
 // wired main's own edu_sink differently for the worker-enabled case, or the
 // runtime handed to the worker's request handler were not the exact instance
@@ -725,7 +730,7 @@ SCENARIO("Sync long-poll wakes when a federation-relayed EDU reaches to_device_m
         // called once on the same HomeserverRuntime that owns sync_notifier,
         // installing the default edu_sink used both when main handles
         // federation directly and when a worker relays an edu_ingest request
-        // to it (worker_pool.cpp's handle_edu_ingest_request runs against
+        // to it (WorkerPool.cpp's handle_edu_ingest_request runs against
         // this exact runtime either way).
         merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
         REQUIRE(rt.homeserver.federation.edu_sink);

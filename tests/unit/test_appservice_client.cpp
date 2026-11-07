@@ -15,10 +15,12 @@
 #include "merovingian/appservice/AppserviceClient.hpp"
 #include "merovingian/appservice/AppservicePingResult.hpp"
 #include "merovingian/appservice/AppserviceTransaction.hpp"
+#include "merovingian/appservice/registration.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/AppserviceConfig.hpp"
 #include "merovingian/config/Config.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

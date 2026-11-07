@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentDeviceKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/DeviceDisplayNames.hpp" // split-shim
+#include "merovingian/federation/DeviceDisplayNames.hpp"
 
 #include <map>
 #include <optional>

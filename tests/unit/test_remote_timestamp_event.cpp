@@ -8,9 +8,10 @@
 // local homeserver ... should determine, using the `origin_server_ts` property, whether the returned
 // event is closer to the requested timestamp than the closest event that it could find locally".
 
+#include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/event_table.hpp"
-#include "merovingian/homeserver/remote_timestamp_event.hpp"
+#include "merovingian/database/TimeDirection.hpp"
+#include "merovingian/homeserver/RemoteTimestampEvent.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

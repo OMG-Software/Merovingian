@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/ConnectionPreference.hpp" // split-shim
-#include "merovingian/http/KeepAlivePolicy.hpp"      // split-shim
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/ConnectionPreference.hpp"
+#include "merovingian/http/HttpVersion.hpp"
+#include "merovingian/http/KeepAlivePolicy.hpp"
 
 #include <cstdint>
 #include <string>

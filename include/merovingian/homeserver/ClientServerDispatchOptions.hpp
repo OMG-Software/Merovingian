@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
 
 namespace merovingian::homeserver
 {

@@ -8,6 +8,7 @@
 #include "../support/master_key.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 

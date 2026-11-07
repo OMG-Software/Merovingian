@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/error.hpp"
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/Error.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
 
 #include <optional>
 #include <vector>

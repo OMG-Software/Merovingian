@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/stored_room_version.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 
 #include <optional>

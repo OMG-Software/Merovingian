@@ -13,14 +13,14 @@
 // the main thread only (Catch2 is not thread-safe) and the reader thread is joined by an RAII guard.
 // Tags: [store_read_guard][f27].
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/server_acl.hpp"
-#include "merovingian/federation_worker/store_read_guard.hpp"
+#include "merovingian/federation_worker/StoreReadGuard.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

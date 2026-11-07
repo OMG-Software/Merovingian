@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -4,10 +4,18 @@
 #include "merovingian/federation/third_party_invite.hpp"
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/event.hpp"
+#include "merovingian/federation/SignedThirdPartyInvite.hpp"
+#include "merovingian/federation/ThirdPartyBindInvite.hpp"
+#include "merovingian/federation/ThirdPartyBindNotification.hpp"
+#include "merovingian/federation/ThirdPartyBindParse.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchange.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchangeParse.hpp"
 
 #include <algorithm>
 #include <cstddef>

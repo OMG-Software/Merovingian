@@ -2,14 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/appservice/AppserviceRegistration.hpp"            // split-shim
-#include "merovingian/appservice/AppserviceRegistrationFinding.hpp"     // split-shim
-#include "merovingian/appservice/AppserviceRegistrationParseResult.hpp" // split-shim
-#include "merovingian/appservice/AppserviceRegistry.hpp"                // split-shim
-#include "merovingian/appservice/EventInterestFacts.hpp"                // split-shim
-#include "merovingian/appservice/LoadRegistrationsResult.hpp"           // split-shim
-#include "merovingian/appservice/Namespace.hpp"                         // split-shim
-#include "merovingian/appservice/Namespaces.hpp"                        // split-shim
+#include "merovingian/appservice/AppserviceRegistration.hpp"
+#include "merovingian/appservice/AppserviceRegistrationFinding.hpp"
+#include "merovingian/appservice/AppserviceRegistrationParseResult.hpp"
+#include "merovingian/appservice/EventInterestFacts.hpp"
+#include "merovingian/appservice/LoadRegistrationsResult.hpp"
+#include "merovingian/appservice/Namespace.hpp"
 
 #include <string>
 #include <string_view>

@@ -8,7 +8,7 @@
 // the file whose identity they are cached under.
 
 #include "../support/temp_directory.hpp"
-#include "merovingian/crypto/secure_key_bytes.hpp"
+#include "merovingian/crypto/SecureKeyBytes.hpp"
 #include "merovingian/crypto/token_key.hpp"
 
 #include <catch2/catch_test_macros.hpp>

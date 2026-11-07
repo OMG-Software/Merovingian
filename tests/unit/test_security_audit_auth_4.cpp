@@ -17,7 +17,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

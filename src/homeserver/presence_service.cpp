@@ -3,10 +3,17 @@
 #include "merovingian/homeserver/presence_service.hpp"
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/homeserver/PresenceRead.hpp"
+#include "merovingian/homeserver/PresenceReadStatus.hpp"
+#include "merovingian/homeserver/SyncPresenceMode.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/sync/SyncFilter.hpp"
 
 #include <algorithm>
 #include <chrono>

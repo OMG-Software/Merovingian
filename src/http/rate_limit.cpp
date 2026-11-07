@@ -3,6 +3,10 @@
 
 #include "merovingian/http/rate_limit.hpp"
 
+#include "merovingian/http/RateLimitConfig.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
+#include "merovingian/http/RateLimitTier.hpp"
+
 #include <optional>
 #include <string>
 #include <string_view>

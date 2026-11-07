@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/FederationMediaPart.hpp" // split-shim
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/FederationMediaPart.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/MediaRedirectResolutionResult.hpp" // split-shim
+#include "merovingian/homeserver/MediaRedirectResolutionResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
-#include "merovingian/homeserver/RemoteMediaRequestContext.hpp" // split-shim
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
 
 #include <cstdint>
 #include <string>

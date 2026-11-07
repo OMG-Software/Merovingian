@@ -14,6 +14,7 @@
 // |  with a clock past the delay, as the push retry tests call theirs.      |
 // +-------------------------------------------------------------------------+
 
+#include "../support/TlsTestCertificate.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
@@ -28,18 +29,22 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/email/SmtpTestResolution.hpp"
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
+#include "merovingian/homeserver/TlsConnection.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 #include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>
@@ -508,7 +513,7 @@ struct SqliteConnectionCloser final
 
 // Makes every DELETE from one table of the server's database fail, from a second connection, so
 // the server's own write aborts and rolls back as a failed commit would. clear() lifts it so a
-// retry can succeed; the destructor lifts it too. (tests/support/sqlite_insert_fault.hpp does the
+// retry can succeed; the destructor lifts it too. (tests/support/SqliteInsertFault.hpp does the
 // same for INSERT.)
 class SqliteDeleteFault final
 {

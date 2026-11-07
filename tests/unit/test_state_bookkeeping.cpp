@@ -18,12 +18,16 @@
 // receipt of a PDU" (state resolution determines "current state", not
 // arrival order).
 
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
+#include "merovingian/homeserver/EventBookkeeping.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

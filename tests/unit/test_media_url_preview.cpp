@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/media/OpenGraphData.hpp"
+#include "merovingian/media/UrlPreviewCache.hpp"
 #include "merovingian/media/url_preview.hpp"
 
 #include <catch2/catch_test_macros.hpp>

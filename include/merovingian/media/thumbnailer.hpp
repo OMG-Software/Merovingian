@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/library_version.hpp"
-#include "merovingian/media/ThumbnailMethod.hpp" // split-shim
+#include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/media/ThumbnailRequest.hpp"
 #include "merovingian/media/ThumbnailResult.hpp"
 #include "merovingian/media/ThumbnailSourceFormat.hpp"
 #include "merovingian/media/ThumbnailWorkerLibraries.hpp"
 #include "merovingian/media/ThumbnailWorkerRequest.hpp"
 #include "merovingian/media/ThumbnailWorkerResponse.hpp"
-#include "merovingian/media/ThumbnailWorkerStatus.hpp" // split-shim
 #include "merovingian/media/ThumbnailerConfig.hpp"
 
 #include <cstddef>

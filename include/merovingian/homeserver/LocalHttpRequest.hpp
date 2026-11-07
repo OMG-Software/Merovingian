@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/Header.hpp"
 
 #include <cstdint>
 #include <optional>

@@ -8,14 +8,14 @@
 // counterpart. Tests focus on correctness of the encryption handshake, frame
 // delivery, request/response pairing, and graceful shutdown.
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/ipc/channel.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
-#include "merovingian/net/thread_pool.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>

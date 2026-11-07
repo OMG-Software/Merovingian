@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/events/StateEventReference.hpp"    // split-shim
-#include "merovingian/events/StateGroup.hpp"             // split-shim
-#include "merovingian/events/StateKey.hpp"               // split-shim
-#include "merovingian/events/StateKeyHash.hpp"           // split-shim
-#include "merovingian/events/StateResolutionLimits.hpp"  // split-shim
-#include "merovingian/events/StateResolutionRequest.hpp" // split-shim
-#include "merovingian/events/StateResolutionResult.hpp"  // split-shim
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateGroup.hpp"
+#include "merovingian/events/StateKey.hpp"
+#include "merovingian/events/StateKeyHash.hpp"
+#include "merovingian/events/StateResolutionLimits.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/events/StateResolutionResult.hpp"
 #include "merovingian/events/limits.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstddef>
 #include <cstdint>

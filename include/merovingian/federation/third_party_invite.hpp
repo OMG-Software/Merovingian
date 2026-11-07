@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/SignedThirdPartyInvite.hpp"         // split-shim
-#include "merovingian/federation/ThirdPartyBindInvite.hpp"           // split-shim
-#include "merovingian/federation/ThirdPartyBindNotification.hpp"     // split-shim
-#include "merovingian/federation/ThirdPartyBindParse.hpp"            // split-shim
-#include "merovingian/federation/ThirdPartyInviteExchange.hpp"       // split-shim
-#include "merovingian/federation/ThirdPartyInviteExchangeParse.hpp"  // split-shim
-#include "merovingian/federation/ThirdPartyInviteExchangeResult.hpp" // split-shim
+#include "merovingian/federation/ThirdPartyBindParse.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchange.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchangeParse.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchangeResult.hpp"
 
 #include <cstddef>
 #include <cstdint>

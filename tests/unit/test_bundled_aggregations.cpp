@@ -4,11 +4,10 @@
 #include "../support/json_test_support.hpp"
 #include "../support/room_history_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/bundled_aggregations.hpp"
-#include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/BundledAggregations.hpp"
+#include "merovingian/sync/HistoryVisibility.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

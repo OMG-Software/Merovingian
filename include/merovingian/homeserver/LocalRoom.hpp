@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/room_members.hpp"
+#include "merovingian/homeserver/RoomMembers.hpp"
 
 #include <string>
 

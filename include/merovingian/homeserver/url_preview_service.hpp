@@ -4,7 +4,7 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 
 #include <string_view>
 

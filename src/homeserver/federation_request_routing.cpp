@@ -3,8 +3,9 @@
 
 #include "merovingian/homeserver/federation_request_routing.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

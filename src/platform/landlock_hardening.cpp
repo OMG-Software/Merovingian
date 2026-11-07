@@ -5,7 +5,13 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/platform/LandlockAccess.hpp"
+#include "merovingian/platform/LandlockAddRuleOutcome.hpp"
+#include "merovingian/platform/LandlockHardeningOps.hpp"
+#include "merovingian/platform/LandlockHardeningResult.hpp"
+#include "merovingian/platform/LandlockPathRule.hpp"
+#include "merovingian/platform/LandlockSecretExposure.hpp"
 
 #include <algorithm>
 #include <filesystem>

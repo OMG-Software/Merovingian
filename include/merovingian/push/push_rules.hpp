@@ -2,13 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/push/PushCondition.hpp"     // split-shim
-#include "merovingian/push/PushConditionKind.hpp" // split-shim
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/push/PushEvaluationContext.hpp"
 #include "merovingian/push/PushEvaluationResult.hpp"
-#include "merovingian/push/PushRule.hpp"     // split-shim
-#include "merovingian/push/PushRuleKind.hpp" // split-shim
 #include "merovingian/push/PushRuleset.hpp"
 
 #include <cstddef>

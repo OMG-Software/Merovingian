@@ -29,7 +29,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/AccountState.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"

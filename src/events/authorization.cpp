@@ -3,10 +3,16 @@
 
 #include "merovingian/events/authorization.hpp"
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/EventAuthorizationDecision.hpp"
+#include "merovingian/events/MembershipState.hpp"
+#include "merovingian/events/PowerLevelEncoding.hpp"
 #include "merovingian/events/event_signer.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <array>

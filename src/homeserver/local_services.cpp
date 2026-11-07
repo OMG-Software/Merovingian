@@ -6,9 +6,12 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditSinkFields.hpp"
+#include "merovingian/observability/DropEpisodePolicy.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <string>

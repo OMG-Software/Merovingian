@@ -3,8 +3,13 @@
 
 #include "merovingian/crypto/signing_service.hpp"
 
+#include "merovingian/crypto/ServerSignatureResult.hpp"
+#include "merovingian/crypto/SigningKeyRecord.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <string>
 #include <vector>

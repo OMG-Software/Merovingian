@@ -1,3 +1,21 @@
+## 0.12.80
+
+Every header the first split (0.12.79) left now holds at most one type, and every file named after a type holds that type (ADR-0466, ADR-0467). No behaviour changes.
+
+### Changed
+
+- The 104 remaining headers that defined more than one class, struct, union or enum are split: 369 types move to `include/merovingian/<module>/<TypeName>.hpp`, and 25 of them get a matching `<TypeName>.cpp` for their out-of-line members. Among the largest: `media/security.hpp` (12 types), `federation/server_discovery.hpp` (9), `media/thumbnailer.hpp` (9), `appservice/registration.hpp` (8), `federation/membership_endpoints.hpp` (8), `identity/identity_client.hpp` (8), `push/push_gateway_client.hpp` (8) and `tests/support/tls_mock_server.hpp` (8).
+- 99 headers are renamed after the one type they hold, 78 of them with their `.cpp`, for example `core/error.hpp` to `Error.hpp`, `ipc/channel.hpp` to `IpcChannel.hpp`, `observability/logger.hpp` to `SingleLog.hpp` and `sync/sync_filter.hpp` to `SyncFilter.hpp`. A header with one type that only carries a function's input or result keeps its snake_case name for the functions, and the type moves out: `redaction.hpp` keeps `redact_event`, and `RedactionResult` moves to `RedactionResult.hpp` (ADR-0530).
+- The federation worker's `worker_event_loop.hpp` and `.cpp` are now `WorkerEventLoop.hpp` and `.cpp`, still beside `main.cpp` and still the one relative include in `src/` (`src/AGENTS.md`).
+- Comments and documents that named a renamed file by its old name now name the new file. A type that moved out of a renamed header, such as `RuntimeLockRelease`, is named with its own header. The packaging changelogs keep the old names, because they record past releases.
+- ADR-0002 and ADR-0003 link to `RuntimeMutex.hpp` and `RuntimeLockRelease.hpp`, because their old targets are gone and `mkdocs build --strict` refused the dead links. Only the link targets change; the records' text stays as written.
+- `scripts/reject-unsafe.sh` exempts `src/core/SecretBuffer.cpp` from the libsodium boundary under its new name. The old pattern no longer matched any file, so the gate rejected the file's `sodium_mlock` and `sodium_memzero` calls.
+- `database/state_group_tables.hpp` is gone. Its three tables have their own headers and sources, and their shared rules are in `state_group_table_support.hpp`.
+- Every file now includes the headers of the types it names, instead of reaching them through the old multi-type headers.
+- Helpers that two files now share are moved, never copied (ADR-0513): `appservice/secret_view.hpp`, `homeserver::poll_for_tls`, `homeserver::published_request_mutex` and the PostgreSQL and SQLite connection deleters.
+- Three test helper types are moved into their file's anonymous namespace (`PrivateAddressDiscoveryNetwork`, `RelayCase`) or renamed after their type (`ScratchPostgresqlDatabase.hpp`).
+- Two types keep their member definitions in the `.cpp` named for something else, because moving them needs a module-internal header for the helpers they share: `PostgresqlConnection` (`postgresql_store.cpp`) and the `LandlockHardeningOps` constructor (`landlock_hardening.cpp`).
+
 ## 0.12.79
 
 The largest multi-type files are split into one file per class, struct or enum (ADR-0466, ADR-0467). The code quality and security findings SonarQube Cloud raised on the split files are fixed, which changes one behaviour: an appservice may use plain http only to a loopback address or a host the operator lists.

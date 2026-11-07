@@ -5,8 +5,8 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
 #include "merovingian/database/MigrationFileLoadResult.hpp"
+#include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/OfflineMigrationPlanResult.hpp"
-#include "merovingian/database/migration.hpp"
 
 #include <cstdint>
 #include <string>

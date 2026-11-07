@@ -10,10 +10,11 @@
 //     a user joined to an allowed room, and lists what it withholds as inaccessible
 
 #include "../support/json_test_support.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
+#include "merovingian/homeserver/SpaceHierarchyResult.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

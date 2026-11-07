@@ -1,0 +1,765 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/ipc/IpcChannel.hpp"
+
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/crypto/IpcStreamCipher.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <new>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace merovingian::ipc
+{
+
+namespace
+{
+
+    constexpr auto kIpcEnvelopeHeadroom = std::uint64_t{2U * 1024U * 1024U};
+    // The body of a response frame that stands for an answer the sender could not send. The
+    // member name is reserved: no frame body uses it, and the reader treats a reply carrying it
+    // as "no response" for the waiter.
+    constexpr auto failed_response_body = std::string_view{R"({"ipc_error":"response_too_large"})"};
+    constexpr auto kIpcRequestEscapeMultiplier = std::uint64_t{6U};
+    // The frame prefix stores ciphertext bytes in uint32, and each plaintext
+    // frame gains the secretstream's fixed 17-byte authentication overhead.
+    constexpr auto kMaxPlaintextFrameBytes =
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) - 17U;
+
+    [[nodiscard]] auto saturating_add(std::uint64_t lhs, std::uint64_t rhs) noexcept -> std::uint64_t
+    {
+        return rhs > std::numeric_limits<std::uint64_t>::max() - lhs ? std::numeric_limits<std::uint64_t>::max()
+                                                                     : lhs + rhs;
+    }
+
+    [[nodiscard]] auto saturating_multiply(std::uint64_t value, std::uint64_t multiplier) noexcept -> std::uint64_t
+    {
+        return multiplier != 0U && value > std::numeric_limits<std::uint64_t>::max() / multiplier
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : value * multiplier;
+    }
+
+    [[nodiscard]] auto response_frame_budget(std::uint64_t response_bytes) noexcept -> std::uint64_t
+    {
+        // ceil(response_bytes / 3) * 4 without overflowing the intermediate.
+        auto const groups = saturating_add(response_bytes / 3U, response_bytes % 3U == 0U ? 0U : 1U);
+        return saturating_add(saturating_multiply(groups, 4U), kIpcEnvelopeHeadroom);
+    }
+
+    // Extracts a uint64 value for a JSON key from a parsed object. The
+    // canonicaljson DOM stores integers as int64; values are monotonic frame
+    // ids/reply_tos starting at 0, so the int64 range is sufficient. Returns
+    // nullopt for a missing key or a non-integer value.
+    [[nodiscard]] auto extract_uint64(canonicaljson::Object const& obj, std::string_view key) noexcept
+        -> std::optional<std::uint64_t>
+    {
+        for (auto const& member : obj)
+        {
+            if (member.key == key)
+            {
+                auto const* num = std::get_if<std::int64_t>(&member.value->storage());
+                if (num == nullptr || *num < 0)
+                {
+                    return std::nullopt;
+                }
+                return static_cast<std::uint64_t>(*num);
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Whether a parsed reply frame is the notice send_response writes in place of an answer it
+    // could not send.
+    [[nodiscard]] auto reply_is_failure_notice(canonicaljson::Object const& frame) noexcept -> bool
+    {
+        for (auto const& member : frame)
+        {
+            if (member.key == "ipc_error")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The routing members of a frame whose payload did not parse.
+    struct FrameRouting final
+    {
+        std::optional<std::uint64_t> id{};
+        std::optional<std::uint64_t> reply_to{};
+    };
+
+    // Consumes a run of decimal digits from the front of `text` as a uint64.
+    [[nodiscard]] auto take_uint64(std::string_view& text) noexcept -> std::optional<std::uint64_t>
+    {
+        auto value = std::uint64_t{0U};
+        auto const* const first = text.data();
+        auto const result = std::from_chars(first, first + text.size(), value);
+        if (result.ec != std::errc{} || result.ptr == first)
+        {
+            return std::nullopt;
+        }
+        text.remove_prefix(static_cast<std::size_t>(result.ptr - first));
+        return value;
+    }
+
+    // Reads the id and reply_to that IpcChannel::build_frame writes at the very start of every
+    // frame, `{"id":N` and then `,"reply_to":M` for a response, without parsing the rest. Used
+    // only for an authenticated frame whose payload the JSON parser refused (an integer past
+    // 2^53 - 1, invalid UTF-8, ...), so the request it answers can be failed at once instead
+    // of waiting for its timeout (ADR-0322). A frame that does not start that way yields
+    // nothing.
+    [[nodiscard]] auto read_frame_routing(std::string_view frame) noexcept -> FrameRouting
+    {
+        constexpr auto id_prefix = std::string_view{R"({"id":)"};
+        constexpr auto reply_prefix = std::string_view{R"(,"reply_to":)"};
+        auto routing = FrameRouting{};
+        if (!frame.starts_with(id_prefix))
+        {
+            return routing;
+        }
+        frame.remove_prefix(id_prefix.size());
+        routing.id = take_uint64(frame);
+        if (routing.id.has_value() && frame.starts_with(reply_prefix))
+        {
+            frame.remove_prefix(reply_prefix.size());
+            routing.reply_to = take_uint64(frame);
+        }
+        return routing;
+    }
+
+} // namespace
+
+auto frame_bytes_for_response_cap(std::uint64_t max_response_body_bytes) noexcept -> std::uint32_t
+{
+    auto const needed =
+        std::max(response_frame_budget(max_response_body_bytes), static_cast<std::uint64_t>(kIpcMaxFrameBytes));
+    return static_cast<std::uint32_t>(std::min(needed, kMaxPlaintextFrameBytes));
+}
+
+auto frame_bytes_for_transport_caps(std::uint64_t max_response_body_bytes, std::uint64_t federation_request_body_bytes,
+                                    std::uint64_t general_request_body_bytes, std::uint64_t header_bytes,
+                                    std::uint64_t start_line_bytes) noexcept -> std::uint32_t
+{
+    auto const request_body_bytes = std::max(federation_request_body_bytes, general_request_body_bytes);
+    auto request_bytes = saturating_add(request_body_bytes, header_bytes);
+    request_bytes = saturating_add(request_bytes, start_line_bytes);
+    auto const request_budget =
+        saturating_add(saturating_multiply(request_bytes, kIpcRequestEscapeMultiplier), kIpcEnvelopeHeadroom);
+    auto const needed = std::max({response_frame_budget(max_response_body_bytes), request_budget,
+                                  static_cast<std::uint64_t>(kIpcMaxFrameBytes)});
+    return static_cast<std::uint32_t>(std::min(needed, kMaxPlaintextFrameBytes));
+}
+
+namespace
+{
+
+    [[nodiscard]] auto set_socket_send_timeout(int fd, std::chrono::seconds timeout) noexcept -> bool
+    {
+        if (fd < 0 || timeout.count() <= 0)
+        {
+            return true;
+        }
+        auto const tv = ::timeval{
+            .tv_sec = timeout.count(),
+            .tv_usec = 0,
+        };
+        return ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+    }
+
+} // namespace
+
+IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key, std::uint32_t max_frame_bytes)
+    : fd_{std::move(fd)}
+    , max_frame_bytes_{max_frame_bytes == 0U ? kIpcMaxFrameBytes : max_frame_bytes}
+    , cipher_{std::make_unique<crypto::IpcStreamCipher>(
+          role == Role::server ? crypto::IpcStreamCipher::Role::server : crypto::IpcStreamCipher::Role::client,
+          std::move(auth_key),
+          [this](void const* buf, std::size_t n) {
+              return raw_send_exact(buf, n);
+          },
+          [this](void* buf, std::size_t n) {
+              return raw_recv_exact(buf, n);
+          })}
+{
+    // CRY-2: a peer that stops reading must not pin a writer forever. Use a
+    // bounded send timeout so every send path (request, response, notification)
+    // returns instead of blocking indefinitely on a flooded or dead peer.
+    std::ignore = set_socket_send_timeout(fd_.get(), std::chrono::seconds{30});
+}
+
+IpcChannel::~IpcChannel()
+{
+    stop();
+}
+
+auto IpcChannel::set_request_handler(RequestHandler handler) -> void
+{
+    request_handler_ = std::move(handler);
+}
+
+auto IpcChannel::start() -> void
+{
+    running_.store(true);
+    reader_thread_ = std::thread{[this] {
+        reader_loop();
+    }};
+    dispatch_thread_ = std::thread{[this] {
+        dispatcher_loop();
+    }};
+}
+
+auto IpcChannel::stop() noexcept -> void
+{
+    running_.store(false);
+    healthy_.store(false);
+
+    // Wake every pending send_request waiter so callers return quickly instead
+    // of continuing to use the file descriptor while it is being closed.
+    {
+        auto const lk = std::lock_guard{pending_mu_};
+        for (auto& [_, e] : pending_)
+        {
+            e->ready = true;
+            e->cv.notify_one();
+        }
+    }
+
+    // shutdown() is the reliable way to unblock recv() in the reader thread
+    // and to fail in-flight send()/recv() calls without waiting for timeouts.
+    // The reader thread must be joined before the descriptor is closed; closing
+    // it earlier creates a data race between the close and the reader's use of
+    // the same fd (ThreadSanitizer: FileDescriptor::reset vs get).
+    if (fd_.get() >= 0)
+    {
+        ::shutdown(fd_.get(), SHUT_RDWR);
+    }
+
+    if (reader_thread_.joinable())
+    {
+        reader_thread_.join();
+    }
+
+    // Wake the dispatch thread so it drains any queued request frames and
+    // exits (running_ is already false). Joined after the reader so no new
+    // frames can be queued behind the drain.
+    //
+    // dispatch_mu_ is taken (and released) after running_ was cleared and
+    // before the notify. The dispatcher tests running_ under that mutex and
+    // then waits; without this, the store and notify could fall between its
+    // test and its wait, the wakeup would be lost, and the join below would
+    // never return (a FreeBSD CI run hung here).
+    {
+        auto const lk = std::lock_guard{dispatch_mu_};
+    }
+    dispatch_cv_.notify_all();
+    if (dispatch_thread_.joinable())
+    {
+        dispatch_thread_.join();
+    }
+
+    // No writer can hold write_mu_ once shutdown() has caused the blocked
+    // send() to return, so take the lock while closing the fd to serialize
+    // the last close with any straggling write_frame call.
+    {
+        auto const lk = std::lock_guard{write_mu_};
+        fd_.reset();
+    }
+}
+
+auto IpcChannel::healthy() const noexcept -> bool
+{
+    return healthy_.load();
+}
+
+auto IpcChannel::raw_send_exact(void const* buf, std::size_t n) noexcept -> bool
+{
+    auto const* p = static_cast<char const*>(buf);
+    std::size_t sent{0};
+    while (sent < n)
+    {
+        auto const rc = ::send(fd_.get(), p + sent, n - sent, MSG_NOSIGNAL);
+        if (rc <= 0)
+        {
+            return false;
+        }
+        sent += static_cast<std::size_t>(rc);
+    }
+    return true;
+}
+
+auto IpcChannel::raw_recv_exact(void* buf, std::size_t n) noexcept -> bool
+{
+    auto* p = static_cast<char*>(buf);
+    std::size_t received{0};
+    while (received < n)
+    {
+        auto const rc = ::recv(fd_.get(), p + received, n - received, 0);
+        if (rc <= 0)
+        {
+            return false;
+        }
+        received += static_cast<std::size_t>(rc);
+    }
+    return true;
+}
+
+auto IpcChannel::write_frame(std::string_view plaintext) noexcept -> bool
+{
+    auto const pt_len = plaintext.size();
+    if (pt_len > max_frame_bytes_)
+    {
+        return false;
+    }
+    auto const ct_len = static_cast<std::uint32_t>(cipher_->ciphertext_size(pt_len));
+    // Allocation can throw std::bad_alloc; this function is noexcept, so an
+    // uncaught exception would call std::terminate. Allocate defensively and
+    // treat allocation failure as a normal send failure (issue #324).
+    auto ct = std::vector<uint8_t>{};
+    try
+    {
+        ct.resize(ct_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return false;
+    }
+
+    if (!cipher_->encrypt(std::span<uint8_t const>{reinterpret_cast<uint8_t const*>(plaintext.data()), pt_len},
+                          std::span<uint8_t>{ct.data(), ct_len}))
+    {
+        return false;
+    }
+
+    auto const net_len = htonl(ct_len);
+    return raw_send_exact(&net_len, 4U) && raw_send_exact(ct.data(), ct_len);
+}
+
+auto IpcChannel::read_frame() noexcept -> std::optional<std::string>
+{
+    uint32_t net_len{};
+    if (!raw_recv_exact(&net_len, 4U))
+    {
+        return std::nullopt;
+    }
+    auto const ct_len = ntohl(net_len);
+    if (ct_len < static_cast<std::uint32_t>(cipher_->ciphertext_size(0U)) ||
+        ct_len > max_frame_bytes_ + static_cast<std::uint32_t>(cipher_->ciphertext_size(0U)))
+    {
+        return std::nullopt;
+    }
+
+    // See write_frame: defend the noexcept contract against std::bad_alloc.
+    auto ct = std::vector<uint8_t>{};
+    try
+    {
+        ct.resize(ct_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
+    if (!raw_recv_exact(ct.data(), ct_len))
+    {
+        return std::nullopt;
+    }
+
+    auto const pt_len = ct_len - static_cast<std::uint32_t>(cipher_->ciphertext_size(0U));
+    auto pt = std::string{};
+    try
+    {
+        pt.resize(pt_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
+    if (!cipher_->decrypt(std::span<uint8_t const>{ct.data(), ct_len}, std::span<char>{pt.data(), pt_len}))
+    {
+        return std::nullopt;
+    }
+    return pt;
+}
+
+auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
+    -> std::string
+{
+    auto frame = std::string{"{\"id\":"};
+    frame += std::to_string(id);
+    if (reply_to.has_value())
+    {
+        frame += ",\"reply_to\":";
+        frame += std::to_string(*reply_to);
+    }
+    // Append body fields after the opening '{'. A body of exactly "{}" has
+    // no fields — appending it naively would emit a trailing comma
+    // ("{\"id\":1,}"), invalid JSON that makes the peer mark the channel
+    // unhealthy and tear it down (#451).
+    if (body.size() > 2U)
+    {
+        frame += ',';
+        frame.append(body.data() + 1U, body.size() - 1U);
+    }
+    else
+    {
+        frame += '}';
+    }
+    return frame;
+}
+
+auto IpcChannel::report_oversize_drop(std::string_view json_body, char const* kind) const noexcept -> void
+{
+    // Extract the frame "type" for diagnostics without trusting the body to be
+    // well-formed; a failed parse just yields an empty type string.
+    auto const type = ipc::ipc_json_get_str(json_body, "type");
+    LOG_WARNING("ipc: dropping oversize " + std::string{kind} +
+                " frame: body_bytes=" + std::to_string(json_body.size()) + " cap=" + std::to_string(max_frame_bytes_) +
+                " type=\"" + type + "\"");
+}
+
+auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout,
+                              std::string_view verified_origin, std::vector<std::string> edu_digests)
+    -> std::optional<std::string>
+{
+    auto const now = std::chrono::steady_clock::now();
+    // Check conversion and addition before computing an absolute deadline.
+    if (timeout <= std::chrono::seconds::zero() ||
+        timeout > std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::duration::max()))
+    {
+        return std::nullopt;
+    }
+    auto const duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(timeout);
+    if (now.time_since_epoch() > std::chrono::steady_clock::duration::max() - duration)
+    {
+        return std::nullopt;
+    }
+    auto const deadline = now + duration;
+    // Reject before build_frame so an oversize body never pins a huge allocation
+    // (issue #325). The id/reply_to overhead is < 64 bytes, so a body within the
+    // cap cannot push the frame materially over it; the edge case is caught by
+    // write_frame's cap check.
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "request");
+        return std::nullopt;
+    }
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const frame = build_frame(id, std::nullopt, json_body);
+
+    auto entry = std::make_shared<PendingEntry>();
+    entry->verified_origin = verified_origin;
+    entry->edu_digests.reserve(edu_digests.size());
+    for (auto& digest : edu_digests)
+    {
+        entry->edu_digests.push_back({std::move(digest), false});
+    }
+    entry->deadline = deadline;
+    {
+        auto const lk = std::lock_guard{pending_mu_};
+        if (!running_.load() || !healthy_.load())
+        {
+            return std::nullopt;
+        }
+        pending_[id] = entry;
+    }
+
+    {
+        auto const lk = std::lock_guard{write_mu_};
+        if (!write_frame(frame))
+        {
+            auto const lk2 = std::lock_guard{pending_mu_};
+            pending_.erase(id);
+            return std::nullopt;
+        }
+    }
+
+    auto lk = std::unique_lock{pending_mu_};
+    auto const ok = entry->cv.wait_until(lk, deadline, [&] {
+        return entry->ready;
+    });
+    pending_.erase(id);
+    if (!ok || !entry->response.has_value())
+    {
+        return std::nullopt;
+    }
+    return std::move(entry->response);
+}
+
+auto IpcChannel::pending_admits_origin(PendingEntry const& entry, std::string_view claimed_origin) const noexcept
+    -> bool
+{
+    return running_.load() && healthy_.load() && !entry.ready && !claimed_origin.empty() &&
+           entry.verified_origin == claimed_origin && std::chrono::steady_clock::now() < entry.deadline;
+}
+
+auto IpcChannel::matches_pending_origin(std::uint64_t parent_request_id, std::string_view claimed_origin) const -> bool
+{
+    auto const lock = std::lock_guard{pending_mu_};
+    auto const found = pending_.find(parent_request_id);
+    return found != pending_.end() && pending_admits_origin(*found->second, claimed_origin);
+}
+
+auto IpcChannel::consume_pending_edu(std::uint64_t parent_request_id, std::string_view claimed_origin,
+                                     std::string_view edu_digest) -> bool
+{
+    auto const lock = std::lock_guard{pending_mu_};
+    auto const found = pending_.find(parent_request_id);
+    if (found == pending_.end() || !pending_admits_origin(*found->second, claimed_origin))
+    {
+        return false;
+    }
+    for (auto& candidate : found->second->edu_digests)
+    {
+        if (!candidate.used && candidate.digest == edu_digest)
+        {
+            candidate.used = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void
+{
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "response");
+        // The requester is waiting for this answer: tell it there will not be one, in a frame
+        // that cannot itself be over the cap, so it fails now and not at its timeout (F-23).
+        json_body = failed_response_body;
+    }
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const frame = build_frame(id, reply_to, json_body);
+    auto const lk = std::lock_guard{write_mu_};
+    std::ignore = write_frame(frame);
+}
+
+auto IpcChannel::send_notification(std::string_view json_body) -> void
+{
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "notification");
+        return;
+    }
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const frame = build_frame(id, std::nullopt, json_body);
+    auto const lk = std::lock_guard{write_mu_};
+    std::ignore = write_frame(frame);
+}
+
+auto IpcChannel::set_max_in_flight(std::size_t const cap) noexcept -> void
+{
+    max_in_flight_ = cap;
+}
+
+auto IpcChannel::set_dispatch_queue_limits(std::size_t const max_count, std::uint64_t const max_bytes) noexcept -> void
+{
+    dispatch_queue_max_count_ = max_count;
+    dispatch_queue_max_bytes_ = max_bytes;
+}
+
+auto IpcChannel::try_acquire_in_flight() noexcept -> bool
+{
+    auto current = in_flight_.load(std::memory_order_relaxed);
+    while (true)
+    {
+        if (max_in_flight_ > 0U && current >= max_in_flight_)
+        {
+            return false;
+        }
+        if (in_flight_.compare_exchange_weak(current, current + 1U, std::memory_order_relaxed))
+        {
+            return true;
+        }
+    }
+}
+
+auto IpcChannel::release_in_flight() noexcept -> void
+{
+    in_flight_.fetch_sub(1U, std::memory_order_relaxed);
+}
+
+auto IpcChannel::reader_loop() -> void
+{
+    while (running_.load())
+    {
+        auto frame = read_frame();
+        if (!frame.has_value())
+        {
+            healthy_.store(false);
+            break;
+        }
+
+        // Parse the frame once with the fuzzed, depth-bounded canonicaljson
+        // parser and read id/reply_to from the DOM. The previous substring
+        // scanner misparsed frames whose body string values contained
+        // `"id":`-shaped substrings (issue #320).
+        //
+        // A frame that got here passed AEAD authentication and the length checks in read_frame,
+        // so the peer wrote it. Its payload not parsing (an integer past 2^53 - 1, bytes that
+        // are not UTF-8) is a problem with that one request, not with the channel: it fails
+        // that request and the loop carries on. Only a failure of read_frame ends the channel
+        // (ADR-0322).
+        auto const parsed = canonicaljson::parse_json(*frame);
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
+        {
+            auto const routing = read_frame_routing(*frame);
+            LOG_WARNING("ipc: dropping a frame whose payload does not parse: error=" +
+                        std::string{canonicaljson::parse_error_name(parsed.error)} +
+                        " bytes=" + std::to_string(frame->size()) +
+                        " id=" + (routing.id.has_value() ? std::to_string(*routing.id) : std::string{"unreadable"}) +
+                        " reply_to=" +
+                        (routing.reply_to.has_value() ? std::to_string(*routing.reply_to) : std::string{"none"}));
+            if (routing.reply_to.has_value())
+            {
+                // The answer to one of our requests: release its waiter with no response.
+                std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — outlives lock for cv::notify_one()
+                {
+                    auto const lk = std::lock_guard{pending_mu_};
+                    auto const it = pending_.find(*routing.reply_to);
+                    if (it != pending_.end())
+                    {
+                        it->second->ready = true;
+                        entry = it->second;
+                    }
+                }
+                if (entry)
+                {
+                    entry->cv.notify_one();
+                }
+            }
+            continue;
+        }
+        auto const id = extract_uint64(*obj, "id").value_or(0U);
+        auto const reply_to = extract_uint64(*obj, "reply_to");
+
+        if (reply_to.has_value())
+        {
+            // Response to one of our pending send_request calls.
+            // Extract before releasing the lock so cv.notify_one() is called
+            // outside the critical section — notifying under the mutex would
+            // let the waiter wake and immediately re-lock, defeating the cv.
+            std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — outlives lock for cv::notify_one()
+            {
+                auto const lk = std::lock_guard{pending_mu_};
+                auto const it = pending_.find(*reply_to);
+                if (it != pending_.end())
+                {
+                    // A reply that says the peer could not send the answer releases the waiter
+                    // with no response, as a timeout would, but now (F-23).
+                    if (!reply_is_failure_notice(*obj))
+                    {
+                        it->second->response = std::move(*frame);
+                    }
+                    it->second->ready = true;
+                    entry = it->second;
+                }
+            }
+            if (entry)
+            {
+                entry->cv.notify_one();
+            }
+        }
+        else if (id != 0U && request_handler_)
+        {
+            // Queue for the dispatch thread rather than invoking the handler
+            // here: a handler that blocks (e.g. on a lock held by a thread
+            // that is itself waiting inside send_request) must never prevent
+            // this loop from routing the responses queued behind it.
+            {
+                auto const lk = std::lock_guard{dispatch_mu_};
+                auto const frame_bytes = static_cast<std::uint64_t>(frame->size());
+                auto const would_count = dispatch_queue_.size() + 1U;
+                auto const would_bytes = saturating_add(dispatch_queue_bytes_, frame_bytes);
+                if ((dispatch_queue_max_count_ > 0U && would_count > dispatch_queue_max_count_) ||
+                    (dispatch_queue_max_bytes_ > 0U && would_bytes > dispatch_queue_max_bytes_))
+                {
+                    healthy_.store(false);
+                    LOG_WARNING("ipc: dispatch queue flooded (" + std::to_string(would_count) + " frames, " +
+                                std::to_string(would_bytes) + " bytes); marking channel unhealthy");
+                    break;
+                }
+                dispatch_queue_bytes_ = would_bytes;
+                dispatch_queue_.emplace_back(id, std::move(*frame));
+            }
+            dispatch_cv_.notify_one();
+        }
+    }
+
+    // Wake all pending waiters so send_request callers return nullopt.
+    auto const lk = std::lock_guard{pending_mu_};
+    for (auto& [_, e] : pending_)
+    {
+        e->ready = true;
+        e->cv.notify_one();
+    }
+}
+
+auto IpcChannel::dispatcher_loop() -> void
+{
+    while (true)
+    {
+        auto item = std::pair<std::uint64_t, std::string>{};
+        {
+            auto lk = std::unique_lock{dispatch_mu_};
+            dispatch_cv_.wait(lk, [this] {
+                return !dispatch_queue_.empty() || !running_.load();
+            });
+            if (dispatch_queue_.empty())
+            {
+                // running_ is false and the queue is drained — exit.
+                break;
+            }
+            item = std::move(dispatch_queue_.front());
+            dispatch_queue_.pop_front();
+            dispatch_queue_bytes_ -= static_cast<std::uint64_t>(item.second.size());
+        }
+        // Invoked outside dispatch_mu_ so a long-running handler never blocks
+        // the reader thread from queuing further request frames.
+        try
+        {
+            request_handler_(item.first, std::move(item.second));
+        }
+        catch (...)
+        {
+            // A request handler must not be allowed to crash the channel's
+            // dispatch thread and call std::terminate(). Mark the channel
+            // unhealthy and wake every pending send_request waiter so callers
+            // return nullopt instead of hanging.
+            healthy_.store(false);
+            LOG_WARNING("ipc: unhandled exception in request handler; marking channel unhealthy");
+            {
+                auto const lk = std::lock_guard{pending_mu_};
+                for (auto& [_, e] : pending_)
+                {
+                    e->ready = true;
+                    e->cv.notify_one();
+                }
+            }
+            break;
+        }
+    }
+}
+
+} // namespace merovingian::ipc

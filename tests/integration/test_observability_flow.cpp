@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/LocalDatabaseScope.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/AdminOperation.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditSinkFields.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/HealthStatus.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
+#include "merovingian/platform/HardeningStatus.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

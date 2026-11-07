@@ -7,7 +7,13 @@
 // content.body, and as an event_match condition on the event type.
 
 #include "fuzz_input.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/push/PushCondition.hpp"
+#include "merovingian/push/PushConditionKind.hpp"
+#include "merovingian/push/PushEvaluationContext.hpp"
+#include "merovingian/push/PushRule.hpp"
+#include "merovingian/push/PushRuleKind.hpp"
+#include "merovingian/push/PushRuleset.hpp"
 #include "merovingian/push/push_rules.hpp"
 
 #include <cstddef>

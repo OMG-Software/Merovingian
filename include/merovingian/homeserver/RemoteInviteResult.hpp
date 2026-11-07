@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/event.hpp"
+#include "merovingian/events/EventSignature.hpp"
 #include "merovingian/homeserver/RemoteInviteOutcome.hpp"
 
 #include <cstdint>

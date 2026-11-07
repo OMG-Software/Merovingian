@@ -5,19 +5,18 @@
 // the whole integration binary until meson killed it.
 
 #include "bounded_connect.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-
-#include <catch2/catch_test_macros.hpp>
-
-#include <chrono>
-#include <cstdint>
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <arpa/inet.h>
+#include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <chrono>
+#include <cstdint>
 
 namespace
 {

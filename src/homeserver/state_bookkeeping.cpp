@@ -2,12 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateKey.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/events/limits.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/homeserver/CurrentStateRecompute.hpp"
+#include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
+#include "merovingian/homeserver/EventBookkeeping.hpp"
+#include "merovingian/homeserver/NewEventBasis.hpp"
+#include "merovingian/homeserver/StateBeforeResult.hpp"
+#include "merovingian/homeserver/StoredWithBookkeeping.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <functional>

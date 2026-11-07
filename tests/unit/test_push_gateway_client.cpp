@@ -12,9 +12,14 @@
 // |  conformance/integration, matching the identity-client precedent.      |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
-#include "merovingian/push/push_retry_queue.hpp"
+#include "merovingian/push/GatewayCircuitOutcome.hpp"
+#include "merovingian/push/PushGatewayClient.hpp"
+#include "merovingian/push/PushGatewayDevice.hpp"
+#include "merovingian/push/PushGatewayNotification.hpp"
+#include "merovingian/push/PushGatewayResult.hpp"
+#include "merovingian/push/PushRetryQueue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

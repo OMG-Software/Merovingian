@@ -5,11 +5,9 @@
 #include "merovingian/database/MigrationApplyResult.hpp"
 #include "merovingian/database/MigrationDirection.hpp"
 #include "merovingian/database/MigrationPlan.hpp"
-#include "merovingian/database/MigrationRecord.hpp" // split-shim
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/MigrationValidationResult.hpp"
 #include "merovingian/database/SchemaState.hpp"
-#include "merovingian/database/statement.hpp"
 
 #include <cstdint>
 #include <string>

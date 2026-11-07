@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/trust_safety/ignore_list.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 
 #include <algorithm>
 #include <variant>

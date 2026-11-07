@@ -363,8 +363,8 @@ must restart together. See
 
 ## Identity server client (3PID invites)
 
-A dedicated `identity` module (`include/merovingian/identity/identity_client.hpp`,
-`src/identity/identity_client.cpp`) owns the outbound Identity Service API client.
+A dedicated `identity` module (`include/merovingian/identity/IdentityServerClient.hpp`,
+`src/identity/IdentityServerClient.cpp`) owns the outbound Identity Service API client.
 `IdentityServerClient` exposes `store_invite`, `lookup`, `bind`, `unbind`, and
 `requestToken` methods plus pure helpers (`parse_identity_server_url`,
 `build_*_body`, `parse_store_invite_response`, `parse_lookup_response`). It talks
@@ -770,7 +770,7 @@ below the per-source limit) and `security.login_throttle.window` (default
 
 ### Bounded memory (AUTH-10)
 
-Each table (`auth::FailureWindowTable`, `include/merovingian/auth/failure_window_table.hpp`)
+Each table (`auth::FailureWindowTable`, `include/merovingian/auth/FailureWindowTable.hpp`)
 holds at most 100 000 entries. A key is a fixed-size BLAKE2b-256 digest of the
 counter kind and its parts, so a user ID chosen to be 60 KiB costs the same 32
 bytes as a short one, and the account is length-prefixed so two different

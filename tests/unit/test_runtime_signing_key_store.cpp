@@ -3,13 +3,20 @@
 // Unit tests for the multi-key aware RuntimeSigningKeyStore and its interaction
 // with crypto::sign_for_server.
 
+#include "merovingian/crypto/Ed25519Keypair.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/RuntimeMultiKeyEd25519Provider.hpp"
+#include "merovingian/crypto/SignatureResult.hpp"
+#include "merovingian/crypto/VerificationResult.hpp"
 #include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/events/event_signer.hpp"
-#include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -11,7 +11,8 @@
 // |  in conformance/integration with a mock IS.                            |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/identity/identity_client.hpp"
+#include "merovingian/identity/IdentityServerClient.hpp"
+#include "merovingian/identity/IdentityServerUrl.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

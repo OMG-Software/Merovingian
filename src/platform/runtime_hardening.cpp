@@ -3,8 +3,9 @@
 
 #include "merovingian/platform/runtime_hardening.hpp"
 
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/BsdHardeningPlan.hpp"
 #include "merovingian/platform/FilesystemRestrictionPlan.hpp"
 #include "merovingian/platform/HardeningAction.hpp"

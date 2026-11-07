@@ -3,8 +3,8 @@
 #pragma once
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/OperatorReply.hpp" // split-shim
-#include "merovingian/homeserver/ReviewOutcome.hpp" // split-shim
+#include "merovingian/homeserver/OperatorReply.hpp"
+#include "merovingian/homeserver/ReviewOutcome.hpp"
 #include "merovingian/trust_safety/ReviewTarget.hpp"
 
 #include <cstddef>

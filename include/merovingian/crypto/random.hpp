@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/crypto/RandomBytesResult.hpp" // split-shim
-#include "merovingian/crypto/RandomSource.hpp"      // split-shim
 
 #include <cstddef>
 #include <cstdint>

@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/ServerAclDecision.hpp"   // split-shim
-#include "merovingian/federation/ServerAclEvaluation.hpp" // split-shim
-#include "merovingian/federation/ServerAclEvent.hpp"      // split-shim
+#include "merovingian/federation/ServerAclEvaluation.hpp"
+#include "merovingian/federation/ServerAclEvent.hpp"
 
 #include <optional>
 #include <string>

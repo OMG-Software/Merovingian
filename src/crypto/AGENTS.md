@@ -2,7 +2,7 @@
 
 All cryptographic operations flow through the interfaces defined here.
 **Never call libsodium functions directly from outside `src/crypto/`, `src/events/`, `src/auth/`
-or `src/core/secret_buffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for both calls and
+or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for both calls and
 `<sodium.h>` includes (ADR-0014).
 
 ## What lives here
@@ -10,9 +10,9 @@ or `src/core/secret_buffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for 
 | File | Purpose |
 |---|---|
 | `ed25519.cpp` | Key/signature shape validation; key ID format validation; keypair generation into `SecretBuffer` |
-| `runtime_ed25519_provider.cpp` | `RuntimeEd25519Provider` — the production libsodium `Ed25519Provider` |
-| `runtime_multikey_ed25519_provider.cpp` | `RuntimeMultiKeyEd25519Provider` — production provider holding several signing keys |
-| `refusing_ed25519_provider.cpp` | `RefusingEd25519Provider` — the federation worker's provider: refuses every `sign` and `verify` (ADR-0078) |
+| `RuntimeEd25519Provider.cpp` | `RuntimeEd25519Provider` — the production libsodium `Ed25519Provider` |
+| `RuntimeMultiKeyEd25519Provider.cpp` | `RuntimeMultiKeyEd25519Provider` — production provider holding several signing keys |
+| `RefusingEd25519Provider.cpp` | `RefusingEd25519Provider` — the federation worker's provider: refuses every `sign` and `verify` (ADR-0078) |
 | `signing_service.cpp` | Server signing-key selection and delegation to the Ed25519 provider |
 | `hmac_sha1.cpp` | `hmac_sha1`: OpenSSL's `HMAC` with SHA-1, for the coturn REST API's TURN password only (ADR-0480). Not for any new use of SHA-1 |
 | `constant_time.cpp` | Constant-time byte comparison (wraps `sodium_memcmp`) |
@@ -22,13 +22,13 @@ or `src/core/secret_buffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for 
 | `master_key.cpp` | Loads and validates the operator master key into locked memory; fails closed if it cannot be locked |
 | `secret_box.cpp` | `SecretBoxKey` — encrypts server signing secrets at rest (`secretbox:v1:` format) |
 | `token_key.cpp` | `TokenHmacKey` — master-key-derived key for `v3`/`v4` access-token hashing |
-| `ipc_auth_key.cpp` | `IpcAuthKey` — master-key-derived key that authenticates the federation-worker IPC handshake |
-| `ipc_stream_cipher.cpp` | `crypto_kx` session keys and `secretstream` AEAD framing for the IPC channel |
+| `IpcAuthKey.cpp` | `IpcAuthKey` — master-key-derived key that authenticates the federation-worker IPC handshake |
+| `IpcStreamCipher.cpp` | `crypto_kx` session keys and `secretstream` AEAD framing for the IPC channel |
 
 ## Security rules — non-negotiable
 
 1. **Never log key material.** No private key bytes, signatures, or access tokens in log output.
-   Wrap sensitive data in `SecretBuffer` from `core/secret_buffer.hpp`.
+   Wrap sensitive data in `SecretBuffer` from `core/SecretBuffer.hpp`.
 
 2. **Always use constant-time comparison for secrets.** Call `constant_time_equal()` from
    `constant_time.hpp`. Never use `==`, `memcmp`, or `std::equal` on secret bytes.

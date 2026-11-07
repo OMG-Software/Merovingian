@@ -3,14 +3,14 @@
 
 #include "merovingian/canonicaljson/library_versions.hpp"
 
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+
+#include <yyjson.h>
 
 #include <bit>
 #include <cstdint>
 #include <string>
 #include <vector>
-
-#include <yyjson.h>
 
 namespace merovingian::canonicaljson
 {

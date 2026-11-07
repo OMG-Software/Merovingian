@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/email/smtp_client.hpp"
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/email/SmtpSendOutcome.hpp"
+#include "merovingian/email/SmtpSendResult.hpp"
+#include "merovingian/email/SmtpSettings.hpp"
+#include "merovingian/email/SmtpTestResolution.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/platform/file_metadata.hpp"

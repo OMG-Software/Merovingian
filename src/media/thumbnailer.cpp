@@ -3,9 +3,23 @@
 
 #include "merovingian/media/thumbnailer.hpp"
 
-#include "merovingian/core/error.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/Error.hpp"
+#include "merovingian/core/ErrorCode.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+#include "merovingian/core/Linkage.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
+#include "merovingian/media/ThumbnailRequest.hpp"
+#include "merovingian/media/ThumbnailResult.hpp"
+#include "merovingian/media/ThumbnailSourceFormat.hpp"
+#include "merovingian/media/ThumbnailWorkerLibraries.hpp"
+#include "merovingian/media/ThumbnailWorkerRequest.hpp"
+#include "merovingian/media/ThumbnailWorkerResponse.hpp"
+#include "merovingian/media/ThumbnailWorkerStatus.hpp"
+#include "merovingian/media/ThumbnailerConfig.hpp"
+
+#include <fcntl.h>
+#include <poll.h>
 
 #include <algorithm>
 #include <array>
@@ -16,16 +30,13 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <signal.h>
 #include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif

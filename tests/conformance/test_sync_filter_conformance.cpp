@@ -22,8 +22,9 @@
 // |    An empty list means "no restriction" — all events pass.              |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/SyncFilter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

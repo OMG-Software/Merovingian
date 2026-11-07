@@ -4,13 +4,14 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/PersistentDeviceKey.hpp"
@@ -24,6 +25,8 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/AuthEventSlots.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -31,14 +34,22 @@
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/events/unsigned_data.hpp"
+#include "merovingian/federation/EduDispositionResult.hpp"
+#include "merovingian/federation/EduDispositionStatus.hpp"
+#include "merovingian/federation/EduIdempotenceWindow.hpp"
+#include "merovingian/federation/EduType.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationResponse.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
+#include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/PduIngestionResult.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -47,8 +58,11 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/AdminAuthResult.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
@@ -58,6 +72,13 @@
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/PublishedStreamOrdering.hpp"
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
+#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
+#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -67,11 +88,9 @@
 #include "merovingian/homeserver/operator_admin.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
 #include "merovingian/homeserver/public_rooms.hpp"
-#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -83,10 +102,11 @@
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/CorrelationScope.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -1675,7 +1695,7 @@ namespace
                 // #479 P1 fix: this is the single convergence point for every
                 // accepted federation PDU — both the direct main-process path
                 // (inbound_request.cpp calling runtime.pdu_sink) and the
-                // worker-relayed path (worker_pool.cpp's pdu_ingest handler
+                // worker-relayed path (WorkerPool.cpp's pdu_ingest handler
                 // calling this same runtime_.federation.pdu_sink) land here
                 // exactly once per accepted PDU, so this cannot double-deliver.
                 // Without this call, an event from a remote room member never
@@ -2284,7 +2304,7 @@ namespace
             // It is invoked from two call sites with different locking states:
             //   - the direct path (handle_federation_http_request) releases
             //     rt->mutex before dispatching into federation::inbound_request.cpp;
-            //   - the worker-relay path (worker_pool.cpp's
+            //   - the worker-relay path (WorkerPool.cpp's
             //     handle_membership_ingest_request) already holds rt->mutex when
             //     it calls this callback.
             // rt->mutex is recursive (RuntimeMutex), so acquiring it here is safe in
@@ -2840,7 +2860,7 @@ namespace
             // above — this callback mutates store.state/events/memberships and
             // the stream-ordering/sync-stream-id counters with no lock held by
             // its direct-path caller, while the worker-relay path
-            // (handle_invite_ingest_request in worker_pool.cpp) already holds
+            // (handle_invite_ingest_request in WorkerPool.cpp) already holds
             // rt->mutex. Take only the global recursive mutex, never a room
             // stripe mutex, so the lock order can never invert against
             // ingest_pdu_event's documented stripe-then-global ordering.
@@ -5129,7 +5149,7 @@ namespace
 // Signature verification (receipt step 2) is the caller's job, done before
 // this function takes any lock because resolving a key may go to the network:
 // federation::authorize_federation_pdu() in inbound_request.cpp on the
-// same-process path, and handle_pdu_ingest_request() in worker_pool.cpp, with
+// same-process path, and handle_pdu_ingest_request() in WorkerPool.cpp, with
 // main's own admitted key-only helper, for a PDU relayed by a federation worker
 // (ADR-0071). This function re-checks authorization and content-hash
 // integrity.
@@ -5792,7 +5812,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     auto guard = RuntimeLock{runtime.mutex};
     // Publish the guard so a blocking network call further down the stack —
     // notably a remote media fetch — can release it for the duration. See
-    // RuntimeLockRelease in request_lock.hpp.
+    // RuntimeLockRelease in RuntimeLockRelease.hpp.
     auto const lock_scope = RequestLockScope{guard};
     auto const encoded_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
     if (core::path_component_contains_nul(encoded_path))

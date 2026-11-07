@@ -4,12 +4,21 @@
 // scenarios spawn the real sandboxed worker binary and verify that an image is
 // genuinely decoded, resampled, and re-encoded — not passed through unchanged.
 
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
+#include "merovingian/media/ThumbnailRequest.hpp"
+#include "merovingian/media/ThumbnailResult.hpp"
+#include "merovingian/media/ThumbnailWorkerResponse.hpp"
+#include "merovingian/media/ThumbnailWorkerStatus.hpp"
+#include "merovingian/media/ThumbnailerConfig.hpp"
 #include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 #include "support/temp_directory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
 #include <cstdint>
@@ -20,10 +29,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace
 {

@@ -3,12 +3,22 @@
 
 #include "merovingian/events/state_resolution.hpp"
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateGroup.hpp"
+#include "merovingian/events/StateKey.hpp"
+#include "merovingian/events/StateKeyHash.hpp"
+#include "merovingian/events/StateResolutionLimits.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/events/StateResolutionResult.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
 #include <algorithm>
 #include <cstdint>

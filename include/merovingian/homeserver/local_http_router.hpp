@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
 
 #include <cstdint>
 #include <optional>

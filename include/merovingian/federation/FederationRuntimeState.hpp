@@ -11,10 +11,10 @@
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/KeyResolutionBucket.hpp"
 #include "merovingian/federation/KeyResolutionFailure.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 

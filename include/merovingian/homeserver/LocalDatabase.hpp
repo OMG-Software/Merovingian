@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/RoomPositionIndex.hpp"
-#include "merovingian/homeserver/session_table.hpp"
+#include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
-#include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/AuditRateGate.hpp"
 
 #include <cstddef>
 #include <cstdint>

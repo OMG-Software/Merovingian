@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/crypto/ipc_stream_cipher.hpp"
+#include "merovingian/crypto/IpcAuthKey.hpp"
+#include "merovingian/crypto/IpcStreamCipher.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

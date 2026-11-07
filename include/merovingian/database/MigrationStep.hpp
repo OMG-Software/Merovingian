@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/database/MigrationDirection.hpp"
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 
 #include <cstdint>
 #include <string>

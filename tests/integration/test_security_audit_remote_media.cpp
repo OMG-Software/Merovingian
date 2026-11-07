@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

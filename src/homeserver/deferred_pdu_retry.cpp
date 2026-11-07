@@ -8,7 +8,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <chrono>

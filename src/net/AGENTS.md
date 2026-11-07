@@ -7,17 +7,17 @@ No Matrix-specific logic lives here.
 
 | File | Responsibility |
 |---|---|
-| `tcp_acceptor.cpp` | Opens and binds listening sockets with `SOCK_CLOEXEC` and `SO_REUSEADDR`; accepts inbound TCP connections and hands them to the HTTP layer |
-| `listener.cpp` | Builds `ListenerPlan` / `RuntimeListeners` from config (client and federation bind addresses, TLS settings); makes no socket calls |
-| `thread_pool.cpp` | Fixed-size thread pool; tasks submitted via `submit()`; `worker_count()` sizes the dispatcher's caps |
-| `connection_parker.cpp` | `ConnectionParker`: one `poll(2)` thread holding connections that wait for input; hands a connection out only once readable, under a global and a per-client cap with an RAII `ActiveShare` (ADR-0077) |
+| `TcpAcceptor.cpp` | Opens and binds listening sockets with `SOCK_CLOEXEC` and `SO_REUSEADDR`; accepts inbound TCP connections and hands them to the HTTP layer |
+| `RuntimeListeners.cpp` | Builds `ListenerPlan` / `RuntimeListeners` from config (client and federation bind addresses, TLS settings); makes no socket calls |
+| `ThreadPool.cpp` | Fixed-size thread pool; tasks submitted via `submit()`; `worker_count()` sizes the dispatcher's caps |
+| `ConnectionParker.cpp` | `ConnectionParker`: one `poll(2)` thread holding connections that wait for input; hands a connection out only once readable, under a global and a per-client cap with an RAII `ActiveShare` (ADR-0077) |
 | `loopback_literal.cpp` | `is_loopback_ip_literal`: a 127.0.0.0/8 dotted quad or `::1` (bracketed or bare), never a name; shared by SMTP and the appservice cleartext rule |
-| `shutdown_signal.cpp` | Catches `SIGTERM` / `SIGINT` and initiates graceful shutdown |
+| `ShutdownSignal.cpp` | Catches `SIGTERM` / `SIGINT` and initiates graceful shutdown |
 
 ## Rules
 
 - **All sockets must be opened with `O_CLOEXEC` / `SOCK_CLOEXEC`.** File descriptors must not
-  leak across `fork()` or `exec()`. Use `FileDescriptor` from `core/file_descriptor.hpp`.
+  leak across `fork()` or `exec()`. Use `FileDescriptor` from `core/FileDescriptor.hpp`.
 - **Thread pool threads must not throw.** Any exception that escapes a task terminates the
   process. Wrap task bodies in `try/catch` and log the error.
 - **Graceful shutdown**: stop accepting, then stop the `ConnectionParker` (it closes every

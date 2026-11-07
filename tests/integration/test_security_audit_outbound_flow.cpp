@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>

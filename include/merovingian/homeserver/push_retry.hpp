@@ -3,11 +3,10 @@
 #pragma once
 
 #include "merovingian/config/PushConfig.hpp"
-#include "merovingian/homeserver/PushRetryJob.hpp" // split-shim
-#include "merovingian/homeserver/periodic_job.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
-#include "merovingian/push/push_retry_queue.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
+#include "merovingian/push/PushGatewayClient.hpp"
+#include "merovingian/push/PushRetry.hpp"
 
 #include <chrono>
 #include <cstddef>

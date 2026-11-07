@@ -7,9 +7,9 @@
 // See docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md
 // and tests/integration/AGENTS.md.
 
-#include "../support/sqlite_insert_fault.hpp"
+#include "../support/SqliteInsertFault.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <merovingian/database/PersistentStore.hpp>

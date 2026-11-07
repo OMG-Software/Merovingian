@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/LocalRedactionCheck.hpp" // split-shim
+#include "merovingian/homeserver/LocalRedactionCheck.hpp"
 
 #include <cstddef>
 #include <string_view>

@@ -3,17 +3,17 @@
 
 // Test-only exec interposer. Nothing here reads stdin, writes stdout, decodes an
 // image or constructs a worker frame. The real worker retains both pipe ends.
-#include "merovingian/core/file_descriptor.hpp"
-
-#include <cerrno>
-#include <chrono>
-#include <filesystem>
-#include <tuple>
+#include "merovingian/core/FileDescriptor.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <filesystem>
+#include <tuple>
 
 #ifndef MEROVINGIAN_TEST_THUMBNAIL_WORKER
 #error "The thumbnail gate requires the actual built thumbnail worker"

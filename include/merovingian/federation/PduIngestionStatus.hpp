@@ -14,7 +14,7 @@ enum class PduIngestionStatus : std::uint8_t
     // Legacy status from the pre-ADR-0064 state-conflict-resolver plumbing
     // (removed in phase B2 — see the ADR). No production sink produces this
     // any more; kept only so the worker IPC wire format
-    // (worker_pool.cpp/worker_event_loop.cpp) stays a stable, exhaustive set.
+    // (WorkerPool.cpp/WorkerEventLoop.cpp) stays a stable, exhaustive set.
     rejected_state_conflict,
     rejected_invalid,
     internal_error,

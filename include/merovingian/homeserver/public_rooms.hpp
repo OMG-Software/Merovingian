@@ -3,11 +3,12 @@
 
 #pragma once
 
-#include "merovingian/appservice/registration.hpp"
-#include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/appservice/AppserviceRegistry.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
-#include "merovingian/homeserver/PublicRoomsScope.hpp" // split-shim
+#include "merovingian/homeserver/PublicRoomsScope.hpp"
 
 #include <cstddef>
 #include <optional>

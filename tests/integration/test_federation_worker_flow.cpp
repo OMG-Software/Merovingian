@@ -9,17 +9,19 @@
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
-#include "../support/edu_relay_context.hpp"
+#include "../support/EduRelayContext.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/ingested_state_fixture.hpp"
-#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
 #include "bounded_connect.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -30,9 +32,11 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/crypto/Ed25519Keypair.hpp"
+#include "merovingian/crypto/IpcAuthKey.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentDevice.hpp"
@@ -44,15 +48,18 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/EduDispositionResult.hpp"
+#include "merovingian/federation/EduDispositionStatus.hpp"
+#include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
@@ -61,20 +68,19 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/federation_proxy.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
+#include "merovingian/homeserver/WorkerSupervisor.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
-#include "merovingian/net/shutdown_signal.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/net/thread_pool.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/net/ShutdownSignal.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/net/ThreadPool.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
@@ -142,7 +148,7 @@ using merovingian::http::OutboundRequest;
 // Derives the worker IPC auth key material a test hands directly to a
 // WorkerSupervisor it constructs itself (bypassing WorkerPool, which would
 // otherwise do this derivation once for every shard — see
-// WorkerPool::WorkerPool in src/homeserver/worker_pool.cpp). Mirrors that
+// WorkerPool::WorkerPool in src/homeserver/WorkerPool.cpp). Mirrors that
 // same derivation from the same master key file so the standalone
 // WorkerSupervisor scenarios below authenticate against a real worker
 // exactly as WorkerPool-driven scenarios do.
@@ -310,8 +316,8 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
 // AF_UNIX channel a real worker uses. That leaves one layer of the production
 // path completely untested: whether a large, deeply nested EDU payload
 // survives serialize -> AEAD-encrypt -> frame -> decrypt -> deserialize on a
-// *real* ipc::IpcChannel pair, the same transport worker_event_loop.cpp's
-// edu_sink override and worker_pool.cpp's request handler actually use. This
+// *real* ipc::IpcChannel pair, the same transport WorkerEventLoop.cpp's
+// edu_sink override and WorkerPool.cpp's request handler actually use. This
 // mirrors test_ipc_framing.cpp's socketpair/channel-pair fixture (not shared
 // via tests/support/ per its own rule that I/O helpers don't belong there).
 struct IpcTestSocketPair final
@@ -1508,9 +1514,9 @@ SCENARIO("A real worker's relays of a signed transaction's EDUs all match the di
 SCENARIO("handle_membership_ingest_request persists a worker-relayed federated join to main's own store",
          "[integration][federation-worker][membership][send_join]")
 {
-    // This drives the actual new code from this fix — worker_pool.cpp's
+    // This drives the actual new code from this fix — WorkerPool.cpp's
     // handle_membership_ingest_request() — through its real wire format: a raw
-    // JSON string shaped exactly like worker_event_loop.cpp's
+    // JSON string shaped exactly like WorkerEventLoop.cpp's
     // serialize_membership_ingest() produces, in and out. Driving a real
     // send_join through a real worker subprocess end-to-end would additionally
     // require it to pass the "remote is unknown" federation-policy gate ahead
@@ -1806,9 +1812,9 @@ SCENARIO("handle_membership_ingest_request reports 501 when membership_acceptor 
 SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device EDU to main's to-device queue",
          "[integration][federation-worker][edu][to-device][e2ee]")
 {
-    // Drives worker_pool.cpp's handle_edu_ingest_request() through its real
+    // Drives WorkerPool.cpp's handle_edu_ingest_request() through its real
     // wire format: a raw JSON string shaped exactly like
-    // worker_event_loop.cpp's serialize_edu_ingest() produces, in and out —
+    // WorkerEventLoop.cpp's serialize_edu_ingest() produces, in and out —
     // the same pattern the membership_ingest scenario above uses, and for the
     // same reason: exercising the real relay logic without needing a live
     // remote signing key to clear the federation-policy gate ahead of it.
@@ -1997,7 +2003,7 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
     // Every scenario above calls handle_edu_ingest_request() (or the local
     // transaction-body-parser path in test_federation_inbound_flow.cpp)
     // in-process, as a plain function call. None of them send a single byte
-    // over the real transport a worker actually uses: worker_event_loop.cpp's
+    // over the real transport a worker actually uses: WorkerEventLoop.cpp's
     // edu_sink override serializes the envelope and calls
     // IpcChannel::send_request(), which AEAD-encrypts and frames it before it
     // ever reaches main's request handler. If a large, deeply nested payload
@@ -2024,7 +2030,7 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
         REQUIRE(runtime.federation.edu_sink);
 
         auto channels = merovingian::tests::make_edu_relay_channels();
-        // Mirrors worker_pool.cpp's WorkerSupervisor::set_request_handler's
+        // Mirrors WorkerPool.cpp's WorkerSupervisor::set_request_handler's
         // "edu_ingest" branch: dispatch the request body to
         // handle_edu_ingest_request() against main's own runtime and send the
         // result back over the same channel.
@@ -2396,9 +2402,9 @@ SCENARIO("A worker-relayed EDU reaches edu_sink only if the verified body carrie
 SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invite to main's own store",
          "[integration][federation-worker][invite]")
 {
-    // Drives worker_pool.cpp's handle_invite_ingest_request() through its
+    // Drives WorkerPool.cpp's handle_invite_ingest_request() through its
     // real wire format: a raw JSON string shaped exactly like
-    // worker_event_loop.cpp's serialize_invite_ingest() produces, in and out
+    // WorkerEventLoop.cpp's serialize_invite_ingest() produces, in and out
     // — the same pattern the membership_ingest and edu_ingest scenarios
     // above use, and for the same reason: a real end-to-end PUT
     // /_matrix/federation/{v1,v2}/invite through a real worker subprocess
@@ -2598,7 +2604,7 @@ SCENARIO("handle_invite_ingest_request reports 501 when invite_handler is not wi
 SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against main's own store",
          "[integration][federation-worker][e2ee][otk]")
 {
-    // Drives worker_pool.cpp's handle_otk_claim_ingest_request() through its
+    // Drives WorkerPool.cpp's handle_otk_claim_ingest_request() through its
     // real wire format, the same pattern the other *_ingest scenarios in
     // this file use.
     //
@@ -2773,7 +2779,7 @@ SCENARIO("handle_otk_claim_ingest_request returns no keys when the requested dev
 SCENARIO("handle_user_devices_ingest_request reads a device list from main's own store",
          "[integration][federation-worker][e2ee][query-relay]")
 {
-    // Drives worker_pool.cpp's handle_user_devices_ingest_request() through
+    // Drives WorkerPool.cpp's handle_user_devices_ingest_request() through
     // its real wire format, the same pattern the *_ingest scenarios above
     // use.
     //
@@ -3029,7 +3035,7 @@ SCENARIO("handle_public_rooms_ingest_request lists the directory from main's own
 SCENARIO("handle_event_query_ingest_request reads an event from main's own store regardless of shard ownership",
          "[integration][federation-worker][query-relay]")
 {
-    // Drives worker_pool.cpp's handle_event_query_ingest_request() through
+    // Drives WorkerPool.cpp's handle_event_query_ingest_request() through
     // its real wire format, the same pattern the *_ingest scenarios above
     // use.
     //

@@ -2,18 +2,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/AccountState.hpp"
 #include "merovingian/config/RegistrationSecurityConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
-#include "merovingian/homeserver/AccountSummary.hpp"    // split-shim
-#include "merovingian/homeserver/AdminAuthResult.hpp"   // split-shim
-#include "merovingian/homeserver/DeactivationAudit.hpp" // split-shim
+#include "merovingian/homeserver/AccountSummary.hpp"
+#include "merovingian/homeserver/AdminAuthResult.hpp"
+#include "merovingian/homeserver/DeactivationAudit.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/OpenidTokenIssueResult.hpp" // split-shim
+#include "merovingian/homeserver/LocalSession.hpp"
+#include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
-#include "merovingian/homeserver/PasswordVerificationResult.hpp" // split-shim
+#include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/SessionRefreshResult.hpp"
-#include "merovingian/homeserver/SsoRedirectResult.hpp" // split-shim
+#include "merovingian/homeserver/SsoRedirectResult.hpp"
 
 #include <cstddef>
 #include <cstdint>

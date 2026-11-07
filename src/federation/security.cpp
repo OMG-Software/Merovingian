@@ -4,8 +4,15 @@
 #include "merovingian/federation/security.hpp"
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/federation/FederationDiscoveryDecision.hpp"
+#include "merovingian/federation/FederationRequestSignature.hpp"
+#include "merovingian/federation/FederationVerificationDecision.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustDecision.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

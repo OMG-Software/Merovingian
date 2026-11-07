@@ -15,7 +15,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/identity/identity_client.hpp"
+#include "merovingian/identity/TestForcedIdentityResolution.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

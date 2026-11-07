@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
+#include "merovingian/platform/HardeningStatus.hpp"
+#include "merovingian/platform/SeccompProbeResult.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp" // split-shim
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstddef>
 #include <string>

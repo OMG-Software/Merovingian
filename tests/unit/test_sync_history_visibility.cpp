@@ -19,8 +19,10 @@
 
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/history_visibility.hpp"
-#include "merovingian/sync/room_read_access.hpp"
+#include "merovingian/sync/HistoryVisibility.hpp"
+#include "merovingian/sync/HistoryVisibilityValue.hpp"
+#include "merovingian/sync/RoomReadAccess.hpp"
+#include "merovingian/sync/RoomReadKind.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

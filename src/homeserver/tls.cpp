@@ -3,8 +3,13 @@
 
 #include "merovingian/homeserver/tls.hpp"
 
+#include "merovingian/homeserver/TlsConnection.hpp"
+#include "merovingian/homeserver/TlsConnectionResult.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 
 #include <fcntl.h>

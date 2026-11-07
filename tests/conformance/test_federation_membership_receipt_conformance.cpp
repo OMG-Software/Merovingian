@@ -6,15 +6,16 @@
 // checks to the event they carry.
 
 #include "../federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/InviteAcceptResult.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/MembershipAcceptResult.hpp"
+#include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

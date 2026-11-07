@@ -20,6 +20,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/homeserver/default_push_ruleset.hpp"
+#include "merovingian/push/PushEvaluationContext.hpp"
 #include "merovingian/push/push_rules.hpp"
 
 #include <catch2/catch_test_macros.hpp>

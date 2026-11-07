@@ -3,15 +3,13 @@
 
 #pragma once
 
-#include "merovingian/federation/FederationDestination.hpp"       // split-shim
-#include "merovingian/federation/FederationTlsOriginDecision.hpp" // split-shim
-#include "merovingian/federation/LiteralDiscoveryOptIn.hpp"       // split-shim
-#include "merovingian/federation/ResolvedAddressSet.hpp"          // split-shim
-#include "merovingian/federation/ServerDiscoveryNetwork.hpp"      // split-shim
-#include "merovingian/federation/ServerDiscoveryResult.hpp"       // split-shim
-#include "merovingian/federation/SrvRecord.hpp"                   // split-shim
-#include "merovingian/federation/WellKnownHopResponse.hpp"        // split-shim
-#include "merovingian/federation/WellKnownServerResult.hpp"       // split-shim
+#include "merovingian/federation/FederationTlsOriginDecision.hpp"
+#include "merovingian/federation/LiteralDiscoveryOptIn.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownHopResponse.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 
 #include <cstdint>
 #include <functional>

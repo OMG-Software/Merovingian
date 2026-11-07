@@ -18,24 +18,28 @@
 // Tags: [worker_relay_signature].
 
 #include "../federation_signing_test_support.hpp"
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/remote_room_fixture.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -79,7 +83,7 @@ constexpr auto attacker_key_seed = "worker-relay-attacker-seed";
 }
 
 // The wire frame a worker sends for pdu_ingest / membership_ingest, built from
-// an envelope the way worker_event_loop.cpp's append_envelope_fields does.
+// an envelope the way WorkerEventLoop.cpp's append_envelope_fields does.
 // `type` is the frame type; `endpoint` is set for membership_ingest.
 [[nodiscard]] auto envelope_frame(std::string_view type, InboundPduEnvelope const& env,
                                   std::optional<std::string> const& endpoint = std::nullopt) -> std::string

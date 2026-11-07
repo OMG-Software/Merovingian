@@ -3,11 +3,11 @@
 
 #pragma once
 
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/federation/OutboundCall.hpp"              // split-shim
-#include "merovingian/federation/OutboundTransaction.hpp"       // split-shim
-#include "merovingian/federation/OutboundTransactionResult.hpp" // split-shim
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/federation/FederationDestination.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
+#include "merovingian/federation/OutboundTransactionResult.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 

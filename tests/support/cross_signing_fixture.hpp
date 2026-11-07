@@ -7,13 +7,15 @@
 // user-signing keys' signatures by the master key (Client-Server API, CrossSigningKey), so a fixture with
 // invented key text and signature text cannot be uploaded.
 
-#include "CrossSigningKeyPair.hpp" // split-shim
-#include "CrossSigningSet.hpp"     // split-shim
+#include "CrossSigningKeyPair.hpp"
+#include "CrossSigningSet.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/signable.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 

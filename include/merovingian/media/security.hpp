@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/media/AdminQuarantineAction.hpp" // split-shim
 #include "merovingian/media/AdminQuarantineRequest.hpp"
 #include "merovingian/media/DecoderSafetyPolicy.hpp"
 #include "merovingian/media/DecoderSafetyRequest.hpp"

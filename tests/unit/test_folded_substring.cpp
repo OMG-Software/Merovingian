@@ -5,7 +5,7 @@
 // The Matrix v1.19 spec gives the three search terms no length limit and no matching algorithm; what is
 // tested here is the project's rule that a client's term and text never cost more than a pass over the text.
 
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -23,6 +23,8 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/json_test_support.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/signable.hpp"

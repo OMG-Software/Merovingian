@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/event.hpp"
-#include "merovingian/federation/FederationDiscoveryDecision.hpp"    // split-shim
-#include "merovingian/federation/FederationRequestSignature.hpp"     // split-shim
-#include "merovingian/federation/FederationVerificationDecision.hpp" // split-shim
-#include "merovingian/federation/RemoteServerRecord.hpp"             // split-shim
-#include "merovingian/federation/RemoteTrustDecision.hpp"            // split-shim
-#include "merovingian/federation/RemoteTrustState.hpp"               // split-shim
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/events/EventSignature.hpp"
+#include "merovingian/federation/FederationDiscoveryDecision.hpp"
+#include "merovingian/federation/FederationRequestSignature.hpp"
+#include "merovingian/federation/FederationVerificationDecision.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustDecision.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
 
 #include <chrono>
 #include <cstdint>

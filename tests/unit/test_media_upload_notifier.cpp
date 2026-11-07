@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/homeserver/media_upload_notifier.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/homeserver/MediaUploadNotifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

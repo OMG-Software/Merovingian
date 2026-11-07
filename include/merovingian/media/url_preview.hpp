@@ -3,7 +3,6 @@
 #pragma once
 
 #include "merovingian/media/OpenGraphData.hpp"
-#include "merovingian/media/UrlPreviewCache.hpp" // split-shim
 
 #include <cstddef>
 #include <cstdint>

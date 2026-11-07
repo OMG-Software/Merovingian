@@ -6,12 +6,13 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
+#include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
+#include "merovingian/sync/UnreadEventClassifier.hpp"
+#include "merovingian/sync/UnreadEventOutcome.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
-#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

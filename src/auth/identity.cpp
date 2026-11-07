@@ -3,9 +3,14 @@
 
 #include "merovingian/auth/identity.hpp"
 
+#include "merovingian/auth/AccountState.hpp"
+#include "merovingian/auth/LoginPolicyDecision.hpp"
+#include "merovingian/auth/PasswordPolicy.hpp"
+#include "merovingian/auth/UserIdentity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <cstdint>

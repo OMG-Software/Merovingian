@@ -16,7 +16,7 @@ namespace merovingian::push
 // discovery. Always empty in production; no production construction path
 // populates it. Exists so integration tests can drive a real local HTTPS
 // gateway (self-signed certificate, loopback address) without weakening the
-// production SSRF/discovery boundary in push_gateway_client.cpp.
+// production SSRF/discovery boundary in PushGatewayClient.cpp.
 struct TestForcedPushGatewayResolution final
 {
     std::vector<std::string> pinned_addresses{};

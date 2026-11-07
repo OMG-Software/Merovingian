@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/runtime_config.hpp"
+#include "merovingian/config/RuntimeConfigApplyResult.hpp"
+#include "merovingian/config/RuntimeConfigSnapshot.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

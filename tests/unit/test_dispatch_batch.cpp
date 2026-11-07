@@ -9,8 +9,9 @@
 #include "merovingian/database/PersistentFederationTransaction.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>

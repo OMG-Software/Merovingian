@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 
 namespace merovingian::canonicaljson
 {

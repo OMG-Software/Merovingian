@@ -1,0 +1,135 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/config/ReloadPolicy.hpp"
+
+#include "merovingian/config/Config.hpp"
+
+#include <string_view>
+
+namespace merovingian::config
+{
+
+auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
+{
+    if (key == "server.name" || key == "database.uri_file" || key == "database.role" ||
+        key == "database.migration_role" || key == "database.runtime_role" ||
+        key == "listeners.client.tls_certificate_file" || key == "listeners.client.tls_private_key_file" ||
+        key == "listeners.client.reverse_proxy" || key == "listeners.federation.tls_certificate_file" ||
+        key == "listeners.federation.tls_private_key_file" || key == "listeners.federation.reverse_proxy" ||
+        key == "security.registration.token_file" || key == "database.pool_size" ||
+        key == "security.media.thumbnail_cache_size" || key == "security.media.thumbnail_max_concurrent_per_user" ||
+        key == "security.password_hashing.max_concurrent")
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // ADR-0236: a weaker password policy is logged at CRITICAL when the server
+    // starts. Taking it only on restart keeps that warning from being skipped.
+    if (starts_with(key, "security.password_policy."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // ADR-0212 / ADR-0213: the asynchronous-upload and URL preview limits are
+    // copied into the media repository's runtime config at startup.
+    if (starts_with(key, "security.media.url_preview_") || key == "security.media.pending_upload_ttl_seconds" ||
+        key == "security.media.max_pending_uploads_per_user" || key == "security.media.max_pending_uploads" ||
+        key == "security.media.pending_upload_max_wait_ms")
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Federation admission/recovery and client API budgets are copied into
+    // runtime objects at startup. Worker IPC framing also depends on the
+    // federation byte caps. A config snapshot reload does not rebuild these
+    // consumers, so the plan must require a restart for the whole block.
+    if (starts_with(key, "security.federation.") || starts_with(key, "server.client_api."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Per-endpoint rate-limit policies and per-module log level overrides
+    // are read once at `start_client_server()` time when the rate-limit
+    // engine and the logger module map are constructed. SIGHUP does not
+    // rebuild them; the operator must restart. Marking them restart_required
+    // here keeps the reload-plan summary honest (an operator running
+    // `merovingian-server --plan-config-reload a.conf b.conf` will see the
+    // `restart_required` flag for any change to these blocks).
+    if (key == "client_rate_limits.default_per_ip" || starts_with(key, "client_rate_limits.per_ip.") ||
+        starts_with(key, "client_rate_limits.per_user.") || starts_with(key, "client_rate_limits.tier.") ||
+        starts_with(key, "log_modules."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // The master key is loaded and zeroised at startup, the federation
+    // worker processes are spawned (with their thread pools, shard count and
+    // hardening) at startup, and CORS headers and the keep-alive connection
+    // policy are wired when the listeners start — SIGHUP cannot re-apply any
+    // of these (#421, and the docs/user-manual.md Reloadability policy).
+    if (key == "security.secrets.master_key_file" || starts_with(key, "federation.worker.") ||
+        starts_with(key, "server.cors.") || starts_with(key, "server.http."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Identity Service API: the outbound IS client and the cached SSRF-safe
+    // resolver are constructed at startup from the trusted-server allowlist and
+    // timeouts. SIGHUP does not rebuild them, so any identity_server change
+    // requires a restart (consistent with client_rate_limits and server.cors).
+    if (starts_with(key, "server.identity_server."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Push Gateway API: the outbound push client and its SSRF-safe resolver
+    // are constructed at startup from this block, the same lifecycle as the
+    // identity-server client above. SIGHUP does not rebuild them.
+    if (starts_with(key, "server.push."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Outbound email for email pushers: the SMTP relay, credentials file and timeouts are read
+    // at startup. SIGHUP does not rebuild them.
+    if (starts_with(key, "server.email."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Application Service API: the AppserviceRegistry is parsed from the
+    // configured registration files once at start_runtime() time and handed
+    // out as an immutable, read-only snapshot to every request. SIGHUP does
+    // not re-parse or rebuild it, so a registration-file-path change (add,
+    // remove, or edit the list) requires a restart, the same lifecycle as
+    // federation.worker.* above.
+    if (starts_with(key, "appservice."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Presence: main and the federation worker copy `presence.enabled` at start-up (the worker
+    // reads its own config file once), and SIGHUP does not push a new value to either.
+    if (starts_with(key, "presence."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    return ReloadPolicy::reloadable;
+}
+
+auto reload_policy_name(ReloadPolicy policy) noexcept -> char const*
+{
+    switch (policy)
+    {
+    case ReloadPolicy::reloadable:
+        return "reloadable";
+    case ReloadPolicy::restart_required:
+        return "restart_required";
+    }
+
+    return "restart_required";
+}
+
+} // namespace merovingian::config

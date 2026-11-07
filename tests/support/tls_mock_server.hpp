@@ -10,18 +10,17 @@
 // linked into production code.
 #pragma once
 
-#include "EvpPkeyDeleter.hpp"         // split-shim
-#include "FileDeleter.hpp"            // split-shim
-#include "ScopedThreadJoin.hpp"       // split-shim
-#include "StallingTlsServerState.hpp" // split-shim
-#include "TlsTestCertificate.hpp"     // split-shim
-#include "X509Deleter.hpp"            // split-shim
-#include "X509NameDeleter.hpp"        // split-shim
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "EvpPkeyDeleter.hpp"
+#include "FileDeleter.hpp"
+#include "StallingTlsServerState.hpp"
+#include "TlsTestCertificate.hpp"
+#include "X509Deleter.hpp"
+#include "X509NameDeleter.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SocketHandle.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/identity/identity_client.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 #include "temp_directory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -380,4 +379,3 @@ inline auto run_stalling_tls_server(merovingian::net::TcpAcceptor& acceptor,
 } // namespace merovingian::tests::tls_mock
 
 // The shim below is deliberately last: MockIdentityServer uses the functions above.
-#include "MockIdentityServer.hpp" // split-shim

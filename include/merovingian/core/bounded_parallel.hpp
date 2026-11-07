@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/portable_semaphore.hpp"
+#include "merovingian/core/PortableSemaphore.hpp"
+#include "merovingian/core/SemaphorePermit.hpp"
 
 #include <algorithm>
 #include <cstddef>

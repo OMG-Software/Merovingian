@@ -3,11 +3,11 @@
 #pragma once
 
 #include "merovingian/homeserver/LocalDatabase.hpp"
-#include "merovingian/homeserver/LocalDatabaseScope.hpp" // split-shim
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <cstdint>
 #include <string>

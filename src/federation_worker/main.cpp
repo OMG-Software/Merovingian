@@ -1,16 +1,20 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "WorkerEventLoop.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/library_version.hpp"
-#include "merovingian/federation_worker/args.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+#include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
 #include "merovingian/homeserver/library_versions.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
-#include "worker_event_loop.hpp"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstdlib>
@@ -19,14 +23,10 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <signal.h>
 #include <string>
 #include <string_view>
 #include <tuple>
-
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #ifdef __linux__
 #include <sys/prctl.h>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
 
 #include <string>
 #include <unordered_map>

@@ -3,6 +3,8 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -69,10 +71,12 @@
 #include "merovingian/database/RedactionState.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
+#include "merovingian/database/migration.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <cerrno>

@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/media/AdminQuarantineAction.hpp"
+#include "merovingian/media/AdminQuarantineRequest.hpp"
+#include "merovingian/media/DecoderSafetyPolicy.hpp"
+#include "merovingian/media/DecoderSafetyRequest.hpp"
+#include "merovingian/media/MediaAcceptancePolicy.hpp"
+#include "merovingian/media/MediaDisposition.hpp"
+#include "merovingian/media/MediaUploadPolicy.hpp"
+#include "merovingian/media/MediaUploadRequest.hpp"
+#include "merovingian/media/RemoteMediaFetchRequest.hpp"
+#include "merovingian/media/RuntimeMediaConfig.hpp"
+#include "merovingian/media/SandboxedMediaWorkerPlan.hpp"
 #include "merovingian/media/security.hpp"
 
 #include <catch2/catch_test_macros.hpp>

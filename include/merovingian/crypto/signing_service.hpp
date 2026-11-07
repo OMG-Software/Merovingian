@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/ServerSignatureResult.hpp"
 #include "merovingian/crypto/SigningKeyLookupResult.hpp"
 #include "merovingian/crypto/SigningKeyRecord.hpp"
 #include "merovingian/crypto/SigningKeyStore.hpp"
-#include "merovingian/crypto/ed25519.hpp"
 
 #include <string>
 #include <string_view>

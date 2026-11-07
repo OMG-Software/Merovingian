@@ -3,9 +3,19 @@
 
 #include "merovingian/database/migration.hpp"
 
+#include "merovingian/database/MigrationApplyResult.hpp"
+#include "merovingian/database/MigrationDirection.hpp"
+#include "merovingian/database/MigrationPlan.hpp"
+#include "merovingian/database/MigrationRecord.hpp"
+#include "merovingian/database/MigrationStep.hpp"
+#include "merovingian/database/MigrationValidationResult.hpp"
+#include "merovingian/database/SchemaIndexDefinition.hpp"
+#include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <optional>

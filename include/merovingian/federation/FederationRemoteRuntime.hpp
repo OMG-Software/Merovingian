@@ -3,7 +3,8 @@
 #pragma once
 
 #include "merovingian/federation/FederationKeyRecord.hpp"
-#include "merovingian/federation/security.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
 
 #include <string>
 

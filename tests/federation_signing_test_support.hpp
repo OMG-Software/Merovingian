@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/SignatureResult.hpp"
+#include "merovingian/crypto/SigningKeyLookupResult.hpp"
+#include "merovingian/crypto/SigningKeyRecord.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/crypto/VerificationResult.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+
+#include <sodium.h>
 
 #include <array>
 #include <cstdint>
@@ -15,8 +25,6 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-
-#include <sodium.h>
 
 namespace merovingian::federation::test
 {

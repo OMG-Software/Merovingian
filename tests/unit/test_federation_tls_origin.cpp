@@ -8,6 +8,7 @@
 // |        #resolving-server-names                                          |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>

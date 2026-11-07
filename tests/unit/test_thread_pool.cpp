@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/net/thread_pool.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -214,10 +214,10 @@ SCENARIO("ThreadPool request_stop asserts when invoked from inside a worker", "[
             // request_stop(), gated to debug builds by `#ifndef NDEBUG`.
             // The mere presence of this SCENARIO inside the same `#ifndef
             // NDEBUG` block proves the contract is debug-only; the matching
-            // assertion is documented in src/net/thread_pool.cpp. We do not
+            // assertion is documented in src/net/ThreadPool.cpp. We do not
             // trigger the assert from the test (doing so would abort the
             // test process); the contract is verified by the assertion being
-            // compiled and the comment in thread_pool.cpp being present.
+            // compiled and the comment in ThreadPool.cpp being present.
             THEN("the assertion is compiled in")
             {
                 REQUIRE(true);

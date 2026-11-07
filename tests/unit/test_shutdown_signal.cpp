@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/net/shutdown_signal.hpp"
+#include "merovingian/net/ShutdownSignal.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <poll.h>
 
 SCENARIO("ShutdownSignal is not fired on construction", "[net][shutdown]")

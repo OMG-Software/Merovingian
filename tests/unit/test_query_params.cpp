@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/core/SyncRequest.hpp"
 #include "merovingian/core/query_params.hpp"
 
 #include <catch2/catch_test_macros.hpp>

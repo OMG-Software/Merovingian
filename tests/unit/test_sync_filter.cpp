@@ -20,7 +20,9 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/EventTypeFilter.hpp"
+#include "merovingian/sync/RoomFilter.hpp"
+#include "merovingian/sync/SyncFilter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

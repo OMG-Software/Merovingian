@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/TlsConnection.hpp"          // split-shim
-#include "merovingian/homeserver/TlsConnectionResult.hpp"    // split-shim
-#include "merovingian/homeserver/TlsServerContext.hpp"       // split-shim
-#include "merovingian/homeserver/TlsServerContextResult.hpp" // split-shim
+#include "merovingian/homeserver/TlsConnectionResult.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 
 #include <cstddef>
 #include <optional>

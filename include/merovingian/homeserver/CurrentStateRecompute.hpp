@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/state_resolution.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
 
 #include <string>

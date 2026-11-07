@@ -3,8 +3,6 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/state_resolution.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
 

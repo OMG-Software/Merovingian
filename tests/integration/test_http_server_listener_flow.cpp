@@ -10,8 +10,8 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -20,10 +20,10 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/shutdown_signal.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/net/thread_pool.hpp"
-#include "merovingian/sync/stream_token.hpp"
+#include "merovingian/net/ShutdownSignal.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/net/ThreadPool.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>

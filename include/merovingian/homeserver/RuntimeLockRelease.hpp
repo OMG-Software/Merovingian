@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 
 #include <cstddef>
 #include <mutex>

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationTransaction.hpp"
 #include "merovingian/federation/transactions.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -82,7 +84,7 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
 
 // The federation worker uses federation_endpoint_requires_main_relay() to route
 // an incoming request to one of two differently-sized thread pools (see
-// worker_event_loop.cpp and docs/architecture.md, "Federation worker relay
+// WorkerEventLoop.cpp and docs/architecture.md, "Federation worker relay
 // pool separation") — a burst of slow, main-relay-requiring requests must
 // never be able to starve fast, local-only ones of a thread. Getting this
 // classification wrong in either direction is a real regression: misclassify
@@ -96,7 +98,7 @@ SCENARIO("federation_endpoint_requires_main_relay classifies every registered en
     {
         // Endpoints whose handling can call pdu_sink, edu_sink,
         // membership_acceptor, invite_handler, or one of the query-provider
-        // relays — see worker_event_loop.cpp's overrides of each. make_join
+        // relays — see WorkerEventLoop.cpp's overrides of each. make_join
         // relays its template to main (R04, ADR-0185).
         auto const requires_relay = std::array{
             merovingian::federation::FederationEndpoint::transaction,

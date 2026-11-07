@@ -5,16 +5,15 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/sync/NotificationCounts.hpp" // split-shim
+#include "merovingian/sync/HistoryVisibility.hpp"
+#include "merovingian/sync/ReadMarkers.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
-#include "merovingian/sync/history_visibility.hpp"
-#include "merovingian/sync/read_markers.hpp"
-#include "merovingian/sync/unread_event_classifier.hpp"
+#include "merovingian/sync/UnreadEventClassifier.hpp"
 
 #include <cstdint>
 #include <functional>

@@ -214,7 +214,7 @@ identical to an existing one. See
 
 ### Signal handling and graceful shutdown
 
-`src/net/shutdown_signal.cpp` installs a self-pipe and SIGINT/SIGTERM handlers.
+`src/net/ShutdownSignal.cpp` installs a self-pipe and SIGINT/SIGTERM handlers.
 The handler does only signal-safe work: it writes one byte to the pipe and sets
 an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
 `SIGPIPE` is ignored process-wide so a peer that vanishes mid-write cannot
@@ -618,7 +618,7 @@ Linux receives the richest set of in-process controls.
 | No new privileges | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` | Applied by `apply_seccomp_filter()` and `apply_runtime_hardening_controls()`. |
 | Capability bounding set drop | `apply_linux_capability_bounding_set()` | Calls `prctl(PR_CAPBSET_DROP, cap, ...)` for every capability. |
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
-| Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
+| Self-check probes | `src/platform/HardeningSelfCheck.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
 | Ignored SIGPIPE | `src/platform/signal_hardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, `UMask=0077`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=true`, `ProtectKernelTunables=`/`Modules=`/`Logs=`, `ProtectControlGroups=`, `ProtectClock=`, `ProtectHostname=` (ISO-8, ADR-0147), `ProtectProc=invisible`, `LimitNOFILE=65536`, `TasksMax=4096`, `TimeoutStopSec=300s` and a `SystemCallFilter` that is `@system-service` plus every call the processes' own seccomp filters allow (ADR-0499; `WatchdogSec` is absent because the server never calls `sd_notify`), etc. |
 
@@ -774,7 +774,7 @@ profile:
 
 ## Startup hardening self-check
 
-`src/platform/hardening_self_check.cpp` is invoked from `src/main.cpp` after all
+`src/platform/HardeningSelfCheck.cpp` is invoked from `src/main.cpp` after all
 platform hardening controls have been applied (seccomp-bpf, Linux capability
 bounding / no_new_privs / core-dump policy, OpenBSD pledge/unveil, FreeBSD
 Capsicum). Each check reports one of:

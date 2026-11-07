@@ -3,9 +3,10 @@
 
 #include "merovingian/homeserver/user_directory_search.hpp"
 
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/database/PersistentProfile.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/UserDirectorySearchStats.hpp"
 
 #include <string_view>
 #include <unordered_set>

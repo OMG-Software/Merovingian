@@ -3,12 +3,15 @@
 
 #include "merovingian/homeserver/public_rooms.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/PublicRoomsScope.hpp"
 
 #include <algorithm>
 #include <cstdint>

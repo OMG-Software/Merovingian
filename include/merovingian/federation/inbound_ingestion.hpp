@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/event.hpp"
-#include "merovingian/events/state_resolution.hpp"
-#include "merovingian/federation/EduDispositionResult.hpp" // split-shim
-#include "merovingian/federation/EduDispositionStatus.hpp" // split-shim
-#include "merovingian/federation/EduType.hpp"              // split-shim
-#include "merovingian/federation/InboundEduEnvelope.hpp"   // split-shim
-#include "merovingian/federation/InboundPduEnvelope.hpp"   // split-shim
-#include "merovingian/federation/PduIngestionResult.hpp"   // split-shim
-#include "merovingian/federation/PduIngestionStatus.hpp"   // split-shim
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/federation/EduDispositionResult.hpp"
+#include "merovingian/federation/EduType.hpp"
+#include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionResult.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstdint>
 #include <functional>

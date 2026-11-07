@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/SecretBoxCiphertext.hpp"
 #include "merovingian/crypto/SecretBoxKey.hpp"
-#include "merovingian/crypto/secure_key_bytes.hpp"
+#include "merovingian/crypto/SecureKeyBytes.hpp"
 
 #include <array>
 #include <cstddef>

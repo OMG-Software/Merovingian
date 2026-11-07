@@ -3,6 +3,8 @@
 
 #include "merovingian/events/redaction.hpp"
 
+#include "merovingian/events/RedactionResult.hpp"
+
 #include <string_view>
 #include <variant>
 

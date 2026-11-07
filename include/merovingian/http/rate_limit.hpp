@@ -3,12 +3,9 @@
 #pragma once
 
 #include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/random.hpp"
-#include "merovingian/http/BucketKeyHash.hpp"     // split-shim
-#include "merovingian/http/RateLimitConfig.hpp"   // split-shim
-#include "merovingian/http/RateLimitDecision.hpp" // split-shim
-#include "merovingian/http/RateLimitPolicy.hpp"   // split-shim
-#include "merovingian/http/RateLimitTier.hpp"     // split-shim
+#include "merovingian/http/RateLimitConfig.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
+#include "merovingian/http/RateLimitTier.hpp"
 
 #include <algorithm>
 #include <array>
@@ -45,5 +42,3 @@ namespace merovingian::http
 [[nodiscard]] auto default_client_rate_limit_config() noexcept -> RateLimitConfig;
 
 } // namespace merovingian::http
-
-#include "merovingian/http/RateLimitEngine.hpp" // split-shim

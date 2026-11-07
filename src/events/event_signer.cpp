@@ -3,9 +3,17 @@
 
 #include "merovingian/events/event_signer.hpp"
 
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/EventSigningDiagnosticField.hpp"
+#include "merovingian/events/SignatureVerificationResult.hpp"
+#include "merovingian/events/SignedEventResult.hpp"
+#include "merovingian/events/SigningKeyId.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <sodium.h>
 

@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/platform/LandlockAccess.hpp"         // split-shim
-#include "merovingian/platform/LandlockAddRuleOutcome.hpp" // split-shim
 #include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/LandlockHardeningResult.hpp"
 #include "merovingian/platform/LandlockPathRule.hpp"

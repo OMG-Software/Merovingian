@@ -1,5 +1,5 @@
 identity_sources = files(
-  'identity_client.cpp',
+  'IdentityServerClient.cpp',
 )
 
 identity_lib = static_library(

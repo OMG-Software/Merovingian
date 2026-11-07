@@ -7,10 +7,11 @@
 // project (0.12.13 audit item 5).
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#user-directory
 
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/database/PersistentProfile.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentUser.hpp"
+#include "merovingian/homeserver/UserDirectorySearchStats.hpp"
 #include "merovingian/homeserver/user_directory_search.hpp"
 
 #include <catch2/catch_test_macros.hpp>

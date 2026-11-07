@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/events/StateEventReference.hpp"
+#include "merovingian/events/StateGroup.hpp"
+#include "merovingian/events/StateKey.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/events/StateResolutionResult.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

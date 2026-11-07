@@ -5,10 +5,10 @@
 #include "merovingian/config/DatabaseConfig.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/reload_plan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

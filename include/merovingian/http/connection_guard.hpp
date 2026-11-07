@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/ConnectionPhase.hpp" // split-shim
-#include "merovingian/http/RequestProgress.hpp" // split-shim
-#include "merovingian/http/SlowlorisPolicy.hpp" // split-shim
-#include "merovingian/http/keep_alive.hpp"
+#include "merovingian/http/ConnectionPhase.hpp"
+#include "merovingian/http/KeepAlivePolicy.hpp"
+#include "merovingian/http/RequestProgress.hpp"
+#include "merovingian/http/SlowlorisPolicy.hpp"
 
 #include <cstdint>
 #include <string>

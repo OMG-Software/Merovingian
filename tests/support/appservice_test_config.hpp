@@ -9,7 +9,7 @@
 // tokens it presents from the id alone. A fresh file is written per call, so
 // parallel scenarios never share on-disk state.
 
-#include "TestAppservice.hpp" // split-shim
+#include "TestAppservice.hpp"
 #include "in_memory_database_config.hpp"
 #include "master_key.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"

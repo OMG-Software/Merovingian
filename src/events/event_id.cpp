@@ -3,9 +3,15 @@
 
 #include "merovingian/events/event_id.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/SerializeResult.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/EventHashResult.hpp"
+#include "merovingian/events/EventIdResult.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
+
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -14,8 +20,6 @@
 #include <string_view>
 #include <tuple>
 #include <variant>
-
-#include <sodium.h>
 
 namespace merovingian::events
 {

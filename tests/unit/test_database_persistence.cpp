@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/database/BoundValue.hpp"
+#include "merovingian/database/DatabaseExecutor.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MigrationDirection.hpp"
+#include "merovingian/database/MigrationPlan.hpp"
+#include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentClientTxnRecord.hpp"
 #include "merovingian/database/PersistentDeferredPdu.hpp"
@@ -18,12 +23,16 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
+#include "merovingian/database/PostgresqlConnection.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
+#include "merovingian/database/QueryResult.hpp"
+#include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/migration_files.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
-#include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>

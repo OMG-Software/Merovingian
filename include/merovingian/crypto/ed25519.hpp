@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/Ed25519Keypair.hpp"
-#include "merovingian/crypto/Ed25519Provider.hpp" // split-shim
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
-#include "merovingian/crypto/Ed25519SecretKeyHandle.hpp" // split-shim
 #include "merovingian/crypto/Ed25519Signature.hpp"
-#include "merovingian/crypto/SignatureResult.hpp" // split-shim
 #include "merovingian/crypto/VerificationResult.hpp"
 
 #include <array>

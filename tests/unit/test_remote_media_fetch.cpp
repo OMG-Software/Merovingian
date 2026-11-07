@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchScope.hpp"
 #include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
-#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

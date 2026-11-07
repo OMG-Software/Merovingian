@@ -7,8 +7,10 @@
 // the events, notifications and users properties"; rooms/v10.md "power levels MUST NOT be
 // represented as strings within this room version".
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/homeserver/push_room_facts.hpp"
+#include "merovingian/homeserver/PushRoomFacts.hpp"
+#include "merovingian/push/PushRuleset.hpp"
 #include "merovingian/push/push_rules.hpp"
 
 #include <catch2/catch_test_macros.hpp>

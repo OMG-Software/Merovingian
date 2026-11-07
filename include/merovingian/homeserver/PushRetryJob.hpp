@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
 
 namespace merovingian::homeserver
 {

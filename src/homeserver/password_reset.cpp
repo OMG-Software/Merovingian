@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/password_reset.hpp"
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/random.hpp"
+#include "merovingian/email/PasswordResetEmail.hpp"
+#include "merovingian/email/SmtpSendResult.hpp"
 #include "merovingian/email/notification_email.hpp"
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <atomic>

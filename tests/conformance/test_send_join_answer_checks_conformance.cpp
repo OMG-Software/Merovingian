@@ -9,11 +9,13 @@
 //
 // A resident's send_join answer is such a receipt (F-45, ADR-0369): nothing in it is taken on the resident's word.
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
 #include "merovingian/homeserver/send_join_answer_authorization.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

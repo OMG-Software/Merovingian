@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/auth/KeyApiEndpoint.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
 
 #include <string>
 

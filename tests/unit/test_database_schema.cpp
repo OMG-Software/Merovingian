@@ -21,9 +21,13 @@
 //   - apply_migration_plan: state version mismatch fails closed
 //   - migration_plan_is_valid: no-op valid/invalid, direction mismatch, no steps
 
+#include "merovingian/database/MigrationDirection.hpp"
+#include "merovingian/database/MigrationPlan.hpp"
+#include "merovingian/database/MigrationStep.hpp"
+#include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
-#include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

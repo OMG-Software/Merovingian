@@ -4,18 +4,23 @@
 // These exercise pure functions only — no process is spawned here (that is the
 // integration test's job).
 
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
+#include "merovingian/media/ThumbnailSourceFormat.hpp"
+#include "merovingian/media/ThumbnailWorkerRequest.hpp"
+#include "merovingian/media/ThumbnailWorkerResponse.hpp"
+#include "merovingian/media/ThumbnailWorkerStatus.hpp"
+#include "merovingian/media/ThumbnailerConfig.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
-
-#include <fcntl.h>
-#include <unistd.h>
 
 SCENARIO("thumbnail request frames round-trip", "[media][thumbnail]")
 {

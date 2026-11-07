@@ -4,7 +4,7 @@
 
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
-#include "merovingian/net/thread_pool.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <memory>
 

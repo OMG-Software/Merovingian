@@ -3,10 +3,10 @@
 
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/federation/PublicRoomsFilter.hpp"  // split-shim
-#include "merovingian/federation/PublicRoomsRefusal.hpp" // split-shim
-#include "merovingian/federation/PublicRoomsRequest.hpp" // split-shim
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
 
 #include <cstddef>
 #include <optional>

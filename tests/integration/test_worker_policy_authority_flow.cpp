@@ -17,17 +17,18 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/remote_room_fixture.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,7 +81,7 @@ constexpr auto relay_paths = std::array{RelayPath::pdu, RelayPath::membership, R
     return canonicaljson::Value{std::move(array)};
 }
 
-// The frame a worker sends, built the way worker_event_loop.cpp's append_envelope_fields does. `origin` is the
+// The frame a worker sends, built the way WorkerEventLoop.cpp's append_envelope_fields does. `origin` is the
 // transport origin the worker names; the event is signed by the remote server whatever it is.
 [[nodiscard]] auto relay_frame(RelayPath path, InboundPduEnvelope const& env, std::string_view origin) -> std::string
 {

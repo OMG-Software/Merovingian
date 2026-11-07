@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/BackfillRequest.hpp"         // split-shim
-#include "merovingian/federation/BackfillResult.hpp"          // split-shim
-#include "merovingian/federation/FederationQueryPolicy.hpp"   // split-shim
-#include "merovingian/federation/InviteAcceptResult.hpp"      // split-shim
-#include "merovingian/federation/InviteRequest.hpp"           // split-shim
-#include "merovingian/federation/MembershipAcceptResult.hpp"  // split-shim
-#include "merovingian/federation/MembershipEventTemplate.hpp" // split-shim
-#include "merovingian/federation/MembershipPathParams.hpp"    // split-shim
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/BackfillRequest.hpp"
+#include "merovingian/federation/BackfillResult.hpp"
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationQueryPolicy.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InviteAcceptResult.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/MembershipAcceptResult.hpp"
+#include "merovingian/federation/MembershipEventTemplate.hpp"
+#include "merovingian/federation/MembershipPathParams.hpp"
 
 #include <cstdint>
 #include <functional>

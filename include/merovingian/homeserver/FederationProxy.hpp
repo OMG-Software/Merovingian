@@ -1,0 +1,79 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RoomSyncStatus.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
+
+#include <chrono>
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace merovingian::homeserver
+{
+
+struct HomeserverRuntime;
+class WorkerPool;
+
+// Intercepts inbound federation HTTP requests and forwards them to the
+// out-of-process federation worker pool via encrypted IPC channels.
+//
+// The key-server endpoint (GET /_matrix/key/v2/server) is always handled
+// locally — it serves this server's own signing key and must never be
+// delegated to the worker.
+//
+// Requests with a room ID are routed to the worker shard that owns that
+// room; non-room requests route to shard 0. If the selected shard is
+// unhealthy, 503 is returned immediately (fail-closed; no in-process fallback).
+class FederationProxy final
+{
+public:
+    FederationProxy(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
+                    std::string config_path);
+    ~FederationProxy();
+
+    FederationProxy(FederationProxy const&) = delete;
+    auto operator=(FederationProxy const&) -> FederationProxy& = delete;
+    FederationProxy(FederationProxy&&) = delete;
+    auto operator=(FederationProxy&&) -> FederationProxy& = delete;
+
+    // Called in place of handle_federation_http_request() when the worker is active.
+    [[nodiscard]] auto handle(LocalHttpRequest const& request) -> LocalHttpResponse;
+
+    // Sends a pre-signed OutboundRequest to the worker shard for room_id to
+    // execute. The HTTP call runs in the worker's thread pool; the signing key
+    // never crosses the IPC boundary.
+    // The IPC wait is request.total_timeout_seconds plus `ipc_margin`, which
+    // gives the worker time to hand back a result once its own transport has
+    // timed out. Calls with a tight deadline pass a small margin so the round
+    // trip cannot exceed the deadline by much (ADR-0079).
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                             std::chrono::seconds ipc_margin = default_worker_ipc_margin)
+        -> http::OutboundResult;
+
+    // Tells the worker shard that owns room_id to refresh its otherwise-stale
+    // copy of that room from the database. See WorkerPool::notify_room_changed.
+    auto notify_room_changed(std::string_view room_id) -> void;
+
+    // True when the underlying worker pool is up and all shards are healthy.
+    // Exposed for tests that need to poll readiness instead of sleeping.
+    [[nodiscard]] auto healthy() const noexcept -> bool;
+
+    // Returns the last observed room-sync status for the shard that owns room_id.
+    // A "failed" status means the worker's room snapshot is stale and must not be
+    // trusted for room-scoped reads; room-scoped federation requests then fall back
+    // to the main process's authoritative in-memory state.
+    [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
+
+private:
+    HomeserverRuntime& runtime_;
+    std::unique_ptr<WorkerPool> pool_{};
+};
+
+} // namespace merovingian::homeserver

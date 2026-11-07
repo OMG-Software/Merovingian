@@ -10,12 +10,12 @@
 // "any older schema version" scenario starts to cover it, and when 1.1 starts
 // a fixture written by the last 1.0.x release joins them.
 #include "../support/temp_directory.hpp"
+#include "ScratchPostgresqlDatabase.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/migration.hpp"
+#include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
-#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>

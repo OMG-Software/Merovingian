@@ -10,8 +10,8 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/homeserver/push_badge_count.hpp"
-#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
+#include "merovingian/homeserver/PushBadgeCount.hpp"
+#include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 

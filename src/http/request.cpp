@@ -3,7 +3,12 @@
 
 #include "merovingian/http/request.hpp"
 
-#include "merovingian/http/request_limits.hpp"
+#include "merovingian/http/Header.hpp"
+#include "merovingian/http/HttpVersion.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
+#include "merovingian/http/RequestHead.hpp"
+#include "merovingian/http/RequestLimits.hpp"
+#include "merovingian/http/RequestParseResult.hpp"
 
 #include <limits>
 #include <string>

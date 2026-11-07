@@ -13,10 +13,10 @@
 // finish, the operation cannot have finished when the main thread holds it. No
 // scenario asserts from a worker thread: results are read after join.
 
+#include "../support/JoiningThreads.hpp"
+#include "../support/RealPasswordHashCost.hpp"
 #include "../support/in_memory_database_config.hpp"
-#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
-#include "../support/password_hash_cost.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -30,9 +30,10 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PasswordVerificationResult.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/request_lock.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

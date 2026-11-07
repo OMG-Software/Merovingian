@@ -3,6 +3,8 @@
 
 #include "merovingian/events/redaction_validity.hpp"
 
+#include "merovingian/events/RedactionContext.hpp"
+#include "merovingian/events/RedactionVerdict.hpp"
 #include "merovingian/events/authorization.hpp"
 
 #include <cstddef>

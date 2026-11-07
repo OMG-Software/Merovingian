@@ -2,55 +2,56 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/appservice/registration.hpp"
-#include "merovingian/auth/failure_window_table.hpp"
+#include "merovingian/appservice/AppserviceRegistry.hpp"
+#include "merovingian/auth/FailureWindowTable.hpp"
 #include "merovingian/config/Config.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/database/PersistentPolicyRule.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/email/smtp_client.hpp"
+#include "merovingian/database/SchemaState.hpp"
+#include "merovingian/email/SmtpTestResolution.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
-#include "merovingian/federation/edu_idempotence.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
 #include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
 #include "merovingian/homeserver/AppservicePendingEphemeral.hpp"
+#include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/MediaUploadNotifier.hpp"
 #include "merovingian/homeserver/PendingFederatedJoin.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
+#include "merovingian/homeserver/RoomMembers.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/media_upload_notifier.hpp"
-#include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
-#include "merovingian/homeserver/room_members.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
-#include "merovingian/homeserver/session_table.hpp"
+#include "merovingian/http/InFlightBudget.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
-#include "merovingian/http/in_flight_budget.hpp"
-#include "merovingian/identity/identity_client.hpp"
+#include "merovingian/identity/TestForcedIdentityResolution.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
-#include "merovingian/media/url_preview.hpp"
-#include "merovingian/net/listener.hpp"
+#include "merovingian/media/UrlPreviewCache.hpp"
+#include "merovingian/net/RuntimeListeners.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
-#include "merovingian/observability/audit_rate_gate.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
-#include "merovingian/push/email_digest_queue.hpp"
-#include "merovingian/push/gateway_circuit_breaker.hpp"
-#include "merovingian/push/gateway_in_flight_limiter.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
-#include "merovingian/push/push_retry_queue.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
+#include "merovingian/push/EmailDigestQueue.hpp"
+#include "merovingian/push/GatewayCircuitBreaker.hpp"
+#include "merovingian/push/GatewayInFlightLimiter.hpp"
+#include "merovingian/push/PushRetryQueue.hpp"
+#include "merovingian/push/TestForcedPushGatewayResolution.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
-#include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/sync/SyncNotifier.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
 #include "merovingian/trust_safety/PolicySurface.hpp"
@@ -85,7 +86,7 @@ namespace merovingian::homeserver
 
 constexpr std::size_t room_mutex_stripe_count = 256U;
 
-// Forward declaration — full type in federation_proxy.hpp, included by HomeserverRuntime.cpp.
+// Forward declaration — full type in FederationProxy.hpp, included by HomeserverRuntime.cpp.
 class FederationProxy;
 
 // The room with `room_id` in `database.rooms` (the first, if two share the ID), or nullptr. One hash lookup on a hit; a
@@ -293,7 +294,7 @@ struct HomeserverRuntime final
     std::vector<InboundTypingUser> typing_users{};
     // Replay window for inbound m.direct_to_device message IDs, keyed on
     // (origin, message_id). In memory only: a restart forgets it (see
-    // federation/edu_idempotence.hpp). Guarded by `mutex` like the state above.
+    // federation/EduIdempotenceWindow.hpp). Guarded by `mutex` like the state above.
     federation::EduIdempotenceWindow inbound_to_device_window{};
     // Per-room monotonic cursor advanced whenever the set of typing users in
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
@@ -352,7 +353,7 @@ struct HomeserverRuntime final
     // in file-scope statics: a static is shared by every runtime in the process,
     // which in the test binary means lockout state leaks between unrelated
     // scenarios and makes them order-dependent. All three are bounded and
-    // guarded by `mutex`. See auth/failure_window_table.hpp.
+    // guarded by `mutex`. See auth/FailureWindowTable.hpp.
     //   by_source:  password-login failures keyed (account, client source).
     //   by_account: the same failures keyed by account alone, the ceiling that
     //               stops guessing spread over many sources.
@@ -367,7 +368,7 @@ struct HomeserverRuntime final
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated
     // requests can continue while a federation round-trip is in flight. Use
-    // `RuntimeLockRelease` (request_lock.hpp) to release it — the mutex is
+    // `RuntimeLockRelease` (RuntimeLockRelease.hpp) to release it — the mutex is
     // recursive, and releasing a single level by hand is what produced the
     // deadlocks in 0.12.1, 0.12.3 and 0.12.6.
     RuntimeMutex mutex{};

@@ -5,8 +5,10 @@
 // Spec: ../../docs/matrix-v1.19-spec/push-gateway-api.md — "If the endpoint returns an HTTP error
 // code, the homeserver SHOULD retry for a reasonable amount of time using exponential backoff."
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/push/push_retry_queue.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/push/PushRetry.hpp"
+#include "merovingian/push/PushRetryAdmission.hpp"
+#include "merovingian/push/PushRetryQueue.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

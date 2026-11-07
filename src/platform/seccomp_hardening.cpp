@@ -3,6 +3,9 @@
 
 #include "merovingian/platform/seccomp_hardening.hpp"
 
+#include "merovingian/platform/SeccompProbeResult.hpp"
+#include "merovingian/platform/TaskConfinement.hpp"
+
 #include <charconv>
 #include <cstddef>
 #include <optional>

@@ -5,7 +5,7 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/push/email_digest_queue.hpp"
+#include "merovingian/push/EmailDigestQueue.hpp"
 
 #include <chrono>
 #include <mutex>

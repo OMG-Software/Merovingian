@@ -11,23 +11,23 @@ Spec authority:
 
 | File | Responsibility |
 |---|---|
-| `stream_token.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
-| `sync_filter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
-| `sync_notifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
+| `StreamToken.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
+| `SyncFilter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
+| `SyncNotifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
 | `sliding_sync_parser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
 | `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
-| `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
+| `RoomAccess.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
-| `receipt_content_builder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
-| `bundled_aggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
-| `viewer_event_unsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
-| `read_markers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
-| `history_visibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
-| `room_read_access.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
+| `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
+| `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
+| `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
+| `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
+| `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
+| `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
 | `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
-| `device_list_delta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
+| `DeviceListDelta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
 ## Stream token format
 
@@ -35,7 +35,7 @@ Spec authority:
 `<rooms_ordering>|<to_device_ordering>|<account_data_ordering>`
 
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
-Use `stream_token.hpp` — never parse or construct tokens manually.
+Use `StreamToken.hpp` — never parse or construct tokens manually.
 
 A token is unauthenticated client input: decoding it proves nothing about who issued it. It never moves
 server-wide state. A classic `/sync` token ahead of any stream is served as an initial sync; a sliding sync
@@ -261,7 +261,7 @@ sliding sync stay exact.
 **Every client read path that returns room events or room state goes through these two, and
 nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
 
-- `HistoryVisibility{store, user}` (`history_visibility.hpp`) answers "may this user see this
+- `HistoryVisibility{store, user}` (`HistoryVisibility.hpp`) answers "may this user see this
   event?" by the spec's five rules against the state recorded for the event (its ADR-0064 state
   group), with the two before-or-after special cases (`m.room.history_visibility` events and
   the user's own `m.room.member` events). Build **one per request** and reuse it across rooms
@@ -288,7 +288,7 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   The one exception is the user's own `m.room.member` event held as an outlier with no state group
   (a received invite, the leave that rejected it): it is visible to that user, who was sent it already
   (ADR-0304). Do not widen it to other events or other users.
-- `room_read_access_for(store, room, user)` (`room_read_access.hpp`) answers "what room state
+- `room_read_access_for(store, room, user)` (`RoomReadAccess.hpp`) answers "what room state
   may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
   the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,
   invite, declined invite, never joined, forgotten). `room_state_event_ids()` returns the state
@@ -324,7 +324,7 @@ keeps the initial response bounded.
 
 All three surfaces that report device-list changes — `/sync`, the MSC4186 e2ee
 extension, and `GET /_matrix/client/v3/keys/changes` — go through
-`collect_device_list_delta` (`sync/device_list_delta.hpp`). It collapses the
+`collect_device_list_delta` (`sync/DeviceListDelta.hpp`). It collapses the
 store's append-only change log to one entry per subject user, so a subject is
 never repeated however many rows the range covers, and resolves a subject that
 both changed and left to whichever came last. Do not walk

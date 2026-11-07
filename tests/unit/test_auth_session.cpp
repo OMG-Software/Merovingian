@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/auth/RegistrationPolicy.hpp"
 #include "merovingian/auth/session.hpp"
-#include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/homeserver/LocalDatabaseScope.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

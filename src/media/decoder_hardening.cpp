@@ -3,6 +3,9 @@
 
 #include "merovingian/media/decoder_hardening.hpp"
 
+#include "merovingian/media/DecoderHardeningOps.hpp"
+#include "merovingian/media/DecoderHardeningResult.hpp"
+
 #include <sys/resource.h>
 
 namespace merovingian::media

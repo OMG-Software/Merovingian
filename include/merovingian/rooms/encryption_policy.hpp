@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/EncryptionSecurityConfig.hpp"
-#include "merovingian/rooms/EncryptedEventLogSummary.hpp"       // split-shim
-#include "merovingian/rooms/RoomCreationEncryptionDecision.hpp" // split-shim
-#include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"  // split-shim
-#include "merovingian/rooms/RoomEncryptionRequest.hpp"          // split-shim
-#include "merovingian/rooms/RoomPreset.hpp"                     // split-shim
+#include "merovingian/rooms/EncryptedEventLogSummary.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionDecision.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomPreset.hpp"
 
 #include <span>
 #include <string>

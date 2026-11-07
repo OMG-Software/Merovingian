@@ -3,16 +3,16 @@
 
 #include "merovingian/auth/token.hpp"
 
+#include "merovingian/crypto/TokenHmacKey.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/token_key.hpp"
+
+#include <sodium.h>
 
 #include <array>
 #include <string>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::auth
 {

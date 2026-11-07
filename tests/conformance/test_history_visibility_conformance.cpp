@@ -17,6 +17,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -27,7 +28,7 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/HistoryVisibility.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -3,11 +3,11 @@
 
 #include "merovingian/crypto/library_versions.hpp"
 
-#include "merovingian/core/library_version.hpp"
-
-#include <vector>
+#include "merovingian/core/LibraryVersion.hpp"
 
 #include <sodium.h>
+
+#include <vector>
 
 namespace merovingian::crypto
 {

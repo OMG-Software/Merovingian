@@ -15,7 +15,7 @@ namespace merovingian::config
 // bridge/bot's as_token/hs_token, namespaces, and outbound URL. Empty by
 // default: with no registration files, the Application Service surface
 // (as_token auth, transactions, query hooks, third-party endpoints) is
-// entirely inert. Restart required — see reload_policy.cpp: the registry is
+// entirely inert. Restart required — see ReloadPolicy.cpp: the registry is
 // built once at start_runtime() time.
 struct AppserviceConfig final
 {

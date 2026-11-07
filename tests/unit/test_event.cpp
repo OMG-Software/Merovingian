@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/EventParseResult.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/limits.hpp"
 

@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/RemoteKeyClaimKeys.hpp" // split-shim
-#include "merovingian/federation/RemoteKeyQueryKeys.hpp" // split-shim
+#include "merovingian/federation/RemoteKeyClaimKeys.hpp"
+#include "merovingian/federation/RemoteKeyQueryKeys.hpp"
 
 #include <cstdint>
 #include <optional>

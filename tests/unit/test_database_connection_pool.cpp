@@ -5,7 +5,7 @@
 // connections. A lease is only ever waited for, never timed out, so a slot
 // that is not given back is lost for the life of the process.
 
-#include "merovingian/database/connection_pool.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -4,9 +4,12 @@
 // push::UserPushRules: a user's push rules over the server defaults (R19, ADR-0204).
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#push-rules-api
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
-#include "merovingian/push/user_push_rules.hpp"
+#include "merovingian/push/PushRuleEditOutcome.hpp"
+#include "merovingian/push/PushRulePlacement.hpp"
+#include "merovingian/push/UserPushRules.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/temp_directory.hpp"
-#include "merovingian/observability/log_file_sink.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogFileSink.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <ctime>
 #include <filesystem>
@@ -14,10 +17,6 @@
 #include <string>
 #include <system_error>
 #include <tuple>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace
 {

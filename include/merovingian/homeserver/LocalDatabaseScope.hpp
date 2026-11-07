@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/homeserver/LocalDatabase.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <memory>
 

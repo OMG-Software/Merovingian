@@ -3,16 +3,18 @@
 #pragma once
 
 #include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/state_resolution.hpp"
-#include "merovingian/homeserver/CurrentStateRecompute.hpp"       // split-shim
-#include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp" // split-shim
-#include "merovingian/homeserver/EventBookkeeping.hpp"            // split-shim
-#include "merovingian/homeserver/NewEventBasis.hpp"               // split-shim
-#include "merovingian/homeserver/StateBeforeResult.hpp"           // split-shim
-#include "merovingian/homeserver/StoredWithBookkeeping.hpp"       // split-shim
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/events/StateResolutionLimits.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
+#include "merovingian/homeserver/CurrentStateRecompute.hpp"
+#include "merovingian/homeserver/EventBookkeeping.hpp"
+#include "merovingian/homeserver/NewEventBasis.hpp"
+#include "merovingian/homeserver/StateBeforeResult.hpp"
+#include "merovingian/homeserver/StoredWithBookkeeping.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstdint>
 #include <optional>

@@ -17,8 +17,9 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/SizeLimitParseResult.hpp"
-#include "merovingian/http/rate_limit.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <cstdint>
 #include <optional>

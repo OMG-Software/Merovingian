@@ -2,13 +2,13 @@
 
 Bidirectional encrypted IPC over an `AF_UNIX` socketpair fd between `merovingian-server` (main)
 and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inherited through
-`posix_spawn` (`channel.hpp`).
+`posix_spawn` (`IpcChannel.hpp`).
 
 ## Key files
 
 | File | Responsibility |
 |---|---|
-| `channel.cpp` | `IpcChannel`: handshake, AEAD framing, reader and dispatch threads, `send_request` / `send_response` / `send_notification` |
+| `IpcChannel.cpp` | `IpcChannel`: handshake, AEAD framing, reader and dispatch threads, `send_request` / `send_response` / `send_notification` |
 | `federation_ipc_frames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync`, and `membership_template_ingest` (a worker's `make_join`, ADR-0184) frame bodies |
 
 ## Security model — non-negotiable

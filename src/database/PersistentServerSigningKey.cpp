@@ -3,7 +3,7 @@
 
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 
 #include <span>
 #include <string>

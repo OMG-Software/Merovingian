@@ -3,8 +3,8 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/crypto/IpcAuthKey.hpp"
 
 #include <optional>
 

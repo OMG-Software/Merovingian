@@ -214,7 +214,7 @@ Retained as the record of what was verified and when.
 
 - ~~Fail closed when required production hardening controls are unavailable.~~
   Closed (0.12.1): found the actual fail-open gap — not in
-  `hardening_self_check.cpp` (already strictly fail-closed: every check must
+  `HardeningSelfCheck.cpp` (already strictly fail-closed: every check must
   report `enabled`, `unknown` blocks same as `disabled`) but in
   `apply_worker_hardening()` (`src/platform/runtime_hardening.cpp`), which on
   every non-Linux platform unconditionally returned `accept()` regardless of

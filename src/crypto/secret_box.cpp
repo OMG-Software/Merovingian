@@ -3,10 +3,13 @@
 
 #include "merovingian/crypto/secret_box.hpp"
 
-#include <algorithm>
-#include <string>
+#include "merovingian/crypto/SecretBoxCiphertext.hpp"
+#include "merovingian/crypto/SecretBoxKey.hpp"
 
 #include <sodium.h>
+
+#include <algorithm>
+#include <string>
 
 namespace merovingian::crypto
 {

@@ -12,9 +12,8 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -23,13 +22,14 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/InviteAcceptResult.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -433,7 +433,7 @@ apply to the `bind`, `unbind`, and `requestToken` handlers (v0.11.10); see
 
 `IdentityServerClient` accepts an optional
 `std::map<std::string, identity::TestForcedIdentityResolution> const*
-forced_resolution` (defined in `include/merovingian/identity/identity_client.hpp`,
+forced_resolution` (defined in `include/merovingian/identity/IdentityServerClient.hpp`,
 stored on `HomeserverRuntime::test_forced_identity_resolution` and keyed by IS
 host). When an entry exists for the target host, `perform()` uses the entry's
 `pinned_addresses` and in-memory `trusted_ca_pem` and skips
@@ -1070,7 +1070,7 @@ The entry points now publish the mutex their guard locks through
 `homeserver::RequestLockScope` (never the guard's own address, ADR-0529), and each blocking network call runs inside a
 `homeserver::RuntimeLockRelease` scope that releases the mutex for the round trip
 and re-acquires it on exit — including when the call throws. Both types live in
-[`include/merovingian/homeserver/request_lock.hpp`](../include/merovingian/homeserver/request_lock.hpp).
+[`include/merovingian/homeserver/RequestLockScope.hpp`](../include/merovingian/homeserver/RequestLockScope.hpp).
 
 Rules for anything added to these paths:
 
@@ -1303,7 +1303,7 @@ auto const released = RuntimeLockRelease{guard};   // a guard in hand
 Both release **every recursion level the calling thread holds** and restore
 exactly that many on scope exit, including when the guarded call throws. They
 can do so because `runtime.mutex` is now a `homeserver::RuntimeMutex`
-([`runtime_mutex.hpp`](../include/merovingian/homeserver/runtime_mutex.hpp)):
+([`RuntimeMutex.hpp`](../include/merovingian/homeserver/RuntimeMutex.hpp)):
 a `std::recursive_mutex` that also records its owning thread, so a release
 scope can ask `held_by_current_thread()` and keep unlocking until the answer is
 no. `std::recursive_mutex` cannot answer that question, which is why the

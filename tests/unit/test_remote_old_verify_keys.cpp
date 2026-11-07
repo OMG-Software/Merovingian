@@ -10,22 +10,28 @@
 // ("old_verify_keys which are only valid for signing events"; expired_ts is
 // "Required") and ../../docs/matrix-v1.19-spec/rooms/v5.md ("Signing key
 // validity period").
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/RemoteKeyFetchResult.hpp"
+#include "merovingian/federation/RemoteKeyResponse.hpp"
+#include "merovingian/federation/RemoteOldVerifyKey.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

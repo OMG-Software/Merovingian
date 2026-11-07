@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/master_key.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -12,15 +13,17 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/events/event_id.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionResult.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/PublishedStreamOrdering.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
-#include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/sync/SyncNotifier.hpp"
+#include "merovingian/sync/WaitCursor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

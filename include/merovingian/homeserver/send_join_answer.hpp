@@ -3,10 +3,10 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/database/persistent_state_group.hpp"
-#include "merovingian/homeserver/SendJoinAnswerEvents.hpp" // split-shim
-#include "merovingian/homeserver/SendJoinAnswerLimits.hpp" // split-shim
-#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"   // split-shim
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
+#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
+#include "merovingian/homeserver/SendJoinAnswerLimits.hpp"
+#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
 
 #include <cstddef>
 #include <cstdint>

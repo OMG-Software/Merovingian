@@ -3,6 +3,9 @@
 
 #include "merovingian/database/connection.hpp"
 
+#include "merovingian/database/DatabaseExecutor.hpp"
+#include "merovingian/database/QueryResult.hpp"
+
 namespace merovingian::database
 {
 

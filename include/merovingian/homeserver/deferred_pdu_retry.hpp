@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/DeferredPduRetryJob.hpp" // split-shim
-#include "merovingian/homeserver/periodic_job.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
 
 #include <chrono>
 #include <cstddef>

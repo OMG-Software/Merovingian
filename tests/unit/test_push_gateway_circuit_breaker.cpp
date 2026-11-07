@@ -3,8 +3,11 @@
 // OUT-3 (29 Sep 2026 audit): a push gateway host that keeps failing is skipped
 // for a cooldown, so its stalled requests stop occupying delivery capacity.
 
-#include "merovingian/push/gateway_circuit_breaker.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/push/GatewayCircuitBreaker.hpp"
+#include "merovingian/push/GatewayCircuitBreakerPolicy.hpp"
+#include "merovingian/push/GatewayCircuitOutcome.hpp"
+#include "merovingian/push/PushGatewayClient.hpp"
+#include "merovingian/push/PushGatewayResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
 
 #include <string>
 #include <unordered_map>
@@ -12,7 +12,7 @@ namespace merovingian::config
 
 // Per-endpoint rate-limit policies. The values populate
 // `http::RateLimitEngine` at `start_client_server()` time; restart
-// required (see `src/config/reload_policy.cpp`). Defaults are expressed
+// required (see `src/config/ReloadPolicy.cpp`). Defaults are expressed
 // through the route tiers in `http::rate_limit_tier_for()`:
 // 20/min per IP for the auth-sensitive tier (/login, /register, /refresh
 // and the */requestToken family), 5/min per user for /login, 120/min for

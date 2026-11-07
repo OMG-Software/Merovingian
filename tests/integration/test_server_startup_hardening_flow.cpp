@@ -29,9 +29,18 @@
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <spawn.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <array>
 #include <chrono>
@@ -40,22 +49,12 @@
 #include <fstream>
 #include <optional>
 #include <random>
+#include <signal.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <signal.h>
-#include <spawn.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #ifndef MEROVINGIAN_TEST_SERVER_BINARY
 #define MEROVINGIAN_TEST_SERVER_BINARY ""

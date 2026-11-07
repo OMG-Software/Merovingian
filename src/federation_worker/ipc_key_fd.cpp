@@ -3,15 +3,15 @@
 
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+
+#include <unistd.h>
 
 #include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <span>
-
-#include <unistd.h>
 
 namespace merovingian::federation_worker
 {

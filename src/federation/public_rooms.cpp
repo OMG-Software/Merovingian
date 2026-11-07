@@ -3,9 +3,13 @@
 
 #include "merovingian/federation/public_rooms.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/core/folded_substring.hpp"
+#include "merovingian/core/FoldedSubstringMatcher.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
 
 #include <algorithm>
 #include <charconv>

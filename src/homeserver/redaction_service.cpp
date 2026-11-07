@@ -3,14 +3,20 @@
 
 #include "merovingian/homeserver/redaction_service.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/RedactionContext.hpp"
+#include "merovingian/events/RedactionVerdict.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/events/redaction_validity.hpp"
+#include "merovingian/homeserver/LocalRedactionCheck.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
-#include "merovingian/observability/logger.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <algorithm>
 #include <optional>

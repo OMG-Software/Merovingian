@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/platform/FileKind.hpp" // split-shim
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/platform/FileMetadata.hpp"
 #include "merovingian/platform/FileMetadataResult.hpp"
-#include "merovingian/platform/PosixFileMode.hpp" // split-shim
 
 #include <cstdint>
 #include <optional>

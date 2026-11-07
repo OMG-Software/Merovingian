@@ -301,8 +301,8 @@ Base: docs/matrix-v1.19-spec/index.md
 | State resolution | Algorithm to merge divergent room state across forks | `events/state_resolution.hpp`, [spec](docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
 | Canonical JSON | Deterministic JSON encoding for signing/hashing | `canonicaljson/`, [spec](docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | Signing key | Ed25519 key pair used to sign events and federation requests | `crypto/ed25519.hpp` |
-| Stream token | Monotonic token for sync pagination | `sync/stream_token.hpp` |
-| Room version | Defines event format, auth rules, and state resolution algorithm | `rooms/room_version_policy.hpp`, [spec](docs/matrix-v1.19-spec/rooms/index.md) |
+| Stream token | Monotonic token for sync pagination | `sync/StreamToken.hpp` |
+| Room version | Defines event format, auth rules, and state resolution algorithm | `rooms/RoomVersionPolicy.hpp`, [spec](docs/matrix-v1.19-spec/rooms/index.md) |
 | Via servers | List of server names used to route joins (v12/MSC4291) | `federation/` |
 | Content hash | SHA-256 hash of event content, used for integrity checks | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | Reference hash | Hash of redacted event, used in event IDs | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event) |

@@ -5,9 +5,9 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/SlidingSyncExtensionRequests.hpp"
 #include "merovingian/sync/SlidingSyncExtensionResponses.hpp"
-#include "merovingian/sync/room_access.hpp"
 
 #include <cstdint>
 #include <functional>

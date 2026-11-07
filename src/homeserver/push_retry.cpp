@@ -5,7 +5,8 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <mutex>

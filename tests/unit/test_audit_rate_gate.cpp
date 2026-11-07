@@ -6,7 +6,7 @@
 // a fixed number of rows per audit event kind per window and counts the rest,
 // so the next admitted row can report how many were dropped.
 
-#include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/AuditRateGate.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/OpenedMasterKeyFile.hpp"
-#include "merovingian/crypto/secret_box.hpp"
+#include "merovingian/crypto/SecretBoxKey.hpp"
 
 #include <cstdint>
 #include <optional>

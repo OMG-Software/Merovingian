@@ -3,14 +3,18 @@
 
 #include "merovingian/homeserver/restricted_join.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/homeserver/RestrictedJoinDecision.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
+#include "merovingian/homeserver/RestrictedJoinWork.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <algorithm>
 #include <optional>

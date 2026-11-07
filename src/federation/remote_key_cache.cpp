@@ -3,15 +3,26 @@
 
 #include "merovingian/federation/remote_key_cache.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/RemoteKeyFetchResult.hpp"
+#include "merovingian/federation/RemoteKeyResponse.hpp"
+#include "merovingian/federation/RemoteOldVerifyKey.hpp"
+#include "merovingian/federation/RemoteVerifyKey.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <array>

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/SecureKeyBytes.hpp"
 #include "merovingian/crypto/TokenHmacKey.hpp"
 #include "merovingian/crypto/TokenHmacKeys.hpp"
-#include "merovingian/crypto/secure_key_bytes.hpp"
 
 #include <sodium.h>
 

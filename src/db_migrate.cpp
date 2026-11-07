@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/bootstrap/exit_code.hpp"
+#include "merovingian/bootstrap/ExitCode.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
 #include "merovingian/config/DatabaseRole.hpp"

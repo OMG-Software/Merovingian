@@ -3,8 +3,8 @@
 
 #include "merovingian/http/OutboundClient.hpp"
 
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/core/not_null.hpp"
-#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundHeader.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
@@ -12,8 +12,9 @@
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/http/ParsedOutboundUrl.hpp"
 #include "merovingian/http/SystemCaTrust.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <arpa/inet.h>
 #include <curl/curl.h>

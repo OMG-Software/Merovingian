@@ -3,7 +3,6 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/GroupLookup.hpp" // split-shim
 #include "merovingian/sync/GroupLookupResult.hpp"
 
 #include <string_view>

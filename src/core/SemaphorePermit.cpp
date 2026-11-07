@@ -3,7 +3,7 @@
 
 #include "merovingian/core/SemaphorePermit.hpp"
 
-#include "merovingian/core/portable_semaphore.hpp"
+#include "merovingian/core/PortableSemaphore.hpp"
 
 #include <utility>
 

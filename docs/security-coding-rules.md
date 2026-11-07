@@ -40,7 +40,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Resource). The file is never written after provisioning, so `0400` costs nothing.
   Source: 0.12.5 security audit, finding 22; `docs/hardening.md`.
 
-- **Outside `src/crypto/`, `src/events/`, `src/auth/` and `src/core/secret_buffer.cpp`, erase
+- **Outside `src/crypto/`, `src/events/`, `src/auth/` and `src/core/SecretBuffer.cpp`, erase
   secret bytes with `core::secure_zero()` — never by calling `sodium_memzero` directly, and
   never by relying on a container's destructor.**
   Prefer `core::SecretBuffer` wherever the owning type can be move-only; `secure_zero` is for
@@ -68,7 +68,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   reviewer rather than indistinguishable from a regression. Releasing before calling a
   self-locking function is no longer one of them: the callee's own scope handles it.
   Source: 0.12.5 security audit, finding 14; issue #487;
-  `include/merovingian/homeserver/request_lock.hpp`.
+  `include/merovingian/homeserver/RequestLockScope.hpp`.
 
 - **RAII is non-negotiable.**
   Why: resources (file descriptors, locks, `SecretBuffer`s, mutex guards) must be released
@@ -184,7 +184,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/observability/AGENTS.md`.
 
 - **Never read config values directly from environment or disk inside other modules — all
-  config access goes through `runtime_config.hpp`. Log the effective config at startup
+  config access goes through `RuntimeConfigSnapshot.hpp`. Log the effective config at startup
   excluding secrets; never log TLS private key paths or secret values.**
   Why: centralizing config access means validation happens exactly once, in one reviewed
   place, instead of every call site re-implementing (and potentially getting wrong) parsing
@@ -230,10 +230,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
 ## Cryptography
 
 - **Never call libsodium functions directly from outside the permitted crypto boundary**
-  (`src/crypto/`, `src/events/`, `src/auth/`, and `src/core/secret_buffer.cpp`).
+  (`src/crypto/`, `src/events/`, `src/auth/`, and `src/core/SecretBuffer.cpp`).
   Do not bypass the `Ed25519Provider` interface by calling libsodium directly, even inside
   those modules except where the module's own rules explicitly require it (e.g. `src/auth/`
-  for password hashing, `src/core/secret_buffer.cpp` for `mlock`/`munlock`).
+  for password hashing, `src/core/SecretBuffer.cpp` for `mlock`/`munlock`).
   Why: confining crypto primitive usage to reviewed modules means every use of a primitive
   has been checked for correct parameter order, correct buffer sizing, and correct error
   handling — the kind of mistake that turns a sound algorithm into a broken protocol. It
@@ -582,7 +582,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **Main re-verifies every PDU a federation worker relays, with its own key resolver,
   before the runtime lock is taken, and builds the envelope from the verified event rather
   than the worker's framed fields.** A new worker-to-main relay that carries a PDU must do
-  the same (`handle_pdu_ingest_request` in `src/homeserver/worker_pool.cpp` is the pattern).
+  the same (`handle_pdu_ingest_request` in `src/homeserver/WorkerPool.cpp` is the pattern).
   Why: the worker is the process most exposed to hostile input. Until 0.12.13 main trusted
   its signature check, so a compromised worker could inject events impersonating any
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
@@ -998,7 +998,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/homeserver/AGENTS.md`, `src/media/AGENTS.md`.
 
 - **Never hold `HomeserverRuntime::mutex` across a blocking network call.** Wrap the call
-  in a `homeserver::RuntimeLockRelease` scope (`homeserver/request_lock.hpp`) and keep every
+  in a `homeserver::RuntimeLockRelease` scope (`homeserver/RequestLockScope.hpp`) and keep every
   read and mutation of runtime state outside it.
   Why: that mutex guards client-server request state and narrower inbound-federation
   setup/callback scopes, so a network call held across it turns any remote server into a
@@ -1108,7 +1108,7 @@ media-fetch-pool task.
   parameters.**
   Why: string-interpolated SQL is the textbook SQL injection vector; bound parameters are
   parsed by the database driver as data, never as executable SQL syntax, closing the
-  class entirely rather than relying on escaping discipline. `statement.hpp` enforces this
+  class entirely rather than relying on escaping discipline. `PreparedStatement.hpp` enforces this
   mechanically.
   Source: `src/database/AGENTS.md`.
 
@@ -1387,7 +1387,7 @@ media-fetch-pool task.
 
 ## Sync
 
-- **Use `stream_token.hpp` — never parse or construct sync tokens manually.**
+- **Use `StreamToken.hpp` — never parse or construct sync tokens manually.**
   Why: a sync token is opaque, client-supplied input on every subsequent request; a
   hand-rolled parser is much more likely to mishandle a malformed or adversarial token than
   the single, reviewed implementation, and inconsistent construction risks producing a token

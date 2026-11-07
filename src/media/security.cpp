@@ -5,8 +5,21 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/media/AdminQuarantineAction.hpp"
+#include "merovingian/media/AdminQuarantineRequest.hpp"
+#include "merovingian/media/DecoderSafetyPolicy.hpp"
+#include "merovingian/media/DecoderSafetyRequest.hpp"
+#include "merovingian/media/MediaAcceptancePolicy.hpp"
+#include "merovingian/media/MediaDeduplicationKey.hpp"
+#include "merovingian/media/MediaDisposition.hpp"
+#include "merovingian/media/MediaPolicyDecision.hpp"
+#include "merovingian/media/MediaUploadPolicy.hpp"
+#include "merovingian/media/MediaUploadRequest.hpp"
+#include "merovingian/media/RemoteMediaFetchRequest.hpp"
+#include "merovingian/media/SandboxedMediaWorkerPlan.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <string>

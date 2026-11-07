@@ -2,17 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentPresence.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/homeserver/PresenceRead.hpp"       // split-shim
-#include "merovingian/homeserver/PresenceReadStatus.hpp" // split-shim
-#include "merovingian/homeserver/SyncPresenceMode.hpp"   // split-shim
-#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/homeserver/PresenceRead.hpp"
+#include "merovingian/homeserver/SyncPresenceMode.hpp"
+#include "merovingian/sync/EventTypeFilter.hpp"
 
 #include <chrono>
 #include <cstddef>

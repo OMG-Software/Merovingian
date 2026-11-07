@@ -3,6 +3,11 @@
 
 #include "merovingian/http/connection_guard.hpp"
 
+#include "merovingian/http/ConnectionPhase.hpp"
+#include "merovingian/http/RequestProgress.hpp"
+#include "merovingian/http/SlowlorisPolicy.hpp"
+#include "merovingian/http/keep_alive.hpp"
+
 #include <string>
 
 namespace merovingian::http
