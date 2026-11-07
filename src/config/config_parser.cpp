@@ -1421,6 +1421,14 @@ namespace
         {
             security.login_throttle.window = std::string{value};
         }
+        // CS8 (ADR-0548): the login token that POST /login/get_token mints.
+        else if (key == "security.login_token.enabled")
+        {
+            if (!parse_bool_value(value, security.login_token.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         // Token lifetimes and audit-log retention.
         else if (key == "security.access_token_lifetime_ms")
         {
