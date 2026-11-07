@@ -448,6 +448,9 @@ jobs:
     # it as Complement does, so the image cannot rot between releases. No Go,
     # no Complement: that run is the maintainer's (tests/complement/AGENTS.md).
     needs: debian-pkg
+    # ADR-0580: the result of debian-pkg itself, never the implicit success(), which also
+    # looks at the gate debian-pkg waits for and would skip this check when only the gate failed.
+    if: ${{ !cancelled() && needs.debian-pkg.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -812,16 +815,18 @@ jobs:
 
   sign-package-assets:
     name: GPG-sign package assets
-    needs: stage-package-assets
+    needs: [stage-package-assets, deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]
     # GitHub implicitly ANDs a bare expression with success(), and that default
     # success() returns false when any job in the broader dependency graph was
-    # skipped (e.g. a job whose own `if` is false). Using !failure() && !cancelled()
-    # plus an explicit result check makes signing depend only on the staging job
-    # outcome, not on the whole graph.
+    # skipped (e.g. a job whose own `if` is false). failure() looks at that whole
+    # graph too, the queue-after-analyses gate included (ADR-0580), so signing
+    # checks the jobs it depends on by name: staging succeeded and no package
+    # job failed or was cancelled, whatever the gate did.
     if: |
-      !failure() &&
       !cancelled() &&
-      needs.stage-package-assets.result == 'success'
+      needs.stage-package-assets.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     uses: ./.github/workflows/sign-artifacts.yml
     with:
       source_artifact_name: unsigned-packages
@@ -833,8 +838,10 @@ jobs:
   publish-latest:
     name: Publish rolling latest
     needs: sign-package-assets
+    # Signing runs only when staging succeeded and no package job failed or was
+    # cancelled, so its result is the whole check; failure() would also see the
+    # gate (ADR-0580).
     if: |
-      !failure() &&
       !cancelled() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&

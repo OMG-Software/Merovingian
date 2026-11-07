@@ -51,6 +51,16 @@ the gate would let a pull request merge with no OS build or package having run. 
 the gate, runs whether the gate passed or failed, and stops when the run is cancelled. `always()` was rejected: it would
 also run the jobs of a cancelled run, so cancelling the CI of a superseded push would no longer stop its queued jobs.
 
+The gate is also an ancestor of every job further down, and two of GitHub's status checks look at every ancestor, not only
+at a job's own `needs`. `success()`, which GitHub applies to a job with no `if`, is false once any ancestor failed, and
+`failure()` is true. So a job that waits for the gate through another job states its condition on what it needs by name
+(`needs.<job>.result`, with `!cancelled()` or `always()`) and never uses `success()` or `failure()`, written or implicit.
+Otherwise a failed gate would skip `complement-image` (its skipped check would count as passed), and signing and
+publishing the rolling release, although every package built. `complement-image` therefore runs when `debian-pkg`
+succeeded. `sign-package-assets` needs the nine package jobs as well as staging, and runs when staging succeeded and
+none of them failed or was cancelled. `publish-latest` runs when signing succeeded. Each keeps what it required before
+the gate existed, with the gate left out.
+
 `sonarcloud` keeps its `concurrency` group. With 15 jobs starting, the 5 seconds it spends cancelling the previous run no
 longer cost it a runner, and the group still stops two analyses of one pull request from running at the same time.
 
@@ -72,8 +82,10 @@ Rejected:
   workflow can change that: only free runners, or a higher cap, can.
 * The OS and package jobs start a few seconds later than before, after the gate has run. On a push where runners are free,
   that is the whole cost.
-* A new job in `ci.yml` or `packages.yml` must `needs:` the gate (or another job) and carry `if: ${{ !cancelled() }}`, or
-  the tooling test fails. A new workflow that runs for pull requests adds to the jobs that start at once; past 20, it needs a
+* A new job in `ci.yml` or `packages.yml` must need the gate or another job. One that needs the gate directly carries
+  `if: ${{ !cancelled() }}`. One that needs another job does not: `!cancelled()` alone would run it after what it needs
+  had failed. It states its condition on its own needs, as above, never with `success()` or `failure()`. The tooling
+  test fails on any of these. A new workflow that runs for pull requests adds to the jobs that start at once; past 20, it needs a
   gate of its own.
 * The cap of 20 is the plan's. If the plan changes, update `RUNNER_CAP` in the tooling test.
 

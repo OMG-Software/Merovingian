@@ -5,7 +5,8 @@ Sonar and CodeQL take a CI runner as soon as a pull request is pushed (ADR-0580)
 ### Changed
 
 - Every job in `ci.yml` and `packages.yml` that needed no other job now waits for a few-second gate job, `queue-after-analyses` ("Queue after Sonar and CodeQL"). A pull request now starts 15 jobs at once instead of 34, under the organisation's limit of 20, so when no other pull request's CI holds the runners `sonarcloud` (about an hour) and CodeQL no longer queue behind the OS and package builds, which take runners as they free up. The limit is shared across pull requests, and GitHub does not serve its queue in order, so the gate cannot help while another pull request's CI runs. The jobs that wait carry `if: ${{ !cancelled() }}`, so a failed gate cannot skip a required check, and GitHub would count a skipped one as passed. No check is renamed.
-- `tests/tooling/test_ci_runner_order.py` (`ci-runner-order-tooling`) fails when the jobs a pull request starts at once exceed 20, when a job in those two workflows needs nothing, or when an analysis waits for another job.
+- `complement-image`, `sign-package-assets` and `publish-latest` judge the jobs they need by name instead of with `success()` or `failure()`, which look at every ancestor, the gate included: a failed gate would otherwise have skipped the Complement image check (counted as passed) and the signing and publishing of the rolling release although every package built. Signing now also needs the nine package jobs, and runs when staging succeeded and none of them failed or was cancelled.
+- `tests/tooling/test_ci_runner_order.py` (`ci-runner-order-tooling`) fails when the jobs a pull request starts at once exceed 20, when a job in those two workflows needs nothing, when a job behind the gate has no condition or uses `success()` or `failure()`, or when an analysis waits for another job.
 ## 0.12.81
 
 Fixes the low findings of the November 2026 project analysis.

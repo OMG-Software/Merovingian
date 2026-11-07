@@ -60,8 +60,34 @@ def needs(job: str) -> list[str]:
 
 
 def job_if(job: str) -> str | None:
+    """The job's condition on one line, a `|` block scalar's lines joined."""
     match = re.search(r"^    if:[ \t]*(.+)$", job, re.MULTILINE)
-    return match.group(1).strip() if match else None
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if value in ("|", ">", "|-", ">-"):
+        block = re.match(r"((?:      .*\n)+)", job[match.end() + 1 :])
+        value = " ".join(block.group(1).split()) if block else ""
+    return value
+
+
+def downstream_of_the_gate(workflow_jobs: dict[str, str]) -> list[str]:
+    """Jobs that wait for the gate through another job: the gate is an ancestor, not a direct need."""
+    found: list[str] = []
+    for job_id, job in workflow_jobs.items():
+        pending = list(needs(job))
+        if GATE in pending:
+            continue
+        seen: set[str] = set()
+        while pending:
+            ancestor = pending.pop()
+            if ancestor in seen or ancestor not in workflow_jobs:
+                continue
+            seen.add(ancestor)
+            pending.extend(needs(workflow_jobs[ancestor]))
+        if GATE in seen:
+            found.append(job_id)
+    return found
 
 
 def matrix_size(job: str) -> int:
@@ -131,6 +157,26 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                     # needs failed reports a skipped check, and a skipped required check counts as passed.
                     if GATE in needs(job):
                         self.assertEqual(job_if(job), "${{ !cancelled() }}")
+
+    def test_given_a_job_behind_the_gate_through_another_when_its_condition_is_read_then_it_ignores_the_gate(
+        self,
+    ) -> None:
+        for workflow in GATED_WORKFLOWS:
+            # GIVEN the jobs that have the gate as an ancestor but do not need it directly.
+            workflow_jobs = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))
+            downstream = downstream_of_the_gate(workflow_jobs)
+            self.assertNotEqual(downstream, [], f"{workflow}: no job found behind the gate; is the parser right?")
+            for job_id in downstream:
+                with self.subTest(workflow=workflow, job=job_id):
+                    # WHEN its condition is read.
+                    condition = job_if(workflow_jobs[job_id])
+
+                    # THEN it is written out: with none, GitHub applies success(), which looks at every ancestor, so
+                    # a failed gate would skip the job and a skipped required check counts as passed.
+                    self.assertIsNotNone(condition, "no `if`: the implicit success() also sees the gate")
+                    # AND it names no status check that looks at every ancestor: a failed gate would stop signing
+                    # and publishing although every package built.
+                    self.assertNotRegex(condition, r"\b(success|failure)\(\)", "judge `needs.<job>.result` instead")
 
     def test_given_the_gate_when_it_runs_then_it_is_quick_and_never_skipped(self) -> None:
         for workflow in GATED_WORKFLOWS:

@@ -359,8 +359,10 @@ the gate job `queue-after-analyses` and carries `if: ${{ !cancelled() }}`, so a 
 once that, when no other pull request's CI holds the runners, `sonarcloud` and CodeQL, the two longest, do not queue
 ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)). The
 condition matters: without it a failed gate skips the jobs, and a skipped required check counts as passed.
-`tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when an analysis waits for anything, or
-when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
+A job that waits for the gate through another job states its condition on its own needs (`needs.<job>.result`, with
+`!cancelled()` or `always()`), never `success()` or `failure()`, written or implicit: both look at every ancestor, the
+gate included. `tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when a job behind the gate
+breaks either condition rule, when an analysis waits for anything, or when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
 
 ## Catch2 example
 
