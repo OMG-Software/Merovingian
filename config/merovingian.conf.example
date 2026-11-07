@@ -235,6 +235,12 @@ security.login_throttle.max_failures_per_source=5
 security.login_throttle.max_failures_per_account=50
 security.login_throttle.window=15m
 
+# Login tokens (CS8, ADR-0548). When true, POST /_matrix/client/v1/login/get_token lets a signed-in user, after
+# re-entering the password on every call, mint a single-use token (valid 2 minutes) that logs another device in as
+# that user with the m.login.token flow. A login token hands a full session to whoever holds it, so it is off by
+# default. Tokens are held in memory only: a restart drops the unredeemed ones. Reloadable.
+security.login_token.enabled=false
+
 # Token lifetimes. Values are in milliseconds; 0 disables expiry for that token
 # kind. The advertised expires_in_ms matches access_token_lifetime_ms so the
 # TTL the client receives equals the TTL the server enforces.
