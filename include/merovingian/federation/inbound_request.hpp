@@ -5,7 +5,21 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/event_table.hpp"
 #include "merovingian/events/event.hpp"
+#include "merovingian/federation/AuthorisingSignatureKey.hpp"
+#include "merovingian/federation/FederationAcceptedTransaction.hpp"
+#include "merovingian/federation/FederationDecision.hpp"
+#include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/FederationPdu.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationResponse.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/FederationSigningKey.hpp"
+#include "merovingian/federation/InboundSignatureVerification.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
+#include "merovingian/federation/XMatrixCredentials.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/room_read_result.hpp"
@@ -13,9 +27,9 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/federation/transactions.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/thumbnailer.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <chrono>
@@ -35,428 +49,6 @@
 
 namespace merovingian::federation
 {
-
-struct FederationSigningKey final
-{
-    std::string server_name{};
-    std::string key_id{};
-    std::string verify_token{};
-    bool loaded{false};
-};
-
-struct FederationKeyRecord final
-{
-    std::string server_name{};
-    std::string key_id{};
-    std::uint64_t valid_until_ts{0U};
-    // Raw 32-byte Ed25519 public key (not base64) used to verify signatures
-    // produced by this server. Populated from the remote's published
-    // /_matrix/key/v2/server response.
-    std::string public_key_bytes{};
-    // True for a key published under `old_verify_keys`: "only valid for signing
-    // events" (server-server-api.md, Publishing keys). It never authenticates a
-    // federation request, and it verifies an event only when the event's
-    // origin_server_ts is before `expired_ts`. For such a key `valid_until_ts`
-    // equals `expired_ts` (capped at the time the key was fetched).
-    bool retired{false};
-    std::uint64_t expired_ts{0U};
-};
-
-// Parsed fields from an Authorization: X-Matrix ... header.
-struct XMatrixCredentials final
-{
-    std::string origin{};
-    std::string destination{};
-    std::string key_id{};
-    std::string signature{};
-};
-
-struct SignedFederationRequest final
-{
-    std::string method{};
-    std::string target{};
-    std::string origin{};
-    // Destination (receiving) server name. Part of the Matrix X-Matrix signed
-    // request object: the verifier rebuilds the signed payload with it, so it
-    // must equal this server's own name.
-    std::string destination{};
-    std::string key_id{};
-    std::string signature{};
-    // Current wall-clock time in milliseconds. Used only to reject a request
-    // signed with a remote key whose published validity window has lapsed;
-    // the Matrix request-signing scheme itself carries no timestamp.
-    std::uint64_t now_ts{0U};
-    bool canonical_json_verified{false};
-    // True when the X-Matrix request signature has already been verified by a
-    // trusted upstream — the main process, over the authenticated IPC channel
-    // (#323). When set, handle_inbound_federation_request skips the
-    // signature-verify step and trusts the origin/key_id fields. The raw
-    // signature is absent in this case; only the verified identity travels.
-    bool signature_verified{false};
-    std::string body{};
-    // Source IP of the direct peer (or the trusted-proxy-resolved client IP),
-    // copied from LocalHttpRequest::remote_addr. Used solely to budget
-    // pre-authentication remote-key resolution: at that point no identity has
-    // been verified, so the IP is the only thing about the sender that is not
-    // simply asserted in a header. Empty in tests and on paths that do not
-    // resolve keys, which the budget treats as a single shared bucket.
-    std::string remote_addr{};
-};
-
-struct FederationPdu final
-{
-    std::string event_id{};
-    std::string room_id{};
-    std::string event_type{};
-    std::string sender{};
-    std::vector<events::EventSignature> signatures{};
-    std::string json{};
-    // Room version resolved from the room's m.room.create state. Populated by
-    // parse_federation_pdu when a room_version_resolver is provided; falls back
-    // to "12" when the room is unknown or no resolver is wired.
-    std::string room_version{"12"};
-};
-
-struct FederationAcceptedTransaction final
-{
-    std::string origin{};
-    std::string transaction_id{};
-    std::size_t pdu_count{0U};
-    std::size_t edu_count{0U};
-    // The 200 body the transaction was first answered with, replayed to a
-    // retry of it. Empty when it did not fit the ring's byte budget (ADR-0283).
-    std::string response_body{};
-};
-
-struct FederationRemoteRuntime final
-{
-    std::string server_name{};
-    RemoteTrustState trust{};
-    FederationKeyRecord signing_key{};
-    RemoteServerRecord discovery{};
-};
-
-struct FederationRateLimitBucket final
-{
-    std::string origin{};
-    std::uint32_t transactions_seen{0U};
-    std::uint32_t pdus_seen{0U};
-    std::uint32_t edus_seen{0U};
-    // Non-/send requests seen from this origin (query, backfill, membership,
-    // key and state endpoints). /send traffic is counted by the three
-    // weighted counters above instead, so a transaction and its contents are
-    // never double-counted.
-    std::uint32_t requests_seen{0U};
-    std::chrono::steady_clock::time_point transaction_window_start{};
-    std::chrono::steady_clock::time_point pdu_window_start{};
-    std::chrono::steady_clock::time_point edu_window_start{};
-    std::chrono::steady_clock::time_point request_window_start{};
-};
-
-// On-demand resolver for remote federation peers. The resolver is responsible
-// for any discovery, network fetch, self-signature verification, and caching
-// — the federation core only consumes the returned record. The returned
-// runtime carries both the verified signing key and the resolved discovery
-// state so the inbound bootstrap path can pass the SSRF/TLS policy on the
-// first request from a previously-unknown remote. Returning std::nullopt
-// signals that resolution failed and the request must be rejected.
-using RemoteKeyResolver =
-    std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
-
-// Optional legacy hint for a genuinely network-free, complete peer resolution.
-// A true answer must cover discovery metadata as well as the signing key: a
-// fresh persistent key alone does not prove that the full resolver avoids DNS
-// or HTTP. Production leaves this unset and uses cached_pdu_key_lookup for
-// key-only PDU verification and known-peer rotation instead.
-//
-// When unset, every full resolution is charged. An embedded full-resolution
-// cache may opt in, but must not use mere key freshness as the admission signal.
-using RemoteKeyCacheProbe = std::function<bool(std::string_view server_name, std::string_view key_id)>;
-
-// Result of a federation `query/directory` lookup. found=false means the alias
-// is unknown to this server and the handler responds 404 M_NOT_FOUND.
-struct FederationDirectory final
-{
-    bool found{false};
-    std::string room_id{};
-    std::vector<std::string> servers{};
-};
-
-// Resolves a room alias for an inbound federation
-// `GET /_matrix/federation/v1/query/directory`. Optional: when unset the
-// handler responds 501 Not Implemented. The alias is percent-decoded before
-// being passed to the provider.
-using DirectoryQueryProvider = std::function<FederationDirectory(std::string_view room_alias)>;
-
-// Answers an inbound `GET` or `POST /_matrix/federation/v1/publicRooms` with its 200 response body, or
-// nothing when the answer could not be had (a worker's relay to main failed: 503). Optional: when unset
-// the handler responds 501 Not Implemented.
-using PublicRoomsProvider = std::function<std::optional<std::string>(PublicRoomsRequest const& request)>;
-
-// Result of a federation `query/profile` lookup. found=false means the user
-// is unknown to this server and the handler responds 404 M_NOT_FOUND.
-struct FederationProfile final
-{
-    bool found{false};
-    std::string displayname{};
-    std::string avatar_url{};
-    // The extended fields (`m.tz` and custom keys) as one canonical JSON object; empty or `{}` for none.
-    std::string fields_json{};
-};
-
-// Resolves a local user's published profile for an inbound federation
-// `GET /_matrix/federation/v1/query/profile`. Optional: when unset the
-// handler responds 501 Not Implemented.
-using ProfileQueryProvider = std::function<FederationProfile(std::string_view user_id)>;
-
-// Server-blind E2EE federation query hooks. The two POST hooks take the
-// request body and return the canonical-JSON response body; the devices hook
-// takes the path user_id. An empty return signals failure. Optional: an unset
-// hook makes the corresponding route respond 501 Not Implemented.
-using DeviceKeysQueryProvider = std::function<std::string(std::string_view request_body)>;
-using OneTimeKeysClaimProvider = std::function<std::string(std::string_view request_body)>;
-using UserDevicesProvider = std::function<std::string(std::string_view user_id)>;
-
-// Inbound event-graph query hooks. Each takes the parsed path component (and
-// for `get_missing_events`, the request body) plus the X-Matrix-authenticated
-// `origin` of the requesting server, and returns a `RoomReadResult`: the
-// canonical-JSON response body on `ok`, `forbidden` when the origin has no
-// joined user in the room and the room is not world readable (403
-// M_FORBIDDEN, FED-2), `not_found` for an unknown room or event (404
-// M_NOT_FOUND) and `malformed` for an unusable request body (400). The provider
-// is where the origin-in-room check lives, so every process that serves the
-// endpoint (main and the federation worker) enforces it. Optional: an unset
-// hook makes the corresponding route respond 501 Not Implemented.
-using EventQueryProvider = std::function<RoomReadResult(std::string_view event_id, std::string_view origin)>;
-using StateQueryProvider =
-    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
-using StateIdsQueryProvider =
-    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
-// `GET /event_auth/{roomId}/{eventId}`: the room, the event whose auth chain is asked for, and the
-// authenticated origin.
-using EventAuthQueryProvider =
-    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
-using MissingEventsQueryProvider =
-    std::function<RoomReadResult(std::string_view room_id, std::string_view request_body, std::string_view origin)>;
-// `GET /timestamp_to_event/{roomId}?ts=&dir=`: the room, the timestamp in milliseconds, the direction and
-// the authenticated origin. The handler has already parsed `ts` and `dir`; the provider decides the
-// access of the origin (`forbidden`) and finds the event (`not_found` when there is none).
-using TimestampToEventQueryProvider = std::function<RoomReadResult(
-    std::string_view room_id, std::int64_t ts, database::TimeDirection direction, std::string_view origin)>;
-
-// Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
-// request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the
-// `suggested_only` query parameter; `origin` is the authenticated requesting server, whose access
-// to the room (and to each child) the provider judges. An empty return signals failure and the
-// handler responds 404 M_NOT_FOUND. Optional: when unset the route responds 501 Not Implemented.
-using SpaceHierarchyProvider =
-    std::function<std::string(std::string_view room_id, bool suggested_only, std::string_view origin)>;
-
-// Serves a local media file for an inbound `GET /_matrix/federation/v1/media/download/{mediaId}`
-// request. The `media_id` path component is already percent-decoded. The handler maps a failed
-// result to the appropriate Matrix error response (404 M_NOT_FOUND for missing media, 451 for
-// quarantined media, etc.). Optional: when unset the route responds 501 Not Implemented.
-using MediaDownloadProvider = std::function<media::LocalMediaDownloadResult(std::string_view media_id)>;
-
-// What an inbound `GET /_matrix/federation/v1/media/thumbnail/{mediaId}` asks for. The handler has
-// validated the dimensions (positive integers) and the method; `origin` is the X-Matrix-authenticated
-// requesting server, which the provider counts the decode against.
-struct FederationThumbnailQuery final
-{
-    std::string media_id{};
-    std::uint32_t width{0U};
-    std::uint32_t height{0U};
-    media::ThumbnailMethod method{media::ThumbnailMethod::scale};
-    std::string origin{};
-};
-
-// Serves a thumbnail of local media for an inbound federation thumbnail request. The handler maps a
-// failed result as for `MediaDownloadProvider` (404, 451, 504 M_NOT_YET_UPLOADED, ...). Optional:
-// when unset the route responds 501 Not Implemented.
-using MediaThumbnailProvider = std::function<media::LocalMediaDownloadResult(FederationThumbnailQuery const& query)>;
-
-// Resolves the room version for a given room ID by consulting the local
-// persistent state (typically the m.room.create event's content.room_version
-// field). Returns a version string such as "10", "11", "12". When the room
-// is unknown the resolver should return the current default ("12").
-// Optional: when unset PDU parsing falls back to "12".
-using RoomVersionResolver = std::function<std::string(std::string_view room_id)>;
-// Optional provider for per-room server ACL enforcement (MSC4436). Returns
-// true when the server is allowed to participate in the room, or when the
-// room has no m.room.server_acl event. When unset, ACL checks are skipped.
-using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
-// Why rules held outside the config refuse a server (an admin's scope-federation policy rule), empty when
-// they do not. See operator_policy_refusal.
-using ServerPolicyRefusalProvider = std::function<std::string(std::string_view server_name)>;
-// Optional probe for a PDU this server already stored (any status) in `room_id` (ADR-0285). The
-// transaction handler asks it before verifying a PDU's signatures, so a re-sent PDU costs no key lookup,
-// and answers a hit as handled without invoking pdu_sink. Unset means every PDU goes on to the sink,
-// which still answers PduIngestionStatus::already_stored for a stored event.
-using PduStoredProbe = std::function<bool(std::string_view room_id, std::string_view event_id)>;
-using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
-// Signalled whenever a key-resolution slot is given back. Shared like the mutex
-// it is used with, so the state stays movable.
-using FederationSlotSignal = std::shared_ptr<std::condition_variable_any>; // SHARED_PTR: reviewed — moves with mutex
-
-// Per-source-IP window for pre-authentication remote-key resolution.
-struct KeyResolutionBucket final
-{
-    std::string source{};
-    std::uint32_t resolutions_seen{0U};
-    std::chrono::steady_clock::time_point window_start{};
-};
-
-// Per-source-IP window of failed X-Matrix signature checks (FED-4, ADR-0081).
-struct BadSignatureBucket final
-{
-    std::string source{};
-    std::uint32_t failures_seen{0U};
-    std::chrono::steady_clock::time_point window_start{};
-};
-
-// Negative cache entry: an origin whose key resolution failed, remembered until
-// `expires_at` so repeats of the same name are cheap.
-struct KeyResolutionFailure final
-{
-    std::string origin{};
-    // Scoped to the requested key ID as well as the origin. Keying on the origin
-    // alone let an unauthenticated sender poison a legitimate third party: name a
-    // real server with a bogus key_id, the resolver fetches that server's real
-    // keys successfully but returns nothing for the bogus id, and an
-    // origin-scoped failure entry then rejects that server's genuine requests
-    // for the whole TTL. A bogus key ID must only ever poison itself.
-    std::string key_id{};
-    std::chrono::steady_clock::time_point expires_at{};
-};
-
-// Its implicit move can throw under libstdc++ (std::deque member); see ADR-0268 before changing that.
-struct FederationRuntimeState final
-{
-    RuntimeFederationConfig config{};
-    // Protects federation-local mutable bookkeeping while homeserver-level
-    // federation dispatch runs without HomeserverRuntime::mutex.
-    FederationRuntimeMutex mutex{std::make_shared<std::recursive_mutex>()};
-    std::vector<FederationRemoteRuntime> remotes{};
-    // Replay-dedup ring (see #416): capped at kMaxAcceptedTransactions
-    // (inbound_request.cpp) so a sustained stream of distinct transaction ids
-    // cannot grow the main process's memory without bound. Entries are always
-    // appended in acceptance order under federation_guard(), so the oldest
-    // entry is always at the front — a plain FIFO pop_front() eviction (O(1)
-    // on a deque) is enough to keep this bounded.
-    std::deque<FederationAcceptedTransaction> accepted_transactions{};
-    // Total bytes of the response_body values kept in accepted_transactions,
-    // bounded by config.accepted_transaction_cache_bytes (ADR-0283).
-    std::size_t accepted_transaction_bytes{0U};
-    std::vector<FederationRateLimitBucket> rate_limit_buckets{};
-    // Bounded audit ring (#423): capped at kMaxAuditEvents
-    // (inbound_request.cpp) with FIFO eviction, mirroring
-    // accepted_transactions above. unsafe_audit_events counts retained
-    // entries whose reason_code carries signature/token material so
-    // federation_audit_is_safe stays O(1).
-    std::deque<observability::AuditLogEvent> audit_events{};
-    std::size_t unsafe_audit_events{0U};
-    RemoteKeyResolver remote_key_resolver{};
-    // Optional, strictly network-free lookup of a PDU verification key. Remote
-    // keys must satisfy the cache freshness policy; local retained keys stay local.
-    // A hit is still verified against the event timestamp by PDU authorization.
-    std::function<std::optional<FederationKeyRecord>(std::string_view, std::string_view)> cached_pdu_key_lookup{};
-    RemoteKeyCacheProbe remote_key_cache_probe{};
-    // Pre-authentication key-resolution budget state. Unlike rate_limit_buckets
-    // above -- which is keyed on an already-verified origin and so bounded by
-    // the number of real federating peers -- these are reachable before any
-    // identity is established, so both containers are explicitly capped with
-    // FIFO eviction (kMaxKeyResolutionBuckets / kMaxKeyResolutionFailures in
-    // inbound_request.cpp). An unbounded pre-auth map is the very DoS this
-    // budget exists to prevent.
-    std::deque<KeyResolutionBucket> key_resolution_buckets{};
-    std::deque<KeyResolutionFailure> key_resolution_failures{};
-    // Failed-signature budget per source address. Pre-authentication like the
-    // containers above, so capped with FIFO eviction (kMaxBadSignatureBuckets
-    // in inbound_request.cpp).
-    std::deque<BadSignatureBucket> bad_signature_buckets{};
-    // Resolutions currently in flight process-wide. Guarded by `mutex`; the
-    // resolver call itself runs unlocked, so this is incremented before the
-    // call and decremented after by a scope guard.
-    std::uint32_t key_resolutions_in_flight{0U};
-    // Notified after key_resolutions_in_flight is decremented, for the one
-    // admission path that waits for a slot (resolve_join_state_key).
-    FederationSlotSignal key_resolution_slot_released{std::make_shared<std::condition_variable_any>()};
-    // Optional ingestion hooks. When set, accepted PDUs are appended to the
-    // event graph via pdu_sink and accepted EDUs are routed to runtime
-    // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both
-    // hooks are invoked from handle_inbound_federation_request.
-    PduSink pdu_sink{};
-    EduSink edu_sink{};
-    // Federation membership and history endpoints. Optional: when unset
-    // the handler returns 501 Not Implemented for the corresponding route
-    // so callers know to fall back to the legacy "log and accept" stub
-    // behaviour rather than appearing to succeed.
-    MembershipTemplateProvider membership_template_provider{};
-    MembershipAcceptor membership_acceptor{};
-    InviteHandler invite_handler{};
-    // Issues the invite for an `exchange_third_party_invite` (ADR-0484). Unset (a worker): the endpoint answers 501.
-    ThirdPartyInviteExchanger third_party_invite_exchanger{};
-    BackfillProvider backfill_provider{};
-    // Optional resolver for inbound `query/directory`. When unset the handler
-    // responds 501 Not Implemented.
-    DirectoryQueryProvider directory_query_provider{};
-    // Optional provider for the inbound published room directory. When unset the handler responds 501
-    // Not Implemented.
-    PublicRoomsProvider public_rooms_provider{};
-    // Optional resolver for inbound `query/profile`. When unset the handler
-    // responds 501 Not Implemented.
-    ProfileQueryProvider profile_query_provider{};
-    // Optional resolvers for inbound E2EE key federation routes. Each unset
-    // hook makes its route respond 501 Not Implemented.
-    DeviceKeysQueryProvider device_keys_query_provider{};
-    OneTimeKeysClaimProvider one_time_keys_claim_provider{};
-    UserDevicesProvider user_devices_provider{};
-    // Optional resolvers for inbound event-graph queries. Each unset hook
-    // makes its route respond 501 Not Implemented.
-    EventQueryProvider event_query_provider{};
-    StateQueryProvider state_query_provider{};
-    StateIdsQueryProvider state_ids_query_provider{};
-    EventAuthQueryProvider event_auth_query_provider{};
-    MissingEventsQueryProvider missing_events_query_provider{};
-    TimestampToEventQueryProvider timestamp_to_event_query_provider{};
-    // Optional resolver for inbound space hierarchy. When unset the handler
-    // responds 501 Not Implemented.
-    SpaceHierarchyProvider space_hierarchy_provider{};
-    // Optional provider for inbound federation media downloads. When unset the
-    // handler responds 501 Not Implemented.
-    MediaDownloadProvider media_download_provider{};
-    // Optional provider for inbound federation thumbnails; as above, 501 when unset.
-    MediaThumbnailProvider media_thumbnail_provider{};
-    // Optional resolver for room version. When set, parse_federation_pdu
-    // calls it with the room_id from the PDU JSON and uses the returned
-    // version string for event-ID computation and signature verification.
-    // When unset, both operations fall back to room version "12".
-    RoomVersionResolver room_version_resolver{};
-    // Optional provider for per-room server ACL enforcement (MSC4436).
-    // When unset, ACL checks are skipped (e.g. in low-level unit tests).
-    RoomServerAclProvider room_server_acl_provider{};
-    // Optional admin rules for operator_policy_refusal. A worker has no authority over them: its answer is empty
-    // and main judges what it relays (ADR-0358, ADR-0390).
-    ServerPolicyRefusalProvider server_policy_refusal_provider{};
-    PduStoredProbe pdu_already_stored{};
-};
-
-struct FederationDecision final
-{
-    bool accepted{false};
-    std::uint16_t status{500U};
-    std::string reason{};
-};
-
-struct FederationResponse final
-{
-    std::uint16_t status{500U};
-    std::string body{};
-    // Non-empty overrides the default application/json Content-Type header on
-    // the HTTP response. Used by the federation media download endpoint to emit
-    // multipart/mixed.
-    std::string content_type{};
-};
 
 // Parses an Authorization header value that begins with "X-Matrix ". Returns
 // std::nullopt for any malformed input or if the required fields (origin, key,
@@ -541,11 +133,6 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
 // misses share this runtime's source quota, slots and pair negative cache.
 // Callers must still verify the signature and event-time key validity. A local
 // denial is retryable overload, not evidence of a bad remote signature.
-struct VerificationKeyResolution final
-{
-    std::optional<FederationKeyRecord> key{};
-    bool locally_denied{false};
-};
 
 [[nodiscard]] auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view source,
                                             std::string_view server_name, std::string_view key_id)
@@ -583,11 +170,6 @@ inline constexpr std::size_t max_authorising_signature_keys{max_signature_keys_p
 // it (a 403), never treating it as absent. Callers
 // that resolve keys ahead of verification (the send_join state path) use this
 // so they fetch exactly the keys the verifier will ask for.
-struct AuthorisingSignatureKey final
-{
-    std::string server_name{};
-    std::vector<std::string> key_ids{};
-};
 [[nodiscard]] auto join_authorising_signature_key(canonicaljson::Value const& event)
     -> std::optional<AuthorisingSignatureKey>;
 
@@ -680,25 +262,6 @@ using SignatureKeyResolver = AuthorisingKeyResolver;
 
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;
-
-// Verified peer identity for an inbound federation request whose X-Matrix
-// signature has been checked by the main process.
-struct VerifiedFederationIdentity final
-{
-    std::string origin{};
-    std::string key_id{};
-};
-
-// Outcome of verifying an inbound federation request's X-Matrix signature in
-// the main process. On success `accepted` is true and `identity` holds the
-// authenticated peer. On failure `accepted` is false and `error` is the
-// FederationResponse to return to the peer directly.
-struct InboundSignatureVerification final
-{
-    bool accepted{false};
-    VerifiedFederationIdentity identity{};
-    FederationResponse error{};
-};
 
 // Verifies an inbound federation request's X-Matrix signature using the main
 // process federation runtime (remote key resolution + Ed25519 verify + policy).

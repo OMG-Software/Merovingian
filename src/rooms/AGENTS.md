@@ -38,13 +38,13 @@ decides: it takes the preset, DM flag, whether the room can federate, the reques
 `encryption_request_from_initial_state` reads the request from `initial_state`; the last
 `m.room.encryption` entry with an empty state key is the request, and anything but
 `m.megolm.v1.aes-sha2` in it is "unencrypted" (fail closed). `encryption_algorithm_is_valid` is the only place that names the valid algorithm; the client
-state PUT of `m.room.encryption` (`homeserver/client_server.cpp`) refuses a missing or other `algorithm`
+state PUT of `m.room.encryption` (`homeserver/ClientServerRuntime.cpp`) refuses a missing or other `algorithm`
 with 400 `M_BAD_JSON` through it (ADR-0448). Room-creation settings: joins and federation
 ingest are never checked, and neither does the PUT check apply to federated events. It also provides log-redaction helpers so encrypted payloads never reach the logs in plaintext
 (`encrypted_event_payload_is_loggable`, `make_encrypted_event_log_summary`).
 
 The server does **not** reject plaintext events in a room that has `m.room.encryption` state;
-the Matrix spec leaves that to clients. `room_is_encrypted()` in `homeserver/client_server.cpp`
+the Matrix spec leaves that to clients. `room_is_encrypted()` in `homeserver/ClientServerRuntime.cpp`
 is only used to exclude encrypted rooms from search indexing.
 
 ## Key spec sections

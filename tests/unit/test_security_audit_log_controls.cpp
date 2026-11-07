@@ -232,6 +232,7 @@ SCENARIO("A structured log field value is capped at the real console sink",
 {
     GIVEN("a local logger writing synchronously to a captured console")
     {
+        // Console output is captured from the real sink, so the cap is proven on what an operator would actually see.
         auto capture = ConsoleCapture{};
         auto logger = SingleLog{};
         logger.set_console_log_level(LogLevel::trace);
@@ -257,6 +258,7 @@ SCENARIO("A structured log field value is capped at the real console sink",
             }
         }
 
+        // The cap is inclusive: a value of exactly the cap is emitted unchanged.
         WHEN("a field value is exactly the cap")
         {
             auto const value = std::string(max_log_field_value_bytes, 'b');
@@ -307,6 +309,7 @@ SCENARIO("A structured log field value is capped at the real console sink",
             }
         }
 
+        // Control characters are escaped before the cap is applied, so the limit holds for the escaped output.
         WHEN("a long value is full of control characters")
         {
             auto const value = std::string(100000U, '\n');
@@ -342,6 +345,7 @@ SCENARIO("A structured log field value is capped at the real console sink",
             }
         }
 
+        // Redaction must win over truncation: no prefix of a secret may survive.
         WHEN("a sensitive field carries a huge value")
         {
             auto const value = std::string(100000U, 'p');
@@ -357,6 +361,7 @@ SCENARIO("A structured log field value is capped at the real console sink",
             }
         }
 
+        // Control: short values pass through untouched, so the cap does not alter normal logging.
         WHEN("an ordinary short value is logged")
         {
             logger.warning("auth", diagnostic_message("login.rejected", std::vector<StructuredLogField>{

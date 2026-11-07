@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config_parser.hpp"
+#include "merovingian/platform/HardeningAction.hpp"
+#include "merovingian/platform/HardeningGate.hpp"
+#include "merovingian/platform/HardeningMode.hpp"
+#include "merovingian/platform/HardeningPlatform.hpp"
+#include "merovingian/platform/UnveilRule.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>

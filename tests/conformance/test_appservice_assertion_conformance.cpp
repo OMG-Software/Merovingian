@@ -15,8 +15,14 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -531,7 +537,7 @@ SCENARIO("an appservice's device_id assertion reads the device table under the r
         auto& runtime = started.runtime;
         REQUIRE(register_as_user(runtime, service_a_token, "_a_alice").response.status == 200U);
 
-        auto lock = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto lock = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         auto pending = std::async(std::launch::async, [&runtime]() {
             return merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET",

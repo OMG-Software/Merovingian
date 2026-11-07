@@ -6,7 +6,7 @@
 // These scenarios pin the bounding helper on its own; test_audit_flood.cpp
 // covers the wiring through the audit-append layer.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/observability/bounded_text.hpp"
 
 #include <catch2/catch_test_macros.hpp>

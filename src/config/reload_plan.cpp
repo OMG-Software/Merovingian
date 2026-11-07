@@ -32,9 +32,8 @@ namespace
                 add_change(plan, prefix + key);
             }
         }
-        for (auto const& [key, value] : next)
+        for ([[maybe_unused]] auto const& [key, value] : next)
         {
-            std::ignore = value;
             if (!current.contains(key))
             {
                 add_change(plan, prefix + key);
@@ -96,6 +95,8 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
 {
     auto plan = ReloadPlan{};
 
+    // Each block below compares one config key and records it under its dotted name; the
+    // policy (live or restart-required) is attached later by reload_policy.cpp.
     if (current.server().server_name != next.server().server_name)
     {
         add_change(plan, "server.name");
@@ -138,6 +139,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.http.request_threads");
     }
 
+    // Listener keys: bind addresses, ports and TLS material.
     if (current.listeners().client.bind != next.listeners().client.bind)
     {
         add_change(plan, "listeners.client.bind");
@@ -175,6 +177,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "listeners.federation.tls_private_key_file");
     }
 
+    // Database connection keys.
     if (current.database().uri_file != next.database().uri_file)
     {
         add_change(plan, "database.uri_file");
@@ -199,6 +202,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "database.pool_size");
     }
 
+    // Registration and password policy keys.
     if (current.security().registration.enabled != next.security().registration.enabled)
     {
         add_change(plan, "security.registration.enabled");
@@ -229,6 +233,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.registration.token_file");
     }
 
+    // Room encryption policy keys.
     if (current.security().encryption.default_for_new_rooms != next.security().encryption.default_for_new_rooms)
     {
         add_change(plan, "security.encryption.default_for_new_rooms");
@@ -253,6 +258,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.encryption.block_unencrypted_federated_private_rooms");
     }
 
+    // Federation policy: enablement, allow/deny lists and transport requirements.
     if (current.security().federation.enabled != next.security().federation.enabled)
     {
         add_change(plan, "security.federation.enabled");
@@ -285,6 +291,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.allow_private_ip_ranges");
     }
+    // Inbound transaction size limits and the per-origin rate limits that follow.
     if (current.security().federation.max_transaction_size != next.security().federation.max_transaction_size)
     {
         add_change(plan, "security.federation.max_transaction_size");
@@ -342,6 +349,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.key_resolution_failure_ttl");
     }
+    // Federation timeouts and the join pipeline's concurrency and size limits.
     if (current.security().federation.remote_timeout != next.security().federation.remote_timeout)
     {
         add_change(plan, "security.federation.remote_timeout");
@@ -372,6 +380,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.federation.join_response_max_size");
     }
 
+    // Media repository keys: upload policy, remote fetch policy, quotas and caches.
     if (current.security().media.max_upload_size != next.security().media.max_upload_size)
     {
         add_change(plan, "security.media.max_upload_size");
@@ -445,6 +454,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_media_cache_max_entries");
     }
+    // The pending-upload and URL-preview keys are compared through local references to shorten the lines.
     auto const& current_media = current.security().media;
     auto const& next_media = next.security().media;
     if (current_media.pending_upload_ttl_seconds != next_media.pending_upload_ttl_seconds)
@@ -492,6 +502,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.media.url_preview_cache_max_entries");
     }
 
+    // Log redaction switches.
     if (current.security().logging.redact_tokens != next.security().logging.redact_tokens)
     {
         add_change(plan, "security.logging.redact_tokens");
@@ -504,6 +515,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     // #421: the blocks below previously produced no diff at all, so an edit
     // to any of these keys was reported as "no changes" and silently dropped.
 
+    // CORS keys.
     if (current.server().cors.allowed_origins != next.server().cors.allowed_origins)
     {
         add_change(plan, "server.cors.allowed_origins");
@@ -525,6 +537,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.cors.allow_headers");
     }
 
+    // TURN credential keys.
     if (current.server().turn.server != next.server().turn.server)
     {
         add_change(plan, "server.turn.server");
@@ -623,11 +636,13 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.email.notification_throttle_seconds");
     }
 
+    // The master key path.
     if (current.security().secrets.master_key_file != next.security().secrets.master_key_file)
     {
         add_change(plan, "security.secrets.master_key_file");
     }
 
+    // Trust and safety policy server keys.
     if (current.security().trust_safety.enabled != next.security().trust_safety.enabled)
     {
         add_change(plan, "security.trust_safety.enabled");
@@ -646,6 +661,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.trust_safety.policy_server_allow_without_result");
     }
 
+    // Login throttle budgets, token lifetimes and audit retention.
     if (current.security().login_throttle.max_failures_per_source !=
         next.security().login_throttle.max_failures_per_source)
     {
@@ -675,6 +691,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.audit_log_retention_days");
     }
 
+    // Federation worker keys: IPC limits, thread and shard counts, and hardening switches.
     if (current.federation_worker().request_timeout_seconds != next.federation_worker().request_timeout_seconds)
     {
         add_change(plan, "federation.worker.request_timeout_seconds");
@@ -727,9 +744,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "federation.worker.allow_without_landlock");
     }
 
+    // Application-service registration keys.
     if (current.appservice().registration_files != next.appservice().registration_files)
     {
         add_change(plan, "appservice.registration_files");
+    }
+    if (current.appservice().allow_cleartext_hosts != next.appservice().allow_cleartext_hosts)
+    {
+        add_change(plan, "appservice.allow_cleartext_hosts");
     }
 
     if (!(current.client_rate_limits().default_per_ip == next.client_rate_limits().default_per_ip))
@@ -743,6 +765,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     diff_keyed_map(plan, "client_rate_limits.tier.", current.client_rate_limits().tier, next.client_rate_limits().tier);
     diff_keyed_map(plan, "log_modules.", current.log_modules().levels, next.log_modules().levels);
 
+    // Client API work bounds for sync, search and message paging.
     if (current.server().client_api.max_sync_rooms != next.server().client_api.max_sync_rooms)
     {
         add_change(plan, "server.client_api.max_sync_rooms");
@@ -781,6 +804,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.sliding_sync_max_timeline_limit");
     }
+    // Sliding sync limits.
     if (current.server().client_api.sliding_sync_max_room_subscriptions !=
         next.server().client_api.sliding_sync_max_room_subscriptions)
     {
@@ -796,6 +820,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.sliding_sync_connections_per_device");
     }
+    // Dedicated sync and media-fetch pools, plus request framing limits.
     if (current.server().http.sync_threads != next.server().http.sync_threads)
     {
         add_change(plan, "server.http.sync_threads");
@@ -846,6 +871,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.backfill.max_outbound_calls");
     }
+    // Federation backfill, key cache and pending-join limits.
     if (current.security().federation.backfill.max_state_ids != next.security().federation.backfill.max_state_ids)
     {
         add_change(plan, "security.federation.backfill.max_state_ids");
@@ -900,6 +926,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.push.max_in_flight_deliveries");
     }
+    // Push delivery and pusher limits.
     if (current.server().push.max_pushers_per_user != next.server().push.max_pushers_per_user)
     {
         add_change(plan, "server.push.max_pushers_per_user");
@@ -912,6 +939,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.push.gateway_cooldown_seconds");
     }
+    // Body size limits for the client API and pending joins.
     if (current.server().client_api.max_body_size != next.server().client_api.max_body_size)
     {
         add_change(plan, "server.client_api.max_body_size");
@@ -956,6 +984,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_registration_validation_sessions_per_remote");
     }
+    // Session and queue caps for user-interactive auth and to-device storage.
     if (current.server().client_api.max_uia_sessions != next.server().client_api.max_uia_sessions)
     {
         add_change(plan, "server.client_api.max_uia_sessions");
@@ -968,6 +997,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_notifications_page_size");
     }
+    // Federation query and state resolution bounds.
     if (current.security().federation.query.max_backfill_pdus != next.security().federation.query.max_backfill_pdus)
     {
         add_change(plan, "security.federation.query.max_backfill_pdus");
@@ -1040,6 +1070,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_key_signatures_per_user");
     }
+    // Per-user stored data caps: filters, push rules and account data.
     if (current.server().client_api.max_filters_per_user != next.server().client_api.max_filters_per_user)
     {
         add_change(plan, "server.client_api.max_filters_per_user");
@@ -1066,6 +1097,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_relations_page_size");
     }
+    // createRoom and hierarchy limits.
     if (current.server().client_api.max_create_room_invites != next.server().client_api.max_create_room_invites)
     {
         add_change(plan, "server.client_api.max_create_room_invites");
@@ -1091,6 +1123,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.outbound_delivery_threads");
     }
+    // Outbound federation delivery limits.
     if (current.security().federation.outbound_max_retries != next.security().federation.outbound_max_retries)
     {
         add_change(plan, "security.federation.outbound_max_retries");
@@ -1103,6 +1136,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "appservice.total_timeout_seconds");
     }
+    // Application-service outbound client response and queue bounds.
     if (current.appservice().response_max_size != next.appservice().response_max_size)
     {
         add_change(plan, "appservice.response_max_size");
@@ -1115,6 +1149,8 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "presence.enabled");
     }
+    // Every difference found above is already in the plan; callers read the count of
+    // restart-required entries to decide whether a reload can be applied live.
     return plan;
 }
 

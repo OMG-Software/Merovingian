@@ -17,6 +17,7 @@
 // message; it never passes silently.
 
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
@@ -31,6 +32,14 @@
 #include "../support/process_tasks.hpp"
 #include "../support/temp_directory.hpp"
 
+#include <fcntl.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
@@ -41,14 +50,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <fcntl.h>
-#include <linux/seccomp.h>
-#include <sys/prctl.h>
-#include <sys/resource.h>
-#include <sys/syscall.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #endif
 
 using merovingian::platform::parse_task_confinement;

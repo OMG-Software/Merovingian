@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/config/ListenerConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
@@ -11,10 +13,15 @@
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/client_txn_prune.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/email_push.hpp"
@@ -40,6 +47,9 @@
 #include "merovingian/platform/seccomp_hardening.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
 
+#include <poll.h>
+#include <sys/stat.h>
+
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -56,9 +66,6 @@
 #include <utility>
 #include <vector>
 
-#include <poll.h>
-#include <sys/stat.h>
-
 #ifdef __FreeBSD__
 #include <fcntl.h>
 #endif
@@ -66,7 +73,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.78"};
+constexpr auto version = std::string_view{"0.12.79"};
 
 struct BootstrapConfigResult final
 {
@@ -876,7 +883,7 @@ struct ListenerBinding final
             sync_pool.request_stop();
             return std::nullopt;
         }
-        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.appservice_delivery_wake = [&appservice_delivery_job]() {
             appservice_delivery_job.wake();
         };
@@ -997,7 +1004,7 @@ struct ListenerBinding final
         return std::nullopt;
     }
     {
-        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
             typing_expiry_job.wake();
         };
@@ -1062,7 +1069,7 @@ struct ListenerBinding final
     // stop the delivery thread. A transaction it is sending ends within the outbound call's own
     // timeout; the rest stay queued in the database for the next start.
     {
-        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.appservice_delivery_wake = nullptr;
     }
     appservice_delivery_job.stop();
@@ -1073,7 +1080,7 @@ struct ListenerBinding final
     // timeouts. Emails still due are dropped with the process (ADR-0219).
     email_push_job.stop();
     {
-        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;
         runtime.homeserver.profile_propagation_wake = nullptr;
     }

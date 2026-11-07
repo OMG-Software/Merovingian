@@ -9,10 +9,19 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

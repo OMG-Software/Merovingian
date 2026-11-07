@@ -14,15 +14,25 @@
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include <array>
 #include <atomic>
@@ -34,12 +44,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/time.h>
 
 namespace
 {

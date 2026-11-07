@@ -1,5 +1,5 @@
 config_sources = files(
-  'config.cpp',
+  'Config.cpp',
   'config_parser.cpp',
   'reload_plan.cpp',
   'reload_policy.cpp',

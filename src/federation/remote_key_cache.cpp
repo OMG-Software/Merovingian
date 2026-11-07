@@ -10,8 +10,8 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>

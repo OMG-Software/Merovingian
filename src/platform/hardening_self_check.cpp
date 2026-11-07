@@ -3,20 +3,20 @@
 
 #include "merovingian/platform/hardening_self_check.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/elf_probe.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
+
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <sys/resource.h>
-#include <unistd.h>
 
 #ifdef __linux__
 #include <linux/capability.h>

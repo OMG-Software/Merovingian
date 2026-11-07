@@ -4,7 +4,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/OidcConfig.hpp"
 
 namespace merovingian::auth
 {

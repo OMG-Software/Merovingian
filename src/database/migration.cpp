@@ -4,8 +4,8 @@
 #include "merovingian/database/migration.hpp"
 
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <optional>

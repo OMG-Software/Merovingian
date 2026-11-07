@@ -8,11 +8,18 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "merovingian/auth/password.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/platform/runtime_hardening.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
 
 namespace merovingian::platform
 {

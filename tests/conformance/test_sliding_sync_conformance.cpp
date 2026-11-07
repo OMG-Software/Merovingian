@@ -22,7 +22,6 @@
 // |                  = true for matrix-rust-sdk compatibility              |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_parser.hpp"
 #include "merovingian/sync/stream_token.hpp"
 

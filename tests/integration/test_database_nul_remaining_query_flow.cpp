@@ -6,12 +6,25 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -243,14 +256,10 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                     auto const avatar_url = "mxc://example.org/db6-avatar-" + suffix;
                     auto const presence = case_index % 2U == 0U ? std::string{"unavailable"} : std::string{"online"};
                     auto const status_msg = "DB-6 status " + suffix;
-                    auto const display_response =
-                        send_request("PUT", profile_path + "/displayname" + with_marker("/displayname"),
-                                     "{\"displayname\":\"" + displayname + "\"}");
-                    auto const avatar_response =
-                        send_request("PUT", profile_path + "/avatar_url" + with_marker("/avatar_url"),
-                                     "{\"avatar_url\":\"" + avatar_url + "\"}");
-                    std::ignore = display_response;
-                    std::ignore = avatar_response;
+                    std::ignore = send_request("PUT", profile_path + "/displayname" + with_marker("/displayname"),
+                                               "{\"displayname\":\"" + displayname + "\"}");
+                    std::ignore = send_request("PUT", profile_path + "/avatar_url" + with_marker("/avatar_url"),
+                                               "{\"avatar_url\":\"" + avatar_url + "\"}");
 
                     // Explicitly unauthenticated controls exercise the pre-auth profile GET.
                     auto const full_profile = send_request("GET", profile_path + query, {}, false);
@@ -276,10 +285,9 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                                                                                    {"avatar_url", avatar_url}
                         }));
                     }
-                    auto const presence_response =
+                    std::ignore =
                         send_request("PUT", presence_path + with_marker("/status"),
                                      "{\"presence\":\"" + presence + "\",\"status_msg\":\"" + status_msg + "\"}");
-                    std::ignore = presence_response;
 
                     // Every query/marker pair gets a fresh, real room; leave is last.
                     auto options = hs::CreateRoomOptions{};
@@ -327,10 +335,9 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                     auto const encoded_event = merovingian::core::percent_encode_path_component(*event_id);
                     for (auto const receipt_type : {std::string_view{"m.read"}, std::string_view{"m.read.private"}})
                     {
-                        auto const receipt_response = send_request(
+                        std::ignore = send_request(
                             "POST", room_path + "/receipt/" + std::string{receipt_type} + "/" + encoded_event + query,
                             "{}");
-                        std::ignore = receipt_response;
                         // Receipts are in-memory: never invent a durable receipt field.
                         // Exact identity catches both appended query text and double decoding.
                         record(std::ranges::count_if(
@@ -339,16 +346,14 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                                               receipt.receipt_type == receipt_type && receipt.event_id == *event_id;
                                    }) == 1);
                     }
-                    auto const fully_read =
+                    std::ignore =
                         send_request("POST", room_path + "/receipt/m.fully_read/" + encoded_event + query, "{}");
-                    std::ignore = fully_read;
                     record(std::ranges::count_if(
                                runtime.homeserver.database.persistent_store.receipts, [&](auto const& receipt) {
                                    return receipt.room_id == room.value && receipt.user_id == owner.value;
                                }) == 2);
 
-                    auto const leave = send_request("POST", room_path + "/leave" + with_marker("/leave"), "{}");
-                    std::ignore = leave;
+                    std::ignore = send_request("POST", room_path + "/leave" + with_marker("/leave"), "{}");
                     auto const verify_store = [&](db::PersistentStore const& store) {
                         auto const profile = db::find_profile(store, owner.value);
                         record(profile.has_value());
@@ -622,6 +627,8 @@ SCENARIO("Deleting a key backup version with unused query text removes the inten
             THEN("that version disappears in memory and after reopening while a second version survives")
             {
                 auto index = 0U;
+                // Every request must answer with the expected status and must never let an exception escape the
+                // dispatcher, whatever the query text contains.
                 auto const request = [&](std::string method, std::string target, std::string body,
                                          std::uint32_t expected) {
                     auto response = std::optional<hs::LocalHttpResponse>{};
@@ -645,6 +652,7 @@ SCENARIO("Deleting a key backup version with unused query text removes the inten
                     return response;
                 };
                 auto constexpr prefix = "/_matrix/client/v3/room_keys/version";
+                // Creating a version through the API gives the id the server chose, so the test never guesses it.
                 auto const create_version = [&]() {
                     auto const response =
                         request("POST", prefix,
@@ -658,7 +666,10 @@ SCENARIO("Deleting a key backup version with unused query text removes the inten
                     REQUIRE_FALSE(version->empty());
                     return *version;
                 };
+                // The survivor proves a delete with a hostile query removes only the addressed version.
                 auto const survivor = create_version();
+                // Each case gets a fresh version, deletes it with the query appended, then checks the in-memory store,
+                // a reopened SQLite store, and the HTTP reads agree on the outcome.
                 auto const exercise = [&](std::string const& query) {
                     auto const case_index = index++;
                     INFO("backup query case index: " << case_index);
@@ -695,12 +706,15 @@ SCENARIO("Deleting a key backup version with unused query text removes the inten
                     auto const survivor_read = request("GET", std::string{prefix} + "/" + survivor, {}, 200U);
                     record(survivor_read && remaining_string_field(json::parse_lossless(survivor_read->body).value,
                                                                    "version") == std::optional<std::string>{survivor});
+                    // Deleting an already-deleted version stays idempotent (200) rather than failing on the query.
                     auto const repeated = request("DELETE", path + query, {}, 200U);
                     record(repeated && repeated->status == 200U);
                     record(deletion_correct(runtime.homeserver.database.persistent_store));
                     return okay;
                 };
+                // The no-query control must pass first so a later failure is attributable to the query text.
                 REQUIRE(exercise({}));
+                // Include a literal NUL byte as well as its percent-encoded and double-encoded forms.
                 auto literal = std::string{"?unused="};
                 literal.push_back('\0');
                 literal += "/version";

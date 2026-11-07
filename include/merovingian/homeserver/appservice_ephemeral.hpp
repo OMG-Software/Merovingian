@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/homeserver/AppserviceEphemeralItem.hpp"
+#include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 
 #include <cstddef>
 #include <optional>

@@ -8,7 +8,8 @@
 // docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md,
 // part 3.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
@@ -95,9 +96,8 @@ struct RecordingOps final
         ops.query_abi_version = [this]() -> int {
             return abi;
         };
-        ops.create_ruleset = [this](std::uint64_t handled_access_fs, int ruleset_abi) -> int {
+        ops.create_ruleset = [this](std::uint64_t handled_access_fs, int /*ruleset_abi*/) -> int {
             handled_access_fs_requested = handled_access_fs;
-            std::ignore = ruleset_abi;
             return create_ruleset_fails ? -1 : 42;
         };
         ops.add_rule = [this](int, std::string const& path, std::uint64_t allowed_access) -> LandlockAddRuleOutcome {

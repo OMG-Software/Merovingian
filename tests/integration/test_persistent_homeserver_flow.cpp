@@ -6,16 +6,32 @@
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/migration.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 
@@ -1288,14 +1304,20 @@ SCENARIO("DB-6 send_event rejects NUL state keys before local stream allocation"
 SCENARIO("DB-6 local admission preserves empty Unicode keys and escaped NUL content",
          "[db6][db6-local-admission][homeserver][database]")
 {
+    // Both createRoom entry points (the HTTP handler and the in-process API) and direct sends are covered.
     GIVEN("real SQLite stores with authenticated local users")
     {
+        // The escaped NUL ( ) in content and the empty or non-ASCII state keys are the edge cases
+        // that a text-based store or key comparison could truncate or normalise.
         WHEN("createRoom initial state and direct sends use supported keys with escaped NUL content")
         {
             THEN("empty and Unicode keys compose and persist unchanged through both createRoom APIs")
             {
+                // Run the whole flow once per createRoom entry point.
                 for (auto const through_http : {false, true})
                 {
+                    // An empty state key is valid for state events, and the Unicode key checks that bytes survive
+                    // the round trip unchanged.
                     for (auto const& escaped_key : {std::string{}, std::string{R"(\u00e9\u96ea)"}})
                     {
                         CAPTURE(through_http, escaped_key);
@@ -1346,8 +1368,12 @@ SCENARIO("DB-6 local admission preserves empty Unicode keys and escaped NUL cont
                             REQUIRE(sent.ok);
                             sent_id = sent.value;
                         }
+                        // Reopen the SQLite file in a fresh store so the assertions read what was persisted,
+                        // not what is still cached in memory.
                         auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
                         REQUIRE(reopened.ok);
+                        // The createRoom initial_state event and the directly sent state event must both be found
+                        // under the unchanged key, with their content intact.
                         for (auto const& type : {"org.example.db6.state", "org.example.db6.sent"})
                         {
                             auto const state = std::find_if(
@@ -1394,8 +1420,7 @@ SCENARIO("Rate-limit audit rows and debug lines never retain registration query 
     GIVEN("a real SQLite homeserver with a one-request per-route IP budget")
     {
         auto const path = unique_sqlite_path();
-        auto const cleanup = AuditSqliteCleanup{path};
-        std::ignore = cleanup;
+        [[maybe_unused]] auto const cleanup = AuditSqliteCleanup{path};
         auto const route = std::string{"/_matrix/client/v1/register/m.login.registration_token/validity"};
         auto config = sqlite_registration_enabled_config(path);
         auto limits = merovingian::config::ClientRateLimitsConfig{};

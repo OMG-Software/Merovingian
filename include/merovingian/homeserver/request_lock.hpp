@@ -10,16 +10,22 @@
 namespace merovingian::homeserver
 {
 
-// Publishes the `std::unique_lock` that currently owns `HomeserverRuntime::mutex`
-// for this thread's in-flight request, so code deeper in the call stack can
-// release that lock around a blocking network call without threading the lock
-// object through every intervening signature.
+// Publishes the mutex that the `std::unique_lock` owning `HomeserverRuntime::mutex`
+// for this thread's in-flight request locks, so code deeper in the call stack can
+// release it around a blocking network call without threading the lock object
+// through every intervening signature.
+//
+// The mutex is published, not the guard (ADR-0529): `RuntimeLockRelease` only
+// ever asks a guard which mutex it refers to, and the mutex outlives every guard
+// on it, whereas the guard is a local variable whose address in thread-local
+// storage would be a stack address (CodeQL cpp/stack-address-escape). A published
+// guard is never moved or released (`unique_lock::release`), so the mutex read
+// here is the one the guard still refers to.
 //
 // The publication is thread_local, so one request thread never observes
-// another's guard. A thread that publishes nothing — the federation worker, a
-// test calling a service function directly — leaves the publication null, and
-// the default-constructed `RuntimeLockRelease` below then has no guard to
-// release.
+// another's. A thread that publishes nothing — the federation worker, a test
+// calling a service function directly — leaves the publication null, and the
+// default-constructed `RuntimeLockRelease` below then has nothing to release.
 //
 // Nesting is supported: the innermost scope wins and restores its predecessor
 // on exit. That matches the one nesting path in the server, where the
@@ -28,7 +34,7 @@ namespace merovingian::homeserver
 class RequestLockScope final
 {
 public:
-    explicit RequestLockScope(std::unique_lock<RuntimeMutex>& guard) noexcept;
+    explicit RequestLockScope(RuntimeLock& guard) noexcept;
     ~RequestLockScope();
 
     RequestLockScope(RequestLockScope const&) = delete;
@@ -37,7 +43,8 @@ public:
     auto operator=(RequestLockScope&&) -> RequestLockScope& = delete;
 
 private:
-    std::unique_lock<RuntimeMutex>* previous_{nullptr};
+    // The mutex the enclosing scope published, put back when this one closes.
+    RuntimeMutex const* previous_{nullptr};
 };
 
 // Releases `HomeserverRuntime::mutex` for the lifetime of the scope and
@@ -63,8 +70,8 @@ private:
 //
 // Two constructors, one behaviour:
 //
-//   RuntimeLockRelease{}        // find the mutex via the thread's published guard
-//   RuntimeLockRelease{guard}   // find it via a guard in hand
+//   RuntimeLockRelease{}        // the mutex the thread's request published
+//   RuntimeLockRelease{guard}   // the mutex a guard in hand refers to
 //
 // The argument says only which `unique_lock` to read the mutex address from,
 // never whether that guard believes it owns it. The set of levels released is
@@ -94,7 +101,7 @@ public:
     // Releases `guard` and any further levels this thread holds. Use this
     // whenever the guard is in hand rather than published: a nested call site
     // has its own guard, and the published one belongs to a different frame.
-    explicit RuntimeLockRelease(std::unique_lock<RuntimeMutex>& guard) noexcept;
+    explicit RuntimeLockRelease(RuntimeLock& guard) noexcept;
 
     // Re-acquires everything the constructor released. A failure to re-acquire
     // leaves the runtime's locking invariant broken with no way to signal it
@@ -116,12 +123,12 @@ public:
     [[nodiscard]] auto levels_released() const noexcept -> std::size_t;
 
 private:
-    void release(std::unique_lock<RuntimeMutex>* guard) noexcept;
+    void release(RuntimeMutex const* mutex) noexcept;
 
     // Non-owning observer of the mutex this scope released, null when it
     // released nothing. A reference member cannot express "nothing to do", and
     // this mirrors what `std::unique_lock` itself stores.
-    RuntimeMutex* mutex_{nullptr};
+    RuntimeMutex const* mutex_{nullptr};
     std::size_t levels_{0U};
 };
 

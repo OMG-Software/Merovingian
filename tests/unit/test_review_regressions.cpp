@@ -4,22 +4,43 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/migration.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -36,8 +57,6 @@
 #include <tuple>
 #include <type_traits>
 #include <vector>
-
-#include <sqlite3.h>
 
 namespace
 {

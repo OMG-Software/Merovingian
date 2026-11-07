@@ -4,7 +4,7 @@
 // homeserver::may_send_state_event (CSAZ-12): whether a user may send a state event of a type in a
 // room's current state, judged as the authorization rules judge it.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/room_power.hpp"
 
 #include <catch2/catch_test_macros.hpp>

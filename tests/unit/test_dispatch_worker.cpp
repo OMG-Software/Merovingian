@@ -3,12 +3,15 @@
 #include "../support/joining_threads.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "federation_signing_test_support.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentFederationDestination.hpp"
+#include "merovingian/database/PersistentFederationTransaction.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1034,13 +1037,16 @@ SCENARIO("A slow success grows the destination's backoff", "[f20][federation][di
         auto const port = acceptor.bound_port();
         REQUIRE(port > 0U);
         auto const answer = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"pdus":{}})");
+        // The mock peer serves exactly one TLS connection and is joined on scope exit, so a failed REQUIRE cannot leak
+        // the thread.
         auto server_thread = std::thread{[&]() {
             merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_context.context, answer);
         }};
         auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
-        std::ignore = join_server;
 
         auto client = merovingian::http::OutboundClient{};
+        // The resolver advances the fake clock by attempt_takes_ms, so each test decides how long a delivery appears to
+        // take without sleeping.
         auto fake_now = std::atomic<std::uint64_t>{1000U};
         auto attempt_takes_ms = std::atomic<std::uint64_t>{0U};
         auto discoveries = std::atomic<std::size_t>{0U};
@@ -1062,6 +1068,7 @@ SCENARIO("A slow success grows the destination's backoff", "[f20][federation][di
         }};
         auto config = worker_config();
         config.trusted_ca_pem = certificate.certificate_pem;
+        // One millisecond past the limit is the smallest duration that counts as slow.
         auto const slow = config.slow_attempt_ms + 1U;
         auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
                                                               std::move(now_ms), {},     &store};
@@ -1080,6 +1087,7 @@ SCENARIO("A slow success grows the destination's backoff", "[f20][federation][di
             }
         }
 
+        // A late 200 is still a delivery, but F-20 requires it to be penalised like a failure.
         WHEN("it answers only after the limit")
         {
             attempt_takes_ms.store(slow);

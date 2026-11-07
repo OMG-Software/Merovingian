@@ -3,8 +3,9 @@
 
 #include "merovingian/auth/session.hpp"
 
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <vector>

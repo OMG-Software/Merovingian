@@ -9,15 +9,28 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #include <array>
 #include <cstdint>
@@ -25,12 +38,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
 
 namespace
 {
@@ -120,7 +127,7 @@ SCENARIO("GET /_merovingian/health answers 200 with a fixed body and no credenti
         {
             auto response = std::string{};
             {
-                auto const held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+                auto const held = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
                 response =
                     exchange(port, "GET /_merovingian/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
             }

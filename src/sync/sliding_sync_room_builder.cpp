@@ -61,7 +61,7 @@ namespace
     // event formats do not carry event_id on the wire (it is derived from a
     // reference hash), but every client-facing event — timeline and
     // required_state alike — must include it per the Matrix spec's Room
-    // Event Format. Mirrors client_server.cpp's client_event_value().
+    // Event Format. Mirrors ClientServerRuntime.cpp's client_event_value().
     //
     // `unsigned` is never taken from the stored copy: it is outside the event's signatures, so a remote
     // sender can put anything there. It is built from `redacted_because` (attach_redacted_because) and the
@@ -207,9 +207,9 @@ namespace
         std::vector<std::pair<std::uint64_t, std::string>> const& timeline_events) -> std::unordered_set<std::string>
     {
         auto members = std::unordered_set<std::string>{};
-        for (auto const& [ordering, json] : timeline_events)
+        for (auto const& entry : timeline_events)
         {
-            std::ignore = ordering;
+            auto const& json = entry.second;
             auto const parsed = canonicaljson::parse_lossless(json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
@@ -471,7 +471,7 @@ auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
 // is never unread. The push badge counts the same way in one bounded pass of its own
 // (homeserver::count_push_badge, ADR-0207); a change to what counts here changes it there too.
 auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                            ReadMarkers const& markers, UnreadEventClassifier const& unread) -> ThreadNotificationCounts
+                            ReadMarkers const& markers, UnreadEventClassifier& unread) -> ThreadNotificationCounts
 {
     auto counts = ThreadNotificationCounts{};
     auto const counted_after = unread.counted_after(room_id);
@@ -520,13 +520,13 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
 }
 
 auto count_notifications(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                         ReadMarkers const& markers, UnreadEventClassifier const& unread) -> std::uint64_t
+                         ReadMarkers const& markers, UnreadEventClassifier& unread) -> std::uint64_t
 {
     return count_unread_by_thread(store, room_id, user, markers, unread).total().notification_count;
 }
 
 auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                      ReadMarkers const& markers, UnreadEventClassifier const& unread) -> std::uint64_t
+                      ReadMarkers const& markers, UnreadEventClassifier& unread) -> std::uint64_t
 {
     return count_unread_by_thread(store, room_id, user, markers, unread).total().highlight_count;
 }
@@ -551,7 +551,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
 {
     // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
-    auto const unread = homeserver::PushRuleUnreadClassifier{
+    auto unread = homeserver::PushRuleUnreadClassifier{
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
                                lazy_members_already_sent, ignored_senders, visibility, unread, expansion,
@@ -633,7 +633,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
-                         UnreadEventClassifier const& unread, TimelineExpansion expansion,
+                         UnreadEventClassifier& unread, TimelineExpansion expansion,
                          std::optional<std::uint64_t> room_last_sent_ordering,
                          std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id)
     -> SlidingSyncRoomResponse
@@ -823,9 +823,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // A room's first send on the connection has no previous send and no "previous
     // sync", so it is neither expanded nor live.
     auto const last_sent = room_last_sent_ordering.value_or(room_since_event_ordering);
-    for (auto const& [ordering, json] : timeline_events)
+    for (auto const& entry : timeline_events)
     {
-        std::ignore = json;
+        auto const ordering = entry.first;
         if (is_initial)
         {
             break;
@@ -915,10 +915,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         });
     }
 
-    for (auto& [ordering, json] : timeline_events)
+    for (auto& entry : timeline_events)
     {
-        resp.timeline_json.push_back(std::move(json));
-        std::ignore = ordering;
+        resp.timeline_json.push_back(std::move(entry.second));
     }
 
     return resp;

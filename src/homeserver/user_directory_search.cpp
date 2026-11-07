@@ -4,7 +4,8 @@
 #include "merovingian/homeserver/user_directory_search.hpp"
 
 #include "merovingian/core/folded_substring.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentProfile.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <string_view>
 #include <unordered_set>

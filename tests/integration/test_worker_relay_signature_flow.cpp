@@ -23,11 +23,15 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -35,6 +39,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <array>
@@ -52,8 +57,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <sys/socket.h>
 
 namespace
 {
@@ -378,7 +381,7 @@ auto prepare_main_relay(homeserver::HomeserverRuntime& runtime, std::atomic<std:
 
 auto exhaust_main_admission(homeserver::HomeserverRuntime& runtime, bool occupied_slot) -> void
 {
-    auto guard = std::lock_guard{*runtime.federation.mutex};
+    auto const guard = runtime.federation.mutex.acquire();
     runtime.federation.config.key_resolution_max_in_flight = 1U;
     runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
     runtime.federation.key_resolution_buckets.clear();
@@ -608,7 +611,7 @@ SCENARIO("main worker relays defer key misses without mutation and retry after a
                         CHECK(runtime.federation.key_resolution_failures.empty());
 
                         {
-                            auto guard = std::lock_guard{*runtime.federation.mutex};
+                            auto const guard = runtime.federation.mutex.acquire();
                             runtime.federation.key_resolutions_in_flight = 0U;
                             runtime.federation.key_resolution_buckets.clear();
                         }
@@ -778,6 +781,8 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
 {
     GIVEN("a room in which the remote member may post, and main knowing the remote server's genuine key")
     {
+        // SQLite on a unique temp path gives main a real store, as in production, without sharing state between
+        // scenarios.
         auto const path = unique_sqlite_path("merovingian-worker-relay-sig-");
         std::filesystem::remove(path);
         auto started = homeserver::start_runtime(config_with_sqlite(path));
@@ -799,6 +804,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // The worker is untrusted: main must verify the signature itself instead of believing the relayed frame.
         WHEN("the worker relays a message signed with a key that is not the sender server's")
         {
             auto const env = parse_envelope(make_remote_message_json(room.room_id, room.prev_event_ids(),
@@ -812,6 +818,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // Failing closed: a key main cannot resolve means the PDU is dropped, not accepted unverified.
         WHEN("the worker relays a message whose sender key main cannot resolve")
         {
             runtime.federation.remote_key_resolver =
@@ -829,6 +836,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
             }
         }
 
+        // The event ID in the frame is a claim; main recomputes it from the signed content and refuses a mismatch.
         WHEN("the worker's frame names a different event ID from the one the signed event hashes to")
         {
             auto env = parse_envelope(
@@ -869,6 +877,7 @@ SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation 
                 make_remote_message_json(room.room_id, room.prev_event_ids(), room.auth_event_ids(), 4, 44));
             auto const result = homeserver::handle_pdu_ingest_request(runtime, envelope_frame("pdu_ingest", env));
 
+            // Resolving a key can block on the network, so it must happen with the runtime lock released.
             THEN("main resolved the key itself, without holding the runtime lock, and accepted the PDU")
             {
                 REQUIRE(resolver_called);

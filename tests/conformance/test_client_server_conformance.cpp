@@ -32,13 +32,20 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -3969,8 +3976,7 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
                 // Spec MUST: 200 on valid access token, all sessions invalidated.
                 REQUIRE(response.response.status == 200U);
                 // Body must parse as an object (spec shows {}).
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -5089,8 +5095,7 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
             {
                 // Spec MUST: 200 on successful password change.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -5843,8 +5848,7 @@ SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object", "[conform
             {
                 // Spec MUST: 200 on successful device display name update.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -5898,8 +5902,7 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conf
             {
                 // Spec MUST: 200 on successful device deletion.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -5996,8 +5999,7 @@ SCENARIO("POST /delete_devices requires UIA and deletes listed devices", "[confo
             {
                 // Spec MUST: valid UIA => 200 {} and devices removed.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
 
                 auto const get_b = merovingian::homeserver::handle_client_server_request(
                     started.runtime, {"GET", "/_matrix/client/v3/devices/DEV_B", *token_a, {}});
@@ -6034,8 +6036,7 @@ SCENARIO("POST /delete_devices requires UIA and deletes listed devices", "[confo
             {
                 // Spec MUST: already-removed devices still succeed.
                 REQUIRE(second.response.status == 200U);
-                auto const body = parse_object(second.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(second.response.body);
             }
         }
     }
@@ -6698,8 +6699,7 @@ SCENARIO("PUT /room_keys/version/{version} returns 200 after updating backup met
             {
                 // Spec MUST: 200 on successful backup version update.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -6734,8 +6734,7 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
             {
                 // Spec MUST: 200 on successful backup version deletion.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -6875,8 +6874,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session
             {
                 // Spec MUST: 200 with session backup data.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }
@@ -10965,7 +10963,7 @@ SCENARIO("/sync notification_count still reflects messages sent after the receip
         REQUIRE(join.response.status == 200U);
 
         auto const first_event_id = send_text(started.runtime, alice, *room_id, "txn-partial-1", "first");
-        auto const second_event_id = send_text(started.runtime, alice, *room_id, "txn-partial-2", "second");
+        std::ignore = send_text(started.runtime, alice, *room_id, "txn-partial-2", "second");
 
         WHEN("bob posts a receipt for the first message only, then syncs")
         {
@@ -10973,7 +10971,6 @@ SCENARIO("/sync notification_count still reflects messages sent after the receip
                 started.runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/receipt/m.read/" + first_event_id, bob, "{}"});
             REQUIRE(receipt.response.status == 200U);
-            std::ignore = second_event_id;
 
             auto const sync = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
@@ -11202,8 +11199,7 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns state at the last event 
         // Two events after `target`; with limit=2 (after_limit=1) only the
         // nearer one (after1) lands inside the returned window.
         auto const after1 = send_text(started.runtime, token, room_id, "ctx-state-after1", "after one");
-        auto const after2 = send_text(started.runtime, token, room_id, "ctx-state-after2", "after two");
-        std::ignore = after2;
+        std::ignore = send_text(started.runtime, token, room_id, "ctx-state-after2", "after two");
 
         // The room name changes only after both `after1` and `after2` -- i.e.
         // strictly after the last event the bounded context window below will
@@ -11274,13 +11270,11 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} honours the limit query paramete
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
-        auto const e1 = send_text(started.runtime, token, room_id, "ctx-limit-1", "one");
-        std::ignore = e1;
+        std::ignore = send_text(started.runtime, token, room_id, "ctx-limit-1", "one");
         auto const e2 = send_text(started.runtime, token, room_id, "ctx-limit-2", "two");
         auto const e3 = send_text(started.runtime, token, room_id, "ctx-limit-3", "three");
         auto const e4 = send_text(started.runtime, token, room_id, "ctx-limit-4", "four");
-        auto const e5 = send_text(started.runtime, token, room_id, "ctx-limit-5", "five");
-        std::ignore = e5;
+        std::ignore = send_text(started.runtime, token, room_id, "ctx-limit-5", "five");
 
         WHEN("GET context/{eventId}?limit=2 is called for the middle event")
         {
@@ -14876,8 +14870,8 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // 21     Third-party lookup
 // ============================================================================
 // Spec: Matrix v1.19 §third party networks. All six lookups are implemented
-//       (src/appservice/appservice_client.cpp's query_thirdparty_* methods,
-//       routed in client_server.cpp) — see tests/conformance/
+//       (src/appservice/AppserviceClient.cpp's query_thirdparty_* methods,
+//       routed in ClientServerRuntime.cpp) — see tests/conformance/
 //       test_appservice_thirdparty_conformance.cpp for the full surface. The
 //       two scenarios below cover the specific "protocol name nobody
 //       registered declares" case: 404 M_NOT_FOUND, per spec ("The protocol
@@ -14910,8 +14904,7 @@ SCENARIO("GET /thirdparty/protocols returns a 200 JSON object", "[conformance][c
                 // Spec MUST: 200 with an object body (empty when no appservices),
                 // never 404. parse_object REQUIREs the body parses as an object.
                 REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                std::ignore = parse_object(response.response.body);
             }
         }
     }

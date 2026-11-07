@@ -1,0 +1,1612 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+
+#include "merovingian/appservice/registration.hpp"
+#include "merovingian/auth/password.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/refusing_ed25519_provider.hpp"
+#include "merovingian/crypto/runtime_ed25519_provider.hpp"
+#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
+#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/schema.hpp"
+#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/InboundTypingUser.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/TypingExpiry.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
+#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/redaction_service.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/media/LocalMediaBlob.hpp"
+#include "merovingian/media/LocalMediaRecord.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
+#include "merovingian/media/PendingMediaUpload.hpp"
+#include "merovingian/media/RemoteMediaCacheEntry.hpp"
+#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/HealthCheckSnapshot.hpp"
+#include "merovingian/observability/HealthStatus.hpp"
+#include "merovingian/observability/MetricLabel.hpp"
+#include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
+#include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <functional>
+#include <future>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace merovingian::homeserver
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("runtime", event, std::move(fields), severity);
+    }
+
+    [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
+                                   std::string help, std::vector<observability::MetricLabel> labels = {})
+        -> observability::MetricSample
+    {
+        return {std::move(name), value, true, type, std::move(help), std::move(labels)};
+    }
+
+    [[nodiscard]] auto admin_metrics(HomeserverRuntime const& runtime) -> std::vector<observability::MetricSample>
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto metrics = std::vector<observability::MetricSample>{
+            make_metric("merovingian_server_identity", 1, observability::MetricType::gauge,
+                        "Identity labels for the running homeserver process.",
+                        {{"server_name", runtime.config.server().server_name, true}}
+                        ),
+            make_metric("merovingian_runtime_started", runtime.started ? 1 : 0, observability::MetricType::gauge,
+                        "Whether the homeserver runtime has completed startup."),
+            make_metric("merovingian_database_schema_version",
+                        static_cast<std::int64_t>(runtime.database.schema_version), observability::MetricType::gauge,
+                        "Current validated database schema version."),
+            make_metric("users_total", static_cast<std::int64_t>(store.users.size()), observability::MetricType::gauge,
+                        "Number of local users currently present in the persistent store."),
+            make_metric("sessions_total", static_cast<std::int64_t>(store.access_tokens.size()),
+                        observability::MetricType::gauge,
+                        "Number of persisted access-token sessions currently known to the runtime."),
+            make_metric("rooms_total", static_cast<std::int64_t>(store.rooms.size()), observability::MetricType::gauge,
+                        "Number of persisted rooms currently known to the runtime."),
+            make_metric("events_total", static_cast<std::int64_t>(store.events.size()),
+                        observability::MetricType::gauge, "Number of persisted events currently known to the runtime."),
+            make_metric("audit_events_appended_total",
+                        static_cast<std::int64_t>(store.audit_log.size() + store.audit_log_evicted),
+                        observability::MetricType::counter,
+                        "Total number of durable audit events appended since the current store was created."),
+            make_metric("admin_actions_total", static_cast<std::int64_t>(store.admin_actions.size()),
+                        observability::MetricType::counter,
+                        "Total number of durable admin actions appended since the current store was created."),
+        };
+
+        if (runtime.dispatch_worker != nullptr)
+        {
+            // Security audit run-1: outbound transactions the worker refused because its queue, or a
+            // destination's share of it, was full. The peers recover those events themselves.
+            auto const dispatch = runtime.dispatch_worker->summary();
+            metrics.push_back(make_metric("merovingian_federation_outbound_rejected_total",
+                                          static_cast<std::int64_t>(dispatch.rejected),
+                                          observability::MetricType::counter,
+                                          "Outbound federation transactions refused because the dispatch queue, or "
+                                          "the destination's share of it, was full."));
+            metrics.push_back(make_metric("merovingian_federation_outbound_pending",
+                                          static_cast<std::int64_t>(dispatch.pending), observability::MetricType::gauge,
+                                          "Outbound federation transactions waiting in the dispatch queue."));
+        }
+
+        auto const health = admin_health(runtime);
+        for (auto const& component : health.components)
+        {
+            metrics.push_back(make_metric("merovingian_health_status",
+                                          component.status == observability::HealthStatus::ok
+                                              ? 1
+                                              : (component.status == observability::HealthStatus::degraded ? 0 : -1),
+                                          observability::MetricType::gauge,
+                                          "Current status of a named runtime health component.",
+                                          {
+                                              {"component", component.name,                                      true},
+                                              {"status",    observability::health_status_name(component.status), true}
+            }));
+        }
+
+        // Appservice queues (ADR-0190, ADR-0191): the depth of each outbox, the events refused at the
+        // appservice.max_queued_events cap, and the ephemeral items dropped at their own cap. An
+        // operator alerts on the dropped counters: a non-zero value means a bridge has been
+        // unreachable for long enough to lose events.
+        for (auto const& registration : runtime.appservices.all())
+        {
+            auto const labels = std::vector<observability::MetricLabel>{
+                {"appservice_id", registration.id, true}
+            };
+            auto const find_count = [&registration](auto const& counts) -> std::int64_t {
+                auto const found = counts.find(registration.id);
+                return found == counts.end() ? std::int64_t{0} : static_cast<std::int64_t>(found->second);
+            };
+            auto const ephemeral_dropped = [&]() -> std::int64_t {
+                auto const found = runtime.appservice_ephemeral.find(registration.id);
+                return found == runtime.appservice_ephemeral.end() ? std::int64_t{0}
+                                                                   : static_cast<std::int64_t>(found->second.dropped);
+            }();
+            metrics.push_back(make_metric(
+                "merovingian_appservice_outbox_queued",
+                static_cast<std::int64_t>(database::count_appservice_outbox_entries(store, registration.id)),
+                observability::MetricType::gauge, "Events queued for an application service and not yet delivered.",
+                labels));
+            metrics.push_back(make_metric("merovingian_appservice_outbox_dropped_total",
+                                          find_count(runtime.appservice_outbox_dropped),
+                                          observability::MetricType::counter,
+                                          "Events not queued for an application service because its outbox was at "
+                                          "appservice.max_queued_events, since the process started.",
+                                          labels));
+            metrics.push_back(make_metric("merovingian_appservice_ephemeral_dropped_total", ephemeral_dropped,
+                                          observability::MetricType::counter,
+                                          "Ephemeral items dropped from an application service's queue because it "
+                                          "was full, since the process started.",
+                                          labels));
+        }
+
+        auto const media_metrics = media::media_repository_metrics(runtime.media_repository);
+        metrics.insert(metrics.end(), media_metrics.begin(), media_metrics.end());
+        return metrics;
+    }
+
+    [[nodiscard]] auto read_database_uri_file(std::string const& path) -> std::string
+    {
+        auto const secret = platform::read_secure_secret_line(path, 4096U);
+        if (!secret)
+        {
+            return {};
+        }
+        auto const bytes = secret->bytes();
+        return {reinterpret_cast<char const*>(bytes.data()), bytes.size()};
+    }
+
+    auto hydrate_media_repository(media::LocalMediaRepository& repository,
+                                  database::PersistentStore const& persistent_store, std::string_view server_name)
+        -> void
+    {
+        auto records = std::vector<media::LocalMediaRecord>{};
+        records.reserve(persistent_store.local_media.size());
+        for (auto const& media_row : persistent_store.local_media)
+        {
+            auto record = media::LocalMediaRecord{};
+            record.media_id = media_row.media_id;
+            record.owner_user_id = media_row.owner_user_id;
+            record.content_type = media_row.content_type;
+            record.size_bytes = media_row.size_bytes;
+            record.hash_algorithm = media_row.hash_algorithm;
+            record.digest = media_row.digest;
+            record.storage_id = media::make_local_media_storage_id(media_row.digest, media_row.size_bytes);
+            record.state = media_row.removed ? media::LocalMediaState::removed
+                                             : (media_row.quarantined ? media::LocalMediaState::quarantined
+                                                                      : media::LocalMediaState::available);
+            record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
+            record.legacy_endpoint_visible = media_row.legacy_endpoint_visible;
+            record.from_remote_fetch = media::is_remote_cache_owner(media_row.owner_user_id, server_name);
+            record.upload_name = media_row.upload_name;
+            records.push_back(std::move(record));
+        }
+
+        // ADR-0119: the repository holds blob metadata only. SQLite and
+        // PostgreSQL hydrate these rows without their bytes; for the memory
+        // backend the rows are the database and keep them.
+        auto blobs = std::vector<media::LocalMediaBlob>{};
+        blobs.reserve(persistent_store.media_blobs.size());
+        for (auto const& blob_row : persistent_store.media_blobs)
+        {
+            blobs.push_back({blob_row.storage_id, blob_row.hash_algorithm, blob_row.digest, blob_row.size_bytes,
+                             blob_row.ref_count});
+        }
+        media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
+
+        // ADR-0119: the remote media cache is durable, so its entries come
+        // back with the records they point at.
+        auto const ttl_ms = repository.config.remote_media_cache_max_entries == 0U
+                                ? std::uint64_t{0U}
+                                : static_cast<std::uint64_t>(repository.config.remote_media_cache_ttl_seconds) * 1000U;
+        auto entries = std::vector<media::RemoteMediaCacheEntry>{};
+        entries.reserve(persistent_store.remote_media.size());
+        for (auto const& row : persistent_store.remote_media)
+        {
+            if (!row.local_media_id.empty())
+            {
+                entries.push_back(
+                    {row.server_name, row.media_id, row.local_media_id, row.fetched_at_ms + ttl_ms, row.fetched_at_ms});
+            }
+        }
+        media::restore_remote_media_cache(repository, std::move(entries));
+
+        // ADR-0212: reservations survive a restart; expired ones are kept until
+        // the next create deletes them.
+        auto reservations = std::vector<media::PendingMediaUpload>{};
+        reservations.reserve(persistent_store.pending_media_uploads.size());
+        for (auto const& row : persistent_store.pending_media_uploads)
+        {
+            reservations.push_back({row.media_id, row.owner_user_id, row.created_at_ms, row.expires_at_ms});
+        }
+        media::restore_pending_media_uploads(repository, std::move(reservations));
+    }
+
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto parse_policy_server_action(std::string_view value) noexcept
+        -> std::optional<trust_safety::PolicyAction>
+    {
+        using trust_safety::PolicyAction;
+        if (value == "allow")
+        {
+            return PolicyAction::allow;
+        }
+        if (value == "deny")
+        {
+            return PolicyAction::deny;
+        }
+        if (value == "quarantine")
+        {
+            return PolicyAction::quarantine;
+        }
+        if (value == "lock_account")
+        {
+            return PolicyAction::lock_account;
+        }
+        if (value == "suspend_account")
+        {
+            return PolicyAction::suspend_account;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto parse_policy_server_response(std::string_view body, trust_safety::PolicyServerHook hook)
+        -> trust_safety::PolicyServerHook
+    {
+        if (body.empty())
+        {
+            return hook;
+        }
+        auto const parsed = canonicaljson::parse_lossless(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return hook;
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return hook;
+        }
+
+        auto const* action = string_member(*object, "action");
+        if (action == nullptr)
+        {
+            return hook;
+        }
+        auto const parsed_action = parse_policy_server_action(*action);
+        if (!parsed_action.has_value())
+        {
+            return hook;
+        }
+
+        hook.decision_received = true;
+        hook.action = *parsed_action;
+        if (auto const* rule_id = string_member(*object, "rule_id"); rule_id != nullptr)
+        {
+            hook.rule_id = *rule_id;
+        }
+        auto code = std::string{"policy_server_"};
+        code += *action;
+        auto summary = std::string{"policy server decision"};
+        if (auto const* response_summary = string_member(*object, "summary");
+            response_summary != nullptr && !response_summary->empty())
+        {
+            summary = *response_summary;
+        }
+        auto detail = summary;
+        if (auto const* response_reason = string_member(*object, "reason"); response_reason != nullptr)
+        {
+            detail = *response_reason;
+        }
+        hook.reason = trust_safety::enforcement_reason(code, summary, detail);
+        return hook;
+    }
+
+} // namespace
+
+// Rebuilds crypto_provider_owned from all currently-active persisted signing
+// keys. Called after startup, after every key rotation, and after any other
+// change that adds or removes an active key. Exposed to room_service.cpp for
+// use by rotate_server_signing_key.
+auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
+{
+    // The federation worker never signs (ADR-0078) and holds no signing secret of its
+    // own. Rebuilding from local secrets there would swap the refusing provider for
+    // one built from whatever secrets the snapshot happens to contain.
+    if (runtime.crypto_provider_overridden)
+    {
+        return;
+    }
+
+    auto secrets = active_server_signing_key_secrets(runtime);
+    if (secrets.empty())
+    {
+        runtime.database.signing_secret_keys.clear();
+        runtime.database.signing_secret_key = core::SecretBuffer{};
+        runtime.crypto_provider_owned.reset();
+        runtime.crypto_provider = nullptr;
+        return;
+    }
+
+    // Every copy below lands in a core::SecretBuffer (0.12.5 audit, finding 5).
+    // This used to stage the seeds through a std::vector of plain std::array,
+    // which put a second, unlocked and never-zeroised copy of every active
+    // signing secret in ordinary heap memory on each provider rebuild.
+    auto key_entries = std::vector<std::pair<std::string, core::SecretBuffer>>{};
+    key_entries.reserve(secrets.size());
+    for (auto const& entry : secrets)
+    {
+        // Copy, do not move, the key_id: the loop below stores the same id in
+        // runtime.database.signing_secret_keys. Moving it here left that vector
+        // holding empty key ids, so any lookup by key_id silently missed. The
+        // secret is copied rather than moved for the same reason — the provider
+        // and the runtime store each need their own locked copy.
+        key_entries.emplace_back(entry.key_id, core::SecretBuffer{entry.secret.bytes()});
+    }
+
+    runtime.database.signing_secret_keys.clear();
+    for (auto&& entry : secrets)
+    {
+        runtime.database.signing_secret_keys.emplace_back(std::move(entry.key_id), std::move(entry.secret));
+    }
+
+    // Preserve the preferred single secret for callers that still borrow
+    // runtime.database.signing_secret_key (outbound federation, worker config,
+    // pagination-token derivation). The vector is sorted with the preferred
+    // key first, so front() is the same key the pre-multi-key code chose.
+    runtime.database.signing_secret_key =
+        core::SecretBuffer{runtime.database.signing_secret_keys.front().second.bytes()};
+
+    runtime.crypto_provider_owned = std::make_unique<crypto::RuntimeMultiKeyEd25519Provider>(std::move(key_entries));
+    runtime.crypto_provider = runtime.crypto_provider_owned.get();
+}
+
+HomeserverRuntime::HomeserverRuntime()
+    : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+    , argon2id_admission{std::make_unique<auth::Argon2idAdmission>(auth::default_argon2id_capacity())}
+{
+}
+
+auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void
+{
+    auto kept = std::vector<std::future<void>>{};
+    kept.reserve(futures.size());
+    for (auto& future : futures)
+    {
+        if (future.valid() && future.wait_for(std::chrono::seconds{0}) != std::future_status::ready)
+        {
+            kept.push_back(std::move(future));
+        }
+    }
+    futures = std::move(kept);
+}
+
+HomeserverRuntime::~HomeserverRuntime()
+{
+    // Join any still-running loser tasks from a parallel make_join race (and
+    // any still-running push-delivery task — see push_delivery_in_flight_)
+    // before other members (outbound_client, discovery_network, the signing
+    // SecretBuffer) are destroyed. orphan_futures_ is declared last so it is
+    // destroyed first; this explicit wait makes that ordering guarantee
+    // obvious and keeps the tasks' captured `&runtime` reference valid for
+    // the duration of the drain. The wait is bounded by each task's per-call
+    // timeout (join_timeout_seconds), so a hung remote cannot pin runtime
+    // destruction indefinitely.
+    //
+    // The mutex is held only long enough to move the futures out of
+    // orphan_futures_ — never across the blocking wait() below. A task's
+    // final action must never need to acquire orphan_futures_mutex_ to
+    // finish (push_delivery_in_flight_ is an atomic decrement for exactly
+    // this reason), but holding the lock across wait() would also needlessly
+    // block every other thread trying to reap or park a future (e.g. a
+    // concurrent dispatch_push_deliveries call) while this drain is in
+    // progress, so it is released regardless.
+    auto drained = std::vector<std::future<void>>{};
+    {
+        auto const lk = std::lock_guard{orphan_futures_mutex_};
+        drained = std::move(orphan_futures_);
+    }
+    for (auto& future : drained)
+    {
+        if (future.valid())
+        {
+            future.wait();
+        }
+    }
+}
+
+HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
+    : config(std::move(other.config))
+    , listeners(std::move(other.listeners))
+    , database(std::move(other.database))
+    // The source's `audit_sink_scope` is left as-is (still pointing
+    // at the source's `database` address). When the source runtime
+    // is destroyed, its scope's dtor will see the thread_local now
+    // points at the new `database` (this runtime's), and the
+    // `current != m_installed` check makes the clear a no-op.
+    // Re-install a fresh scope against the new `database` so the
+    // thread_local tracks the moved-into runtime, not the source.
+    , audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+    , federation(std::move(other.federation))
+    , media_repository(std::move(other.media_repository))
+    , hardening(std::move(other.hardening))
+    , started(other.started)
+    , outbound_client(std::move(other.outbound_client))
+    , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
+    , discovery_network(std::move(other.discovery_network))
+    , cached_discovery(std::move(other.cached_discovery))
+    , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
+    , appservices(std::move(other.appservices))
+    , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
+    , typing_expiry_wake(std::move(other.typing_expiry_wake))
+    , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
+    , appservice_ephemeral(std::move(other.appservice_ephemeral))
+    , appservice_pending_ephemeral(std::move(other.appservice_pending_ephemeral))
+    , appservice_outbox_dropped(std::move(other.appservice_outbox_dropped))
+    , dispatch_worker(std::move(other.dispatch_worker))
+    , federation_proxy(std::move(other.federation_proxy))
+    , crypto_provider_owned(std::move(other.crypto_provider_owned))
+    , crypto_provider(other.crypto_provider)
+    , crypto_provider_overridden(other.crypto_provider_overridden)
+    , sync_notifier(std::exchange(other.sync_notifier, nullptr))
+    , typing_users(std::move(other.typing_users))
+    , room_typing_stream_id(std::move(other.room_typing_stream_id))
+    , last_create_event_ts_ms(other.last_create_event_ts_ms)
+    , client_outbound_budget(std::move(other.client_outbound_budget))
+    , policy_server_budget(std::move(other.policy_server_budget))
+    , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
+    , argon2id_admission(std::move(other.argon2id_admission))
+    , deferred_pdu_next_attempt(std::move(other.deferred_pdu_next_attempt))
+    , deferred_pdu_retry_wake(std::move(other.deferred_pdu_retry_wake))
+    , orphan_futures_(std::move(other.orphan_futures_))
+    , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
+    , password_reset_sends_in_flight_(other.password_reset_sends_in_flight_.exchange(0U))
+    , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
+    , push_gateway_breaker_(std::move(other.push_gateway_breaker_))
+{
+    other.crypto_provider = nullptr;
+}
+
+auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+
+    config = std::move(other.config);
+    listeners = std::move(other.listeners);
+    database = std::move(other.database);
+    // `database` is now the new storage; re-seat the audit-sink
+    // install on it. The old scope (which pointed at the previous
+    // `database` address) is destroyed by `reset()` first; its dtor
+    // clears the thread_local only if the install is still ours, so
+    // it is always safe to call.
+    audit_sink_scope.reset();
+    audit_sink_scope = std::make_unique<LocalDatabaseScope>(database);
+    federation = std::move(other.federation);
+    media_repository = std::move(other.media_repository);
+    hardening = std::move(other.hardening);
+    started = other.started;
+    outbound_client = std::move(other.outbound_client);
+    trust_safety_policy_server = std::move(other.trust_safety_policy_server);
+    discovery_network = std::move(other.discovery_network);
+    cached_discovery = std::move(other.cached_discovery);
+    test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
+    appservices = std::move(other.appservices);
+    appservice_delivery_wake = std::move(other.appservice_delivery_wake);
+    typing_expiry_wake = std::move(other.typing_expiry_wake);
+    appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
+    appservice_ephemeral = std::move(other.appservice_ephemeral);
+    appservice_pending_ephemeral = std::move(other.appservice_pending_ephemeral);
+    appservice_outbox_dropped = std::move(other.appservice_outbox_dropped);
+    dispatch_worker = std::move(other.dispatch_worker);
+    federation_proxy = std::move(other.federation_proxy);
+    crypto_provider_owned = std::move(other.crypto_provider_owned);
+    crypto_provider = other.crypto_provider;
+    crypto_provider_overridden = other.crypto_provider_overridden;
+    other.crypto_provider = nullptr;
+    sync_notifier = std::exchange(other.sync_notifier, nullptr);
+    typing_users = std::move(other.typing_users);
+    room_typing_stream_id = std::move(other.room_typing_stream_id);
+    last_create_event_ts_ms = other.last_create_event_ts_ms;
+    client_outbound_budget = std::move(other.client_outbound_budget);
+    policy_server_budget = std::move(other.policy_server_budget);
+    client_outbound_proxy_policy = other.client_outbound_proxy_policy;
+    argon2id_admission = std::move(other.argon2id_admission);
+    deferred_pdu_next_attempt = std::move(other.deferred_pdu_next_attempt);
+    deferred_pdu_retry_wake = std::move(other.deferred_pdu_retry_wake);
+    orphan_futures_ = std::move(other.orphan_futures_);
+    push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
+    password_reset_sends_in_flight_ = other.password_reset_sends_in_flight_.exchange(0U);
+    push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);
+    push_gateway_breaker_ = std::move(other.push_gateway_breaker_);
+    return *this;
+}
+
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
+    -> std::vector<std::string>
+{
+    auto users = std::vector<std::string>{};
+    for (auto const& entry : rt.typing_users)
+    {
+        if (entry.room_id == room_id && entry.typing)
+        {
+            users.push_back(entry.user_id);
+        }
+    }
+    std::ranges::sort(users);
+    return users;
+}
+
+[[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t
+{
+    auto const it = rt.room_typing_stream_id.find(std::string{room_id});
+    return it == rt.room_typing_stream_id.end() ? std::uint64_t{0U} : it->second;
+}
+
+namespace
+{
+
+    // Gives the room a new typing stream position and tells appservices its typing list
+    // `current` (sorted). Every typing change (local, federated or expired) passes through here, so this is the one
+    // place appservices that receive ephemeral data are told (R08, ADR-0190).
+    auto advance_room_typing_stream_id(HomeserverRuntime& rt, std::string_view room_id,
+                                       std::vector<std::string> const& current) -> std::uint64_t
+    {
+        auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
+        rt.room_typing_stream_id[std::string{room_id}] = new_id;
+        queue_appservice_typing(rt, room_id, current);
+        return new_id;
+    }
+
+} // namespace
+
+[[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
+                                                           std::vector<std::string> const& previous) -> std::uint64_t
+{
+    auto const current = current_typing_users_in_room(rt, room_id);
+    if (previous == current)
+    {
+        return room_typing_stream_id_for(rt, room_id);
+    }
+    return advance_room_typing_stream_id(rt, room_id, current);
+}
+
+[[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry
+{
+    // Runs under runtime.mutex, so the work is a fixed number of passes over the typing table,
+    // never one pass per expired room (PR #522 review). Each (room, user) pair has at most one
+    // entry, so a room that loses an expired typist always changes its typing list and gets one
+    // new stream position, as update_room_typing_stream_id_if_changed would give it.
+    auto expiry = TypingExpiry{};
+    auto const is_expired = [now](InboundTypingUser const& entry) {
+        return entry.typing && entry.expires_at <= now;
+    };
+    auto const local_suffix = ":" + rt.config.server().server_name;
+    // Pass 1: the rooms that lose a typist, and the local typists that expired.
+    auto remaining_by_room = std::map<std::string, std::vector<std::string>, std::less<>>{};
+    for (auto const& entry : rt.typing_users)
+    {
+        if (!is_expired(entry))
+        {
+            continue;
+        }
+        remaining_by_room.try_emplace(entry.room_id);
+        if (entry.user_id.ends_with(local_suffix))
+        {
+            expiry.expired_local.push_back(entry);
+        }
+    }
+    if (!remaining_by_room.empty())
+    {
+        // Pass 2: drop the expired entries.
+        std::erase_if(rt.typing_users, is_expired);
+        expiry.changed = true;
+    }
+    // Pass 3: the typists left in each affected room, and the next pending deadline.
+    for (auto const& entry : rt.typing_users)
+    {
+        if (!entry.typing)
+        {
+            continue;
+        }
+        if (auto const room = remaining_by_room.find(entry.room_id); room != remaining_by_room.end())
+        {
+            room->second.push_back(entry.user_id);
+        }
+        if (entry.expires_at != std::chrono::steady_clock::time_point::max() &&
+            (!expiry.next_expiry.has_value() || entry.expires_at < *expiry.next_expiry))
+        {
+            expiry.next_expiry = entry.expires_at;
+        }
+    }
+    for (auto& [room_id, remaining] : remaining_by_room)
+    {
+        std::ranges::sort(remaining);
+        std::ignore = advance_room_typing_stream_id(rt, room_id, remaining);
+    }
+    return expiry;
+}
+
+auto wake_typing_expiry(HomeserverRuntime& rt) -> void
+{
+    if (rt.typing_expiry_wake)
+    {
+        rt.typing_expiry_wake();
+    }
+}
+
+auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
+{
+    return bootstrap_local_database(config, {});
+}
+
+auto hydrate_local_database(LocalDatabase& database, database::TableLoadProfile profile) -> void
+{
+    database.users.reserve(database.persistent_store.users.size());
+    for (auto const& user : database.persistent_store.users)
+    {
+        database.users.push_back(
+            {user.user_id, user.password_hash, user.locked, user.suspended, user.admin, user.deactivated});
+    }
+
+    database.sessions.reserve(database.persistent_store.access_tokens.size());
+    for (auto const& token : database.persistent_store.access_tokens)
+    {
+        // Every field, including the expiry: dropping it here made every
+        // access token valid forever after a restart.
+        database.sessions.push_back({token.user_id, token.device_id, token.token_hash, token.revoked, token.expires_at,
+                                     token.predecessor_refresh_hash});
+    }
+
+    database.next_session_id = static_cast<std::uint64_t>(database.sessions.size()) + 1U;
+    database.next_event_id = static_cast<std::uint64_t>(database.persistent_store.events.size()) + 1U;
+    for (auto const& event : database.persistent_store.events)
+    {
+        if (event.stream_ordering >= database.next_stream_ordering)
+        {
+            database.next_stream_ordering = event.stream_ordering + 1U;
+        }
+    }
+    // Some stream_ordering allocations (membership stream positions) are not
+    // backed by a persisted event row, so the counter rebuilt from events
+    // alone can lag the previous lifetime's — which would put clients'
+    // persisted pos/since tokens ahead of the live stream and invalidate
+    // them all on every restart. Merge in the persisted watermark, then
+    // persist the resulting floor so it exists even on fresh upgrades.
+    if (database.persistent_store.event_stream_watermark >= database.next_stream_ordering)
+    {
+        database.next_stream_ordering = database.persistent_store.event_stream_watermark + 1U;
+    }
+
+    // DB-4: the `membership` rows are what the roster below is built from, so
+    // first make them agree with each room's current m.room.member state. A
+    // store written before membership rows shared the event's transaction may
+    // hold a durable ban whose row still says join; without this the banned
+    // user would be a member again after every restart. Main only: the
+    // federation worker never writes main's records (ISO-4, ADR-0062) nor draws
+    // stream positions, and main has reconciled before it spawns the worker.
+    if (profile == database::TableLoadProfile::full)
+    {
+        auto const reconciled =
+            database::reconcile_memberships_with_current_state(database.persistent_store, [&database] {
+                return database.next_stream_ordering++;
+            });
+        if (reconciled > 0U)
+        {
+            log_diagnostic("database.memberships.reconciled",
+                           {
+                               {"count", std::to_string(reconciled), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+    }
+    std::ignore =
+        database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
+
+    // The roster is built with maps local to start-up: a room by ID and each room's members as a set, so a
+    // membership costs one lookup, not a scan of every room and of the room's members so far.
+    database.rooms.reserve(database.persistent_store.rooms.size());
+    auto room_position = std::unordered_map<std::string, std::size_t>{};
+    room_position.reserve(database.persistent_store.rooms.size());
+    for (auto const& room : database.persistent_store.rooms)
+    {
+        room_position.try_emplace(room.room_id, database.rooms.size());
+        database.rooms.push_back({room.room_id, room.creator_user_id, {}, room.directory_public});
+    }
+
+    auto joined = std::unordered_set<std::string>{};
+    for (auto const& membership : database.persistent_store.memberships)
+    {
+        if (membership.membership != "join")
+        {
+            continue;
+        }
+        // A room ID names the first room that holds it, as the scan it replaces did.
+        auto const position = room_position.find(membership.room_id);
+        if (position == room_position.end())
+        {
+            continue;
+        }
+        auto key = std::string{};
+        key.reserve(membership.room_id.size() + membership.user_id.size() + 1U);
+        key.append(membership.room_id);
+        key.push_back('\0');
+        key.append(membership.user_id);
+        if (joined.insert(std::move(key)).second)
+        {
+            std::ignore = database.rooms[position->second].members.add(membership.user_id);
+        }
+    }
+
+    log_diagnostic("database.hydrated",
+                   {
+                       {"rooms_total",       std::to_string(database.rooms.size()),                         false},
+                       {"memberships_total", std::to_string(database.persistent_store.memberships.size()),  false},
+                       {"users_total",       std::to_string(database.users.size()),                         false},
+                       {"sessions_total",    std::to_string(database.sessions.size()),                      false},
+                       {"events_total",      std::to_string(database.persistent_store.events.size()),       false},
+                       {"sync_stream_id",    std::to_string(database.persistent_store.next_sync_stream_id), false}
+    },
+                   observability::LogEventSeverity::info);
+
+    // Repair state entries that older code failed to create for events with
+    // state_key="" (m.room.create, m.room.join_rules, m.room.power_levels, …).
+    // Without these entries build_pdu_auth_event_map cannot find the create event
+    // and auth step 2 rejects every inbound federated PDU for the affected rooms.
+    auto const repaired = database::repair_missing_state_entries(database.persistent_store);
+    if (repaired > 0U)
+    {
+        log_diagnostic("database.state.repaired",
+                       {
+                           {"count", std::to_string(repaired), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+}
+
+auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
+                              database::TableLoadProfile profile) -> LocalDatabase
+{
+    auto database = LocalDatabase{};
+    database.remote_signing_keys_read_through = profile == database::TableLoadProfile::federation_worker;
+    auto opened = database::PersistentStoreOpenResult{};
+    switch (config.database().backend)
+    {
+    case config::DatabaseBackend::sqlite:
+        opened = database::open_sqlite_persistent_store(config.database().sqlite_path, profile);
+        break;
+    case config::DatabaseBackend::memory:
+        opened = database::open_persistent_store(std::move(existing_state));
+        break;
+    case config::DatabaseBackend::postgresql: {
+        // ADR-0062 part 2: the federation worker never reads database.uri_file
+        // itself. When federation_worker::apply_worker_database_uri has set
+        // worker_conninfo_override on this process's own Config copy (from
+        // bytes handed over the inherited kWorkerDbUriFd pipe), that value
+        // takes priority over reading any file. Every other process leaves it
+        // empty, so this is a no-op there.
+        auto const conninfo = !config.database().worker_conninfo_override.empty()
+                                  ? config.database().worker_conninfo_override
+                                  : read_database_uri_file(config.database().uri_file);
+        opened = conninfo.empty()
+                     ? database::PersistentStoreOpenResult{false, "PostgreSQL connection URI is missing or empty", {}}
+                     : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,
+                                                                  config.database().migration_role, profile);
+        break;
+    }
+    default:
+        opened = {false, "unsupported database backend", {}};
+        break;
+    }
+    if (!opened.ok)
+    {
+        return database;
+    }
+
+    database.opened = true;
+    database.persistent_store = std::move(opened.store);
+    // DB-7, ADR-0154: persisted writes reuse at most database.pool_size connections.
+    database::set_write_connection_limit(database.persistent_store, config.database().pool_size);
+    database.persistent_store.max_to_device_messages_per_user_device =
+        config.server().client_api.max_to_device_messages_per_user_device;
+    database.persistent_store.to_device_message_ttl_seconds = config.server().client_api.to_device_message_ttl_seconds;
+    database.persistent_store.max_to_device_message_bytes = config.server().client_api.max_to_device_message_bytes;
+    database.persistent_store.max_to_device_bytes_per_user_device =
+        config.server().client_api.max_to_device_bytes_per_user_device;
+    database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
+    database.schema_version = database.persistent_store.schema.version;
+    database.tables = database.persistent_store.schema.tables;
+    hydrate_local_database(database, profile);
+    // CSAZ-11: the main process applies redactions as events are stored, and once now for any
+    // that were stored but never applied. The federation worker only reads; it serves the redacted
+    // JSON the main process wrote.
+    if (profile == database::TableLoadProfile::full)
+    {
+        install_redaction_reconciler(database.persistent_store);
+        std::ignore = reconcile_all_redactions(database.persistent_store);
+    }
+    return database;
+}
+
+auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool
+{
+    return std::ranges::any_of(database.tables, [table_name](std::string const& table) {
+        return table == table_name;
+    });
+}
+
+auto visible_stream_position(LocalDatabase const& database) noexcept -> std::uint64_t
+{
+    auto const newest = database.next_stream_ordering - 1U;
+    if (database.pending_stream_orderings.empty())
+    {
+        return newest;
+    }
+    auto const oldest_pending = *database.pending_stream_orderings.begin();
+    return oldest_pending == 0U ? 0U : std::min(newest, oldest_pending - 1U);
+}
+
+auto local_user_ids(LocalDatabase const& database) -> std::unordered_set<std::string_view>
+{
+    auto ids = std::unordered_set<std::string_view>{};
+    ids.reserve(database.users.size());
+    for (auto const& user : database.users)
+    {
+        ids.insert(user.user_id);
+    }
+    return ids;
+}
+
+auto allocate_stream_orderings(LocalDatabase& database, std::size_t count) -> std::uint64_t
+{
+    auto const first = database.next_stream_ordering;
+    database.next_stream_ordering += count;
+    if (count > 0U)
+    {
+        std::ignore =
+            database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
+    }
+    return first;
+}
+
+auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t
+{
+    auto const ordering = database.next_stream_ordering++;
+    // Persist the high-water mark immediately: allocations without a backing
+    // event row (membership stream positions) must still survive a restart,
+    // or the rebuilt counter regresses behind clients' persisted pos tokens.
+    std::ignore = database::persist_event_stream_watermark(database.persistent_store, ordering);
+    return ordering;
+}
+
+auto start_runtime(config::Config const& config) -> RuntimeStartResult
+{
+    return start_runtime(RuntimeStartOptions{.config = config});
+}
+
+auto start_runtime(config::Config const& config, database::SchemaState existing_state) -> RuntimeStartResult
+{
+    return start_runtime(RuntimeStartOptions{.config = config, .existing_state = std::move(existing_state)});
+}
+
+auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
+{
+    auto const& config = opts.config;
+    if (!config::is_valid(config))
+    {
+        log_diagnostic("start.rejected", {
+                                             {"reason", "configuration is invalid", false}
+        });
+        return {false, "configuration is invalid", {}};
+    }
+    if (config.database().role != config::DatabaseRole::runtime)
+    {
+        log_diagnostic("start.rejected", {
+                                             {"reason", "runtime requires database.role=runtime", false}
+        });
+        return {false, "runtime requires database.role=runtime", {}};
+    }
+
+    auto runtime = HomeserverRuntime{};
+    runtime.config = config;
+    // ADR-0246: the Argon2id admission budget is the operator's, validated to
+    // 1..max_password_hashing_concurrency at parse time; built before any request can run.
+    static_assert(config::max_password_hashing_concurrency == auth::argon2id_admission_max_capacity,
+                  "the configured cap must not exceed what the admission semaphore can count");
+    runtime.argon2id_admission = std::make_unique<auth::Argon2idAdmission>(std::clamp<std::size_t>(
+        config.security().password_hashing.max_concurrent, 1U, auth::argon2id_admission_max_capacity));
+    // ADR-0079 caps are a fraction of the main request pool, which is now
+    // configured (server.http.request_threads, ADR-0077).
+    runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);
+    runtime.listeners = net::make_runtime_listeners(config);
+    if (runtime.listeners.empty())
+    {
+        log_diagnostic("start.rejected", {
+                                             {"reason", "no runtime listeners configured", false}
+        });
+        return {false, "no runtime listeners configured", {}};
+    }
+    log_diagnostic("start.listeners_ready",
+                   {
+                       {"listener_count", std::to_string(runtime.listeners.count()), false}
+    },
+                   observability::LogEventSeverity::info);
+
+    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile);
+    // The default ctor installed `audit_sink_scope` against the
+    // empty `LocalDatabase{}` placeholder. Now that `database` holds
+    // the real connection state, re-seat the scope so audit rows
+    // route through the *current* `database` member (which is the
+    // one the caller will see via NRVO in the returned
+    // `RuntimeStartResult`).
+    runtime.audit_sink_scope->reset(runtime.database);
+    if (!runtime.database.opened || !runtime.database.schema_validated ||
+        !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
+        !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
+        !database_has_table(runtime.database, "membership") || !database_has_table(runtime.database, "events") ||
+        !database_has_table(runtime.database, "current_state") || !database_has_table(runtime.database, "media") ||
+        !database_has_table(runtime.database, "device_keys") ||
+        !database_has_table(runtime.database, "one_time_keys") ||
+        !database_has_table(runtime.database, "fallback_keys") ||
+        !database_has_table(runtime.database, "cross_signing_keys") ||
+        !database_has_table(runtime.database, "key_signatures") ||
+        !database_has_table(runtime.database, "key_backup_versions") ||
+        !database_has_table(runtime.database, "key_backup_sessions") ||
+        !database_has_table(runtime.database, "media_blobs") || !database_has_table(runtime.database, "remote_media") ||
+        !database_has_table(runtime.database, "policy_rules") ||
+        !database_has_table(runtime.database, "account_data") ||
+        !database_has_table(runtime.database, "room_account_data") ||
+        !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
+    {
+        log_diagnostic("start.rejected",
+                       {
+                           {"opened",           runtime.database.opened ? "true" : "false",           false},
+                           {"schema_validated", runtime.database.schema_validated ? "true" : "false", false},
+                           {"reason",           "database schema validation failed",                  false}
+        });
+        return {false, "database schema validation failed", {}};
+    }
+    log_diagnostic("start.database_ready",
+                   {
+                       {"schema_version", std::to_string(runtime.database.schema_version), false},
+                       {"table_count",    std::to_string(runtime.database.tables.size()),  false}
+    },
+                   observability::LogEventSeverity::info);
+
+    // Wire the signing provider. The main process loads the persisted signing secret;
+    // the federation worker never signs (ADR-0078), so it gets a provider that refuses
+    // every request and no secret ever enters the child process. The provider must be
+    // ready before publish_server_signing_keys or any federation handler runs.
+    if (opts.signing_disabled)
+    {
+        runtime.crypto_provider_owned = std::make_unique<crypto::RefusingEd25519Provider>();
+        runtime.crypto_provider = runtime.crypto_provider_owned.get();
+        runtime.crypto_provider_overridden = true;
+        log_diagnostic("start.crypto_provider_refusing",
+                       {
+                           {"reason", "signing disabled in this process", false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+    else
+    {
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        reset_runtime_crypto_provider(runtime);
+        log_diagnostic("start.crypto_provider_ready",
+                       {
+                           {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
+        },
+                       observability::LogEventSeverity::info);
+
+        // 0.12.5 audit, finding 1: signing secrets are never stored in
+        // plaintext, so a server with no usable master key can no longer mint
+        // one. Say so here rather than letting it surface three steps later as
+        // a failure to derive an unrelated pagination-token key: without a
+        // signing key this server cannot sign an event or a federation request,
+        // and starting it would only produce silent federation failures.
+        if (!signing_key.has_value())
+        {
+            auto const reason = runtime.config.security().secrets.master_key_file.empty()
+                                    ? std::string{"no server signing key: set security.secrets.master_key_file so the "
+                                                  "signing secret can be encrypted at rest"}
+                                    : std::string{"no server signing key: the configured "
+                                                  "security.secrets.master_key_file could not be read, locked into "
+                                                  "memory, or used to encrypt a new signing secret"};
+            log_diagnostic("start.rejected", {
+                                                 {"reason", reason, false}
+            });
+            return {false, reason, {}};
+        }
+
+        // Derive the server-scoped pagination-token key from the signing secret.
+        // This keeps tokens opaque and tied to this deployment without needing a
+        // persistent token store.
+        auto const key_derivation_pieces =
+            std::array<std::string_view, 1U>{"merovingian.mutual_rooms.pagination_token_key_v1"};
+        auto const token_key_material =
+            crypto::generic_hash_bytes(key_derivation_pieces, runtime.database.signing_secret_key.bytes());
+        if (!token_key_material.has_value() || token_key_material->size() != 32U)
+        {
+            log_diagnostic("start.rejected",
+                           {
+                               {"reason", "unable to derive mutual_rooms pagination token key", false}
+            });
+            return {false, "unable to derive mutual_rooms pagination token key", {}};
+        }
+        runtime.database.mutual_rooms_token_key = core::SecretBuffer{*token_key_material};
+    }
+
+    runtime.federation = federation::make_federation_runtime_state(federation::shard_key_resolution_budget(
+        federation::make_runtime_federation_config(config), opts.key_resolution_shards));
+    runtime.outbound_client = std::make_unique<http::OutboundClient>();
+    runtime.discovery_network = federation::make_system_server_discovery_network(
+        runtime.federation.config.deny_ip_ranges, runtime.federation.config.allow_private_ip_ranges);
+    for (auto const& range : runtime.federation.config.allow_private_ip_ranges)
+    {
+        // ADR-0231: an opened private network is an SSRF exception, so it is
+        // announced on every start, not only when the config is first read.
+        log_diagnostic("federation.private_range_allowed",
+                       {
+                           {"range",  range,                                                                  false},
+                           {"reason", "security.federation.allow_private_ip_ranges lets federation reach it", false}
+        },
+                       observability::LogEventSeverity::critical);
+    }
+    if (auto const& registration = runtime.config.security().registration;
+        registration.enabled && !registration.require_token)
+    {
+        // ADR-0232: anyone who can reach the client API can create an account.
+        log_diagnostic(
+            "registration.open",
+            {
+                {"reason", "security.registration.allow_open_registration lets anyone register with m.login.dummy",
+                 false}
+        },
+            observability::LogEventSeverity::critical);
+    }
+    if (auto const& password_policy = runtime.config.security().password_policy;
+        password_policy.min_length < config::PasswordPolicyConfig{}.min_length ||
+        !password_policy.require_character_classes)
+    {
+        // ADR-0236: a policy weaker than the default lets users choose weaker
+        // passwords. A change needs a restart, so this is never skipped.
+        log_diagnostic(
+            "registration.password_policy_relaxed",
+            {
+                {"min_length",                std::to_string(password_policy.min_length),                   false},
+                {"require_character_classes", password_policy.require_character_classes ? "true" : "false", false},
+                {"reason",                    "security.password_policy is weaker than the default",        false}
+        },
+            observability::LogEventSeverity::critical);
+    }
+    if (runtime.discovery_network != nullptr)
+    {
+        // Wrap the raw network with a 60s TTL cache so repeated lookups for the
+        // same server name skip the .well-known + SRV + DNS cascade. A monotonic
+        // clock drives the TTL so a wall-clock jump cannot flush the cache or
+        // keep stale SSRF pins alive past their bound.
+        runtime.cached_discovery = std::make_unique<federation::CachedServerDiscovery>(
+            *runtime.discovery_network, std::uint64_t{60U * 1000U}, []() -> std::uint64_t {
+                return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now().time_since_epoch())
+                                                      .count());
+            });
+    }
+    runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
+    hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store,
+                             runtime.config.server().server_name);
+
+    // Application Service API (Matrix v1.19): parse every configured
+    // registration file once, up front. A per-file problem (bad JSON, a
+    // missing required field, an unreadable path) is logged and that one
+    // appservice is dropped rather than failing the whole server — an
+    // operator typo in one bridge's registration must not take down every
+    // other appservice or the homeserver itself. A cross-file problem
+    // (duplicate id/as_token, which the spec says the homeserver MUST
+    // enforce) drops every registration, since routing would otherwise be
+    // ambiguous.
+    // The federation worker loads none (ADR-0296): see RuntimeStartOptions::load_appservices.
+    if (opts.load_appservices)
+    {
+        auto loaded =
+            appservice::load_registrations(config.appservice().registration_files, config.server().server_name,
+                                           config.appservice().allow_cleartext_hosts);
+        for (auto const& finding : loaded.findings)
+        {
+            log_diagnostic("start.appservice_registration_rejected",
+                           {
+                               {"source",  finding.source,  false},
+                               {"message", finding.message, false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        // Create or verify every appservice's sender_localpart user. The
+        // sender is the bridge's own identity; it must exist and must not be
+        // claimable by ordinary registration (AUTH-3). Registration is
+        // passwordless — the bridge authenticates by as_token and masquerades
+        // by user_id.
+        for (auto const& registration : loaded.registry.all())
+        {
+            auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
+            auto const user_exists = std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
+                return user.user_id == sender_id;
+            });
+            if (!user_exists)
+            {
+                auto const result = register_appservice_user(runtime, registration.sender_localpart);
+                if (!result.ok)
+                {
+                    log_diagnostic("start.appservice_sender_creation_failed",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender",        sender_id,       false},
+                                       {"reason",        result.reason,   false}
+                    },
+                                   observability::LogEventSeverity::error);
+                }
+                else
+                {
+                    log_diagnostic("start.appservice_sender_created",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender",        sender_id,       false}
+                    },
+                                   observability::LogEventSeverity::info);
+                }
+            }
+        }
+
+        log_diagnostic("start.appservices_ready",
+                       {
+                           {"count", std::to_string(loaded.registry.size()), false}
+        },
+                       observability::LogEventSeverity::info);
+        runtime.appservices = std::move(loaded.registry);
+    }
+    // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil
+    // there would permanently restrict that process and break every subsequent
+    // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they
+    // invoke the test suite; production binaries never see it.
+    auto const hardening_controls = [&]() {
+        if (opts.process_hardening_applied_by_caller)
+        {
+            // The federation worker hardened itself before calling us; its
+            // seccomp filter denies setrlimit, which the main profile below
+            // would call (ISO-2, ADR-0112).
+            return platform::HardeningPlanDecision{true, false, "applied by the caller before start_runtime"};
+        }
+        if (std::getenv("MEROVINGIAN_TEST_DISABLE_HARDENING") != nullptr)
+        {
+            log_diagnostic(
+                "hardening.test_disable",
+                {
+                    {
+                     "reason", std::string{"runtime hardening controls disabled by MEROVINGIAN_TEST_DISABLE_HARDENING"},
+                     false, }
+            },
+                observability::LogEventSeverity::info);
+            return platform::HardeningPlanDecision{true, false, "disabled by MEROVINGIAN_TEST_DISABLE_HARDENING"};
+        }
+#if defined(__linux__)
+        return platform::apply_runtime_hardening_controls(platform::default_linux_hardening_profile());
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+        return platform::apply_runtime_hardening_controls(platform::default_bsd_hardening_profile());
+#else
+        return platform::apply_runtime_hardening_controls(platform::default_portable_hardening_profile());
+#endif
+    }();
+    log_diagnostic("start.hardening_controls",
+                   {
+                       {"accepted", hardening_controls.accepted ? "true" : "false", false},
+                       {"reason",   hardening_controls.reason,                      false},
+    },
+                   observability::LogEventSeverity::info);
+    // Capture a hardening self-check snapshot for the health endpoint. The final
+    // startup gate in main.cpp re-runs the check after all platform controls are
+    // applied and overwrites runtime.hardening with the definitive result.
+    runtime.hardening = platform::run_startup_hardening_self_check();
+    log_diagnostic("start.complete",
+                   {
+                       {"federation_enabled", runtime.federation.config.enabled ? "true" : "false", false}
+    },
+                   observability::LogEventSeverity::info);
+    append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
+                       "startup");
+    runtime.started = true;
+
+    // Pre-warm the key server response cache before the HTTP server starts accepting
+    // connections. This ensures /_matrix/key/v2/server is served lock-free from the
+    // very first request, even if make_join or another outbound operation arrives
+    // concurrently on a different connection and holds the runtime mutex.
+    // The federation worker does not serve /_matrix/key/v2/server and has no local
+    // signing secret, so skip the pre-warm when signing is disabled.
+    if (!opts.signing_disabled)
+    {
+        auto const key_warm = publish_server_signing_keys(runtime);
+        if (!key_warm.ok)
+        {
+            log_diagnostic(
+                "start.rejected",
+                {
+                    {"reason", key_warm.reason.empty() ? "key server cache unavailable" : key_warm.reason, false}
+            });
+            return {false, key_warm.reason.empty() ? "key server cache unavailable" : key_warm.reason, {}};
+        }
+    }
+
+    return {true, {}, std::move(runtime)};
+}
+
+auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot
+{
+    auto snapshot = observability::HealthCheckSnapshot{};
+    auto const federation_detail = runtime.federation.config.enabled
+                                       ? federation::federation_runtime_summary(runtime.federation)
+                                       : std::string{"federation disabled by configuration"};
+    auto const media_detail = media::media_repository_summary(runtime.media_repository);
+    snapshot.components = {
+        {"runtime",    runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed,           "started"        },
+        {"listeners",  runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok,
+         "configured"                                                                                                                      },
+        {"database",
+         runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed,
+         "schema_validated"                                                                                                                },
+        {"federation", observability::HealthStatus::ok,                                                                   federation_detail},
+        {"media",
+         runtime.media_repository.config.max_upload_bytes > 0U ? observability::HealthStatus::ok
+                                                               : observability::HealthStatus::failed,
+         media_detail                                                                                                                      },
+        {"hardening",
+         runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded,
+         "self_check"                                                                                                                      },
+    };
+
+    for (auto const& component : snapshot.components)
+    {
+        if (component.status == observability::HealthStatus::failed)
+        {
+            snapshot.status = observability::HealthStatus::failed;
+            return snapshot;
+        }
+        if (component.status == observability::HealthStatus::degraded)
+        {
+            snapshot.status = observability::HealthStatus::degraded;
+        }
+    }
+    return snapshot;
+}
+
+auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string
+{
+    return observability::health_snapshot_summary(admin_health(runtime));
+}
+
+auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string
+{
+    return observability::prometheus_metrics_summary(admin_metrics(runtime));
+}
+
+auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observability::AuditCategory> category,
+                         std::optional<std::string_view> event_type) -> std::string
+{
+    // Filter the audit log by the optional `category` and `event_type`
+    // parameters. The view carries the count of *all* retained audit rows so
+    // the operator can see how many rows the filter excluded; `entries` only
+    // holds the matching rows.
+    // AUTH-1: the retained rows are the most recent `max_in_memory_audit_events`.
+    // `evicted` appears once older rows have left that window; they remain in
+    // the audit_log table.
+    // F-62 (ADR-0416): a JSON object with one JSON object per row, so the text of a
+    // field (an unauthenticated login's claimed user and device) can never look like
+    // another entry. The text view this replaces joined the fields with ' entry=' and ':'.
+    auto const& log = runtime.database.persistent_store.audit_log;
+    auto view = canonicaljson::Object{};
+    view.push_back(
+        canonicaljson::make_member("audit_events", canonicaljson::Value{static_cast<std::int64_t>(log.size())}));
+    if (runtime.database.persistent_store.audit_log_evicted != 0U)
+    {
+        view.push_back(canonicaljson::make_member(
+            "evicted",
+            canonicaljson::Value{static_cast<std::int64_t>(runtime.database.persistent_store.audit_log_evicted)}));
+    }
+    if (category.has_value())
+    {
+        view.push_back(canonicaljson::make_member(
+            "filter_category", canonicaljson::Value{std::string{observability::audit_category_name(*category)}}));
+    }
+    if (event_type.has_value())
+    {
+        view.push_back(canonicaljson::make_member("filter_event_type", canonicaljson::Value{std::string{*event_type}}));
+    }
+    auto entries = canonicaljson::Array{};
+    for (auto const& event : log)
+    {
+        if (category.has_value() && event.category != observability::audit_category_name(*category))
+        {
+            continue;
+        }
+        if (event_type.has_value() && event.event_type != *event_type)
+        {
+            continue;
+        }
+        auto entry = canonicaljson::Object{};
+        entry.push_back(canonicaljson::make_member("category", canonicaljson::Value{event.category}));
+        entry.push_back(canonicaljson::make_member("event_type", canonicaljson::Value{event.event_type}));
+        entry.push_back(canonicaljson::make_member("actor", canonicaljson::Value{event.actor}));
+        entry.push_back(canonicaljson::make_member("target", canonicaljson::Value{event.target}));
+        entry.push_back(canonicaljson::make_member("reason", canonicaljson::Value{event.reason}));
+        entries.push_back(canonicaljson::Value{std::move(entry)});
+    }
+    view.push_back(canonicaljson::make_member("entries", canonicaljson::Value{std::move(entries)}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(view)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        // A field that is not valid UTF-8 cannot be written as a JSON string. The stored fields are
+        // bounded to valid UTF-8 on the way in, so this is not expected; say so rather than send a
+        // view with rows missing and no sign of it.
+        return std::string{R"({"error":"audit view could not be serialised"})"};
+    }
+    return serialized.output;
+}
+
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
+    -> std::optional<database::PersistentPolicyRule>
+{
+    auto const& rules = runtime.database.persistent_store.policy_rules;
+    auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {
+        return rule.scope == scope && rule.entity == entity;
+    });
+    if (exact != rules.end())
+    {
+        return *exact;
+    }
+    auto const wildcard = std::ranges::find_if(rules, [scope](database::PersistentPolicyRule const& rule) {
+        return rule.scope == scope && rule.entity == "*";
+    });
+    return wildcard == rules.end() ? std::nullopt : std::optional<database::PersistentPolicyRule>{*wildcard};
+}
+
+auto evaluate_inbound_federation_policy(HomeserverRuntime& runtime, std::string_view origin, bool consult_policy_server)
+    -> trust_safety::PolicyDecision
+{
+    auto held_for_review = false;
+    auto blocked_by_local_policy = false;
+    {
+        auto const guard = RuntimeLock{runtime.mutex};
+        auto const local_rule = find_policy_rule(runtime, "federation", origin);
+        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        blocked_by_local_policy =
+            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+    }
+    // The policy server is asked with runtime.mutex released: a slow or unreachable one must not freeze
+    // every consumer of the mutex (#415). resolve_policy_server_hook releases it around its own call.
+    auto hook = consult_policy_server
+                    ? resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, origin)
+                    : trust_safety::PolicyServerHook{};
+    return trust_safety::evaluate_federation_policy(
+        {std::string{origin}, held_for_review, blocked_by_local_policy, std::move(hook)});
+}
+
+auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
+                                std::string_view entity) -> trust_safety::PolicyServerHook
+{
+    auto const& trust_safety_config = runtime.config.security().trust_safety;
+    if (!trust_safety_config.enabled || trust_safety_config.policy_server_url.empty())
+    {
+        return {};
+    }
+
+    auto hook = trust_safety::PolicyServerHook{};
+    hook.enabled = true;
+    hook.reachable = false;
+    hook.allow_without_result = trust_safety_config.policy_server_allow_without_result;
+    auto const timeout = config::parse_duration_seconds(trust_safety_config.policy_server_timeout);
+    // Widen before multiplying: seconds is uint32_t, so seconds * 1000 wraps
+    // for anything above ~49.7 days and could yield a tiny or zero timeout
+    // (#431). Saturate at the uint32_t millisecond ceiling instead.
+    auto const timeout_milliseconds =
+        timeout.valid ? static_cast<std::uint64_t>(timeout.seconds) * 1000ULL : std::uint64_t{0U};
+    hook.timeout_milliseconds = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(timeout_milliseconds, std::numeric_limits<std::uint32_t>::max()));
+
+    // Everything from here on is a synchronous round trip to the policy
+    // server — the real one via OutboundClient::perform below, or (in tests)
+    // the injectable trust_safety_policy_server hook standing in for it.
+    // handle_federation_http_request already released runtime.mutex before
+    // calling this function (#415: a slow or unreachable policy server must
+    // not freeze every runtime.mutex consumer for up to
+    // policy_server_timeout). register_local_user, create_room, and the
+    // media download/thumbnail policy check all call this function while
+    // still holding the lock, so releasing it here — not just at that one
+    // call site — is what actually closes the gap. Every value this
+    // function still reads (trust_safety_config, runtime.config, the
+    // request built below) is read above this point, while the lock is
+    // still held; nothing after RuntimeLockRelease touches runtime state. See
+    // RuntimeLockRelease in request_lock.hpp.
+    if (runtime.trust_safety_policy_server)
+    {
+        auto const unlocked = RuntimeLockRelease{};
+        return runtime.trust_safety_policy_server(surface, entity);
+    }
+
+    if (runtime.outbound_client == nullptr || hook.timeout_milliseconds == 0U)
+    {
+        return hook;
+    }
+
+    // F-42 (ADR-0361): the call below holds this request thread for up to policy_server_timeout, on surfaces
+    // reachable before authentication (registration, inbound federation, media), so it takes a place in a
+    // bounded budget first. No place is "no usable decision": the same answer as an unreachable policy server,
+    // so security.trust_safety.policy_server_allow_without_result decides it as it decides any other failure
+    // to get one (false: refused; true: allowed). Taken before the lock is released and held to the end.
+    auto const& proxy_policy = runtime.client_outbound_proxy_policy;
+    auto const admitted = runtime.policy_server_budget->try_acquire(
+        std::string{trust_safety::policy_surface_name(surface)}, proxy_policy.policy_server_global_cap,
+        proxy_policy.policy_server_per_surface_cap);
+    if (!admitted.has_value())
+    {
+        LOG_WARNING(std::string{"Policy server call not made: too many are in flight; surface="} +
+                    trust_safety::policy_surface_name(surface));
+        return hook;
+    }
+
+    auto payload = canonicaljson::Object{};
+    payload.push_back(canonicaljson::make_member(
+        "surface", canonicaljson::Value{std::string{trust_safety::policy_surface_name(surface)}}));
+    payload.push_back(canonicaljson::make_member("entity", canonicaljson::Value{std::string{entity}}));
+    payload.push_back(
+        canonicaljson::make_member("server_name", canonicaljson::Value{runtime.config.server().server_name}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(payload)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return hook;
+    }
+
+    auto request = http::OutboundRequest{};
+    request.method = "POST";
+    request.url = trust_safety_config.policy_server_url;
+    request.connect_timeout_seconds = timeout.valid ? timeout.seconds : 0U;
+    request.total_timeout_seconds = timeout.valid ? timeout.seconds : 0U;
+    request.headers = {
+        {"Content-Type", "application/json"}
+    };
+    request.body = serialized.output;
+    // The policy server is the operator's own configured destination, like an appservice's, not an address a
+    // peer or a client chose, so its host is resolved without the SSRF deny-list and may be on a private
+    // network (ADR-0361). It is still resolved here, not by perform, which resolves nothing and refuses an
+    // empty pin list. Everything read from the runtime is read before the lock is released.
+    auto const parsed = http::parse_outbound_url(trust_safety_config.policy_server_url);
+    if (!parsed.has_value())
+    {
+        LOG_WARNING("Policy server call not made: policy_server_url is not a usable URL");
+        return hook;
+    }
+    request.trusted_ca_pem = runtime.test_policy_server_trusted_ca_pem;
+    if (runtime.discovery_network == nullptr)
+    {
+        LOG_WARNING("Policy server call not made: no resolver is available");
+        return hook;
+    }
+    auto& network = *runtime.discovery_network;
+    auto& client = *runtime.outbound_client;
+    auto const deadline = OutboundDeadline{timeout.valid ? timeout.seconds : 0U};
+    auto const result = [&]() -> http::OutboundResult {
+        auto const unlocked = RuntimeLockRelease{};
+        // getaddrinfo takes as long as the system resolver is configured to; the budget above bounds how many
+        // threads can be in it, and what is left of policy_server_timeout is all the call itself is given.
+        auto const resolved = network.lookup_addresses(parsed->host, parsed->port);
+        if (!resolved.ok || resolved.addresses.empty())
+        {
+            return {false, {}, http::OutboundError::unresolved_host, "policy server host: " + resolved.reason};
+        }
+        auto const remaining = deadline.remaining_seconds();
+        if (remaining == 0U)
+        {
+            return {false, {}, http::OutboundError::timeout, "policy_server_timeout spent resolving the host"};
+        }
+        request.pinned_addresses = resolved.addresses;
+        request.connect_timeout_seconds = std::min(request.connect_timeout_seconds, remaining);
+        request.total_timeout_seconds = std::min(request.total_timeout_seconds, remaining);
+        return client.perform(request);
+    }();
+    if (!result.ok)
+    {
+        LOG_WARNING(std::string{"Policy server call failed: "} + std::string{http::outbound_error_name(result.error)} +
+                    " (" + result.error_detail + "); surface=" + trust_safety::policy_surface_name(surface));
+        return hook;
+    }
+    if (result.response.status < 200U || result.response.status >= 300U)
+    {
+        hook.reachable = true;
+        return hook;
+    }
+
+    hook.reachable = true;
+    return parse_policy_server_response(result.response.body, std::move(hook));
+}
+
+auto find_local_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
+{
+    auto const position = database.room_positions.find(database.rooms, room_id);
+    return position.has_value() ? &database.rooms[*position] : nullptr;
+}
+
+auto find_local_room(LocalDatabase const& database, std::string_view room_id) -> LocalRoom const*
+{
+    auto const position = database.room_positions.find(database.rooms, room_id);
+    return position.has_value() ? &database.rooms[*position] : nullptr;
+}
+
+} // namespace merovingian::homeserver

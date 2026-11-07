@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 namespace merovingian::homeserver
 {
 
@@ -27,6 +29,12 @@ enum class RemoteMediaFetchMode
 // through the client-server dispatcher and the local router. The publication is
 // thread_local, like `RequestLockScope`: one request thread never observes
 // another's. The innermost scope wins and restores its predecessor on exit.
+//
+// The thread's slot holds the innermost scope's mode and deferral by value, and
+// each scope keeps the values it displaced (ADR-0529). No address of a scope is
+// stored anywhere: a scope is a local variable, and a published pointer to it
+// would be a stack address in thread-local storage (CodeQL
+// cpp/stack-address-escape).
 class RemoteMediaFetchScope final
 {
 public:
@@ -45,12 +53,16 @@ public:
     // records a deferral.
     [[nodiscard]] static auto record_deferral() noexcept -> bool;
 
+    // Whether a deferral was recorded on this scope. Read it while this scope is
+    // the thread's innermost, as its owner does once the calls it made return:
+    // the flag lives in the thread's slot, which an inner scope still open holds.
     [[nodiscard]] auto deferred() const noexcept -> bool;
 
 private:
-    RemoteMediaFetchMode m_mode;
-    RemoteMediaFetchScope* m_previous{nullptr};
-    bool m_deferred{false};
+    // What the thread's slot held before this scope opened, put back when it
+    // closes: no mode when no scope was open.
+    std::optional<RemoteMediaFetchMode> m_previous_mode{};
+    bool m_previous_deferred{false};
 };
 
 } // namespace merovingian::homeserver

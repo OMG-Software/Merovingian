@@ -11,8 +11,8 @@
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
 #include "merovingian/events/unsigned_data.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>

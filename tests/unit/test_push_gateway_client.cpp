@@ -83,6 +83,7 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
 {
     GIVEN("a notification with one device and non-zero counts")
     {
+        // Every field is set to a distinct value so a swapped or dropped member shows up in the assertions below.
         auto notification = merovingian::push::PushGatewayNotification{};
         notification.event_id = "$event:example.org";
         notification.room_id = "!room:example.org";
@@ -118,6 +119,7 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
                 REQUIRE(event_id != nullptr);
                 REQUIRE(std::get<std::string>(event_id->storage()) == "$event:example.org");
 
+                // Spec: counts live under `counts` as unread and missed_calls.
                 auto const* counts_value = object_member(*inner, "counts");
                 REQUIRE(counts_value != nullptr);
                 auto const* counts = std::get_if<merovingian::canonicaljson::Object>(&counts_value->storage());
@@ -144,6 +146,8 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
                 REQUIRE(std::get<std::string>(app_id->storage()) == "org.matrix.console.ios");
                 REQUIRE(std::get<std::string>(pushkey->storage()) == "abc123");
 
+                // `format` selects the gateway's payload shape, so it must reach the gateway inside the device's `data`
+                // object.
                 auto const* data_value = object_member(*device_object, "data");
                 REQUIRE(data_value != nullptr);
                 auto const* data = std::get_if<merovingian::canonicaljson::Object>(&data_value->storage());
@@ -166,6 +170,8 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
         }
     }
 
+    // The minimal notification checks the omission rules: zero counts are dropped, but the `tweaks` object is always
+    // present.
     GIVEN("a notification with zero counts and a device with no tweaks")
     {
         auto notification = merovingian::push::PushGatewayNotification{};
@@ -182,6 +188,7 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
             auto const* inner = std::get_if<merovingian::canonicaljson::Object>(&inner_value->storage());
             REQUIRE(inner != nullptr);
 
+            // Omission means the `counts` object is present but empty, not absent.
             THEN("zero-valued counts are omitted, per spec (\"Counts whose value is zero should be omitted\")")
             {
                 auto const* counts_value = object_member(*inner, "counts");

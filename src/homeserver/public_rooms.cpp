@@ -7,7 +7,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/folded_substring.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -318,7 +319,7 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
 auto serve_federation_public_rooms(HomeserverRuntime& runtime, federation::PublicRoomsRequest const& request)
     -> std::string
 {
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     auto const max_page_size = static_cast<std::size_t>(runtime.config.server().client_api.max_public_rooms_page_size);
     auto const scope =
         public_rooms_scope(runtime.appservices, request.include_all_networks, request.third_party_instance_id);

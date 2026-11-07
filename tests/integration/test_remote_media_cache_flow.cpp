@@ -13,12 +13,16 @@
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
 #include "merovingian/core/socket_handle.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/media/repository.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <array>
 #include <chrono>
@@ -30,10 +34,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 namespace
 {

@@ -12,26 +12,26 @@
 
 #ifdef __linux__
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <cerrno>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <string>
-#include <system_error>
-#include <tuple>
-
 #include <linux/seccomp.h>
-#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <signal.h>
+#include <string>
+#include <system_error>
+#include <tuple>
 
 namespace
 {
@@ -124,8 +124,7 @@ extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucont
     auto const wr = g_blocked_pipe_wr;
     if (wr >= 0)
     {
-        auto const written = ::write(wr, msg, static_cast<std::size_t>(msg_len));
-        std::ignore = written;
+        std::ignore = ::write(wr, msg, static_cast<std::size_t>(msg_len));
     }
 
     if (report_count >= k_max_sigsys_reports)

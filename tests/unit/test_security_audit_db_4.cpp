@@ -5,7 +5,12 @@
 // current state at startup. Matrix v1.19 CS API "m.room.member": the room's
 // current m.room.member event is the user's membership.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -99,6 +104,8 @@ auto store_row(PersistentStore& store, std::string_view user_id, std::string_vie
 
 SCENARIO("DB-4 startup reconciliation makes membership rows agree with current state", "[db4][database]")
 {
+    // A stale join row would let a banned user act as a member; the corrected row takes the next
+    // stream position so incremental sync clients see the change.
     GIVEN("a ban that is current state while bob's row, older than the ban, still says join")
     {
         auto store = open_store();
@@ -121,6 +128,8 @@ SCENARIO("DB-4 startup reconciliation makes membership rows agree with current s
         }
     }
 
+    // A row newer than the current-state event is not trusted when it grants more than that
+    // event does: the row is lowered to match.
     GIVEN("a row saying join that is newer than the leave event that is current state")
     {
         auto store = open_store();
@@ -128,6 +137,7 @@ SCENARIO("DB-4 startup reconciliation makes membership rows agree with current s
         store_row(store, "@bob:example.org", "join", 9U);
         auto next = std::uint64_t{100U};
 
+        // Reconciliation runs at startup and returns how many rows it had to correct.
         WHEN("the rows are reconciled")
         {
             auto const corrected = reconcile(store, next);
@@ -165,6 +175,7 @@ SCENARIO("DB-4 startup reconciliation makes membership rows agree with current s
         }
     }
 
+    // Correcting a row to a ban must also drop the pending invite metadata for that user.
     GIVEN("an older invite row with invite metadata, and a ban that is current state")
     {
         auto store = open_store();
@@ -187,6 +198,7 @@ SCENARIO("DB-4 startup reconciliation makes membership rows agree with current s
         }
     }
 
+    // A missing row is rebuilt from current state rather than left absent.
     GIVEN("a join that is current state for a user with no row")
     {
         auto store = open_store();

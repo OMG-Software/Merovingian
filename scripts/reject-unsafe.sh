@@ -90,7 +90,7 @@ fi
 
 # Manual lock release requires an explicit per-line annotation.
 #
-# 0.12.5 audit, finding 14: fourteen endpoints in client_server.cpp released the
+# 0.12.5 audit, finding 14: fourteen endpoints in ClientServerRuntime.cpp released the
 # runtime mutex by hand around a blocking outbound call and re-took it
 # afterwards. Every one is now a homeserver::RuntimeLockRelease scope, which
 # restores the guard on the exceptional path as well as the normal one, and

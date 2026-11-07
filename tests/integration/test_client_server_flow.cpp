@@ -5,15 +5,25 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/remote_timestamp_event.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -346,6 +356,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
         auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_DEV");
         auto const bob = register_and_login(runtime, "bob", "CorrectHorse8!", "BOB_DEV");
 
+        // Alice only uploads device keys and never a signed one-time key, so a placeholder Ed25519 key is enough.
         upload_device_keys(runtime, alice, "@alice:example.org", "ALICE_DEV", "ALICE_CURVE", "ALICE_ED");
         // Bob needs a real Ed25519 keypair: OTK signatures are verified server-side.
         auto const bob_kp = merovingian::federation::test::keypair_from_seed("flow-test-bob-seed");
@@ -369,6 +380,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
         auto const bob_initial_sync =
             merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
         REQUIRE(bob_initial_sync.response.status == 200U);
+        // Bob's first sync must show the pending invite; the token it returns is where his later syncs resume.
         auto const bob_initial_body = parse_object(bob_initial_sync.response.body);
         auto const* initial_rooms = object_member_as_object(bob_initial_body, "rooms");
         REQUIRE(initial_rooms != nullptr);
@@ -403,6 +415,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
                 return type != nullptr && *type == "m.room.encryption";
             }));
 
+            // Alice's new sync token closes the /keys/changes window below, so Bob's join must fall inside it.
             auto const alice_join_to_sync = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
             REQUIRE(alice_join_to_sync.response.status == 200U);
@@ -420,6 +433,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
                 return user_id != nullptr && *user_id == "@bob:example.org";
             }));
 
+            // Alice may query Bob's device keys because the two now share an encrypted room.
             auto const query = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/query", alice,
                           R"({"device_keys":{"@bob:example.org":["BOB_DEV"]}})"});
@@ -436,12 +450,15 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
             REQUIRE(string_member(*bob_device, "user_id") != nullptr);
             REQUIRE(*string_member(*bob_device, "user_id") == "@bob:example.org");
 
+            // Claiming consumes Bob's signed one-time key; its value must come back so Alice could start an Olm
+            // session.
             auto const claim = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/claim", alice,
                           R"({"one_time_keys":{"@bob:example.org":{"BOB_DEV":"signed_curve25519"}}})"});
             REQUIRE(claim.response.status == 200U);
             REQUIRE(claim.response.body.find("BOB_OTK_VALUE") != std::string::npos);
 
+            // Alice hands the Megolm room key to Bob's device as a to-device message.
             auto const send_to_device_body =
                 std::string{"{\"messages\":{\"@bob:example.org\":{\"BOB_DEV\":{\"algorithm\":\"m.megolm.v1.aes-sha2\","
                             "\"room_id\":\""} +
@@ -496,6 +513,8 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
                        *type == "m.room.encrypted";
             }));
 
+            // Bob's read receipt on the encrypted event must reach Alice through her next incremental sync as ephemeral
+            // data.
             auto const receipt = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id, bob, "{}"});
             REQUIRE(receipt.response.status == 200U);
@@ -526,6 +545,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
                        object_member_as_object(*reads, "@bob:example.org") != nullptr;
             }));
 
+            // Leaving comes last: the THEN block checks that the room then disappears from Bob's joined rooms.
             auto const leave = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"});
             REQUIRE(leave.response.status == 200U);
@@ -573,6 +593,8 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
         upload_one_time_key(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_OTK_AAAA",
                             "BOB_REG_OTK_VALUE", bob_reg_kp.secret_key);
 
+        // Unlike the previous scenario, user and device ids come from the registration responses instead of being
+        // hard-coded.
         auto const create_body = std::string{"{\"preset\":\"private_chat\",\"invite\":[\""} + bob.user_id +
                                  "\"],\"initial_state\":[{\"type\":\"m.room.encryption\",\"state_key\":\"\","
                                  "\"content\":{\"algorithm\":\"m.megolm.v1.aes-sha2\"}}]}";
@@ -596,6 +618,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
         REQUIRE(bob_initial_invites != nullptr);
         auto const* bob_invited_room = object_member_as_object(*bob_initial_invites, room_id);
         REQUIRE(bob_invited_room != nullptr);
+        // The invite must carry stripped state so a client can show what it is being invited to.
         auto const* invite_state = object_member_as_object(*bob_invited_room, "invite_state");
         REQUIRE(invite_state != nullptr);
         auto const* invite_events = object_member_as_array(*invite_state, "events");
@@ -609,6 +632,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob.access_token, "{}"});
             REQUIRE(join.response.status == 200U);
 
+            // Both users must be listed as members, and Bob with membership join.
             auto const members = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET",
                           "/_matrix/client/v3/rooms/" + room_id + "/members?not_membership=leave",
@@ -690,6 +714,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
             REQUIRE(changes.response.status == 200U);
             REQUIRE(changes.response.body.find(bob.user_id) != std::string::npos);
 
+            // Bob's device entry must carry the curve25519 and ed25519 keys uploaded earlier.
             auto const query_body_json =
                 std::string{"{\"device_keys\":{\""} + bob.user_id + "\":[\"" + bob.device_id + "\"]}}";
             auto const query = merovingian::homeserver::handle_client_server_request(
@@ -743,6 +768,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                        *session_id == "sid-reg-interop-1";
             }));
 
+            // The encrypted event cites the session id delivered by the to-device message above.
             auto const send_body =
                 std::string{"{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"ciphertext\":\"opaque-ciphertext\","
                             "\"device_id\":\""} +
@@ -783,6 +809,7 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                           bob.access_token, "{}"});
             REQUIRE(receipt.response.status == 200U);
 
+            // Syncing from Alice's original token replays everything since then, including Bob's receipt.
             auto const alice_receipt_sync = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync?since=" + alice_from, alice.access_token, {}});
             REQUIRE(alice_receipt_sync.response.status == 200U);
@@ -2149,7 +2176,7 @@ SCENARIO("GET /timestamp_to_event asks a server of the room only when its own hi
             }};
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             auto const acquired = [&] {
-                auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{rt.homeserver.mutex};
+                auto guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
                 return merovingian::homeserver::acquire_closer_timestamp_event(
                     rt.homeserver, guard, room.room_id, {"remote.example.net", "second.example.net"}, 999999,
                     merovingian::database::TimeDirection::forwards, std::nullopt,

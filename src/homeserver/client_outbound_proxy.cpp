@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 
 #include <algorithm>
 #include <thread>
@@ -28,7 +28,7 @@ namespace
 } // namespace
 
 auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string const& client_key,
-                                         std::unique_lock<RuntimeMutex>& guard, OutboundDeadline const& deadline)
+                                         RuntimeLock& guard, OutboundDeadline const& deadline)
     -> std::optional<http::InFlightBudget::Slot>
 {
     if (auto slot = admit_client_outbound_proxy(runtime, client_key); slot.has_value())

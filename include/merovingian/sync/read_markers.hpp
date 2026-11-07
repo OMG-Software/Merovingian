@@ -3,7 +3,8 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <cstdint>
 #include <functional>

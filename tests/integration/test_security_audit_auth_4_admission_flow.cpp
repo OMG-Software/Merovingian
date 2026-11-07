@@ -19,13 +19,23 @@
 #include "../support/password_hash_cost.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/auth/password.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -36,8 +46,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-
-#include <sodium.h>
 
 namespace
 {
@@ -117,7 +125,7 @@ SCENARIO("Registration does not hold the runtime mutex while it hashes the passw
         auto registration = hs::OperationResult{};
         auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
-            auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+            auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
             request_started.release();
             registration = hs::register_appservice_user(runtime, "bridge_carol");
@@ -129,7 +137,7 @@ SCENARIO("Registration does not hold the runtime mutex while it hashes the passw
             request_started.acquire();
             auto overlapped = false;
             {
-                auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+                auto guard = hs::RuntimeLock{runtime.mutex};
                 overlapped = !registration_done.load(std::memory_order_acquire);
             }
             worker.join();
@@ -171,7 +179,7 @@ SCENARIO("Two concurrent registrations of one username produce exactly one accou
                 {
                     std::this_thread::yield();
                 }
-                auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+                auto guard = hs::RuntimeLock{runtime.mutex};
                 auto const request_lock = hs::RequestLockScope{guard};
                 results.at(index) =
                     hs::register_local_user(runtime, "dave", index == 0U ? first_password : second_password,
@@ -235,7 +243,7 @@ SCENARIO("A password change that races another password change is refused, not o
         auto change = hs::OperationResult{};
         auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
-            auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+            auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
             request_started.release();
             change = hs::change_local_user_password(runtime, signed_in.value, "LaterChange99!z");
@@ -248,7 +256,7 @@ SCENARIO("A password change that races another password change is refused, not o
             auto overlapped = false;
             auto replaced = false;
             {
-                auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+                auto guard = hs::RuntimeLock{runtime.mutex};
                 overlapped = !change_done.load(std::memory_order_acquire);
                 replaced = replace_stored_hash(runtime, registered.value, *competing_hash);
             }
@@ -290,7 +298,7 @@ SCENARIO("A password change races a logout of the session that authorised it",
         auto change = hs::OperationResult{};
         auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
-            auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+            auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
             request_started.release();
             change = hs::change_local_user_password(runtime, signed_in.value, "LaterChange99!z");
@@ -301,7 +309,7 @@ SCENARIO("A password change races a logout of the session that authorised it",
             request_started.acquire();
             auto deleted = false;
             {
-                auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+                auto guard = hs::RuntimeLock{runtime.mutex};
                 deleted = hs::delete_local_device(runtime, registered.value, "DEV1").ok;
             }
             worker.join();
@@ -342,7 +350,7 @@ SCENARIO("A user-interactive-auth password check is refused when the password ch
         auto check = hs::PasswordVerificationResult{};
         auto worker = merovingian::tests::JoiningThreads{};
         worker.emplace_back([&] {
-            auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+            auto guard = hs::RuntimeLock{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
             request_started.release();
             check = hs::verify_local_user_password(runtime, signed_in.value, alice_password);
@@ -355,7 +363,7 @@ SCENARIO("A user-interactive-auth password check is refused when the password ch
             auto overlapped = false;
             auto replaced = false;
             {
-                auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
+                auto guard = hs::RuntimeLock{runtime.mutex};
                 overlapped = !check_done.load(std::memory_order_acquire);
                 replaced = replace_stored_hash(runtime, registered.value, *competing_hash);
             }

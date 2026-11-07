@@ -13,13 +13,21 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <atomic>
 #include <cstdint>
@@ -27,8 +35,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
 #include "temp_directory.hpp"
 
 #include <atomic>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 #include <string_view>

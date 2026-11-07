@@ -290,7 +290,7 @@ These remain deferred:
 2. Add a concrete production provider behind the `RandomSource` interface
    (`include/merovingian/crypto/random.hpp`) — the Ed25519 half is already done
    (`RuntimeEd25519Provider`, `RuntimeMultiKeyEd25519Provider`, wired in
-   `src/homeserver/runtime.cpp`); production code paths call
+   `src/homeserver/HomeserverRuntime.cpp`); production code paths call
    `secure_random_bytes`/`secure_random_hex` directly rather than going through
    a `RandomSource` implementation.
 3. Add audit events for signing-key lifecycle changes.

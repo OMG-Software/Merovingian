@@ -143,7 +143,7 @@ private:
 // authenticated request: the thread it holds while waiting is bounded by the client's connection share
 // (ADR-0077) and by the deadline.
 [[nodiscard]] auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string const& client_key,
-                                                       std::unique_lock<RuntimeMutex>& guard,
+                                                       RuntimeLock& guard,
                                                        OutboundDeadline const& deadline)
     -> std::optional<http::InFlightBudget::Slot>;
 

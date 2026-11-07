@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/temp_directory.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/event_table.hpp"
-#include "merovingian/database/persistent_store.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -581,6 +582,7 @@ SCENARIO("The time index of an event table follows depth, status and removal",
 {
     using merovingian::database::TimeDirection;
 
+    // Equal timestamps are ordered by depth, then stream order, so the answer is the same however the rows arrived.
     GIVEN("two events with one timestamp, the deeper one stored first")
     {
         auto table = EventTable{};
@@ -597,6 +599,8 @@ SCENARIO("The time index of an event table follows depth, status and removal",
         }
     }
 
+    // Only accepted events are candidates: an outlier, rejected or soft-failed row must never be offered as the nearest
+    // event.
     GIVEN("a table holding an accepted event, an outlier, a rejected and a soft-failed event")
     {
         auto table = EventTable{};
@@ -614,6 +618,7 @@ SCENARIO("The time index of an event table follows depth, status and removal",
             }
         }
 
+        // The index is kept in step with a status change made through modify(), not only at insert.
         WHEN("the outlier is later promoted and the accepted event rejected")
         {
             table.modify(table.find("$outlier"), [](PersistentEvent& row) {
@@ -631,6 +636,7 @@ SCENARIO("The time index of an event table follows depth, status and removal",
         }
     }
 
+    // Erasing renumbers row positions; the index must follow, and rooms must stay separate.
     GIVEN("a table with three events in one room and one in another")
     {
         auto table = EventTable{};
@@ -665,6 +671,7 @@ SCENARIO("The time index of an event table follows depth, status and removal",
         }
     }
 
+    // insert_all merges a batch into the existing index, whatever order the batch is in.
     GIVEN("a bulk load in no particular order")
     {
         auto table = EventTable{};

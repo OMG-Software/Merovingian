@@ -5,7 +5,9 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"

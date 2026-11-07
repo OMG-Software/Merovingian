@@ -19,15 +19,24 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAppserviceOutboxEntry.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -39,8 +48,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 using namespace merovingian::tests;
 
@@ -605,7 +612,7 @@ SCENARIO("A membership event accepted as the resident is queued for an intereste
             auto joined = merovingian::federation::MembershipAcceptResult{};
             {
                 // handle_membership_ingest_request calls the acceptor with runtime.mutex already held.
-                auto const guard = std::unique_lock{runtime.homeserver.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{runtime.homeserver.mutex};
                 joined = runtime.homeserver.federation.membership_acceptor(FederationEndpoint::send_join, room.room_id,
                                                                            {}, envelope);
             }

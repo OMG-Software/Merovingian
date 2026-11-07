@@ -3,11 +3,14 @@
 
 #include "merovingian/homeserver/retention_sweep.hpp"
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
+#include "merovingian/database/UnusableCredentials.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -35,7 +38,7 @@ namespace
     {
         auto pending = database::UnusableCredentials{};
         {
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             pending = database::collect_unusable_credentials(runtime.database.persistent_store, now,
                                                              expired_access_token_grace);
         }
@@ -56,7 +59,7 @@ namespace
             auto const refresh_batch =
                 std::span<std::string const>{pending.refresh_token_hashes}.subspan(refresh_next, refresh_count);
             {
-                auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                auto const guard = RuntimeLock{runtime.mutex};
                 if (!database::delete_credential_rows(runtime.database.persistent_store, access_batch, refresh_batch))
                 {
                     failed = true;
@@ -80,7 +83,7 @@ namespace
             // Memory follows the database, and only for what the database really lost.
             auto const gone =
                 std::unordered_set<std::string>{deleted.access_token_hashes.begin(), deleted.access_token_hashes.end()};
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             database::forget_credentials(runtime.database.persistent_store, deleted);
             std::ignore = runtime.database.sessions.erase_if([&gone](LocalSession const& session) {
                 return gone.contains(session.access_token_hash);
@@ -99,7 +102,7 @@ namespace
     {
         auto retention_days = std::uint32_t{0U};
         {
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             retention_days = runtime.config.security().audit_log_retention_days;
         }
         if (retention_days == 0U)
@@ -120,7 +123,7 @@ namespace
         auto const rows_remain = [&]() -> std::optional<bool> {
             if (store.backend == database::PersistentStoreBackend::memory)
             {
-                auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                auto const guard = RuntimeLock{runtime.mutex};
                 return database::audit_rows_older_than_exist(store, cutoff_ms);
             }
             return database::audit_rows_older_than_exist(store, cutoff_ms);
@@ -140,7 +143,7 @@ namespace
                 done = true;
                 break;
             }
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             if (!database::delete_audit_rows_older_than(runtime.database.persistent_store, cutoff_ms,
                                                         retention_batch_rows))
             {
@@ -153,7 +156,7 @@ namespace
         if (batches != 0U)
         {
             // Deleting evidence is itself recorded, after the deletion and so never deleted by it.
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             append_local_audit(runtime.database, observability::AuditCategory::admin, "audit.retention.purged",
                                "server", "audit_log",
                                "rows older than " + std::to_string(cutoff_ms) + " ms since the epoch (" +

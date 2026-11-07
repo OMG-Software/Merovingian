@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentEventAuth.hpp"
+#include "merovingian/database/PersistentEventEdge.hpp"
+#include "merovingian/database/PersistentEventSignature.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/federation/server_acl.hpp"
 
@@ -63,6 +68,8 @@ namespace
 SCENARIO("PostgreSQL reload_room hydrates room event relations beyond the prepared-query parameter limit",
          "[security_audit_postgresql_reload][database][postgresql][integration]")
 {
+    // Two independent store handles stand in for two processes sharing one database: B writes,
+    // A must see B's writes only through reload_room.
     GIVEN("two independent PostgreSQL store handles and a room whose ACL initially allows an origin")
     {
         auto const uri = postgresql_uri_from_environment();
@@ -82,10 +89,13 @@ SCENARIO("PostgreSQL reload_room hydrates room event relations beyond the prepar
         auto const room_id = "!db2-reload-" + suffix + ":example.org";
         auto const origin = "denied-" + suffix + ".example.org";
         auto const initial_acl_id = "$db2-initial-acl-" + suffix + ":example.org";
+        // 202 events exceed the 128-parameter limit of a prepared query, so a reload that binds one
+        // parameter per event id would silently truncate the graph.
         auto const event_total = std::size_t{202U};
         auto event_ids = std::vector<std::string>{};
         event_ids.reserve(event_total);
 
+        // Baseline: a small room whose ACL allows the origin, reloaded by A.
         WHEN("handle B stores the initial ACL and handle A reloads the small room snapshot")
         {
             REQUIRE(merovingian::database::store_room(opened_b.store, {room_id, user_id}));
@@ -109,6 +119,8 @@ SCENARIO("PostgreSQL reload_room hydrates room event relations beyond the prepar
             {
                 REQUIRE(merovingian::federation::room_server_acl_allows(opened_a.store, room_id, origin));
 
+                // B adds a chain of filler events, then an ACL that denies the origin; each event has one prev event,
+                // one auth event and one signature, which the reload must restore for every row.
                 AND_WHEN("handle B commits more than 128 room events and changes the current ACL to deny the origin")
                 {
                     auto previous_event_id = initial_acl_id;
@@ -148,11 +160,14 @@ SCENARIO("PostgreSQL reload_room hydrates room event relations beyond the prepar
                         merovingian::database::PersistentStateEvent{room_id, "m.room.server_acl", "", final_acl_id}));
                     event_ids.push_back(final_acl_id);
 
+                    // After the reload A must hold every event and its edges, auth links and signatures, and the
+                    // current ACL must be the denying one rather than the stale allowing snapshot.
                     THEN("handle A reloads the full event graph and applies the current denying ACL")
                     {
                         REQUIRE(merovingian::database::reload_room(opened_a.store, room_id));
                         REQUIRE_FALSE(merovingian::federation::room_server_acl_allows(opened_a.store, room_id, origin));
 
+                        // Count rows by relation: a truncated hydration shows up as a shortfall in one of them.
                         auto const room_events = std::ranges::count_if(
                             opened_a.store.events, [&room_id](merovingian::database::PersistentEvent const& event) {
                                 return event.room_id == room_id;

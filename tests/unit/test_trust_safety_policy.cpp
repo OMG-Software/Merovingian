@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/database/statement.hpp"
+#include "merovingian/trust_safety/FederationPolicyRequest.hpp"
+#include "merovingian/trust_safety/MediaPolicyRequest.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
+#include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
+#include "merovingian/trust_safety/RegistrationPolicyRequest.hpp"
+#include "merovingian/trust_safety/RoomPolicyRequest.hpp"
+#include "merovingian/trust_safety/SafetyReportRequest.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>

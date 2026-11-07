@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/SlidingSyncList.hpp"
+#include "merovingian/sync/SlidingSyncOp.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <cstdint>
@@ -39,7 +41,7 @@ struct RoomListResult final
 // `by_notification_count` sort counts with. The overload above builds its own.
 [[nodiscard]] auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                      SlidingSyncList const& list, std::vector<std::string> const& prev_window,
-                                     database::PersistentStore const& store, UnreadEventClassifier const& unread)
+                                     database::PersistentStore const& store, UnreadEventClassifier& unread)
     -> RoomListResult;
 
 } // namespace merovingian::sync

@@ -3,9 +3,13 @@
 
 #include "merovingian/federation/security.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <array>
@@ -17,10 +21,6 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 namespace merovingian::federation
 {

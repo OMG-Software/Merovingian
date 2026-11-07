@@ -5,7 +5,7 @@
 // for the higher-level mint/redeem and access-token-separation coverage;
 // this file exercises store_openid_token itself in isolation.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

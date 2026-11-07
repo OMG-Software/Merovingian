@@ -21,6 +21,8 @@ Low-level utilities used across all other modules. No module-specific logic live
 | `not_null.hpp` | `NotNull<T>` — asserts non-null at construction; avoids raw pointer dereference |
 | `socket_handle.hpp` | RAII socket handle (OS-specific); used by `net/` |
 | `bounded_parallel.hpp` | `run_bounded_parallel(count, parallelism, task)`: runs `task(i)` on `std::async` threads, at most `parallelism` at once, joins all, then rethrows the first failure (ADR-0267) |
+| `CopyableMutex.hpp` | `CopyableMutex`: a `std::mutex` for a copyable or movable type that guards members. Copy and move make a fresh unlocked mutex; `acquire()` returns the `unique_lock` (ADR-0517) |
+| `CopyableConditionVariable.hpp` | `CopyableConditionVariable`: the matching `std::condition_variable` wrapper (`notify_one`, `notify_all`, `wait_until`); not `condition_variable_any`, whose constructor allocates (ADR-0517) |
 
 ## Rules
 
@@ -32,3 +34,5 @@ Low-level utilities used across all other modules. No module-specific logic live
 - A semaphore slot is only ever returned by a `SemaphorePermit` destructor, never by a hand-written
   `release()` that a throw can skip. Parallel work with a cap goes through `run_bounded_parallel`
   (ADR-0267).
+- A mutex that guards members of a copyable or movable type is a `CopyableMutex` held by value
+  (ADR-0517), never a `unique_ptr<std::mutex>`. Copying or moving the owner while the mutex is held is a bug.

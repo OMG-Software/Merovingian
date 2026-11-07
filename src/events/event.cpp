@@ -3,8 +3,8 @@
 
 #include "merovingian/events/event.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <cstddef>
 #include <optional>

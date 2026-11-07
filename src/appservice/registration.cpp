@@ -3,6 +3,7 @@
 
 #include "merovingian/appservice/registration.hpp"
 
+#include "merovingian/appservice/cleartext_policy.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -249,6 +250,8 @@ auto registration_interested_in_room_event(AppserviceRegistration const& registr
 
 auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrationParseResult
 {
+    // Every failure below returns a parse_failure value rather than throwing: a bad registration file is expected
+    // input.
     auto const parsed = canonicaljson::parse_json(json_text);
     if (parsed.error != canonicaljson::ParseError::none)
     {
@@ -266,6 +269,8 @@ auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrati
         };
     }
 
+    // Spec (Application Service API, Registration): id, as_token, hs_token, sender_localpart and namespaces are
+    // required.
     auto registration = AppserviceRegistration{};
 
     auto const* id_value = object_member(*root, "id");
@@ -287,6 +292,7 @@ auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrati
             core::Error{core::ErrorCode::parse_failure, "registration missing required 'as_token' string"}
         };
     }
+    // Both tokens go straight into secret storage so they are never kept as ordinary strings.
     registration.as_token = secret_from_string(*as_token_str);
 
     auto const* hs_token_value = object_member(*root, "hs_token");
@@ -330,6 +336,7 @@ auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrati
         };
     }
 
+    // Each of the three namespace kinds is parsed by the same helper, which reports the first malformed entry.
     auto const* namespaces_value = object_member(*root, "namespaces");
     auto const* namespaces_obj = namespaces_value == nullptr ? nullptr : as_object(*namespaces_value);
     if (namespaces_obj == nullptr)
@@ -349,6 +356,8 @@ auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrati
         };
     }
 
+    // The remaining fields are optional and lenient: a missing or wrongly typed value keeps its default, and non-string
+    // protocols are skipped.
     if (auto const* protocols_value = object_member(*root, "protocols"); protocols_value != nullptr)
     {
         if (auto const* protocols_array = as_array(*protocols_value); protocols_array != nullptr)
@@ -632,7 +641,8 @@ auto validate_registrations(std::vector<AppserviceRegistration> const& registrat
     return findings;
 }
 
-auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name) -> LoadRegistrationsResult
+auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name,
+                        std::vector<std::string> const& allowed_cleartext_hosts) -> LoadRegistrationsResult
 {
     auto result = LoadRegistrationsResult{};
     auto loaded = std::vector<AppserviceRegistration>{};
@@ -644,6 +654,16 @@ auto load_registrations(std::vector<std::string> const& paths, std::string_view 
         {
             result.findings.push_back({path, parsed.error.message()});
             continue;
+        }
+        // ADR-0515: the hs_token goes to this url in every request. A null url sends nothing and is fine.
+        if (parsed.value->url.has_value())
+        {
+            if (auto const problem = appservice_url_problem(*parsed.value->url, allowed_cleartext_hosts);
+                problem.has_value())
+            {
+                result.findings.push_back({path, "registration url rejected: " + *problem});
+                continue;
+            }
         }
         loaded.push_back(std::move(*parsed.value));
     }

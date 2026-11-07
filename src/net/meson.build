@@ -1,6 +1,7 @@
 net_sources = files(
   'connection_parker.cpp',
   'listener.cpp',
+  'loopback_literal.cpp',
   'shutdown_signal.cpp',
   'tcp_acceptor.cpp',
   'thread_pool.cpp',

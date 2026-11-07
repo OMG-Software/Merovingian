@@ -1,15 +1,31 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/joining_threads.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <fcntl.h>
+#include <sqlite3.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,12 +41,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <fcntl.h>
-#include <sqlite3.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace
 {

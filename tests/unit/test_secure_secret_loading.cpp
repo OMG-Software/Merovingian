@@ -1,11 +1,19 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
 #include <filesystem>
@@ -14,9 +22,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace
 {
@@ -151,7 +156,7 @@ SCENARIO("All text secret loaders use the descriptor-bound locked reader", "[pla
             THEN("they share the bounded validated reader without file stream plaintext buffers")
             {
                 for (auto const& entry : std::array{
-                         std::pair{"src/homeserver/runtime.cpp",     "auto read_database_uri_file("       },
+                         std::pair{"src/homeserver/HomeserverRuntime.cpp",     "auto read_database_uri_file("       },
                          std::pair{"src/homeserver/worker_pool.cpp", "auto read_worker_database_uri_file("},
                          std::pair{"src/main.cpp",                   "auto read_bootstrap_admin_password("}
                 })

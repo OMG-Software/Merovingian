@@ -3,7 +3,7 @@ homeserver_sources = files(
   'appservice_ephemeral.cpp',
   'auth_service.cpp',
   'client_outbound_proxy.cpp',
-  'client_server.cpp',
+  'ClientServerRuntime.cpp',
   'client_txn_prune.cpp',
   'session_table.cpp',
   'retention_sweep.cpp',
@@ -42,7 +42,8 @@ homeserver_sources = files(
   'send_join_answer.cpp',
   'send_join_answer_authorization.cpp',
   'public_rooms.cpp',
-  'runtime.cpp',
+  'HomeserverRuntime.cpp',
+  'RoomPositionIndex.cpp',
   'runtime_mutex.cpp',
   'runtime_signing_key_store.cpp',
   'space_hierarchy.cpp',
@@ -55,6 +56,8 @@ homeserver_sources = files(
   'worker_ipc_limits.cpp',
   'worker_pool.cpp',
   'worker_supervisor.cpp',
+  'PendingStreamOrdering.cpp',
+  'PublishedStreamOrdering.cpp',
 )
 
 homeserver_lib = static_library(

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/sync/SlidingSyncLimits.hpp"
+#include "merovingian/sync/SlidingSyncRange.hpp"
+#include "merovingian/sync/SlidingSyncRequest.hpp"
 #include "merovingian/sync/stream_token.hpp"
 
 #include <cstdint>

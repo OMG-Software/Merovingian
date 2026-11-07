@@ -13,11 +13,35 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/AuthorisingSignatureKey.hpp"
+#include "merovingian/federation/BadSignatureBucket.hpp"
+#include "merovingian/federation/FederationAcceptedTransaction.hpp"
+#include "merovingian/federation/FederationDecision.hpp"
+#include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/FederationPdu.hpp"
+#include "merovingian/federation/FederationRateLimitBucket.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationResponse.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/FederationSigningKey.hpp"
+#include "merovingian/federation/FederationThumbnailQuery.hpp"
+#include "merovingian/federation/InboundSignatureVerification.hpp"
+#include "merovingian/federation/KeyResolutionBucket.hpp"
+#include "merovingian/federation/KeyResolutionFailure.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
+#include "merovingian/federation/VerifiedFederationIdentity.hpp"
+#include "merovingian/federation/XMatrixCredentials.hpp"
+#include "merovingian/federation/inbound_request_providers.hpp"
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/server_acl.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -150,9 +174,27 @@ namespace
         return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto federation_guard(FederationRuntimeState const& runtime) -> std::unique_lock<std::recursive_mutex>
+    // The federation state mutex is not recursive (ADR-0518): a function that holds this guard must
+    // not call another function that takes it. Add a helper that expects the guard to be held instead.
+    [[nodiscard]] auto federation_guard(FederationRuntimeState const& runtime) -> std::unique_lock<std::mutex>
     {
-        return std::unique_lock<std::recursive_mutex>{*runtime.mutex};
+        return runtime.mutex.acquire();
+    }
+
+    // The kept answer of a completed transaction, if any. The caller must hold `federation_guard`: the
+    // mutex is not recursive (ADR-0518), so this must not take it again.
+    [[nodiscard]] auto completed_answer_with_guard_held(FederationRuntimeState const& runtime, std::string_view origin,
+                                                        std::string_view transaction_id) -> std::optional<std::string>
+    {
+        auto const entry = std::ranges::find_if(
+            runtime.accepted_transactions, [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
+                return accepted.origin == origin && accepted.transaction_id == transaction_id;
+            });
+        if (entry == runtime.accepted_transactions.end())
+        {
+            return std::nullopt;
+        }
+        return entry->response_body;
     }
 
     [[nodiscard]] auto remote_snapshot(FederationRuntimeState const& runtime, std::string_view server_name)
@@ -386,10 +428,7 @@ namespace
                 --runtime.key_resolutions_in_flight;
             }
         }
-        if (runtime.key_resolution_slot_released != nullptr)
-        {
-            runtime.key_resolution_slot_released->notify_all();
-        }
+        runtime.key_resolution_slot_released.notify_all();
     }
 
     // RAII release of the in-flight slot reserved by admit_key_resolution, so an
@@ -2259,10 +2298,10 @@ namespace
 
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
-                                                         FederationRoute const& route, FederationRemoteRuntime& remote)
+                                                         FederationRoute const& route,
+                                                         [[maybe_unused]] FederationRemoteRuntime& remote)
         -> FederationResponse
     {
-        std::ignore = remote; // remote trust accounting is handled by the caller.
         switch (route.endpoint)
         {
         case FederationEndpoint::make_join:
@@ -2343,7 +2382,7 @@ auto resolve_join_state_key(FederationRuntimeState& runtime, std::string_view se
     }
     auto constexpr max_key_id_bytes = std::size_t{255U};
     if (!runtime.remote_key_resolver || !server_name_is_valid(server_name) || key_id.empty() ||
-        key_id.size() > max_key_id_bytes || runtime.key_resolution_slot_released == nullptr)
+        key_id.size() > max_key_id_bytes)
     {
         return std::nullopt;
     }
@@ -2358,7 +2397,7 @@ auto resolve_join_state_key(FederationRuntimeState& runtime, std::string_view se
         auto const slot_free = [&runtime] {
             return runtime.key_resolutions_in_flight < std::max(runtime.config.key_resolution_max_in_flight, 1U);
         };
-        if (!runtime.key_resolution_slot_released->wait_until(guard, deadline, slot_free))
+        if (!runtime.key_resolution_slot_released.wait_until(guard, deadline, slot_free))
         {
             return std::nullopt;
         }
@@ -3082,12 +3121,11 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
     return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier, deadline);
 }
 
-auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::string_view expected_origin,
                               std::optional<FederationKeyRecord> const& key,
                               RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
     -> FederationDecision
 {
-    std::ignore = expected_origin;
     // A RemoteKeyResolver reports no local admission denial, so a failed
     // lookup here is reported as unresolved.
     auto const resolve_key = [&remote_key_resolver](std::string_view server_name,
@@ -4416,22 +4454,14 @@ auto completed_federation_transaction_answer(FederationRuntimeState const& runti
                                              std::string_view transaction_id) -> std::optional<std::string>
 {
     auto guard = federation_guard(runtime);
-    auto const entry = std::ranges::find_if(
-        runtime.accepted_transactions, [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
-            return accepted.origin == origin && accepted.transaction_id == transaction_id;
-        });
-    if (entry == runtime.accepted_transactions.end())
-    {
-        return std::nullopt;
-    }
-    return entry->response_body;
+    return completed_answer_with_guard_held(runtime, origin, transaction_id);
 }
 
 auto record_completed_federation_transaction(FederationRuntimeState& runtime, FederationAcceptedTransaction transaction)
     -> void
 {
     auto guard = federation_guard(runtime);
-    if (federation_transaction_completed(runtime, transaction.origin, transaction.transaction_id))
+    if (completed_answer_with_guard_held(runtime, transaction.origin, transaction.transaction_id).has_value())
     {
         return;
     }

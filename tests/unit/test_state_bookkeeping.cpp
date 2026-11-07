@@ -19,8 +19,9 @@
 // arrival order).
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/FederationStateResolutionConfig.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 

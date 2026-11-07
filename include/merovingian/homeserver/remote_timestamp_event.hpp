@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/event_table.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 
@@ -72,7 +72,7 @@ struct RemoteTimestampEvent final
 // the lock held, before it is returned: the caller judges there what the remote server cannot vouch for
 // (its status, whether the user may see it, its own stored timestamp). One it refuses does not end the
 // search: the next server is asked.
-[[nodiscard]] auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+[[nodiscard]] auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, RuntimeLock& guard,
                                                   std::string_view room_id, std::vector<std::string> const& servers,
                                                   std::int64_t ts, database::TimeDirection direction,
                                                   std::optional<std::int64_t> local_ts,

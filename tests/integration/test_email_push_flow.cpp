@@ -20,18 +20,31 @@
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/socket_handle.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/email/smtp_client.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/stop_flag.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <poll.h>
+#include <sqlite3.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <array>
@@ -54,10 +67,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <poll.h>
-#include <sqlite3.h>
-#include <sys/socket.h>
 
 namespace
 {

@@ -624,6 +624,13 @@ security.media.decode_in_sandbox=true
 # config. Namespace ownership is enforced on every AS-authenticated request,
 # so an appservice cannot masquerade outside what its registration declares.
 # appservice.registration_files=/etc/merovingian/appservices/bridge.yaml
+# A registration url may use plain http only to a loopback IP literal
+# (127.0.0.0/8 or ::1; the name "localhost" does not count) or to a host named
+# here. The homeserver sends its hs_token to the appservice in every request, so
+# a listed host receives that token in cleartext: list only hosts on a network
+# you trust. Comma-separated bare host names or IP literals, matched exactly and
+# ignoring ASCII case. https urls need no entry. Restart required.
+# appservice.allow_cleartext_hosts=host.docker.internal
 
 # Logging redaction
 # Token values and event content are always redacted so operational logs do not

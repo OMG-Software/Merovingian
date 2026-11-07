@@ -23,7 +23,7 @@ supported Linux and BSD targets, and ships in mainline distributions.
 ## Security boundary
 
 - `CURL*`, `curl_slist*`, and `CURLcode` ownership is RAII-managed inside
-  `src/http/outbound_client.cpp`.
+  `src/http/OutboundClient.cpp`.
 - `curl_global_init` runs once through a function-local static guard so the
   call is serialized before any easy-handle initialization on other threads.
 - Every request runs with `CURLOPT_SSL_VERIFYPEER=1`, `CURLOPT_SSL_VERIFYHOST=2`,

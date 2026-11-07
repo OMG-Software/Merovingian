@@ -3,7 +3,8 @@
 
 #include "merovingian/platform/landlock_hardening.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 
 #include <algorithm>
@@ -13,11 +14,11 @@
 #include <utility>
 
 #ifdef __linux__
-#include <cerrno>
-#include <cstddef>
-
 #include <fcntl.h>
 #include <sys/stat.h>
+
+#include <cerrno>
+#include <cstddef>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -80,9 +81,8 @@ auto landlock_handled_access_fs(int abi) noexcept -> std::uint64_t
     return mask;
 }
 
-auto landlock_read_only_access(int abi) noexcept -> std::uint64_t
+auto landlock_read_only_access([[maybe_unused]] int abi) noexcept -> std::uint64_t
 {
-    std::ignore = abi;
     return k_access_fs_read_file | k_access_fs_read_dir;
 }
 
@@ -348,7 +348,7 @@ auto build_worker_landlock_rules(config::Config const& config) -> std::vector<La
 
     // ---- TLS / CA trust store (best-effort: distro-dependent) --------------
     // Mirrors http::detect_system_ca_trust()'s candidate file/directory list
-    // (src/http/outbound_client.cpp), which the worker's relay pool reaches
+    // (src/http/OutboundClient.cpp), which the worker's relay pool reaches
     // via OutboundClient for outbound federation requests, plus the
     // directories Debian/Ubuntu's per-certificate symlinks under
     // /etc/ssl/certs commonly resolve into. See ADR-0062 part 3, "Allowlist

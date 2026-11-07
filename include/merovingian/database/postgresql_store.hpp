@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/connection.hpp"
-#include "merovingian/database/persistent_store.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -119,7 +120,7 @@ struct PostgresqlConnectionOpenResult final
 // `profile` controls which tables load_persistent_rows hydrates into memory
 // (ADR-0062 part 2, finding N1); default TableLoadProfile::full preserves
 // today's behaviour for every caller except the federation worker path in
-// homeserver::bootstrap_local_database. See persistent_store.hpp,
+// homeserver::bootstrap_local_database. See PersistentStore.hpp,
 // table_load_profile_includes.
 [[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role = {},
                                                     std::string_view migration_role = {},

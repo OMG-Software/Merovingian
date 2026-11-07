@@ -3,9 +3,28 @@
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/serializer.hpp>
+#include <merovingian/config/Config.hpp>
+#include <merovingian/core/file_descriptor.hpp>
+#include <merovingian/database/PersistentStore.hpp>
+#include <merovingian/database/migration.hpp>
+#include <merovingian/database/postgresql_store.hpp>
+#include <merovingian/database/schema.hpp>
+#include <merovingian/events/event_id.hpp>
+#include <merovingian/events/event_signer.hpp>
+#include <merovingian/federation/remote_key_cache.hpp>
+#include <merovingian/homeserver/HomeserverRuntime.hpp>
+#include <merovingian/homeserver/local_http_router.hpp>
+#include <merovingian/homeserver/room_service.hpp>
+#include <merovingian/homeserver/worker_pool.hpp>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -14,31 +33,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/core/file_descriptor.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/events/event_id.hpp>
-#include <merovingian/events/event_signer.hpp>
-#include <merovingian/federation/remote_key_cache.hpp>
-#include <merovingian/homeserver/local_http_router.hpp>
-#include <merovingian/homeserver/room_service.hpp>
-#include <merovingian/homeserver/runtime.hpp>
-#include <merovingian/homeserver/worker_pool.hpp>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace
 {
@@ -1210,11 +1211,14 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
             SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
             return;
         }
+        // Two handles on one database model the main process and a federation worker: handle B commits, handle A must
+        // learn of it only by reloading.
         auto opened_a = merovingian::database::open_postgresql_persistent_store(uri);
         auto opened_b = merovingian::database::open_postgresql_persistent_store(uri);
         REQUIRE(opened_a.ok);
         REQUIRE(opened_b.ok);
 
+        // A unique suffix keeps ids from colliding with rows left by other tests sharing the database.
         auto const suffix = unique_test_suffix();
         auto const user_id = "@pg-reload-user-" + suffix + ":example.org";
         auto const room_id = "!pg-reload-room-" + suffix + ":example.org";
@@ -1253,6 +1257,7 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                     std::optional<std::string>{group_id});
             REQUIRE(merovingian::database::set_event_state_group(opened_b.store, member_event_id, group_id));
 
+            // The negative check first: without it a pass could just mean handle A already had the room.
             THEN("handle A, which never saw any of this, has no knowledge of the room before reloading")
             {
                 REQUIRE(std::ranges::none_of(opened_a.store.rooms,
@@ -1263,6 +1268,7 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
 
             AND_WHEN("reload_room is called on handle A for that room_id")
             {
+                // reload_room reads the room back from PostgreSQL rather than from handle B in-memory state.
                 auto const reloaded = merovingian::database::reload_room(opened_a.store, room_id);
 
                 THEN("it succeeds and handle A now has the room, membership, state, and event with its DAG "
@@ -1304,6 +1310,8 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                     REQUIRE(full_state->size() == 2U);
                 }
 
+                // Reloading twice must be idempotent: the state group and its mapping may not be inserted a second
+                // time.
                 AND_WHEN("reload_room is called on handle A again")
                 {
                     REQUIRE(merovingian::database::reload_room(opened_a.store, room_id));
@@ -1673,9 +1681,9 @@ SCENARIO("PostgreSQL audit rows outlive the in-memory window and hydrate newest-
                 REQUIRE(log.front().event_type == flood_type);
                 REQUIRE(log.front().target == "76");
                 REQUIRE(log.back().target == std::to_string(flood - 1U));
-                for (auto i = std::size_t{1U}; i < log.size(); ++i)
+                for (auto current = std::next(log.begin()); current != log.end(); ++current)
                 {
-                    REQUIRE(std::stoul(log[i].target) == std::stoul(log[i - 1U].target) + 1U);
+                    REQUIRE(std::stoul(current->target) == std::stoul(std::prev(current)->target) + 1U);
                 }
             }
         }

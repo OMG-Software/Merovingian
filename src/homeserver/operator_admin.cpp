@@ -8,10 +8,13 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/trust_safety/ReviewRecord.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <stdexcept>
 #include <variant>

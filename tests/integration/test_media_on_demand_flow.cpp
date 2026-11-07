@@ -8,14 +8,27 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sqlite3.h>
 
 #include <atomic>
 #include <chrono>
@@ -28,8 +41,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <sqlite3.h>
 
 namespace
 {
@@ -236,7 +247,11 @@ SCENARIO("Federation media downloads run safely alongside uploads", "[media-on-d
 #include "../support/json_test_support.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <algorithm>
 #include <utility>

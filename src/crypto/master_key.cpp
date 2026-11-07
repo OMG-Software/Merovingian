@@ -4,8 +4,11 @@
 #include "merovingian/crypto/master_key.hpp"
 
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/file_metadata.hpp"
+
+#include <sodium.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -18,10 +21,6 @@
 #include <string>
 #include <tuple>
 #include <utility>
-
-#include <sodium.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace merovingian::crypto
 {

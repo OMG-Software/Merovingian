@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 
 #include <cstdint>

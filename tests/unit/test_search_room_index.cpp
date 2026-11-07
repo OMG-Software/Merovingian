@@ -6,8 +6,8 @@
 // after a result are the room's events in stream order.
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
 
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/persistent_event.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/search_room_index.hpp"
 
 #include <catch2/catch_test_macros.hpp>

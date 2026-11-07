@@ -6,7 +6,7 @@ Structured logging and audit trail for the server.
 
 | File | Responsibility |
 |---|---|
-| `observability.cpp` | Audit event types and category enum, admin route table and matching (`admin_routes`/`match_admin_route`/`match_admin_path`: the one list of operator routes, ADR-0504; there is no shutdown route, ADR-0505), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
+| `observability.cpp` | Audit event types and category enum, admin route table and matching (`admin_routes`/`match_admin_route`/`match_admin_path`: the one list of operator routes, ADR-0504; there is no shutdown route, ADR-0505), health and Prometheus metrics snapshots, the thread's correlation context slot (`current_correlation_context`; it holds the context by value, never a pointer, ADR-0526; the scope that fills it is `CorrelationScope.cpp`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
 | `log_file_sink.hpp` (header-only) | The `--log-file` descriptor: opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, made 0600 (ISO-6, ADR-0146). Never open the log file any other way |
 
@@ -49,10 +49,10 @@ durability distinction:
 - **Durable** (via `append_local_audit`, `src/homeserver/local_services.cpp` — written to the
   `audit_log` table): login success/failure (`auth.login`, `login.rejected`), token
   invalidation/rejection (`auth.logout`, `access_token.rejected`), client-server rate-limit
-  rejections (`rate_limit.exceeded`, appended from `src/homeserver/client_server.cpp`), and media
+  rejections (`rate_limit.exceeded`, appended from `src/homeserver/ClientServerRuntime.cpp`), and media
   quarantine (`media.quarantined`, `media.upload_quarantined`).
 - **In-memory only, not durable** (via `audit_federation`, `src/federation/inbound_request.cpp` —
-  appended to `FederationRuntimeState::audit_events`, a bounded deque, never to the database):
+  appended to `FederationRuntimeState::audit_events`, a bounded list, never to the database):
   federation request authenticated/rejected (`federation.accepted`, `federation.rejected`,
   `federation.acl_rejected`, etc.). These do not survive a restart and are not returned by
   `GET /_merovingian/admin/audit`. Do not assume a `federation.*` audit call gives the same
@@ -67,7 +67,7 @@ durability distinction:
   `audit_log` the same way.
 - **A URL is logged without its query** (F-76, ADR-0418). The logger judges a value by its field
   name, so a query holding a credential or a user's URL passes through under `url`. Log
-  scheme, host, port and path (`loggable_url` in `outbound_client.cpp`), not `sanitized_http_target`,
+  scheme, host, port and path (`loggable_url` in `OutboundClient.cpp`), not `sanitized_http_target`,
   whose marker list misses names such as `share_token` or `sig`.
 - **One log record is one physical line.** `SingleLog::make_log_line` passes the module and
   message through `escape_log_controls` (AUTH-9), so control characters in any logged value are

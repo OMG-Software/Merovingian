@@ -27,19 +27,31 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <optional>
@@ -48,8 +60,6 @@
 #include <string_view>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {
@@ -271,6 +281,8 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
     GIVEN("a v12 room with a local creator and eight members from four servers, and no name or alias")
     {
         REQUIRE(sodium_init() >= 0);
+        // Spec (Joining Rooms, send_join): omit_members=true lets the resident drop member events from state and list
+        // servers_in_room instead.
         auto started = merovingian::homeserver::start_runtime(test_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
@@ -284,6 +296,8 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
         REQUIRE(room_result.ok);
         auto const room_id = room_result.value;
         auto const remote_user = std::string{"@eve:"} + remote_origin;
+        // Eight joined members across four servers, so five heroes cannot cover them and servers_in_room has to name
+        // them.
         auto planted = std::vector<std::string>{};
         for (auto index = 0; index < 8; ++index)
         {
@@ -294,6 +308,7 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
         auto const invite_id = plant_member(runtime, room_id, user.value, remote_user, "invite");
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
         auto const& store = runtime.database.persistent_store;
+        // The joiner's invite is one of the join's auth events, so it must reach the joiner even when state omits it.
         auto const auth = merovingian::tests::fixture_auth_event_ids(store, room_id, remote_user, true);
         REQUIRE(std::ranges::find(auth, invite_id) != auth.end());
         auto const join = make_signed_join_body(room_id, remote_user, auth,
@@ -301,6 +316,7 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
 
         WHEN("the request has omit_members=true")
         {
+            // One request per WHEN against the same room, so the three query forms are compared on identical state.
             auto const answer = send_join(runtime, room_id, join, "?omit_members=true");
 
             THEN("members_omitted is true and servers_in_room, which is then required, lists the servers with joined "
@@ -319,6 +335,7 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
                 REQUIRE(listed == std::set<std::string>{local_server, "srv0.example.net", "srv1.example.net",
                                                         "srv2.example.net", "srv3.example.net"});
             }
+            // With no name or alias the heroes are the five members shown, and nobody else's membership is sent.
             AND_THEN("state keeps the room's other events and at most the five heroes' membership events")
             {
                 REQUIRE(answer.state.contains("m.room.create|"));
@@ -327,6 +344,7 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
                 REQUIRE(count_members(answer.state) == 5);
                 REQUIRE_FALSE(answer.state.contains("m.room.member|" + remote_user));
             }
+            // Spec: auth_chain holds only what state lacks, so nothing sent in state is repeated there.
             AND_THEN(
                 "the join's own auth event that state omits is in auth_chain, and no event of state is repeated there")
             {
@@ -338,6 +356,8 @@ SCENARIO("send_join answers with a reduced response when the joining server sets
             }
         }
 
+        // Without the parameter the answer is the full one, and servers_in_room, which only goes with omit_members, is
+        // absent.
         WHEN("the request has no omit_members")
         {
             auto const answer = send_join(runtime, room_id, join, "");

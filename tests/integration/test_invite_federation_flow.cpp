@@ -17,15 +17,24 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/socket_handle.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
@@ -33,6 +42,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -51,8 +61,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 using namespace merovingian::tests;
 
@@ -1315,6 +1323,8 @@ SCENARIO("An invite to a user of another server is offered to that server before
          "hear of it",
          "[integration][federation][invite][remote-invite-handshake]")
 {
+    // Delia's server shares the room, so it must hear of the invite, but only after bob's server has
+    // accepted and co-signed it.
     GIVEN("alice's room on this server, which delia of a third server has joined, and bob of another server")
     {
         REQUIRE(sodium_init() >= 0);
@@ -1330,6 +1340,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
         auto const invite_target = "/_matrix/client/v3/rooms/" + room_id + "/invite";
         auto const invite_body = std::string{R"({"user_id":")"} + bob + R"("})";
 
+        // The invitee server co-signs the invite event, so the stored copy carries both servers' signatures.
         WHEN("alice invites bob and bob's server accepts the invite")
         {
             auto invitee = InviteeServer{runtime, invitee_answering(InviteeAnswer::cosigned)};
@@ -1363,6 +1374,8 @@ SCENARIO("An invite to a user of another server is offered to that server before
             }
         }
 
+        // Each bad answer must be refused with 502: an empty event, a different event, a signature from another key,
+        // and an unsigned echo of the request.
         WHEN("alice invites bob and bob's server answers with an event that fails validation")
         {
             auto const answer = GENERATE(InviteeAnswer::empty_event, InviteeAnswer::another_event,
@@ -1381,6 +1394,7 @@ SCENARIO("An invite to a user of another server is offered to that server before
             }
         }
 
+        // A refusal from the invitee's server is final: no invite is stored and no other server is told.
         WHEN("alice invites bob and bob's server refuses the invite")
         {
             auto invitee = InviteeServer{runtime, [](std::string const&) {

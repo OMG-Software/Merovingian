@@ -6,7 +6,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 
 | File | Responsibility |
 |---|---|
-| `persistent_store.cpp` | Abstract store interface — all other modules use this, never the backend directly |
+| `PersistentStore.cpp` | Abstract store interface — all other modules use this, never the backend directly |
 | `sqlite_store.cpp` | SQLite backend — used for development and single-node deployments |
 | `postgresql_store.cpp` | PostgreSQL backend — used for production |
 | `migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
@@ -87,7 +87,7 @@ change to what a reload rewrites goes in both the snapshot and the swap, and the
 `PersistentStore::state` has two position indexes (`state_position_index`, `state_room_index`) behind
 `find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
 state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
-calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `persistent_store.cpp`, `reload_room`,
+calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
 and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
@@ -166,3 +166,11 @@ current; hydration calls `rebuild_deferred_pdu_awaits`. Find the rows waiting fo
 status (sliding sync's room `timestamp`). `insert` and `insert_all` raise it, `erase_if` and `modify` recompute the affected
 rooms from their rows, `clear` and `extract` empty it, so a writer that bypasses them does not compile. Do not parse a room's
 events to find it.
+
+## PersistentStore's own mutexes (ADR-0517)
+
+`statement_capture_mutex` and `server_signing_keys_mutex` are `core::CopyableMutex` members held by value. A copy of the
+store gets fresh, unlocked mutexes, so copy a store only while no other thread is using it. The copy constructor and copy
+assignment are defaulted (ADR-0523): a copy carries every member and index. Never go back to a hand-written member list;
+one missed `state_transitions` and its index for months. A member that must not be copied gets its own copy semantics,
+as `core::CopyableMutex` has. No production code copies a store; only tests do.

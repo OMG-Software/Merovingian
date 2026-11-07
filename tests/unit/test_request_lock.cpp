@@ -35,6 +35,7 @@ namespace
 {
 
 using merovingian::homeserver::RequestLockScope;
+using merovingian::homeserver::RuntimeLock;
 using merovingian::homeserver::RuntimeLockRelease;
 using merovingian::homeserver::RuntimeMutex;
 
@@ -65,7 +66,7 @@ SCENARIO("a released guard is restored when the guarded work throws", "[homeserv
     GIVEN("a runtime mutex owned by a request guard")
     {
         auto mutex = RuntimeMutex{};
-        auto guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto guard = RuntimeLock{mutex};
         REQUIRE(guard.owns_lock());
 
         WHEN("the guard is released for a scope that completes normally")
@@ -73,7 +74,6 @@ SCENARIO("a released guard is restored when the guarded work throws", "[homeserv
             auto free_during_scope = false;
             {
                 auto const released = RuntimeLockRelease{guard};
-                std::ignore = released;
                 free_during_scope = free_to_another_thread(mutex);
             }
 
@@ -94,7 +94,6 @@ SCENARIO("a released guard is restored when the guarded work throws", "[homeserv
             try
             {
                 auto const released = RuntimeLockRelease{guard};
-                std::ignore = released;
                 throw std::runtime_error{"outbound call failed"};
             }
             catch (std::runtime_error const&)
@@ -124,7 +123,7 @@ SCENARIO("releasing a guard that does not own the mutex is a no-op", "[homeserve
     GIVEN("a guard that has already been released by hand")
     {
         auto mutex = RuntimeMutex{};
-        auto guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto guard = RuntimeLock{mutex};
         guard.unlock();
         REQUIRE_FALSE(guard.owns_lock());
 
@@ -132,7 +131,6 @@ SCENARIO("releasing a guard that does not own the mutex is a no-op", "[homeserve
         {
             {
                 auto const released = RuntimeLockRelease{guard};
-                std::ignore = released;
             }
 
             THEN("the guard is left as it was found, not acquired")
@@ -155,8 +153,8 @@ SCENARIO("a release scope frees the mutex even when an outer frame also holds it
     GIVEN("a dispatcher guard and a nested service guard on the same runtime mutex")
     {
         auto mutex = RuntimeMutex{};
-        auto dispatcher_guard = std::unique_lock<RuntimeMutex>{mutex};
-        auto service_guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto dispatcher_guard = RuntimeLock{mutex};
+        auto service_guard = RuntimeLock{mutex};
         REQUIRE(dispatcher_guard.owns_lock());
         REQUIRE(service_guard.owns_lock());
         REQUIRE_FALSE(free_to_another_thread(mutex));
@@ -199,7 +197,6 @@ SCENARIO("a release scope frees the mutex even when an outer frame also holds it
             try
             {
                 auto const released = RuntimeLockRelease{service_guard};
-                std::ignore = released;
                 throw std::runtime_error{"outbound call failed"};
             }
             catch (std::runtime_error const&)
@@ -227,10 +224,9 @@ SCENARIO("the published-guard release frees the mutex whichever guard was publis
     GIVEN("a published dispatcher guard and an unpublished nested guard")
     {
         auto mutex = RuntimeMutex{};
-        auto dispatcher_guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto dispatcher_guard = RuntimeLock{mutex};
         auto const published = RequestLockScope{dispatcher_guard};
-        std::ignore = published;
-        auto service_guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto service_guard = RuntimeLock{mutex};
         REQUIRE_FALSE(free_to_another_thread(mutex));
 
         WHEN("a release scope opens on the published guard rather than the nested one")
@@ -238,7 +234,6 @@ SCENARIO("the published-guard release frees the mutex whichever guard was publis
             auto free_during_scope = false;
             {
                 auto const released = RuntimeLockRelease{};
-                std::ignore = released;
                 free_during_scope = free_to_another_thread(mutex);
             }
 
@@ -287,10 +282,9 @@ SCENARIO("release scopes nest without corrupting the recursion depth", "[homeser
     GIVEN("a published dispatcher guard and a nested service guard")
     {
         auto mutex = RuntimeMutex{};
-        auto dispatcher_guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto dispatcher_guard = RuntimeLock{mutex};
         auto const published = RequestLockScope{dispatcher_guard};
-        std::ignore = published;
-        auto service_guard = std::unique_lock<RuntimeMutex>{mutex};
+        auto service_guard = RuntimeLock{mutex};
         REQUIRE_FALSE(free_to_another_thread(mutex));
 
         WHEN("a second release scope opens inside the first")
@@ -300,7 +294,6 @@ SCENARIO("release scopes nest without corrupting the recursion depth", "[homeser
             auto inner_levels = std::size_t{1U};
             {
                 auto const outer = RuntimeLockRelease{service_guard};
-                std::ignore = outer;
                 free_in_outer = free_to_another_thread(mutex);
                 {
                     // A helper deeper in the call stack reaching for the
@@ -346,10 +339,9 @@ SCENARIO("release scopes nest without corrupting the recursion depth", "[homeser
             auto inner_levels = std::size_t{0U};
             {
                 auto const outer = RuntimeLockRelease{service_guard};
-                std::ignore = outer;
                 free_before_fresh_lock = free_to_another_thread(mutex);
 
-                auto fresh_guard = std::unique_lock<RuntimeMutex>{mutex};
+                auto fresh_guard = RuntimeLock{mutex};
                 held_with_fresh_lock = !free_to_another_thread(mutex);
                 {
                     auto const inner = RuntimeLockRelease{fresh_guard};

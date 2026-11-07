@@ -19,13 +19,19 @@
 #include "../support/mock_appservice.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/stop_flag.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -536,6 +542,7 @@ SCENARIO("an appservice with receive_ephemeral is sent the typing, receipt and p
             }
         }
 
+        // Receipts are relayed as m.receipt EDUs carrying the room_id, like typing.
         WHEN("a read receipt is sent in the shared room")
         {
             REQUIRE(call(runtime, "POST", "/_matrix/client/v3/rooms/" + shared_room + "/receipt/m.read/" + shared_event,
@@ -567,6 +574,7 @@ SCENARIO("an appservice with receive_ephemeral is sent the typing, receipt and p
             }
         }
 
+        // Private receipts are the sensitive case: only a user the appservice owns may have theirs forwarded.
         WHEN("a human's private read receipt and the virtual user's private read receipt are sent in the shared room")
         {
             REQUIRE(call(runtime, "POST",
@@ -590,6 +598,8 @@ SCENARIO("an appservice with receive_ephemeral is sent the typing, receipt and p
             }
         }
 
+        // Presence is relevant only through a shared room, so a user with no shared room must not leak to the
+        // appservice.
         WHEN("a user who shares a room with the virtual user changes presence, and one who does not does too")
         {
             REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/presence/@alice:example.org/status", alice,
@@ -643,6 +653,7 @@ SCENARIO("an appservice with receive_ephemeral is sent the typing, receipt and p
             }
         }
 
+        // A profile change sends presence on the user's behalf, so it must obey the same sharing rule.
         WHEN("a user who shares a room with the virtual user changes their display name")
         {
             REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", alice,
@@ -680,6 +691,7 @@ SCENARIO("an appservice with receive_ephemeral is sent the typing, receipt and p
             }
         }
 
+        // Ephemeral data is coalesced: a slow appservice gets the latest state, not a backlog of stale updates.
         WHEN("the same room's typing changes several times before the appservice is next reached")
         {
             for (auto const* typing : {"true", "false", "true"})

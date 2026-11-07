@@ -3,9 +3,10 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/PushConfig.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
 #include "merovingian/push/gateway_in_flight_limiter.hpp"
 
 #include <chrono>

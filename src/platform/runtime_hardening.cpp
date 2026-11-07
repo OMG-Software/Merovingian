@@ -3,8 +3,23 @@
 
 #include "merovingian/platform/runtime_hardening.hpp"
 
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/BsdHardeningPlan.hpp"
+#include "merovingian/platform/FilesystemRestrictionPlan.hpp"
+#include "merovingian/platform/HardeningAction.hpp"
+#include "merovingian/platform/HardeningGate.hpp"
+#include "merovingian/platform/HardeningMode.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
+#include "merovingian/platform/HardeningPlatform.hpp"
+#include "merovingian/platform/LinuxHardeningPlan.hpp"
+#include "merovingian/platform/MemoryLockingPlan.hpp"
+#include "merovingian/platform/PrivilegeDropPlan.hpp"
+#include "merovingian/platform/RandomSourcePlan.hpp"
+#include "merovingian/platform/ResourceLimitPlan.hpp"
+#include "merovingian/platform/RuntimeHardeningProfile.hpp"
+#include "merovingian/platform/SignalHandlingPlan.hpp"
+#include "merovingian/platform/UnveilRule.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <algorithm>
@@ -25,18 +40,18 @@
 #endif
 
 #ifdef __OpenBSD__
-#include <atomic>
-#include <new>
-
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <atomic>
+#include <new>
 #endif
 
 #ifdef __FreeBSD__
+#include <sys/capsicum.h>
+
 #include <cerrno>
 #include <cstring>
-
-#include <sys/capsicum.h>
 #endif
 
 namespace merovingian::platform

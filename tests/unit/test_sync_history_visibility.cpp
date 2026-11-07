@@ -17,7 +17,8 @@
 // These tests build the store directly (events, ADR-0064 state groups, state transitions) so
 // each rule, the two special cases and every fail-closed path are exercised in isolation.
 
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/room_read_access.hpp"
 
@@ -457,6 +458,8 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
 {
     using merovingian::sync::room_read_access_for;
 
+    // The membership row is only a projection; access is classified from the state transitions,
+    // so each case below sets the row and the transitions separately.
     GIVEN("a membership chain join, leave for bob, recorded as state transitions")
     {
         auto store = PersistentStore{};
@@ -466,6 +469,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         add_transition(store, "m.room.member", std::string{bob}, "$join", "");
         add_transition(store, "m.room.member", std::string{bob}, "$leave", "$join");
 
+        // A departed member may read up to the event that ended their join, and no further.
         WHEN("the membership row says leave")
         {
             store.memberships.push_back({std::string{room}, std::string{bob}, "leave", 7U});
@@ -497,6 +501,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
             }
         }
 
+        // Invite and knock are not membership, so neither grants any read access.
         WHEN("the row says invite or knock")
         {
             store.memberships.push_back({std::string{room}, std::string{bob}, "invite", 7U});
@@ -510,6 +515,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         }
     }
 
+    // A user who never joined has no history to read, even though a leave event exists.
     GIVEN("a user whose only membership events are an invite and the leave that declined it")
     {
         auto store = PersistentStore{};
@@ -529,6 +535,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         }
     }
 
+    // Same rule for a ban that follows an invite: there was never a join to bound.
     GIVEN("a user who was banned straight after an invite, never having joined")
     {
         auto store = PersistentStore{};
@@ -548,6 +555,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         }
     }
 
+    // The boundary is the leave that ended the join, not the later decline of the second invite.
     GIVEN("a user who joined, left, was invited again and declined")
     {
         auto store = PersistentStore{};
@@ -574,6 +582,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         }
     }
 
+    // Contradictory inputs fail closed: when the projection and the state disagree, nothing is readable.
     GIVEN("a projection row saying leave while the room's state still says join")
     {
         auto store = PersistentStore{};
@@ -590,6 +599,7 @@ SCENARIO("room_read_access_for grants current, as-of-departure or no read access
         }
     }
 
+    // A missing projection row does not hide a join that the room state itself records.
     GIVEN("a membership row that is missing while the state says join")
     {
         auto store = PersistentStore{};

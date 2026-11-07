@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/mock_appservice.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -549,6 +551,42 @@ SCENARIO("Parsing an outbound URL with an IPv6 literal strips the brackets from 
                     INFO(candidate);
                     REQUIRE_FALSE(merovingian::http::parse_outbound_url(candidate).has_value());
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Parsing an outbound URL accepts only the permitted scheme tokens", "[http][outbound][url][scheme]")
+{
+    GIVEN("URLs whose scheme is not exactly https, or http without the opt-in")
+    {
+        auto const urls = std::vector<std::string>{
+            "HTTP://127.0.0.1/",     "HTTPS://203.0.113.5/", "http://127.0.0.1:1234/", "https://",
+            "httpsx://203.0.113.5/", "ftp://203.0.113.5/",   "203.0.113.5/",           "://203.0.113.5/"};
+
+        WHEN("each is parsed without the cleartext opt-in")
+        {
+            THEN("every one is refused")
+            {
+                for (auto const& candidate : urls)
+                {
+                    INFO(candidate);
+                    REQUIRE_FALSE(merovingian::http::parse_outbound_url(candidate).has_value());
+                }
+            }
+        }
+    }
+
+    GIVEN("a cleartext http URL")
+    {
+        WHEN("it is parsed with the cleartext opt-in")
+        {
+            THEN("it is accepted, while uppercase and unknown schemes are still refused")
+            {
+                REQUIRE(merovingian::http::parse_outbound_url("http://127.0.0.1:1234/", true).has_value());
+                REQUIRE_FALSE(merovingian::http::parse_outbound_url("HTTP://127.0.0.1:1234/", true).has_value());
+                REQUIRE_FALSE(merovingian::http::parse_outbound_url("http://", true).has_value());
+                REQUIRE_FALSE(merovingian::http::parse_outbound_url("httpx://127.0.0.1/", true).has_value());
             }
         }
     }

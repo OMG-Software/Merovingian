@@ -5,8 +5,8 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>
@@ -173,7 +173,7 @@ namespace
         return id.size() >= 3U && id.front() == '@' && id.find(':') != std::string_view::npos;
     }
 
-    // Mirrors repository.cpp's media_id_is_safe() exactly (#443) — both gates
+    // Mirrors LocalMediaRepository.cpp's media_id_is_safe() exactly (#443) — both gates
     // must reject the same shapes so a caller that only reaches one of them
     // does not get a weaker check than the storage boundary applies.
     [[nodiscard]] auto media_id_is_valid(std::string_view media_id) noexcept -> bool
@@ -305,7 +305,7 @@ auto sniff_mime_type(std::string_view bytes) -> std::string
     // classifying it as text/plain would let an ASCII-only HTML/JS polyglot
     // sit in the default MIME allow-list. X-Content-Type-Options: nosniff is
     // set on every response this server sends (see http_server.cpp's
-    // format_response and client_server.cpp's apply_cors_headers), which is
+    // format_response and ClientServerRuntime.cpp's apply_cors_headers), which is
     // the primary defense against a browser executing this as markup
     // regardless of the declared Content-Type; this tightens the heuristic
     // itself so the ambiguous classification is not made at the source.

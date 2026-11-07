@@ -2,8 +2,10 @@
 
 #include "../support/room_history_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/sync/room_access.hpp"
 #include "merovingian/sync/sliding_sync_extensions.hpp"
 #include "merovingian/sync/sliding_sync_room_list.hpp"

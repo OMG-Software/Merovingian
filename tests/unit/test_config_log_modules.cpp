@@ -10,7 +10,7 @@
 // |  via `apply_log_modules` and the result is not hot-reloadable.         |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/config/config_parser.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -89,8 +89,7 @@ class EventDag final
 public:
     auto add(StateEventReference const& ref) -> StateEventReference const&
     {
-        auto [it, inserted] = events_.emplace(ref.event_id, ref);
-        std::ignore = inserted;
+        auto const it = events_.emplace(ref.event_id, ref).first;
         return it->second;
     }
 
@@ -902,8 +901,9 @@ SCENARIO("Room v12: a fork resolves when the create event is reachable only by r
         auto dag = EventDag{};
         // room_id "!roomcreate:example.org" derives create event id
         // "$roomcreate:example.org" (rooms/v12.md rule 2's sigil swap).
-        auto const create = dag.add(make_ref("m.room.create", "", "$roomcreate:example.org", "@alice:example.org", 1,
-                                             {}, R"({"creator":"@alice:example.org","room_version":"12"})"));
+        [[maybe_unused]] auto const create =
+            dag.add(make_ref("m.room.create", "", "$roomcreate:example.org", "@alice:example.org", 1, {},
+                             R"({"creator":"@alice:example.org","room_version":"12"})"));
         // The creator's initial join cites only create as its predecessor.
         // Creator power is implicit in v12 and never supplies membership.
         auto const alice_join =
@@ -915,7 +915,7 @@ SCENARIO("Room v12: a fork resolves when the create event is reachable only by r
                                               {"$pl0", "$alice_join"}, R"({"topic":"a"})"));
         auto const topic_b = dag.add(make_ref("m.room.topic", "", "$topic_b", "@alice:example.org", 200,
                                               {"$pl0", "$alice_join"}, R"({"topic":"b"})"));
-        std::ignore = create; // reachable only via dag.lookup(), never added to a StateGroup below
+        // `create` is reachable only via dag.lookup(), never added to a StateGroup below
 
         // Neither fork's own state lists the create event at all — only
         // pl0/alice_join/topic, exactly the "absent from every submitted

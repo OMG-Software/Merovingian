@@ -20,26 +20,55 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/DatabaseRole.hpp"
+#include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentOneTimeKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/transactions.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
@@ -47,7 +76,12 @@
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
+#include <netinet/in.h>
+#include <sodium.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -68,12 +102,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sodium.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #ifdef __linux__
 #include <sys/types.h>
@@ -157,8 +185,6 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
 
 [[nodiscard]] auto make_federation_worker_config(std::filesystem::path const& tmp) -> Config
 {
-    std::ignore = tmp; // the worker processes use an in-memory SQLite store
-
     auto server = ServerConfig{};
     auto database = DatabaseConfig{};
     database.backend = DatabaseBackend::sqlite;
@@ -1133,12 +1159,11 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                     }
                     runtime.federation_proxy = std::make_unique<FederationProxy>(
                         config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-                    auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-                    std::ignore = proxy_lifetime;
+                    [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
                     REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
                     auto listener = Fed10SocketListener{client};
                     {
-                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        auto const guard = runtime.federation.mutex.acquire();
                         runtime.federation.config.key_resolution_max_in_flight = 1U;
                         runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
                         runtime.federation.key_resolution_buckets.clear();
@@ -1179,7 +1204,7 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                         CHECK(fed10_target_count(durable.store, event_id) == 0U);
                     }
                     {
-                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        auto const guard = runtime.federation.mutex.acquire();
                         CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
                         CHECK(runtime.federation.key_resolution_failures.empty());
                         runtime.federation.key_resolution_buckets.clear();
@@ -1312,8 +1337,7 @@ SCENARIO("A retried transaction is not processed again when its room moves betwe
         };
         runtime.federation_proxy = std::make_unique<FederationProxy>(
             config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-        std::ignore = proxy_lifetime;
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
         REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
         auto listener = Fed10SocketListener{client};
         auto& proxy = *runtime.federation_proxy;
@@ -2118,7 +2142,7 @@ SCENARIO("Main refuses a sign_request frame from a worker without signing and wi
         // that tried to take the lock would block until the request timeout and
         // the reply below would never arrive. That makes "the lock is not
         // taken" observable without any sleep-based synchronisation.
-        auto runtime_guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+        auto runtime_guard = merovingian::homeserver::RuntimeLock{runtime.mutex};
 
         WHEN("the worker sends a sign_request for the active key carrying a serialised PDU")
         {
@@ -4380,6 +4404,7 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         homeserver::wire_federation_callbacks(runtime);
         auto const room_id = std::string{"!policy-authority:"} + local_server;
         fed10_persist_remote_room(runtime, room_id);
+        // The relay is a remote origin with a joined member, so its transaction passes every check except the policy.
         auto const relay_server = std::string{"203.0.113.22"};
         auto const relay_member = std::string{"@relay:"} + relay_server;
         REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
@@ -4401,6 +4426,7 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         auto const event_id = envelope->event_id;
         auto const body = std::string{"{\"origin\":\""} + relay_server + "\",\"origin_server_ts\":50,\"pdus\":[" +
                           signed_pdu + "],\"edus\":[]}";
+        // Build a genuinely X-Matrix signed request, so a refusal can only come from the policy, not the signature.
         auto const target = std::string{"/_matrix/federation/v1/send/policy-authority"};
         auto call = federation::OutboundCall{};
         call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
@@ -4414,12 +4440,12 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
         auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
                           "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
                           "\r\nConnection: close\r\n\r\n" + body;
+        // Start the real worker before any rule exists; the proxy lifetime guard stops it when the scenario ends.
         runtime.federation.remotes = {relay};
         runtime.federation.remote_key_resolver = genuine_key_resolver();
         runtime.federation_proxy = std::make_unique<FederationProxy>(
             config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
-        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
-        std::ignore = proxy_lifetime;
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
         REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
         auto listener = Fed10SocketListener{client};
 

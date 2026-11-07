@@ -17,7 +17,9 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
@@ -979,7 +981,7 @@ SCENARIO("a profile change reaches every room without holding the lock for all o
                     return merovingian::homeserver::propagate_queued_profile(homeserver);
                 }};
             {
-                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{homeserver.mutex};
                 homeserver.profile_propagation_wake = [&job]() {
                     job.wake();
                 };
@@ -988,7 +990,7 @@ SCENARIO("a profile change reaches every room without holding the lock for all o
             REQUIRE(job.start());
             auto const stop_job = [&]() {
                 {
-                    auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                    auto const guard = merovingian::homeserver::RuntimeLock{homeserver.mutex};
                     homeserver.profile_propagation_wake = nullptr;
                 }
                 job.stop();
@@ -1018,7 +1020,7 @@ SCENARIO("a profile change reaches every room without holding the lock for all o
                 while (!finished && std::chrono::steady_clock::now() < give_up)
                 {
                     {
-                        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{homeserver.mutex};
+                        auto const guard = merovingian::homeserver::RuntimeLock{homeserver.mutex};
                         finished = homeserver.profile_propagation_pending.empty();
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});

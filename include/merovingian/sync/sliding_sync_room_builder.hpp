@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/sync/SlidingSyncConnectionState.hpp"
+#include "merovingian/sync/SlidingSyncList.hpp"
+#include "merovingian/sync/SlidingSyncRoomResponse.hpp"
+#include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/read_markers.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <cstdint>
@@ -107,7 +111,7 @@ enum class TimelineExpansion : std::uint8_t
                                        database::PersistentStore const& store,
                                        std::unordered_set<std::string> const& lazy_members_already_sent,
                                        std::unordered_set<std::string> const& ignored_senders,
-                                       HistoryVisibility& visibility, UnreadEventClassifier const& unread,
+                                       HistoryVisibility& visibility, UnreadEventClassifier& unread,
                                        TimelineExpansion expansion = TimelineExpansion::none,
                                        std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
                                        std::optional<std::uint64_t> timeline_upper_bound = std::nullopt,
@@ -153,18 +157,18 @@ struct ThreadNotificationCounts final
 // when the filter sets `unread_thread_notifications`, and summed otherwise.
 [[nodiscard]] auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id,
                                           std::string_view user, ReadMarkers const& markers,
-                                          UnreadEventClassifier const& unread) -> ThreadNotificationCounts;
+                                          UnreadEventClassifier& unread) -> ThreadNotificationCounts;
 
 // count_unread_by_thread()'s notifications, summed over threads. Used for both sliding sync
 // and the legacy /sync `unread_notifications.notification_count`.
 [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
-                                       std::string_view user, ReadMarkers const& markers,
-                                       UnreadEventClassifier const& unread) -> std::uint64_t;
+                                       std::string_view user, ReadMarkers const& markers, UnreadEventClassifier& unread)
+    -> std::uint64_t;
 
 // count_unread_by_thread()'s highlights, summed over threads. Used for both sliding sync and
 // the legacy /sync `unread_notifications.highlight_count`.
 [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
-                                    std::string_view user, ReadMarkers const& markers,
-                                    UnreadEventClassifier const& unread) -> std::uint64_t;
+                                    std::string_view user, ReadMarkers const& markers, UnreadEventClassifier& unread)
+    -> std::uint64_t;
 
 } // namespace merovingian::sync

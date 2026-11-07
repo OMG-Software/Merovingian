@@ -3,16 +3,19 @@
 
 #include "merovingian/homeserver/email_push.hpp"
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/crypto/random.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/email/notification_email.hpp"
 #include "merovingian/email/smtp_client.hpp"
 #include "merovingian/email/smtp_endpoint.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/push_badge_count.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/push/email_digest_queue.hpp"
@@ -78,7 +81,7 @@ namespace
     // notification: the pusher, the user's hold on the address, and what is unread now.
     [[nodiscard]] auto prepare_email(HomeserverRuntime& runtime, push::EmailDigestKey const& key) -> PreparedEmail
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto& store = runtime.database.persistent_store;
         // A deactivated account keeps its pushers and 3PIDs, but nobody can sign in to it to turn
         // the emails off, so it is never mailed.

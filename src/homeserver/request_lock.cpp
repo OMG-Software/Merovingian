@@ -3,56 +3,54 @@
 
 #include "merovingian/homeserver/request_lock.hpp"
 
+#include <utility>
+
 namespace merovingian::homeserver
 {
 namespace
 {
 
-    // The guard owning runtime.mutex for this thread's in-flight request, or
-    // null when this thread is not inside a request handler. Only ever read and
-    // written by its own thread, so it needs no synchronisation of its own.
-    thread_local auto* current_request_guard = static_cast<std::unique_lock<RuntimeMutex>*>(nullptr);
+    // The mutex the guard owning runtime.mutex for this thread's in-flight
+    // request locks, or null when this thread is not inside a request handler.
+    // Never the guard's address (ADR-0529). Only ever read and written by its own
+    // thread, so it needs no synchronisation of its own.
+    thread_local auto* current_request_mutex = static_cast<RuntimeMutex const*>(nullptr);
 
 } // namespace
 
-RequestLockScope::RequestLockScope(std::unique_lock<RuntimeMutex>& guard) noexcept
-    : previous_{current_request_guard}
+// A guard is only ever consulted for which mutex it refers to, never for whether
+// it believes it owns it. `unique_lock::mutex()` answers that even when the lock
+// is not held.
+RequestLockScope::RequestLockScope(RuntimeLock& guard) noexcept
+    : previous_{std::exchange(current_request_mutex, guard.mutex())}
 {
-    current_request_guard = &guard;
 }
 
 RequestLockScope::~RequestLockScope()
 {
-    current_request_guard = previous_;
+    current_request_mutex = previous_;
 }
 
 RuntimeLockRelease::RuntimeLockRelease() noexcept
 {
-    release(current_request_guard);
+    release(current_request_mutex);
 }
 
-RuntimeLockRelease::RuntimeLockRelease(std::unique_lock<RuntimeMutex>& guard) noexcept
+RuntimeLockRelease::RuntimeLockRelease(RuntimeLock& guard) noexcept
 {
-    release(&guard);
+    release(guard.mutex());
 }
 
-void RuntimeLockRelease::release(std::unique_lock<RuntimeMutex>* guard) noexcept
+void RuntimeLockRelease::release(RuntimeMutex const* mutex) noexcept
 {
-    if (guard == nullptr)
+    if (mutex == nullptr)
     {
-        // No request handler on the stack and no guard in hand: there is no
-        // mutex to act on. This is the federation worker and the direct-call
-        // test path.
+        // No request handler on the stack and no guard in hand, or a guard with
+        // no mutex: there is nothing to act on. This is the federation worker
+        // and the direct-call test path.
         return;
     }
-    // The guard is only ever consulted for which mutex it refers to, never for
-    // whether it believes it owns it. `unique_lock::mutex()` answers that even
-    // when the lock is not held.
-    mutex_ = guard->mutex();
-    if (mutex_ == nullptr)
-    {
-        return;
-    }
+    mutex_ = mutex;
     // Drop every level this thread holds, through the mutex rather than
     // through any guard.
     //

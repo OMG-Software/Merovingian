@@ -18,9 +18,17 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -510,7 +518,7 @@ SCENARIO("A flood of remote typing at the cap never evicts a local user's typing
         join_remote_member(rt, room.room_id, "@late:remote.example.org");
         REQUIRE(put_typing(rt, room, R"({"typing":true})").status == 200U);
         {
-            auto const guard = std::unique_lock{rt.homeserver.mutex};
+            auto const guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
             auto const expires_at = std::chrono::steady_clock::now() + std::chrono::minutes{1};
             while (rt.homeserver.typing_users.size() < merovingian::homeserver::max_inbound_typing_entries)
             {
@@ -527,7 +535,7 @@ SCENARIO("A flood of remote typing at the cap never evicts a local user's typing
 
             THEN("the local user is still typing and the table is still at its cap")
             {
-                auto const guard = std::unique_lock{rt.homeserver.mutex};
+                auto const guard = merovingian::homeserver::RuntimeLock{rt.homeserver.mutex};
                 REQUIRE(rt.homeserver.typing_users.size() == merovingian::homeserver::max_inbound_typing_entries);
                 REQUIRE(contains(merovingian::homeserver::current_typing_users_in_room(rt.homeserver, room.room_id),
                                  "@alice:example.org"));

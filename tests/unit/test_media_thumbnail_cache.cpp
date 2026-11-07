@@ -4,7 +4,7 @@
 // and evicted least recently used first, so a repeated request does not fork
 // the decoder again.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/media/thumbnail_cache.hpp"
 

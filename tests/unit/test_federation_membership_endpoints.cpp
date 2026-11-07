@@ -3,6 +3,8 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"

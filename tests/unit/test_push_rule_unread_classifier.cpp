@@ -7,7 +7,8 @@
 // room (ADR-0205, ADR-0207).
 
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/push/push_rules.hpp"
 
@@ -108,7 +109,7 @@ SCENARIO("The unread classifier decides each room by that room's own push-rule f
         join(store, "!trio:x", bob);
         join(store, "!trio:x", "@carol:example.org");
 
-        auto const classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, ruleset()};
+        auto classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, ruleset()};
         auto const room_mention = message(R"({"msgtype":"m.text","body":"all","m.mentions":{"room":true}})");
         auto const says_ally = message(R"({"msgtype":"m.text","body":"hi Ally"})");
         auto const says_prof = message(R"({"msgtype":"m.text","body":"hi Prof"})");
@@ -185,7 +186,7 @@ SCENARIO("The unread classifier finds each room's join start from one walk of th
         add_member("$b2", "!b:x", "join", 2U);
         add_member("$b3", "!b:x", "leave", 3U);
         add_member("$b4", "!b:x", "join", 4U);
-        auto const classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, ruleset()};
+        auto classifier = merovingian::homeserver::PushRuleUnreadClassifier{store, alice, ruleset()};
 
         WHEN("each room's counting start is asked for")
         {

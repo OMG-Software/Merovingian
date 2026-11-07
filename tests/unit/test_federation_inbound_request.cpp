@@ -6,20 +6,29 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/FederationProfile.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationResponse.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/media_service.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -39,8 +48,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 #ifdef __linux__
 #include <sys/wait.h>
@@ -2584,7 +2591,7 @@ SCENARIO("Local sender overload preserves relay trust and the original transacti
                 if (ready)
                 {
                     response = merovingian::federation::handle_inbound_federation_request(runtime, request);
-                    auto const guard = std::lock_guard{*runtime.mutex};
+                    auto const guard = runtime.mutex.acquire();
                     trust_during_overlap = runtime.remotes.front().trust;
                     accepted_during_overlap = std::ranges::any_of(runtime.accepted_transactions, [&](auto const& tx) {
                         return tx.origin == relay && tx.transaction_id == "txn123";
@@ -3665,7 +3672,7 @@ SCENARIO("Sender lookups share a runtime-wide in-flight cap",
                 {
                     warm_response = merovingian::federation::handle_inbound_federation_request(runtime, warm);
                     overlapping = merovingian::federation::handle_inbound_federation_request(runtime, second);
-                    auto const guard = std::lock_guard{*runtime.mutex};
+                    auto const guard = runtime.mutex.acquire();
                     held_count = runtime.key_resolutions_in_flight;
                     calls_during_overlap = calls.load();
                 }
@@ -5317,6 +5324,32 @@ SCENARIO("Completed transactions' answers are kept within a byte budget",
             THEN("there is no answer")
             {
                 REQUIRE_FALSE(missing.has_value());
+            }
+        }
+    }
+}
+
+// The federation state mutex is not recursive (ADR-0518): recording a transaction that is already
+// recorded must look it up under the guard it holds, not take the guard a second time.
+SCENARIO("Recording a completed transaction twice keeps one entry and does not deadlock",
+         "[federation][inbound][transaction]")
+{
+    GIVEN("a runtime with one completed transaction")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                         {"a.example", "txn-1", 1U, 0U, "first"});
+
+        WHEN("the same origin and transaction id is recorded again with another answer")
+        {
+            merovingian::federation::record_completed_federation_transaction(runtime,
+                                                                             {"a.example", "txn-1", 1U, 0U, "second"});
+
+            THEN("the call returns, one entry remains and it keeps the first answer")
+            {
+                REQUIRE(runtime.accepted_transactions.size() == 1U);
+                REQUIRE(merovingian::federation::completed_federation_transaction_answer(runtime, "a.example",
+                                                                                         "txn-1") == "first");
             }
         }
     }

@@ -3,14 +3,25 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaBlob.hpp"
+#include "merovingian/media/LocalMediaRecord.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/media/LocalMediaState.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -18,8 +29,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {
@@ -139,6 +148,7 @@ SCENARIO("remote_federation_media_download_url builds the authenticated federati
 SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of the authenticated media endpoint",
          "[homeserver][media][federation]")
 {
+    // Spec: the authenticated media response is multipart/mixed, a JSON metadata part then the content part.
     GIVEN("a well-formed two-part multipart response carrying inline media bytes")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -167,6 +177,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // The second part may instead be a Location redirect to a CDN, which the caller must follow safely.
     GIVEN("a well-formed response whose second part is a Location redirect instead of inline bytes")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=\"xyz\""};
@@ -192,6 +203,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // Malformed framing must fail closed, never be guessed at.
     GIVEN("a response whose Content-Type header carries no boundary parameter")
     {
         auto const content_type = std::string{"multipart/mixed"};
@@ -224,6 +236,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // Media bytes that happen to contain the boundary text must not end the part early.
     GIVEN("a response whose boundary string also appears inside the media bytes")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -251,6 +264,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // RFC 2046 lets a preamble precede the first delimiter; it is ignored.
     GIVEN("a response with a preamble before the first boundary delimiter")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -278,6 +292,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // Remote servers differ on line endings, so LF-only bodies are accepted.
     GIVEN("a response using LF-only line endings")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -303,6 +318,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // A quoted boundary value may contain punctuation, and whitespace around the equals sign is allowed.
     GIVEN("a response whose boundary parameter contains punctuation from a quoted value")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=\"boundary.with-special\""};
@@ -378,6 +394,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // A redirect part has no body bytes, which must not be mistaken for empty media.
     GIVEN("a response with a Location-only second part and no body bytes")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -402,6 +419,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
         }
     }
 
+    // Extra parts beyond the two the spec defines must not be mistaken for the media bytes.
     GIVEN("a response containing more than the mandatory two parts")
     {
         auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
@@ -437,6 +455,7 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
 SCENARIO("resolve_media_redirect_url validates and resolves federation media redirect URLs safely",
          "[homeserver][media][federation][security]")
 {
+    // Discovery is faked so the SSRF checks run on controlled addresses, with no DNS or network involved.
     GIVEN("a fake discovery network that returns controlled addresses")
     {
         auto network = FakeDiscoveryNetwork{};
@@ -447,6 +466,7 @@ SCENARIO("resolve_media_redirect_url validates and resolves federation media red
         network.addresses["private.example.org"] = {"192.168.1.1"};
         network.addresses["loopback.example.org"] = {"127.0.0.1"};
 
+        // Valid redirects: the resolved addresses are pinned so the later fetch cannot be re-pointed at another host.
         WHEN("the redirect URL is a plain HTTPS URL with a public DNS name")
         {
             auto const result =
@@ -503,6 +523,7 @@ SCENARIO("resolve_media_redirect_url validates and resolves federation media red
             }
         }
 
+        // Malformed or insecure URLs are refused before any resolution happens.
         WHEN("the redirect URL uses cleartext http")
         {
             auto const result =
@@ -527,6 +548,7 @@ SCENARIO("resolve_media_redirect_url validates and resolves federation media red
             }
         }
 
+        // SSRF: a remote server must not steer this server at private, loopback or unresolvable hosts.
         WHEN("the resolved host points to a private IP")
         {
             auto const result = merovingian::homeserver::resolve_media_redirect_url(

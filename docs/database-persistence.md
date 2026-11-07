@@ -161,7 +161,7 @@ value. Test fixtures that do not exercise persistence select it through
   result. Read signatures through this function, not by scanning the vector.
 - `find_current_state_event_id` and `for_each_room_state_row` read current state through in-memory indexes over
   `PersistentStore::state` (`state_position_index` by room, type and state key; `state_room_index` by room).
-  Every writer in `persistent_store.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them
+  Every writer in `PersistentStore.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them
   (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
   no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
   vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
@@ -223,7 +223,7 @@ value. Test fixtures that do not exercise persistence select it through
   and `sid`) and the
   `store_account_threepid` / `find_account_threepid` /
   `delete_account_threepid` store functions
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist, look up, and remove bound 3PIDs. Implemented for both SQLite
   (`sqlite_store.cpp`) and PostgreSQL (`postgresql_store.cpp`); rows are
   hydrated into the in-memory store on backend open so existing bindings are
@@ -244,13 +244,13 @@ value. Test fixtures that do not exercise persistence select it through
   `app_id` and `pushkey` for the same user replaces it in place. The `PersistentPusher` struct and the
   `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`
   store functions
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist, look up, list, and remove pushers, following the same pattern as
   `PersistentThreePidBinding` above; implemented for both SQLite and
   PostgreSQL, hydrated on backend open. `merovingian::push::PushGatewayClient`
   (`push_gateway_client.hpp`) forwards a device's `data_extra` members
   verbatim into the notify request body, and — since the PR #479 follow-up —
-  `client_server.cpp`'s `parse_pusher_set_body()` captures every `data`
+  `ClientServerRuntime.cpp`'s `parse_pusher_set_body()` captures every `data`
   member beyond `url`/`format` at registration time and `room_service.cpp`'s
   pusher-to-`PushGatewayDevice` conversion threads it through to a live
   delivery, so the gap noted above is closed end to end; see
@@ -274,7 +274,7 @@ value. Test fixtures that do not exercise persistence select it through
   The `PersistentNotification`
   struct and the `store_notification` / `list_notifications_for_user` store
   functions
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist and list rows, following the same pattern as `PersistentPusher`
   above; implemented for both SQLite and PostgreSQL, hydrated on backend
   open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
@@ -313,7 +313,7 @@ value. Test fixtures that do not exercise persistence select it through
   `docs/threat-model.md` for why that separation is the entire security
   property this feature depends on. The `PersistentOpenidToken` struct and
   the `store_openid_token` store function
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist rows, following the same hashed-token pattern as
   `PersistentAccessToken`; implemented for both SQLite and PostgreSQL,
   hydrated on backend open. `homeserver::request_openid_token` (`src/
@@ -371,7 +371,7 @@ value. Test fixtures that do not exercise persistence select it through
   neighbours, and parsed back to `std::uint64_t` at hydration. The
   `PersistentAppserviceTxnCursor` struct and the
   `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   are implemented for both SQLite and PostgreSQL, hydrated on backend open.
   The cursor is the *state of the one transaction
   in flight* (`pending_txn_id` / `pending_stream_ordering`) plus the
@@ -422,7 +422,7 @@ value. Test fixtures that do not exercise persistence select it through
   back at hydration. `PersistentDeferredPdu` and
   `upsert_deferred_pdu`/`remove_deferred_pdu`/`list_deferred_pdus`/
   `deferred_pdus_for_room`
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   are implemented for both SQLite and PostgreSQL, hydrated on backend open. The
   store is bounded: 100 rows per room, 1000 in total, 16 MiB of `pdu_json` in
   total (`max_deferred_pdus_per_room`, `max_deferred_pdus_total`,
@@ -442,7 +442,7 @@ value. Test fixtures that do not exercise persistence select it through
   root's event ID. Every unread count is computed from these rows, so before
   this table a restart marked every room unread. `PersistentReceipt`,
   `PersistentStore::receipts` and `store_receipt`/`remove_receipt`
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   are implemented for both SQLite and PostgreSQL and hydrated on backend open;
   `store_receipt` allocates the sync stream position and commits the row before
   the mirror changes. At the inbound cap, it deletes the selected victim and
@@ -474,7 +474,7 @@ value. Test fixtures that do not exercise persistence select it through
   reversible `locked`/`suspended` columns: a deactivated account can never
   log in again, and its row is retained (not deleted) so the localpart is
   never reissued to a new registration. `set_user_deactivated`
-  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   updates the column and mirrors the change into the in-memory
   `PersistentUser`, following the same pattern as `set_user_account_state`
   above; implemented for both SQLite and PostgreSQL, hydrated on backend
@@ -530,7 +530,7 @@ value. Test fixtures that do not exercise persistence select it through
     `create_or_reuse_state_group`'s parent lookup) looks up by
     `state_group_id`, its primary key — nothing queries it by `room_id`.
 
-  Store API ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp)):
+  Store API ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp)):
   `create_or_reuse_state_group(store, room_id, new_state_group_id,
   parent_state_group_id, full_state)` builds the group that will hold
   `full_state` — reusing `parent_state_group_id` unchanged when `full_state`
@@ -1098,7 +1098,7 @@ Two independent mechanisms close this, together:
 
 2. **A load profile for PostgreSQL-backed workers.**
    `database::TableLoadProfile` and `database::table_load_profile_includes`
-   (`include/merovingian/database/persistent_store.hpp`) decide which tables
+   (`include/merovingian/database/PersistentStore.hpp`) decide which tables
    `open_postgresql_persistent_store`'s row loader hydrates.
    `TableLoadProfile::federation_worker` is an **allowlist**
    (`database::federation_worker_table_allowlist`), not a denylist: a table
@@ -1107,7 +1107,7 @@ Two independent mechanisms close this, together:
    it to the allowlist deliberately. The full allowlist, derived by tracing
    every `FederationRuntimeState` callback the worker does NOT override to
    the `PersistentStore` field it reads (see the array's own doc comment in
-   `persistent_store.hpp` for the file:line citation behind each row):
+   `PersistentStore.hpp` for the file:line citation behind each row):
 
    | Table | Why the worker needs it |
    |---|---|
@@ -1254,7 +1254,7 @@ allow_shared_database_credentials=true` lets the worker share main's login
 when a separate role cannot be provisioned, restoring the pre-0.12.13-part-2
 behaviour. `config::validate()` rejects `database.backend=postgresql` with
 `security.federation.enabled=true` and an empty `database_uri_file` unless
-this is set (`src/config/config.cpp`), and `homeserver::WorkerPool::
+this is set (`src/config/Config.cpp`), and `homeserver::WorkerPool::
 WorkerPool` logs `CRITICAL` on every startup while it applies, so the
 downgrade cannot go unnoticed. Ignored entirely for
 `database.backend=sqlite`: a single shared file offers no PostgreSQL role

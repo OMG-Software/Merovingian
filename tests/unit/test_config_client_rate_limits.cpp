@@ -14,7 +14,7 @@
 // |  parser rejects zero-window/zero-cap policies.                         |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/http/rate_limit.hpp"
 

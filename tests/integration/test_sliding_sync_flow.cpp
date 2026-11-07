@@ -5,9 +5,9 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 
 #include <catch2/catch_test_macros.hpp>

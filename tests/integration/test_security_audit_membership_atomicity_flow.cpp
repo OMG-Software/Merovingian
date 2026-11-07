@@ -10,13 +10,29 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <libpq-fe.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -30,9 +46,6 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
-
-#include <libpq-fe.h>
-#include <sqlite3.h>
 
 namespace
 {

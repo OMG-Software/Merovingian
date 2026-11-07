@@ -20,7 +20,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/federation/key_query.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -165,6 +166,8 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
         auto& runtime = started.runtime;
         auto const token = merovingian::tests::register_and_login_alice(runtime);
 
+        // F-37: the size and shape checks must not reject the legitimate shapes the spec defines, so valid uploads come
+        // first.
         WHEN("she uploads unsigned curve25519 keys as plain strings, as an older client does")
         {
             auto const response = upload(runtime, token,
@@ -193,6 +196,8 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
             }
         }
 
+        // Each refusal case checks stored_keys is zero: an oversized or malformed key must be rejected before anything
+        // is persisted.
         WHEN("she uploads a one-time key whose string is a megabyte long")
         {
             auto const response = upload(runtime, token,
@@ -207,6 +212,7 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
             }
         }
 
+        // Wrong JSON types are a malformed request (M_BAD_JSON), not something to coerce or skip.
         WHEN("she uploads a fallback key that is a number, and a one-time key that is a list")
         {
             auto const fallback = upload(runtime, token, R"({"fallback_keys":{"curve25519:AAAAAA":7}})");
@@ -222,6 +228,7 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
             }
         }
 
+        // The padding is an extra member, so the length of the key string alone cannot be what the limit is applied to.
         WHEN("she uploads a key object whose members make it far larger than a key")
         {
             auto const response = upload(runtime, token,
@@ -252,6 +259,7 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
             }
         }
 
+        // Control case: an ordinary device-keys upload must still pass the new size limit.
         WHEN("she uploads ordinary device keys")
         {
             auto const response = upload(
@@ -283,6 +291,8 @@ SCENARIO("/keys/upload accepts the key shapes the spec defines and refuses the r
             }
         }
 
+        // Cross-signing upload needs the user-interactive password stage, which is supplied so the refusal is for size
+        // and not for missing auth.
         WHEN("she uploads a cross-signing key padded to many kilobytes")
         {
             auto const response =

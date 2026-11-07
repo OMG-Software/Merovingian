@@ -895,7 +895,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   less strict.
   Source: `src/http/AGENTS.md`.
 
-- **Route all outbound federation requests through `outbound_client.hpp` — no ad-hoc HTTP
+- **Route all outbound federation requests through `OutboundClient.hpp` — no ad-hoc HTTP
   calls from other modules.**
   Why: the outbound client implements the Matrix server-discovery protocol including the
   SSRF-relevant private/loopback-address blocking; an ad-hoc HTTP call from elsewhere in the
@@ -904,7 +904,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **One documented exception: Application Service transaction delivery is not
   SSRF-filtered.** `appservice::AppserviceClient` (`src/appservice/
-  appservice_client.cpp`) resolves an appservice's `url` directly and sets
+  AppserviceClient.cpp`) resolves an appservice's `url` directly and sets
   `OutboundRequest::allow_cleartext_http = true`, bypassing
   `CachedServerDiscovery`'s private/loopback rejection and permitting plain
   `http://`. Do not generalize this pattern to any other outbound client.
@@ -915,6 +915,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Application Service API transaction delivery" for the full justification
   and the condition under which this exemption must be revisited.
   Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
+
+- **Appservice cleartext http is limited to loopback IP literals and listed
+  hosts (ADR-0515).** The `hs_token` is sent in every request to a
+  registration `url`. `http://` is accepted only when the host is an IPv4
+  address in 127.0.0.0/8, `::1` (`net::is_loopback_ip_literal`, the same
+  definition SMTP uses), or an exact ASCII-case-insensitive entry of
+  `appservice.allow_cleartext_hosts`. `localhost` is a name, not a literal. A
+  `url` with userinfo or a query is refused. The check runs in
+  `load_registrations` and again in `AppserviceClient` before any lookup; never
+  remove the second as redundant, and never add an `http://` or `https://`
+  literal to the client. Why: a network observer could otherwise read the token
+  and impersonate the homeserver. Source: `src/appservice/AGENTS.md`.
 
 - **`security.federation.allow_private_ip_ranges` reaches federation callers
   only.** `discover_server`, well-known fetches, `CachedServerDiscovery::discover`,
@@ -975,7 +987,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **Never call `handle_local_http_request()` with a real, unwrapped client body.** The
   internal pipe-delimited format (`declared_mime|sniffed_mime|scanner_clean|bytes` for
-  media) must be built by `client_server.cpp` — never constructed anywhere else — and the
+  media) must be built by `ClientServerRuntime.cpp` — never constructed anywhere else — and the
   4th field's `|`-boundary logic depends on the first three fields never containing an
   unescaped `|`.
   Why: this internal format carries fields (`sniffed_mime`, `scanner_clean`) that downstream

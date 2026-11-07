@@ -6,16 +6,20 @@
 // RFC 1918 and ULA networks may be named; loopback, link-local, CGNAT,
 // multicast, reserved and public space can never be opened by it.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
+#include "merovingian/config/FederationSecurityConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
+#include "merovingian/config/special_use_ip_ranges.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -192,6 +196,64 @@ SCENARIO("Changing the private-range allowlist requires a restart", "[config][fe
                 REQUIRE(change->policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(merovingian::config::reload_policy_for_key(allowlist_key) ==
                         merovingian::config::ReloadPolicy::restart_required);
+            }
+        }
+    }
+}
+
+SCENARIO("A range counts as private or loopback by value, not by spelling", "[config][federation][special-use-ranges]")
+{
+    GIVEN("the six special-use blocks the default deny list names")
+    {
+        WHEN("each canonical spelling is checked")
+        {
+            THEN("every one is recognised")
+            {
+                for (auto const* range :
+                     {"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"})
+                {
+                    INFO(range);
+                    REQUIRE(merovingian::config::is_private_or_loopback_range(range));
+                }
+            }
+        }
+
+        WHEN("an equal block is written with a different spelling")
+        {
+            THEN("it is still recognised")
+            {
+                REQUIRE(merovingian::config::is_private_or_loopback_range("fc00:0::/7"));
+                REQUIRE(merovingian::config::is_private_or_loopback_range("FC00::/7"));
+                REQUIRE(merovingian::config::is_private_or_loopback_range("0:0:0:0:0:0:0:1/128"));
+            }
+        }
+
+        WHEN("a different block, a missing prefix or garbage is checked")
+        {
+            THEN("it is not recognised")
+            {
+                for (auto const* range :
+                     {"10.0.0.0/9", "10.0.0.0/7", "10.0.0.0", "::1", "127.0.0.1/32", "11.0.0.0/8", "fc00::/8",
+                      "fe80::/10", "0.0.0.0/0", "", "/8", "10.0.0.0/+8", "10.0.0.0/8x", "not-an-ip/8", "10.0.0.0/8/8"})
+                {
+                    INFO(range);
+                    REQUIRE_FALSE(merovingian::config::is_private_or_loopback_range(range));
+                }
+            }
+        }
+    }
+
+    GIVEN("the default federation deny list")
+    {
+        WHEN("it is built from the numeric table")
+        {
+            auto const ranges = merovingian::config::default_federation_deny_ip_ranges();
+
+            THEN("it holds the six blocks in the documented order and spelling")
+            {
+                REQUIRE(ranges == std::vector<std::string>{"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
+                                                           "192.168.0.0/16", "::1/128", "fc00::/7"});
+                REQUIRE(merovingian::config::FederationSecurityConfig{}.deny_ip_ranges == ranges);
             }
         }
     }

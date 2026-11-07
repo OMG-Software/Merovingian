@@ -37,14 +37,28 @@ requirements are met.
 - Make each header self-contained. Include the declarations its interface needs.
   Prefer forward declarations when a complete type is not required.
 - Use `#pragma once` in headers. Do not put `using namespace` directives in headers.
-- Define at most one class or struct per file. Give each class or struct its own
-  header and, when needed, a matching source file. Do not combine implementations
-  of multiple classes in one source file. Forward declarations do not count as
+- Define at most one class, struct, or enum per file. An `enum` and an
+  `enum class` count as types for this rule. Give each type its own header and,
+  when needed, a matching source file. Do not combine implementations of
+  multiple classes in one source file. Forward declarations do not count as
   definitions. See
-  [ADR-0466](adr/0466-define-one-class-or-struct-per-file.md).
-- The filename stem must exactly match the class or struct name, including case.
-  For example, `RoomState` belongs in `RoomState.hpp` and, when needed,
-  `RoomState.cpp`. Do not convert the name to `snake_case`. See
+  [ADR-0466](adr/0466-define-one-class-or-struct-per-file.md) and
+  [ADR-0514](adr/0514-enums-count-as-types-for-the-one-type-per-file-rule.md).
+- A type nested inside a class or struct is part of its enclosing type and stays
+  in the enclosing type's file. Do not extract it only to satisfy the
+  one-type-per-file rule.
+- A helper class or struct used by only one `.cpp` file stays in that file's
+  anonymous namespace; it does not count against the one-type-per-file rule.
+  When a second file needs the helper, move it to its own file, named after the
+  type, rather than copying it. Do not duplicate a helper type or function across
+  files. See
+  [ADR-0513](adr/0513-single-file-helper-types-stay-in-the-anonymous-namespace.md).
+- The filename stem must exactly match the class, struct, or enum name,
+  including case. For example, `RoomState` belongs in `RoomState.hpp` and, when
+  needed, `RoomState.cpp`; `enum class OutboundError` belongs in
+  `OutboundError.hpp`. Do not convert the name to `snake_case`. A header that
+  defines no type, only free functions and constants, keeps a `snake_case`
+  name. See
   [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md).
 - Put module headers in `include/merovingian/<module>/<name>.hpp` and their
   implementations in `src/<module>/<name>.cpp`. Keep the paths aligned when
@@ -140,6 +154,17 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   `homeserver::RuntimeLockRelease` scope from `homeserver/request_lock.hpp`.
   It releases every recursion level held by the caller and restores the lock
   when the scope ends. Do not access protected runtime state while it is released.
+- Lock `HomeserverRuntime::mutex` through `homeserver::RuntimeLock` (a
+  `std::unique_lock<RuntimeMutex const>`). The mutex is not `mutable` and its
+  lock functions are `const`. See
+  [ADR-0522](adr/0522-the-runtime-mutex-locks-through-const.md). It implements
+  its recursion over a plain `std::mutex`; do not swap in `std::recursive_mutex`.
+  See [ADR-0524](adr/0524-the-runtime-mutex-implements-its-recursion-over-std-mutex.md).
+- A `const` member function changes only members that are synchronised (a mutex
+  or an atomic) or that it guards with the object's own mutex. A type that is not
+  thread-safe fills its caches through non-`const` functions, never `mutable`
+  members. See
+  [ADR-0525](adr/0525-a-cache-that-is-not-thread-safe-is-not-hidden-behind-const.md).
 - Use RAII lock guards. A manual `.unlock()` or `->unlock()` in production code
   needs a same-line `// LOCK_RELEASE: reviewed — <reason>` comment. Prefer the
   existing release scope. See [ADR-0004](adr/0004-release-the-runtime-lock-through-the-mutex-not-a-guard.md).
@@ -154,6 +179,10 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   acquisition. Do not release a task's slot manually: an exception can skip the
   release and block later work. See
   [ADR-0267](adr/0267-bounded-parallel-work-holds-each-slot-in-an-raii-permit.md).
+- A copyable or movable type that guards members holds `core::CopyableMutex` (and
+  `core::CopyableConditionVariable`) by value. Never keep a mutex behind a
+  `std::unique_ptr` or `std::shared_ptr`. Take the lock with `acquire()`. See
+  [ADR-0517](adr/0517-guarded-value-types-hold-their-mutex-by-value.md).
 - Do not assume that releasing a mutex also frees the request thread. Follow
   the outbound concurrency caps and deadlines in
   [HTTP transport](http-transport.md) and the security rules.

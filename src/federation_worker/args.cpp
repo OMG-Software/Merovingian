@@ -12,6 +12,8 @@ namespace merovingian::federation_worker
 
 auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
 {
+    // The worker is started by main with a fixed argument set; anything else is refused with an error value rather than
+    // guessed at.
     auto parsed = ParsedWorkerArgs{};
     for (auto i = 1; i < argc; ++i)
     {
@@ -20,6 +22,7 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
         {
             parsed.config_path = argv[++i];
         }
+        // The descriptor options accept decimal digits only, so a sign, a space or a hex prefix is refused.
         else if (arg == "--ipc-fd" && i + 1 < argc)
         {
             auto const val = std::string_view{argv[++i]};
@@ -32,10 +35,12 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
                     parsed.error = "--ipc-fd requires a non-negative integer";
                     return parsed;
                 }
-                fd = fd * 10 + (ch - '0');
-                if (fd > 65535)
+                // Cap at a sane descriptor number; the flag defers the error so every character is still validated
+                // first. Accumulation stops once the cap is passed, so a long digit string cannot overflow `int`.
+                if (!overflow)
                 {
-                    overflow = true;
+                    fd = fd * 10 + (ch - '0');
+                    overflow = fd > 65535;
                 }
             }
             if (overflow)
@@ -57,10 +62,10 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
                     parsed.error = "--ipc-key-fd requires a non-negative integer";
                     return parsed;
                 }
-                fd = fd * 10 + (ch - '0');
-                if (fd > 65535)
+                if (!overflow)
                 {
-                    overflow = true;
+                    fd = fd * 10 + (ch - '0');
+                    overflow = fd > 65535;
                 }
             }
             if (overflow)
@@ -82,10 +87,10 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
                     parsed.error = "--db-uri-fd requires a non-negative integer";
                     return parsed;
                 }
-                fd = fd * 10 + (ch - '0');
-                if (fd > 65535)
+                if (!overflow)
                 {
-                    overflow = true;
+                    fd = fd * 10 + (ch - '0');
+                    overflow = fd > 65535;
                 }
             }
             if (overflow)
@@ -95,6 +100,8 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
             }
             parsed.db_uri_fd = fd;
         }
+        // The shard index is a plain unsigned decimal; range against the configured shard count is checked by the
+        // caller.
         else if (arg == "--shard" && i + 1 < argc)
         {
             auto const val = std::string_view{argv[++i]};
@@ -122,6 +129,7 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
             return parsed;
         }
     }
+    // Required options are checked after parsing, in a fixed order, so the first missing one is the one reported.
     if (!parsed.config_path.has_value())
     {
         parsed.error = "--config is required";
@@ -134,6 +142,8 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
     {
         parsed.error = "--ipc-key-fd is required";
     }
+    // The key descriptor must be a fresh pipe, not stdio and not the IPC socket, or key bytes could reach a log or the
+    // wrong peer.
     else if (*parsed.ipc_key_fd == 0 || *parsed.ipc_key_fd == 1 || *parsed.ipc_key_fd == 2)
     {
         parsed.error = "--ipc-key-fd must not be stdin/stdout/stderr";

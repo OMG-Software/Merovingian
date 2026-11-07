@@ -4,11 +4,35 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
+#include "merovingian/database/PersistentAppserviceTxnCursor.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentDeferredPdu.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentLoginToken.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOpenidToken.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/connection_pool.hpp"
-#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <fcntl.h>
+#include <sqlite3.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
 #include <cerrno>
@@ -26,11 +50,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <fcntl.h>
-#include <sqlite3.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace merovingian::database
 {
@@ -734,6 +753,8 @@ namespace
     auto load_persistent_rows(sqlite3& connection, PersistentStore& store,
                               std::vector<PersistentEvent>& hydrated_events) -> bool
     {
+        // Tables load in dependency order and the chain short-circuits: the first failed SELECT
+        // fails the whole load, so a partially read store is never served.
         return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
                          [&store](sqlite3_stmt& row) {
                              store.users.push_back(
@@ -745,6 +766,7 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
+               // Only stored token hashes are read back; raw tokens never reach SQLite.
                load_rows(connection,
                          "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_refresh_hash "
                          "FROM access_tokens",
@@ -792,6 +814,7 @@ namespace
                                   static_cast<std::uint32_t>(parse_u64(column_text(row, 7))),
                                   parse_u64(column_text(row, 8))});
                          }) &&
+               // Rooms and membership load before events so event rows can be attributed to a known room.
                load_rows(connection, "SELECT room_id, creator_user_id, directory_public FROM rooms",
                          [&store](sqlite3_stmt& row) {
                              store.rooms.push_back(
@@ -811,6 +834,8 @@ namespace
                                                       parse_invite_state_events_json(column_text(row, 5)),
                                                       parse_u64(column_text(row, 6)), column_text(row, 7)});
                          }) &&
+               // Events go to the caller's hydrated_events vector so the stream-order index is built in one pass
+               // (ADR-0215).
                load_rows(connection,
                          "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events",
                          [&hydrated_events](sqlite3_stmt& row) {
@@ -823,6 +848,8 @@ namespace
                              event.status = column_text(row, 6);
                              hydrated_events.push_back(std::move(event));
                          }) &&
+               // The event graph tables (prev edges, auth links, signatures) rebuild what auth checks
+               // and state resolution traverse; they are keyed by event id, not by load order.
                load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
                          [&store](sqlite3_stmt& row) {
                              store.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
@@ -836,6 +863,8 @@ namespace
                              store.event_signatures.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
+               // Current state and the recorded state transitions are restored as stored,
+               // not recomputed from the events at start-up.
                load_rows(connection, "SELECT room_id, event_type, state_key, event_id FROM current_state",
                          [&store](sqlite3_stmt& row) {
                              store.state.push_back(
@@ -848,6 +877,7 @@ namespace
                                                                 column_text(row, 2), column_text(row, 3),
                                                                 column_text(row, 4)});
                          }) &&
+               // End-to-end key material: device, one-time, fallback and cross-signing keys, then signatures.
                load_rows(connection, "SELECT user_id, device_id, json FROM device_keys",
                          [&store](sqlite3_stmt& row) {
                              store.device_keys.push_back(
@@ -874,6 +904,8 @@ namespace
                              store.key_signatures.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
+               // Key backup versions, their per-user counters and the backed-up sessions.
+               // The counter keeps version numbers monotonic after a version is deleted.
                load_rows(connection, "SELECT user_id, version, json FROM key_backup_versions",
                          [&store](sqlite3_stmt& row) {
                              store.key_backup_versions.push_back(
@@ -889,6 +921,7 @@ namespace
                                                                   column_text(row, 2), column_text(row, 3),
                                                                   column_text(row, 4)});
                          }) &&
+               // Media metadata, pending uploads, stored blobs and the remote media cache.
                load_rows(
                    connection,
                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
@@ -928,6 +961,7 @@ namespace
                          }) &&
                // AUTH-1: stream rows in insertion order into the bounded in-memory
                // window, so hydrating a long-lived audit_log keeps only the newest rows.
+               // Operator-facing records: the audit log, admin actions and trust-and-safety policy rules.
                load_rows(connection,
                          "SELECT category, event_type, actor, target, reason, created_at_ms FROM audit_log ORDER BY "
                          "rowid",
@@ -947,6 +981,8 @@ namespace
                                                            column_text(row, 2), column_text(row, 3),
                                                            column_text(row, 4)});
                          }) &&
+               // Global and per-room account data come back ordered by stream id so the in-memory order matches the
+               // stream.
                load_rows(connection, "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
                          [&store](sqlite3_stmt& row) {
                              auto entry = PersistentAccountData{};
@@ -968,6 +1004,7 @@ namespace
                              entry.content_json = column_text(row, 4);
                              store.account_data.push_back(std::move(entry));
                          }) &&
+               // Queued to-device messages and presence survive restarts until delivered or expired.
                load_rows(connection,
                          "SELECT stream_id, sender_user_id, target_user_id, target_device_id, message_type, "
                          "content, created_at_ms FROM to_device_messages ORDER BY stream_id",
@@ -1010,6 +1047,7 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
+               // Profiles, aliases and filters are plain per-user or per-room lookups with no cross references.
                load_rows(connection, "SELECT user_id, displayname, avatar_url, fields_json FROM profiles",
                          [&store](sqlite3_stmt& row) {
                              store.profiles.push_back(
@@ -1028,6 +1066,7 @@ namespace
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
                                   column_text(row, 4), column_text(row, 5), parse_u64(column_text(row, 6))});
                          }) &&
+               // Push configuration: pushers, then the stored notification rows.
                load_rows(connection,
                          "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
                          "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers ORDER BY "
@@ -1049,6 +1088,8 @@ namespace
                              entry.device_id = column_text(row, 11);
                              store.pushers.push_back(std::move(entry));
                          }) &&
+               // The stream watermarks restore the counters so a new sync token
+               // never reuses a position handed out before the restart.
                load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
                          [&store](sqlite3_stmt& row) {
                              store.next_sync_stream_id = parse_u64(column_text(row, 0));
@@ -1113,6 +1154,7 @@ namespace
                              entry.used = text_is_true(column_text(row, 3));
                              store.login_tokens.push_back(std::move(entry));
                          }) &&
+               // Application service delivery state: transaction cursors, the outbox and the directory mapping.
                load_rows(connection,
                          "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
                          "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id",
@@ -1164,6 +1206,8 @@ namespace
                              entry.room_id = column_text(row, 2);
                              store.appservice_directory.push_back(std::move(entry));
                          }) &&
+               // State groups, their member rows and the per-event assignments restore
+               // the compressed state-group store and the forward extremities.
                load_rows(connection,
                          "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
                          [&store](sqlite3_stmt& row) {
@@ -1571,6 +1615,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     log_diagnostic("store.opening", {
                                         {"path", path, false}
     });
+    // The federation worker opens the database read-only: it never initializes or migrates the schema.
     auto const read_only = profile == TableLoadProfile::federation_worker;
     auto connection = open_sqlite_connection(path, read_only);
     if (!connection.has_value())
@@ -1582,6 +1627,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         });
         return {false, "unable to open SQLite persistent store", {}};
     }
+    // Foreign keys are a per-connection setting in SQLite, so they are switched on for every open.
     auto& sqlite = **connection;
     if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
     {
@@ -1602,6 +1648,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         return {false, "unable to initialize SQLite schema", {}};
     }
 
+    // The in-memory store is built up from the tables; nothing is served until validation passes.
     auto store = PersistentStore{};
     store.open = true;
     store.backend = PersistentStoreBackend::sqlite;
@@ -1665,6 +1712,8 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         });
         return {false, "unable to hydrate SQLite rows", {}};
     }
+    // Everything below rebuilds the derived in-memory indexes from the raw rows, because
+    // only the base tables are persisted.
     std::ignore = store.events.insert_all(std::move(hydrated_events));
     sort_appservice_outbox(store);
     sort_to_device_messages(store);
@@ -1681,6 +1730,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 
+    // Cross-table consistency check on the hydrated store; an incompatible store is refused, not repaired.
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
     {

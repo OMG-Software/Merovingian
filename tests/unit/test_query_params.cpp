@@ -8,6 +8,8 @@
 
 SCENARIO("Query parameter parser extracts key-value pairs from URL query strings", "[core][http][query]")
 {
+    // The parser reads only the sync parameters (since, timeout, full_state, filter); a parameter that is not given
+    // stays empty.
     GIVEN("a URL with query parameters")
     {
         WHEN("the query string contains since and timeout")
@@ -27,6 +29,7 @@ SCENARIO("Query parameter parser extracts key-value pairs from URL query strings
         }
     }
 
+    // No query string at all is normal input, not an error.
     GIVEN("a URL with only a path and no query string")
     {
         WHEN("parsed")
@@ -57,6 +60,7 @@ SCENARIO("Query parameter parser extracts key-value pairs from URL query strings
         }
     }
 
+    // The filter is percent-decoded, because clients send inline JSON filters URL-encoded.
     GIVEN("a URL with filter parameter")
     {
         WHEN("parsed")
@@ -72,6 +76,7 @@ SCENARIO("Query parameter parser extracts key-value pairs from URL query strings
         }
     }
 
+    // All four together, with full_state=false parsed as a present false rather than as absent.
     GIVEN("a URL with all sync parameters")
     {
         WHEN("parsed")
@@ -93,6 +98,7 @@ SCENARIO("Query parameter parser extracts key-value pairs from URL query strings
         }
     }
 
+    // Untrusted input: a non-numeric timeout is dropped, never turned into zero or a huge wait.
     GIVEN("a URL with an invalid timeout value")
     {
         WHEN("parsed")
@@ -106,6 +112,7 @@ SCENARIO("Query parameter parser extracts key-value pairs from URL query strings
         }
     }
 
+    // Repeated keys resolve deterministically (last wins), so a request cannot be read two ways.
     GIVEN("a URL with repeated parameters")
     {
         WHEN("parsed")

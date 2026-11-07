@@ -24,21 +24,27 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/PersistentFallbackKey.hpp"
+#include "merovingian/database/PersistentOneTimeKey.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
 #include <iostream>
 #include <string>
 #include <string_view>
-
-#include <sodium.h>
 
 #if defined(__NetBSD__)
 [[maybe_unused]] inline auto merovingian_netbsd_diag(std::string_view const msg) -> void

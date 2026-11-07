@@ -318,8 +318,8 @@ namespace
     // room sorts identically regardless of read state. The same count as the
     // room's notification_count.
     [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
-                                        std::string_view room_id, std::string_view user,
-                                        UnreadEventClassifier const& unread) -> std::uint64_t
+                                        std::string_view room_id, std::string_view user, UnreadEventClassifier& unread)
+        -> std::uint64_t
     {
         return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user), unread);
     }
@@ -439,14 +439,14 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store)
     -> RoomListResult
 {
-    auto const unread = homeserver::PushRuleUnreadClassifier{
+    auto unread = homeserver::PushRuleUnreadClassifier{
         store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user)};
     return compute_room_list(rt, user, list, prev_window, store, unread);
 }
 
 auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user, SlidingSyncList const& list,
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store,
-                       UnreadEventClassifier const& unread) -> RoomListResult
+                       UnreadEventClassifier& unread) -> RoomListResult
 {
 
     // Step 1 — enumerate rooms where the user is joined.

@@ -172,9 +172,12 @@ auto match_key_api_route(std::string_view method, std::string_view target) -> Ke
 auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_id, std::string_view device_id)
     -> std::vector<database::PreparedStatement>
 {
+    // Each endpoint maps to the fixed set of prepared statements it needs; no SQL is built from request data.
     switch (endpoint)
     {
     case KeyApiEndpoint::upload_keys:
+        // Secret payloads (key material) are passed as sensitive placeholders so the statement plan can be logged or
+        // audited without leaking them.
         return {
             {"key_api_store_one_time_keys",
              "INSERT INTO one_time_keys VALUES ($1, $2, $3, $4)", {public_value(user_id), public_value(device_id), public_value("key_id"),
@@ -202,12 +205,14 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
             {"key_api_store_cross_signing_keys",
              "INSERT INTO cross_signing_keys VALUES ($1, $2, $3)", {public_value(user_id), public_value("master"), sensitive_placeholder("cross-signing-key-payload")}}
         };
+    // Signature uploads record who signed which device; the signature body itself is sensitive.
     case KeyApiEndpoint::upload_signatures:
         return {
             {"key_api_store_key_signatures",
              "INSERT INTO key_signatures VALUES ($1, $2, $3, $4)", {public_value(user_id), public_value(user_id), public_value(device_id),
               sensitive_placeholder("signature-payload")}}
         };
+    // Backup-version endpoints read or write only the per-user version metadata row.
     case KeyApiEndpoint::get_key_backup_version:
         return {
             {"key_api_get_backup_version",
@@ -228,6 +233,8 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
             {"key_api_delete_backup_version",
              "DELETE FROM key_backup_versions WHERE user_id = $1", {public_value(user_id)}}
         };
+    // The three put_room_key_backup variants share one INSERT shape; they differ only in how much of the request they
+    // cover.
     case KeyApiEndpoint::put_room_key_backup:
         return {
             {"key_api_put_room_key_backup",
@@ -256,6 +263,7 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
             {"key_api_delete_room_key_backup",
              "DELETE FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
         };
+    // Deletes are scoped by user_id (and version/room_id where narrower) so one user cannot touch another user backup.
     case KeyApiEndpoint::delete_room_key_backup_room:
         return {
             {"key_api_delete_room_key_backup_room",
@@ -278,6 +286,8 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
         };
     }
 
+    // Unreachable for a valid enum value; the empty plan is a safe default if a new endpoint is added without
+    // statements.
     return {};
 }
 

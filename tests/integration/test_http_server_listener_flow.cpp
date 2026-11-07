@@ -4,11 +4,20 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
@@ -1759,7 +1768,6 @@ SCENARIO("merovingian-server drops a client that stalls part-way through a reque
                 REQUIRE(elapsed_ms < 12000);
                 // Whether the server answers first or just hangs up, it must not
                 // still be holding the request open.
-                std::ignore = response;
                 REQUIRE_FALSE(follow_response.empty());
                 REQUIRE(follow_response.starts_with("HTTP/1.1 "));
             }

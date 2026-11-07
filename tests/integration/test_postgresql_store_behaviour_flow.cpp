@@ -7,6 +7,8 @@
 // MEROVINGIAN_TEST_POSTGRESQL_URI is not set; a skip is not a pass.
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/PersistentStore.hpp>
+#include <merovingian/database/postgresql_store.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -17,9 +19,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/postgresql_store.hpp>
 
 namespace
 {

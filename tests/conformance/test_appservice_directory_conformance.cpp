@@ -13,7 +13,8 @@
 #include "../support/appservice_test_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/mock_appservice.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -132,6 +133,8 @@ constexpr auto irc_protocol_json = std::string_view{R"({
 SCENARIO("an appservice publishes a room to its network's directory and publicRooms lists it for that network",
          "[appservice][conformance][directory]")
 {
+    // Three rooms separate the cases: one published to the irc network, one that stays unpublished,
+    // and one in the homeserver's own public directory.
     GIVEN("an appservice declaring the irc protocol that is interested in every room, and a room")
     {
         auto bridge = TestAppservice{.id = "bridge", .rooms_regex = ".*", .protocols = {"irc"}};
@@ -149,8 +152,10 @@ SCENARIO("an appservice publishes a room to its network's directory and publicRo
         REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/directory/list/room/" + published_room, alice,
                      R"({"visibility":"public"})")
                     .response.status == 200U);
+        // The instance_id is what clients put in third_party_instance_id to name the bridge's network.
         auto const instance_id = irc_instance_id(runtime, alice);
 
+        // Only the appservice that declared the protocol may publish into that network's directory.
         WHEN("the appservice lists the room in its irc network directory")
         {
             auto const result = call(runtime, "PUT", directory_target("irc", network_room), bridge.as_token(),
@@ -169,6 +174,8 @@ SCENARIO("an appservice publishes a room to its network's directory and publicRo
                 CHECK(listed == std::vector<std::string>{network_room});
             }
 
+            // Without a network named, publicRooms must show only the homeserver's own directory,
+            // through both POST and GET.
             THEN("the homeserver's own directory (no network named) does not list it")
             {
                 auto const listed =
@@ -195,6 +202,7 @@ SCENARIO("an appservice publishes a room to its network's directory and publicRo
                 CHECK(listed.empty());
             }
 
+            // Spec: include_all_networks and third_party_instance_id are mutually exclusive.
             THEN("naming a network and asking for all networks is refused, as the spec forbids the combination")
             {
                 auto const result_both =
@@ -228,6 +236,7 @@ SCENARIO("an appservice publishes a room to its network's directory and publicRo
             }
         }
 
+        // Directory publication is a set operation, so repeating it changes nothing.
         WHEN("the same room is listed twice")
         {
             auto const first = call(runtime, "PUT", directory_target("irc", network_room), bridge.as_token(),

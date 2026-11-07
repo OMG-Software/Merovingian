@@ -9,10 +9,11 @@
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
@@ -135,7 +136,7 @@ auto timestamp_is_closer(std::int64_t candidate, std::optional<std::int64_t> cur
     return candidate <= ts && (!current.has_value() || candidate > *current);
 }
 
-auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& guard,
+auto acquire_closer_timestamp_event(HomeserverRuntime& runtime, RuntimeLock& guard,
                                     std::string_view room_id, std::vector<std::string> const& servers, std::int64_t ts,
                                     database::TimeDirection direction, std::optional<std::int64_t> local_ts,
                                     OutboundDeadline const& deadline,

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/read_markers.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
@@ -210,22 +212,22 @@ namespace
 class RecordingClassifier final : public merovingian::sync::UnreadEventClassifier
 {
 public:
-    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) const -> std::optional<std::uint64_t> override
+    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) -> std::optional<std::uint64_t> override
     {
         return std::uint64_t{0U};
     }
-    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& event) const -> bool override
+    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& event) -> bool override
     {
         asked.insert(event.event_id);
         return true;
     }
-    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& /*event*/) const
+    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& /*event*/)
         -> merovingian::sync::UnreadEventOutcome override
     {
         return {true, false};
     }
 
-    mutable std::unordered_set<std::string> asked{};
+    std::unordered_set<std::string> asked{};
 };
 
 auto add_room_event(merovingian::database::PersistentStore& store, std::string const& event_id,
@@ -271,7 +273,7 @@ SCENARIO("Unread counts and read markers read only the room they are asked about
         WHEN("alice's markers and unread counts in the room are built")
         {
             auto const markers = merovingian::sync::read_markers_for(receipts, store, room, "@alice:example.org");
-            auto const classifier = RecordingClassifier{};
+            auto classifier = RecordingClassifier{};
             auto const counts =
                 merovingian::sync::count_unread_by_thread(store, room, "@alice:example.org", markers, classifier);
 

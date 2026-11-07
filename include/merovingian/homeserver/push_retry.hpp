@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/PushConfig.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/stop_flag.hpp"
 #include "merovingian/push/push_gateway_client.hpp"

@@ -101,7 +101,7 @@ struct PushRuleset final
 };
 
 // Parses a stored ruleset (the shape produced by
-// `client_server.cpp`'s `default_push_ruleset()` and returned by
+// `ClientServerRuntime.cpp`'s `default_push_ruleset()` and returned by
 // `GET /_matrix/client/v3/pushrules/global/`: an object with `content`,
 // `override`, `room`, `sender`, and `underride` array members) into the typed
 // form above. Malformed rules (missing `rule_id`, wrong-typed fields) are

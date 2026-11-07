@@ -5,7 +5,8 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/events/authorization.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

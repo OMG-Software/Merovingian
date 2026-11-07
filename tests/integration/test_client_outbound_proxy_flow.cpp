@@ -24,19 +24,32 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/core/socket_handle.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <poll.h>
+#include <sodium.h>
+#include <sys/socket.h>
 
 #include <atomic>
 #include <chrono>
@@ -51,10 +64,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <poll.h>
-#include <sodium.h>
-#include <sys/socket.h>
 
 using namespace merovingian::tests;
 using namespace std::chrono_literals;
@@ -298,6 +307,8 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
         runtime.homeserver.discovery_network = std::make_unique<CountingDiscoveryNetwork>(discovery_calls);
         auto const peer = SilentPeer{};
         point_at(runtime, peer);
+        // Both the discovery counter and the peer's connection count must stay at zero: a refusal that still resolved
+        // or connected would leak the lookup.
         auto const token = register_and_login(runtime);
         auto const media = std::string{silent_server} + "/abc";
         auto const thumbnail_query = std::string{"?width=32&height=32&method=crop"};
@@ -315,6 +326,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Thumbnails have their own routes in each API generation, so each is checked separately.
         WHEN("an unauthenticated client asks for a remote thumbnail on the legacy thumbnail route")
         {
             auto const answer =
@@ -357,6 +369,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Refusals are metered but not audited, so an unauthenticated client cannot grow the durable audit log.
         WHEN("an unauthenticated client repeats the refused request")
         {
             auto const audit_rows_before = runtime.homeserver.database.audit_events.size();
@@ -372,6 +385,7 @@ SCENARIO("With remote_fetch_enabled=false no remote media request leaves the ser
             }
         }
 
+        // Local media is unaffected by the switch: it is answered from the local repository without any outbound call.
         WHEN("the request names this server's own media")
         {
             auto const answer =

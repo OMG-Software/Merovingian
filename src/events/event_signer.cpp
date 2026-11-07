@@ -4,8 +4,10 @@
 #include "merovingian/events/event_signer.hpp"
 
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
+
+#include <sodium.h>
 
 #include <array>
 #include <string>
@@ -13,8 +15,6 @@
 #include <tuple>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::events
 {

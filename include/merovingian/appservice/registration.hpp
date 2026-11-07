@@ -278,13 +278,19 @@ struct AppserviceRegistrationFinding final
 // is found, every registration is dropped and the problem is recorded,
 // since the spec-mandated uniqueness makes a duplicate a fail-closed
 // condition (routing further requests would be ambiguous).
+//
+// ADR-0515: a registration whose non-null `url` is not a valid http(s) url, has a query string, or is
+// `http` to a host that is neither a loopback IP literal nor in `allowed_cleartext_hosts`
+// (`appservice.allow_cleartext_hosts`) is rejected as a per-file finding, because the hs_token is sent
+// to that url in every request. The finding names the problem and never contains a token or the url.
 struct LoadRegistrationsResult final
 {
     AppserviceRegistry registry{};
     std::vector<AppserviceRegistrationFinding> findings{};
 };
 
-[[nodiscard]] auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name = {})
+[[nodiscard]] auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name = {},
+                                      std::vector<std::string> const& allowed_cleartext_hosts = {})
     -> LoadRegistrationsResult;
 
 } // namespace merovingian::appservice

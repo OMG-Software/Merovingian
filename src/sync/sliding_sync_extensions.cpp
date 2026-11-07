@@ -6,7 +6,9 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/receipt_content_builder.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
@@ -142,7 +144,7 @@ namespace
 
     // ── e2ee extension ────────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_e2ee(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+    [[nodiscard]] auto build_e2ee(homeserver::HomeserverRuntime const&, database::PersistentStore const& store,
                                   std::string_view user, std::string_view device_id, std::uint64_t since_sync_stream_id)
         -> ExtE2eeResponse
     {
@@ -186,7 +188,6 @@ namespace
             }
         }
 
-        std::ignore = rt;
         return resp;
     }
 

@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/push_retry.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
@@ -68,7 +68,7 @@ namespace
     // removed or re-pointed since the first attempt must not be sent to.
     [[nodiscard]] auto pusher_still_registered(HomeserverRuntime& runtime, push::PushRetry const& delivery) -> bool
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         // A deactivated account keeps no pusher, and a retry queued before it was deactivated must
         // not outlive it (F-80), as email_push.cpp's prepare_email does not mail one.
         if (!asserted_user_is_active(runtime, delivery.user_id))
@@ -169,7 +169,7 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
     if (push::pushkey_was_rejected(result, delivery.pushkey))
     {
         {
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             std::ignore = database::delete_pusher(runtime.database.persistent_store, delivery.user_id, delivery.app_id,
                                                   delivery.pushkey);
         }

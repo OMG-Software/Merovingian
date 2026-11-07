@@ -63,7 +63,7 @@ Use this checklist for every release candidate.
 - Registration `id` and `as_token` uniqueness and exclusive-namespace conflicts
   are enforced at boot (`validate_registrations()`); a conflicting set fails
   the whole set closed rather than resolving by load order.
-- Outbound transaction delivery (`appservice_client.cpp`) is a deliberate,
+- Outbound transaction delivery (`AppserviceClient.cpp`) is a deliberate,
   narrow exception to the outbound SSRF policy: it resolves the appservice
   `url` directly and allows plain `http://`, because that URL comes from an
   operator-placed registration file, not network-reachable input — see

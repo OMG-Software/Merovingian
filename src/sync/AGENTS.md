@@ -117,7 +117,7 @@ extension that takes a client-named room list must gate on room access too.
 When a request names many rooms, classify them through `room_access_index()`, built once per
 request, not `room_access_for()` per room: each `room_access_for()` call scans every membership
 row in the store, and this runs under the runtime lock. `build_extensions` builds one index for
-receipts and typing; the sliding-sync handler in `client_server.cpp` builds one for
+receipts and typing; the sliding-sync handler in `ClientServerRuntime.cpp` builds one for
 `room_subscriptions` and passes it to `build_extensions`, so a request scans the memberships once. The
 receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
 `room_subscriptions` (ADR-0174). A new client-named room list gets the same cap.
@@ -154,7 +154,7 @@ whose receipts extension carries one event per room.
 ## Left rooms in `/sync`
 
 `rooms.leave` lists rooms the user left or was banned from (`membership` `leave` or `ban`).
-`build_left_room` (`client_server.cpp`) builds each: the room's events after `since` up to the
+`build_left_room` (`ClientServerRuntime.cpp`) builds each: the room's events after `since` up to the
 event that ended the stay, selected by the request's timeline filter (`types`, `senders`,
 `contains_url`; `limit` 0 means none, `EventTypeFilter::limit_given`) and by
 `HistoryVisibility`, the newest `limit`, with `limited` and `prev_batch`. The user's own leave or
@@ -345,7 +345,7 @@ delta still apply) and only
 these `m.room.member` events, each passed through the state filter first: the senders of delivered timeline events, as of
 the timeline's start; on a limited incremental sync every member change in the gap (never redundant); the user's own on an
 initial sync, `full_state=true` or a join in the window, unless the join is in the timeline. All of it is decided by
-`LazyRoomSelector` (`client_server.cpp`) inside the state builders; a sync that builds no state calls
+`LazyRoomSelector` (`ClientServerRuntime.cpp`) inside the state builders; a sync that builds no state calls
 `build_lazy_sender_members`. Look a member up by key (`member_event_at_timeline_start`), never by scanning the room's state.
 
 `LazyMemberTracker` skips a member only when the client has acknowledged that exact event: an entry is recorded

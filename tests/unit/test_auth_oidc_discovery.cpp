@@ -8,7 +8,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/auth/oidc_discovery.hpp"
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/OidcConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

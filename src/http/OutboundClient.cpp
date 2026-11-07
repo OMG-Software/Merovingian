@@ -1,0 +1,1033 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/http/OutboundClient.hpp"
+
+#include "merovingian/core/not_null.hpp"
+#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/http/OutboundError.hpp"
+#include "merovingian/http/OutboundHeader.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResponse.hpp"
+#include "merovingian/http/OutboundResult.hpp"
+#include "merovingian/http/ParsedOutboundUrl.hpp"
+#include "merovingian/http/SystemCaTrust.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/observability/logger.hpp"
+
+#include <arpa/inet.h>
+#include <curl/curl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace merovingian::http
+{
+
+namespace
+{
+
+    using namespace std::string_view_literals;
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("outbound_client", event, fields, severity);
+    }
+
+    // libcurl global init/cleanup guard. Constructed once on first use via a
+    // function-local static (thread-safe per C++11+ magic statics) and torn
+    // down at program exit. curl_global_init is documented as not thread-safe
+    // so this guard must complete before any concurrent curl_easy_init call.
+    class CurlGlobalGuard final
+    {
+    public:
+        CurlGlobalGuard() noexcept
+        {
+            auto const code = curl_global_init(CURL_GLOBAL_DEFAULT);
+            initialized_ = (code == CURLE_OK);
+        }
+        ~CurlGlobalGuard()
+        {
+            if (initialized_)
+            {
+                curl_global_cleanup();
+            }
+        }
+        CurlGlobalGuard(CurlGlobalGuard const&) = delete;
+        auto operator=(CurlGlobalGuard const&) -> CurlGlobalGuard& = delete;
+        CurlGlobalGuard(CurlGlobalGuard&&) noexcept = delete;
+        auto operator=(CurlGlobalGuard&&) noexcept -> CurlGlobalGuard& = delete;
+
+        [[nodiscard]] auto initialized() const noexcept -> bool
+        {
+            return initialized_;
+        }
+
+    private:
+        bool initialized_{false};
+    };
+
+    [[nodiscard]] auto ensure_curl_initialized() noexcept -> bool
+    {
+        static auto const guard = CurlGlobalGuard{};
+        return guard.initialized();
+    }
+
+    // Owns one libcurl easy handle for the lifetime of a single thread. A curl
+    // easy handle must never be driven by more than one thread at a time, so
+    // each thread gets its own. The handle is freed when the thread exits.
+    class ThreadCurlHandle final
+    {
+    public:
+        ThreadCurlHandle() noexcept
+        {
+            if (ensure_curl_initialized())
+            {
+                handle_ = curl_easy_init();
+            }
+        }
+        ~ThreadCurlHandle()
+        {
+            if (handle_ != nullptr)
+            {
+                curl_easy_cleanup(handle_);
+            }
+        }
+        ThreadCurlHandle(ThreadCurlHandle const&) = delete;
+        auto operator=(ThreadCurlHandle const&) -> ThreadCurlHandle& = delete;
+        ThreadCurlHandle(ThreadCurlHandle&&) noexcept = delete;
+        auto operator=(ThreadCurlHandle&&) noexcept -> ThreadCurlHandle& = delete;
+
+        [[nodiscard]] auto get() const noexcept -> CURL*
+        {
+            return handle_;
+        }
+
+    private:
+        CURL* handle_{nullptr};
+    };
+
+    // Returns the calling thread's dedicated easy handle, creating it on first
+    // use. Because every perform() resets the handle before configuring it, the
+    // handle can be reused across calls — and across OutboundClient instances on
+    // the same thread — without leaking state between requests, while still
+    // benefiting from libcurl's per-handle TLS-session cache. Socket reuse is
+    // disabled so every request checks its actual peer against its own pins.
+    [[nodiscard]] auto thread_curl_handle() noexcept -> CURL*
+    {
+        thread_local ThreadCurlHandle handle{};
+        return handle.get();
+    }
+
+    [[nodiscard]] auto is_known_method(std::string_view method) noexcept -> bool
+    {
+        constexpr auto known = std::array{"GET"sv, "POST"sv, "PUT"sv, "DELETE"sv};
+        return std::any_of(known.begin(), known.end(), [method](auto candidate) noexcept {
+            return candidate == method;
+        });
+    }
+
+    // Length of the scheme plus its "://" separator that this request is
+    // permitted to use: always "https", and — only when the request has
+    // explicitly opted in via OutboundRequest::allow_cleartext_http — also
+    // "http". The scheme token is compared case-sensitively and at least one
+    // character must follow the separator. Returns 0 for anything else, which
+    // every caller below treats as "reject".
+    [[nodiscard]] auto permitted_scheme_length(std::string_view url, bool allow_cleartext_http) noexcept -> std::size_t
+    {
+        constexpr auto separator = "://"sv;
+        auto const separator_at = url.find(separator);
+        if (separator_at == std::string_view::npos)
+        {
+            return 0U;
+        }
+        auto const prefix_length = separator_at + separator.size();
+        if (url.size() <= prefix_length)
+        {
+            return 0U;
+        }
+        auto const scheme = url.substr(0U, separator_at);
+        if (scheme == "https"sv || (allow_cleartext_http && scheme == "http"sv))
+        {
+            return prefix_length;
+        }
+        return 0U;
+    }
+
+    struct CurlUrlDeleter final
+    {
+        auto operator()(CURLU* value) const noexcept -> void
+        {
+            curl_url_cleanup(value);
+        }
+    };
+
+    struct CurlTextDeleter final
+    {
+        auto operator()(char* value) const noexcept -> void
+        {
+            curl_free(value);
+        }
+    };
+
+    class CurlRequestReset final
+    {
+    public:
+        explicit CurlRequestReset(core::not_null<CURL*> handle) noexcept
+            : handle_{handle}
+        {
+        }
+        ~CurlRequestReset()
+        {
+            curl_easy_reset(handle_.get());
+        }
+        CurlRequestReset(CurlRequestReset const&) = delete;
+        auto operator=(CurlRequestReset const&) -> CurlRequestReset& = delete;
+
+    private:
+        core::not_null<CURL*> handle_; // Borrowed C API handle, owned by ThreadCurlHandle.
+    };
+
+    struct ParsedCurlUrl final
+    {
+        std::unique_ptr<CURLU, CurlUrlDeleter> handle{};
+        ParsedOutboundUrl fields{};
+    };
+
+    [[nodiscard]] auto url_part(CURLU* handle, CURLUPart part, unsigned flags = 0U) -> std::optional<std::string>
+    {
+        auto* buffer = static_cast<char*>(nullptr); // Borrowed C API output, immediately adopted by RAII.
+        auto const result = curl_url_get(handle, part, &buffer, flags);
+        auto text = std::unique_ptr<char, CurlTextDeleter>{buffer};
+        return result == CURLUE_OK ? std::optional<std::string>{std::string{text.get()}} : std::nullopt;
+    }
+
+    [[nodiscard]] auto parse_curl_url(std::string_view url, bool allow_cleartext_http) -> std::optional<ParsedCurlUrl>
+    {
+        auto const scheme_length = permitted_scheme_length(url, allow_cleartext_http);
+        if (!ensure_curl_initialized() || scheme_length == 0U || std::ranges::any_of(url, [](unsigned char value) {
+                return value <= 0x20U || value == 0x7fU || value == '\\' || value == '#';
+            }))
+        {
+            return std::nullopt;
+        }
+        auto const authority_end = url.find_first_of("/?", scheme_length);
+        auto const authority = url.substr(scheme_length, authority_end - scheme_length);
+        if (authority.empty() || authority.find_first_of("@%") != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto parsed = ParsedCurlUrl{};
+        parsed.handle.reset(curl_url());
+        auto const input = std::string{url};
+        if (!parsed.handle ||
+            curl_url_set(parsed.handle.get(), CURLUPART_URL, input.c_str(), CURLU_PATH_AS_IS) != CURLUE_OK)
+        {
+            return std::nullopt;
+        }
+        auto host = url_part(parsed.handle.get(), CURLUPART_HOST);
+        auto scheme = url_part(parsed.handle.get(), CURLUPART_SCHEME);
+        auto port = url_part(parsed.handle.get(), CURLUPART_PORT, CURLU_DEFAULT_PORT);
+        auto canonical = url_part(parsed.handle.get(), CURLUPART_URL);
+        if (!host || host->empty() || !scheme || !port || !canonical || url_part(parsed.handle.get(), CURLUPART_USER) ||
+            url_part(parsed.handle.get(), CURLUPART_PASSWORD) || url_part(parsed.handle.get(), CURLUPART_OPTIONS) ||
+            url_part(parsed.handle.get(), CURLUPART_ZONEID))
+        {
+            return std::nullopt;
+        }
+        auto port_value = std::uint16_t{0U};
+        auto const conv = std::from_chars(port->data(), port->data() + port->size(), port_value);
+        if (conv.ec != std::errc{} || conv.ptr != port->data() + port->size() || port_value == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const ipv6 = host->front() == '[';
+        if (ipv6)
+        {
+            if (host->back() != ']')
+            {
+                return std::nullopt;
+            }
+            host = host->substr(1U, host->size() - 2U);
+            auto address = in6_addr{};
+            if (::inet_pton(AF_INET6, host->c_str(), &address) != 1)
+            {
+                return std::nullopt;
+            }
+        }
+        parsed.fields = {std::move(*scheme),
+                         std::move(*host),
+                         port_value,
+                         url_part(parsed.handle.get(), CURLUPART_PATH).value_or("/"),
+                         url_part(parsed.handle.get(), CURLUPART_QUERY).value_or(""),
+                         std::move(*canonical),
+                         ipv6};
+        return parsed;
+    }
+
+    // F-76 (ADR-0418). What a diagnostic line says of the URL a request went to: the scheme, host, port and
+    // path, never the query. A query can carry a credential the caller put there (an identity server's
+    // `client_secret` and `sid`) or text a user chose (a preview URL, a pusher's gateway URL), and the
+    // logger judges a value by its field name, not its content, so no marker list can be trusted to find
+    // them. Userinfo cannot be present: parse_curl_url refuses it.
+    [[nodiscard]] auto loggable_url(ParsedOutboundUrl const& fields) -> std::string
+    {
+        return fields.scheme + "://" + (fields.ipv6_literal ? "[" + fields.host + "]" : fields.host) + ":" +
+               std::to_string(fields.port) + fields.path;
+    }
+
+    struct ApprovedPeer final
+    {
+        int family{AF_UNSPEC};
+        in_addr ipv4{};
+        in6_addr ipv6{};
+    };
+
+    struct PeerPins final
+    {
+        std::uint16_t port{0U};
+        std::vector<ApprovedPeer> addresses{};
+    };
+
+    [[nodiscard]] auto approved_peer(std::string const& address) -> std::optional<ApprovedPeer>
+    {
+        if (address.find('\0') != std::string::npos)
+        {
+            return std::nullopt;
+        }
+        auto peer = ApprovedPeer{};
+        if (::inet_pton(AF_INET, address.c_str(), &peer.ipv4) == 1)
+        {
+            peer.family = AF_INET;
+        }
+        else if (::inet_pton(AF_INET6, address.c_str(), &peer.ipv6) == 1)
+        {
+            peer.family = AF_INET6;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        return peer;
+    }
+
+    // Borrowed libcurl callback arguments. The callback transfers one RAII-owned
+    // descriptor to libcurl only after checking the actual numeric destination.
+    extern "C" auto mero_curl_open_pinned_socket(void* data, curlsocktype purpose,
+                                                 curl_sockaddr* target) noexcept -> curl_socket_t
+    {
+        if (data == nullptr || target == nullptr || purpose != CURLSOCKTYPE_IPCXN)
+        {
+            return CURL_SOCKET_BAD;
+        }
+        auto const& pins = *static_cast<PeerPins const*>(data);
+        auto const allowed = std::ranges::any_of(pins.addresses, [&](ApprovedPeer const& peer) {
+            if (target->family == AF_INET && peer.family == AF_INET && target->addrlen >= sizeof(sockaddr_in))
+            {
+                auto const& address = *reinterpret_cast<sockaddr_in const*>(&target->addr);
+                return ntohs(address.sin_port) == pins.port && address.sin_addr.s_addr == peer.ipv4.s_addr;
+            }
+            if (target->family == AF_INET6 && peer.family == AF_INET6 && target->addrlen >= sizeof(sockaddr_in6))
+            {
+                auto const& address = *reinterpret_cast<sockaddr_in6 const*>(&target->addr);
+                return ntohs(address.sin6_port) == pins.port &&
+                       std::ranges::equal(address.sin6_addr.s6_addr, peer.ipv6.s6_addr);
+            }
+            return false;
+        });
+        if (!allowed)
+        {
+            return CURL_SOCKET_BAD;
+        }
+        auto socket = core::SocketHandle{::socket(target->family, target->socktype | SOCK_CLOEXEC, target->protocol)};
+        return socket.valid() ? socket.release() : CURL_SOCKET_BAD;
+    }
+
+    // RAII wrapper for a curl_slist*. The list is freed in the destructor so
+    // every exit path from perform() releases the allocation.
+    class CurlSlistGuard final
+    {
+    public:
+        CurlSlistGuard() noexcept = default;
+        ~CurlSlistGuard()
+        {
+            if (list_ != nullptr)
+            {
+                curl_slist_free_all(list_);
+            }
+        }
+        CurlSlistGuard(CurlSlistGuard const&) = delete;
+        auto operator=(CurlSlistGuard const&) -> CurlSlistGuard& = delete;
+        CurlSlistGuard(CurlSlistGuard&&) noexcept = delete;
+        auto operator=(CurlSlistGuard&&) noexcept -> CurlSlistGuard& = delete;
+
+        [[nodiscard]] auto append(std::string const& entry) noexcept -> bool
+        {
+            auto* updated = curl_slist_append(list_, entry.c_str());
+            if (updated == nullptr)
+            {
+                return false;
+            }
+            list_ = updated;
+            return true;
+        }
+
+        [[nodiscard]] auto get() const noexcept -> curl_slist*
+        {
+            return list_;
+        }
+
+    private:
+        curl_slist* list_{nullptr};
+    };
+
+    // Bounds on stored response headers. Unlike the body (capped by
+    // request.max_response_body_bytes), libcurl imposes no default cap on the
+    // number or total size of header lines it will hand to the header
+    // callback, so a hostile peer could otherwise drive unbounded allocation.
+    // See #413.
+    constexpr auto max_response_header_count = std::size_t{256U};
+    constexpr auto max_response_header_bytes = std::size_t{64U * 1024U};
+
+    struct ResponseSink final
+    {
+        std::string body{};
+        std::vector<OutboundHeader> headers{};
+        std::size_t cap{0U};
+        std::size_t header_bytes_seen{0U};
+        bool too_large{false};
+        bool headers_too_large{false};
+    };
+
+    extern "C" auto mero_curl_write_body(char* ptr, std::size_t size, std::size_t nmemb,
+                                         void* userdata) noexcept -> std::size_t
+    {
+        auto* sink = static_cast<ResponseSink*>(userdata);
+        if (sink == nullptr)
+        {
+            return 0U;
+        }
+        auto const bytes = size * nmemb;
+        // Guard against accumulating past the cap. Check body.size() first to
+        // prevent underflow in the subtraction when body already meets or exceeds cap.
+        if (sink->body.size() >= sink->cap || bytes > sink->cap - sink->body.size())
+        {
+            sink->too_large = true;
+            return 0U;
+        }
+        sink->body.append(ptr, bytes);
+        return bytes;
+    }
+
+    extern "C" auto mero_curl_write_header(char* buffer, std::size_t size, std::size_t nitems,
+                                           void* userdata) noexcept -> std::size_t
+    {
+        auto* sink = static_cast<ResponseSink*>(userdata);
+        if (sink == nullptr)
+        {
+            return 0U;
+        }
+        auto const bytes = size * nitems;
+        // Bound both the header count and the cumulative bytes stored before
+        // touching any allocating container. A hostile peer streaming an
+        // unbounded number of response headers must abort the transfer here,
+        // not drive a bad_alloc past this noexcept boundary (that would call
+        // std::terminate and take down the whole process). Returning a short
+        // count signals libcurl to fail the transfer.
+        auto const header_bytes_remaining =
+            max_response_header_bytes - std::min(sink->header_bytes_seen, max_response_header_bytes);
+        if (sink->headers.size() >= max_response_header_count || bytes > header_bytes_remaining)
+        {
+            sink->headers_too_large = true;
+            return 0U;
+        }
+        try
+        {
+            auto line = std::string_view{buffer, bytes};
+            // Strip trailing CRLF so the stored header values are clean.
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            {
+                line.remove_suffix(1U);
+            }
+            // Skip the status line and the blank separator between headers and body.
+            if (line.empty() || line.starts_with("HTTP/"))
+            {
+                return bytes;
+            }
+            auto const colon = line.find(':');
+            if (colon == std::string_view::npos)
+            {
+                return bytes;
+            }
+            auto name = line.substr(0U, colon);
+            auto value = line.substr(colon + 1U);
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+            {
+                value.remove_prefix(1U);
+            }
+            // RFC 7230 §3.2.4: strip trailing OWS too, so stored values
+            // compare cleanly (e.g. MIME type checks) (#441).
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+            {
+                value.remove_suffix(1U);
+            }
+            sink->headers.push_back(OutboundHeader{std::string{name}, std::string{value}});
+            sink->header_bytes_seen += bytes;
+            return bytes;
+        }
+        catch (...)
+        {
+            // Allocation failure or similar: signal libcurl to abort rather
+            // than let the exception escape this noexcept callback.
+            sink->headers_too_large = true;
+            return 0U;
+        }
+    }
+
+    [[nodiscard]] auto map_curl_code(CURLcode code, ResponseSink const& sink) noexcept -> OutboundError
+    {
+        switch (code)
+        {
+        case CURLE_OK:
+            return OutboundError::none;
+        case CURLE_PEER_FAILED_VERIFICATION:
+        case CURLE_SSL_CACERT_BADFILE:
+        case CURLE_SSL_CERTPROBLEM:
+        case CURLE_SSL_CIPHER:
+        case CURLE_SSL_CONNECT_ERROR:
+        case CURLE_SSL_ENGINE_INITFAILED:
+        case CURLE_SSL_ENGINE_NOTFOUND:
+        case CURLE_SSL_ENGINE_SETFAILED:
+        case CURLE_SSL_INVALIDCERTSTATUS:
+        case CURLE_SSL_ISSUER_ERROR:
+        case CURLE_SSL_PINNEDPUBKEYNOTMATCH:
+        case CURLE_SSL_SHUTDOWN_FAILED:
+        case CURLE_USE_SSL_FAILED:
+            return OutboundError::tls_verification_failed;
+        case CURLE_COULDNT_CONNECT:
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_RESOLVE_PROXY:
+            return OutboundError::connection_failed;
+        case CURLE_OPERATION_TIMEDOUT:
+            return OutboundError::timeout;
+        case CURLE_WRITE_ERROR:
+            return (sink.too_large || sink.headers_too_large) ? OutboundError::response_too_large
+                                                              : OutboundError::network_error;
+        default:
+            return OutboundError::network_error;
+        }
+    }
+
+    [[nodiscard]] auto fail(OutboundError error, std::string detail) -> OutboundResult
+    {
+        log_diagnostic("request.failed",
+                       {
+                           {"error",  std::string{outbound_error_name(error)}, false},
+                           {"detail", detail,                                  false}
+        });
+        return OutboundResult{false, OutboundResponse{}, error, std::move(detail)};
+    }
+
+    [[nodiscard]] auto configure_security_options(CURL* handle, bool allow_cleartext_http) noexcept -> bool
+    {
+        // Treat any setopt failure on a security-critical option as fatal so
+        // the request fails closed before a single byte hits the wire.
+        if (curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L) != CURLE_OK)
+        {
+            return false;
+        }
+        if (curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 2L) != CURLE_OK)
+        {
+            return false;
+        }
+        if (curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK)
+        {
+            return false;
+        }
+        // Cleartext http is only ever added to the allowed protocol set for a
+        // request that explicitly opted in (OutboundRequest::allow_cleartext_http)
+        // — see that field's doc comment for the narrow, operator-configured-only
+        // destinations this is meant for. Every other caller keeps the
+        // https-only restriction unchanged.
+        if (curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, allow_cleartext_http ? "https,http" : "https") != CURLE_OK)
+        {
+            return false;
+        }
+        // Disable signal-driven DNS resolution so timeouts behave safely when
+        // multiple OutboundClient instances run on different threads.
+        if (curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L) != CURLE_OK)
+        {
+            return false;
+        }
+        // A proxy socket is not the approved origin peer. Reused connections
+        // likewise bypass the open-socket callback and its current pin set.
+        if (curl_easy_setopt(handle, CURLOPT_PROXY, "") != CURLE_OK ||
+            curl_easy_setopt(handle, CURLOPT_FRESH_CONNECT, 1L) != CURLE_OK ||
+            curl_easy_setopt(handle, CURLOPT_FORBID_REUSE, 1L) != CURLE_OK)
+        {
+            return false;
+        }
+        return true;
+    }
+
+} // namespace
+
+auto outbound_error_name(OutboundError error) noexcept -> std::string_view
+{
+    switch (error)
+    {
+    case OutboundError::none:
+        return "none"sv;
+    case OutboundError::invalid_url:
+        return "invalid_url"sv;
+    case OutboundError::invalid_method:
+        return "invalid_method"sv;
+    case OutboundError::https_required:
+        return "https_required"sv;
+    case OutboundError::unresolved_host:
+        return "unresolved_host"sv;
+    case OutboundError::tls_verification_failed:
+        return "tls_verification_failed"sv;
+    case OutboundError::connection_failed:
+        return "connection_failed"sv;
+    case OutboundError::redirect_rejected:
+        return "redirect_rejected"sv;
+    case OutboundError::response_too_large:
+        return "response_too_large"sv;
+    case OutboundError::timeout:
+        return "timeout"sv;
+    case OutboundError::network_error:
+        return "network_error"sv;
+    case OutboundError::invalid_header:
+        return "invalid_header"sv;
+    }
+    return "unknown"sv;
+}
+
+auto outbound_error_from_name(std::string_view name) noexcept -> OutboundError
+{
+    // Keep this mapping in lock-step with outbound_error_name. Any name not
+    // produced by the serializer (including "unknown") falls back to
+    // network_error so deserialization is fail-closed.
+    if (name == "none"sv)
+    {
+        return OutboundError::none;
+    }
+    if (name == "invalid_url"sv)
+    {
+        return OutboundError::invalid_url;
+    }
+    if (name == "invalid_method"sv)
+    {
+        return OutboundError::invalid_method;
+    }
+    if (name == "https_required"sv)
+    {
+        return OutboundError::https_required;
+    }
+    if (name == "unresolved_host"sv)
+    {
+        return OutboundError::unresolved_host;
+    }
+    if (name == "tls_verification_failed"sv)
+    {
+        return OutboundError::tls_verification_failed;
+    }
+    if (name == "connection_failed"sv)
+    {
+        return OutboundError::connection_failed;
+    }
+    if (name == "redirect_rejected"sv)
+    {
+        return OutboundError::redirect_rejected;
+    }
+    if (name == "response_too_large"sv)
+    {
+        return OutboundError::response_too_large;
+    }
+    if (name == "timeout"sv)
+    {
+        return OutboundError::timeout;
+    }
+    if (name == "network_error"sv)
+    {
+        return OutboundError::network_error;
+    }
+    if (name == "invalid_header"sv)
+    {
+        return OutboundError::invalid_header;
+    }
+    return OutboundError::network_error;
+}
+
+auto detect_system_ca_trust() -> SystemCaTrust
+{
+    // Concatenated PEM bundles, in rough order of prevalence across the
+    // platforms Merovingian ships on (Debian/Ubuntu/Alpine, Fedora/RHEL,
+    // openSUSE, BSD/macOS, FreeBSD ports).
+    constexpr std::array<std::string_view, 8U> bundle_files{
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+        "/usr/local/share/certs/ca-root-nss.crt",
+        "/etc/openssl/cert.pem",         // NetBSD (base/pkgsrc openssl)
+        "/usr/pkg/etc/openssl/cert.pem", // NetBSD pkgsrc prefix
+    };
+    // OpenSSL hashed certificate directories.
+    constexpr std::array<std::string_view, 4U> bundle_dirs{
+        "/etc/ssl/certs", "/etc/pki/tls/certs",
+        "/etc/openssl/certs",         // NetBSD
+        "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
+    };
+    auto trust = SystemCaTrust{};
+    for (auto const candidate : bundle_files)
+    {
+        auto error = std::error_code{};
+        if (std::filesystem::is_regular_file(candidate, error))
+        {
+            trust.bundle_file = std::string{candidate};
+            break;
+        }
+    }
+    for (auto const candidate : bundle_dirs)
+    {
+        auto error = std::error_code{};
+        if (std::filesystem::is_directory(candidate, error))
+        {
+            trust.bundle_dir = std::string{candidate};
+            break;
+        }
+    }
+    return trust;
+}
+
+namespace
+{
+
+    // RFC 9110 section 5.6.2: tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+    // "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA.
+    [[nodiscard]] auto is_token_character(char character) noexcept -> bool
+    {
+        if ((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9'))
+        {
+            return true;
+        }
+        return std::string_view{"!#$%&'*+-.^_`|~"}.find(character) != std::string_view::npos;
+    }
+
+    // RFC 9110 section 5.5: a field value holds no control character other than HTAB. CR and LF
+    // in particular would end the header line and start another, and libcurl writes header lines
+    // verbatim.
+    [[nodiscard]] auto is_field_value_character(char character) noexcept -> bool
+    {
+        auto const byte = static_cast<unsigned char>(character);
+        return byte == 0x09U || (byte >= 0x20U && byte != 0x7FU);
+    }
+
+    [[nodiscard]] auto header_is_valid(OutboundHeader const& header) noexcept -> bool
+    {
+        return !header.name.empty() && std::ranges::all_of(header.name, is_token_character) &&
+               std::ranges::all_of(header.value, is_field_value_character);
+    }
+
+} // namespace
+
+auto validate_outbound_request(OutboundRequest const& request) noexcept -> OutboundError
+{
+    if (!is_known_method(request.method))
+    {
+        return OutboundError::invalid_method;
+    }
+    // Header values can carry client-supplied data (an identity server access token, for one), so
+    // every header is checked here, at the boundary every outbound request crosses, before any
+    // DNS, connection or header serialisation (security audit run-1, sp02).
+    if (!std::ranges::all_of(request.headers, header_is_valid))
+    {
+        return OutboundError::invalid_header;
+    }
+    if (request.url.empty())
+    {
+        return OutboundError::invalid_url;
+    }
+    if (permitted_scheme_length(request.url, request.allow_cleartext_http) == 0U)
+    {
+        return OutboundError::https_required;
+    }
+    try
+    {
+        if (!parse_curl_url(request.url, request.allow_cleartext_http))
+        {
+            return OutboundError::invalid_url;
+        }
+        if (request.pinned_addresses.empty() || std::ranges::any_of(request.pinned_addresses, [](auto const& address) {
+                return !approved_peer(address).has_value();
+            }))
+        {
+            return OutboundError::unresolved_host;
+        }
+    }
+    catch (...)
+    {
+        return OutboundError::invalid_url;
+    }
+    return OutboundError::none;
+}
+
+auto parse_outbound_url(std::string_view url, bool allow_cleartext_http) -> std::optional<ParsedOutboundUrl>
+{
+    auto parsed = parse_curl_url(url, allow_cleartext_http);
+    return parsed ? std::optional<ParsedOutboundUrl>{std::move(parsed->fields)} : std::nullopt;
+}
+
+OutboundClient::OutboundClient() = default;
+
+OutboundClient::~OutboundClient() = default;
+
+auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
+{
+    if (!is_known_method(request.method))
+    {
+        return fail(OutboundError::invalid_method, "invalid_method");
+    }
+    if (!std::ranges::all_of(request.headers, header_is_valid))
+    {
+        return fail(OutboundError::invalid_header, "invalid_header");
+    }
+    if (request.url.empty())
+    {
+        return fail(OutboundError::invalid_url, "invalid_url");
+    }
+    if (permitted_scheme_length(request.url, request.allow_cleartext_http) == 0U)
+    {
+        return fail(OutboundError::https_required, "https_required");
+    }
+    auto parsed = parse_curl_url(request.url, request.allow_cleartext_http);
+    if (!parsed)
+    {
+        return fail(OutboundError::invalid_url, "invalid_url");
+    }
+    auto const logged_url = loggable_url(parsed->fields);
+    auto pins = PeerPins{parsed->fields.port, {}};
+    for (auto const& address : request.pinned_addresses)
+    {
+        auto peer = approved_peer(address);
+        if (!peer)
+        {
+            return fail(OutboundError::unresolved_host, "invalid numeric pin");
+        }
+        pins.addresses.push_back(*peer);
+    }
+    if (pins.addresses.empty())
+    {
+        return fail(OutboundError::unresolved_host, "unresolved_host");
+    }
+
+    // Each thread drives its own easy handle; a single OutboundClient instance
+    // is therefore safe to share across the dispatch worker and the request
+    // handler pool without locking.
+    auto* handle = thread_curl_handle();
+    if (handle == nullptr)
+    {
+        return fail(OutboundError::network_error, "curl handle unavailable");
+    }
+
+    curl_easy_reset(handle);
+    auto const reset_on_exit = CurlRequestReset{core::not_null{handle}};
+
+    if (!configure_security_options(handle, request.allow_cleartext_http))
+    {
+        return fail(OutboundError::network_error, "failed to configure curl security options");
+    }
+
+    if (curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(request.connect_timeout_seconds)) !=
+            CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_TIMEOUT, static_cast<long>(request.total_timeout_seconds)) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_CURLU, parsed->handle.get()) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_PATH_AS_IS, 1L) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_OPENSOCKETFUNCTION, &mero_curl_open_pinned_socket) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_OPENSOCKETDATA, &pins) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, request.method.c_str()) != CURLE_OK)
+    {
+        return fail(OutboundError::network_error, "failed to configure curl request");
+    }
+
+    // Optional in-memory CA bundle. When populated (tests, pinned-CA
+    // deployments) it replaces the system trust store. When empty, point
+    // libcurl at the host trust store explicitly: the bundled libcurl is
+    // built from source with no fixed --with-ca-bundle, so its compiled-in
+    // default path may not exist on the deployment host, which surfaces as
+    // tls_verification_failed on otherwise-valid public certificates.
+    if (!request.trusted_ca_pem.empty())
+    {
+        auto ca_blob = curl_blob{};
+        // curl owns the copy thanks to CURL_BLOB_COPY, so the caller's
+        // buffer can go out of scope after curl_easy_setopt returns.
+        ca_blob.data = const_cast<char*>(request.trusted_ca_pem.data());
+        ca_blob.len = request.trusted_ca_pem.size();
+        ca_blob.flags = CURL_BLOB_COPY;
+        if (curl_easy_setopt(handle, CURLOPT_CAINFO_BLOB, &ca_blob) != CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to attach CA bundle");
+        }
+    }
+    else
+    {
+        // Probed once per process. Certificate verification stays on; if no
+        // trust store is found the request still fails closed rather than
+        // skipping verification.
+        static auto const ca_trust = detect_system_ca_trust();
+        if (!ca_trust.bundle_file.empty() &&
+            curl_easy_setopt(handle, CURLOPT_CAINFO, ca_trust.bundle_file.c_str()) != CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to set CA bundle file");
+        }
+        if (!ca_trust.bundle_dir.empty() &&
+            curl_easy_setopt(handle, CURLOPT_CAPATH, ca_trust.bundle_dir.c_str()) != CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to set CA bundle directory");
+        }
+    }
+
+    if (!request.body.empty())
+    {
+        if (curl_easy_setopt(handle, CURLOPT_POSTFIELDS, request.body.data()) != CURLE_OK ||
+            curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(request.body.size())) !=
+                CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to configure curl body");
+        }
+    }
+
+    auto headers = CurlSlistGuard{};
+    // Suppress libcurl's automatic Expect: 100-continue so the round trip is
+    // a single request/response exchange.
+    if (!headers.append("Expect:"))
+    {
+        return fail(OutboundError::network_error, "header allocation failed");
+    }
+    for (auto const& header : request.headers)
+    {
+        auto entry = header.name;
+        entry += ": ";
+        entry += header.value;
+        if (!headers.append(entry))
+        {
+            return fail(OutboundError::network_error, "header allocation failed");
+        }
+    }
+    if (curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers.get()) != CURLE_OK)
+    {
+        return fail(OutboundError::network_error, "failed to attach headers");
+    }
+
+    // Pin DNS for the URL host:port to the caller-supplied addresses. libcurl
+    // will use these entries instead of consulting the resolver, locking the
+    // connection to the address set validated by the federation security
+    // policy.
+    auto resolve = CurlSlistGuard{};
+    auto entry = parsed->fields.ipv6_literal ? "[" + parsed->fields.host + "]" : parsed->fields.host;
+    entry += ':';
+    entry += std::to_string(parsed->fields.port);
+    entry += ':';
+    for (std::size_t i = 0U; i < request.pinned_addresses.size(); ++i)
+    {
+        if (i != 0U)
+        {
+            entry += ',';
+        }
+        auto const& address = request.pinned_addresses[i];
+        entry += pins.addresses[i].family == AF_INET6 ? "[" + address + "]" : address;
+    }
+    if (!resolve.append(entry))
+    {
+        return fail(OutboundError::network_error, "resolve allocation failed");
+    }
+    if (curl_easy_setopt(handle, CURLOPT_RESOLVE, resolve.get()) != CURLE_OK)
+    {
+        return fail(OutboundError::network_error, "failed to attach resolve list");
+    }
+
+    auto sink = ResponseSink{};
+    sink.cap = request.max_response_body_bytes;
+    if (curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &mero_curl_write_body) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_WRITEDATA, &sink) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, &mero_curl_write_header) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_HEADERDATA, &sink) != CURLE_OK)
+    {
+        return fail(OutboundError::network_error, "failed to attach response sinks");
+    }
+
+    auto const code = curl_easy_perform(handle);
+    auto const mapped = map_curl_code(code, sink);
+
+    auto status_code = long{0};
+    curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status_code);
+
+    auto response = OutboundResponse{};
+    response.status = status_code >= 0L && status_code <= static_cast<long>(std::numeric_limits<std::uint16_t>::max())
+                          ? static_cast<std::uint16_t>(status_code)
+                          : std::uint16_t{0U};
+    response.body = std::move(sink.body);
+    response.headers = std::move(sink.headers);
+
+    // FOLLOWLOCATION is disabled, so a 3xx surfaces as a successful curl call
+    // with a redirect status. Federation must not chase redirects, so the
+    // response is preserved for audit but the result is marked as a
+    // redirect_rejected failure.
+    if (mapped == OutboundError::none && response.status >= 300U && response.status < 400U)
+    {
+        log_diagnostic("request.redirect_rejected", {
+                                                        {"url",         logged_url,                      false},
+                                                        {"method",      request.method,                  false},
+                                                        {"http_status", std::to_string(response.status), false}
+        });
+        return OutboundResult{
+            false,
+            std::move(response),
+            OutboundError::redirect_rejected,
+            std::string{outbound_error_name(OutboundError::redirect_rejected)},
+        };
+    }
+
+    if (mapped != OutboundError::none)
+    {
+        log_diagnostic("request.error", {
+                                            {"url",    logged_url,                               false},
+                                            {"method", request.method,                           false},
+                                            {"error",  std::string{outbound_error_name(mapped)}, false}
+        });
+        return OutboundResult{
+            false,
+            std::move(response),
+            mapped,
+            std::string{outbound_error_name(mapped)},
+        };
+    }
+
+    log_diagnostic("request.success", {
+                                          {"url",         logged_url,                      false},
+                                          {"method",      request.method,                  false},
+                                          {"http_status", std::to_string(response.status), false}
+    });
+    return OutboundResult{true, std::move(response), OutboundError::none, std::string{}};
+}
+
+} // namespace merovingian::http

@@ -15,18 +15,30 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -129,6 +141,8 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
     GIVEN("a restricted room, an allowed room bob is joined to, and a local admin who can invite")
     {
         auto builder = restricted_room_store();
+        // decide runs the resident decision for one user, optionally with the authorising user the joining server
+        // named.
         auto const decide = [&](std::string_view user, std::string_view named = {}) {
             return merovingian::homeserver::decide_restricted_join(builder.store, "!r:local.example.org", user,
                                                                    our_server, named);
@@ -174,6 +188,7 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        // A ban outranks every condition, so the restricted-room logic must never reach it.
         WHEN("bob is banned")
         {
             std::ignore = builder.member("!r:local.example.org", bob, "ban");
@@ -214,6 +229,7 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        // Conditions the server cannot parse count as unmet, never as satisfied.
         WHEN("no condition matches the required schema")
         {
             std::ignore = builder.state("!r:local.example.org", "m.room.join_rules", "",
@@ -227,6 +243,7 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        // The bound caps the work an attacker-chosen join_rule can cost; the condition beyond it is ignored.
         WHEN("the condition bob meets is listed past the bound on considered conditions")
         {
             auto allow = std::string{};
@@ -248,6 +265,7 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        // Meeting a condition is not enough: someone local must also be able to invite and so authorise the join.
         WHEN("the only local member lacks the invite power level")
         {
             std::ignore = builder.state("!r:local.example.org", "m.room.power_levels", "",
@@ -273,6 +291,8 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        // The authorising user comes from the joining server, so it is validated against local state rather than
+        // trusted.
         WHEN("a submitted join names a local user who is not a member, or a remote user")
         {
             auto const not_member = decide(bob, "@nobody:local.example.org");
@@ -486,6 +506,7 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
 {
     GIVEN("this server as the only resident of a restricted room, and bob joined to the allowed room")
     {
+        // The server is the only resident, with bob joined to the allowed room, so its own users can authorise him.
         auto const path = unique_sqlite_path();
         std::filesystem::remove(path);
         auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
@@ -534,6 +555,8 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
             }
         }
 
+        // The worker relays through the IPC frame handler; main must return the same decision it would for a local
+        // call.
         WHEN("a federation worker relays bob's make_join to main")
         {
             auto const reply = merovingian::homeserver::handle_membership_template_ingest_request(
@@ -553,6 +576,7 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
             }
         }
 
+        // Malformed relay frames are answered with no template rather than guessed at.
         WHEN("a worker relays a make_join frame without a user")
         {
             auto const reply = merovingian::homeserver::handle_membership_template_ingest_request(
@@ -564,6 +588,7 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
             }
         }
 
+        // make_join is how another server's user joins, so a frame naming a local user is refused.
         WHEN("a worker relays a make_join frame naming a user of this server, or a malformed user ID")
         {
             auto const local = merovingian::homeserver::handle_membership_template_ingest_request(
@@ -595,6 +620,7 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
             }
         }
 
+        // With no state for the allowed room no condition can be checked, so the request fails closed.
         WHEN("a template is asked for in a restricted room whose allowed room this server does not know")
         {
             std::ignore = seed_room(
@@ -625,6 +651,7 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
 {
     GIVEN("this server as the only resident of a restricted room, and bob joined to the allowed room")
     {
+        // Same fixture as make_join: the only resident, with bob joined to the allowed room.
         auto const path = unique_sqlite_path();
         std::filesystem::remove(path);
         auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
@@ -639,6 +666,8 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
             R"({"allow":[{"room_id":"!a:local.example.org","type":"m.room_membership"}],"join_rule":"restricted"})");
         auto const auth =
             std::vector<std::string>{room.create_id, room.pl_id, room.join_rules_id, room.admin_member_id};
+        // join_by builds a member join event, signed only by the joining user's server, as a remote server would submit
+        // it.
         auto const join_by = [&](std::string_view user, std::string const& event_id) {
             auto const json = event_json("!r:local.example.org", "m.room.member", std::string{user}, std::string{user},
                                          R"({"join_authorised_via_users_server":"@admin:local.example.org",)"
@@ -653,6 +682,8 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
             });
         };
 
+        // The resident must add its own signature for the authorising user, since the spec requires the event to carry
+        // it.
         WHEN("bob's join, naming the local admin and signed only by bob's server, is submitted")
         {
             auto const envelope = join_by(bob, "$bobjoin:remote.example.org");
@@ -692,6 +723,8 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
             }
         }
 
+        // A signature already present under this server name must not be trusted or kept; only the one added here
+        // counts.
         WHEN("bob's join also carries a signature planted under this server's name")
         {
             namespace cj = merovingian::canonicaljson;
@@ -737,6 +770,7 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
             }
         }
 
+        // Naming an authorising user does not help a user who meets no condition.
         WHEN("carol's join, naming the local admin although she meets no condition, is submitted")
         {
             auto const envelope = join_by(carol, "$caroljoin:remote.example.org");
@@ -753,6 +787,8 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
             }
         }
 
+        // This server must not co-sign events that need no authorisation, or it would vouch for joins it did not
+        // decide.
         WHEN("a join naming the local admin is submitted into a public room, where no authorisation is needed")
         {
             auto const open = seed_room(started.runtime, "!p:local.example.org", R"({"join_rule":"public"})");

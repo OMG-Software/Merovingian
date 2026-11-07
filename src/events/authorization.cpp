@@ -7,7 +7,6 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>

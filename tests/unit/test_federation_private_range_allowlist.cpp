@@ -9,7 +9,7 @@
 // redirects) keep the full block even when the shared discovery network
 // carries one.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"

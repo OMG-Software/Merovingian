@@ -1,3 +1,39 @@
+## 0.12.79
+
+The largest multi-type files are split into one file per class, struct or enum (ADR-0466, ADR-0467). The code quality and security findings SonarQube Cloud raised on the split files are fixed, which changes one behaviour: an appservice may use plain http only to a loopback address or a host the operator lists.
+
+### Security
+
+- An appservice registration `url` may use `http` only when its host is a loopback IP literal (127.0.0.0/8 or `::1`) or is listed in the new `appservice.allow_cleartext_hosts` key; every other host must use `https`, because the homeserver sends the `hs_token` with each request. A registration that breaks the rule, or whose `url` has userinfo or a query, is skipped at start-up with a warning, and the client refuses such a call before any lookup (ADR-0515). The Complement configuration lists `host.docker.internal`.
+- The appservice client parses its URL with the shared libcurl-backed parser, so an IPv6 literal host and a `url` path of `/` are handled correctly. SMTP and appservices share one loopback-literal check (`net::is_loopback_ip_literal`).
+- `observability::CorrelationScope` no longer publishes a pointer. The thread's correlation slot holds the context by value: a scope moves its context in and puts back the one it displaced, so no address of a scope or of a caller's object is stored, and the published context cannot change or dangle while the scope is open (CodeQL `cpp/stack-address-escape`, ADR-0526). New unit test `test_correlation_scope.cpp` (`[correlation]`).
+- `homeserver::RemoteMediaFetchScope` and `homeserver::RequestLockScope` no longer publish a stack address either. The fetch slot holds the innermost scope's mode and deferral flag by value, and the request slot holds the `RuntimeMutex` the guard locks, not the guard (CodeQL `cpp/stack-address-escape`, ADR-0529). The fourth such alert, the thread's audit database pointer, is dismissed on GitHub as won't fix, with the reason recorded in ADR-0529.
+- `merovingian-fed-worker` stops accumulating `--ipc-fd`, `--ipc-key-fd` and `--db-uri-fd` digits once the value passes 65535. A long digit string used to overflow `int` (undefined behaviour) before the out-of-range error was reported. The arguments come from the supervisor, so no running server was exposed. New scenario in `test_federation_worker_args.cpp`.
+
+### Changed
+
+- Fifteen headers that defined many types now define at most one: `persistent_store.hpp` (63 types), `config.hpp` (37), `sliding_sync.hpp` (25), `federation/inbound_request.hpp` (21), `runtime.hpp` (20), `media/repository.hpp` (16), `appservice_client.hpp` (14), `observability.hpp` (13), `policy_engine.hpp` (13), `runtime_hardening.hpp` (15), `room_service.hpp` (9), `client_server.hpp` (8), `http/outbound_client.hpp` (7), `http_server.hpp` (5) and `local_http_router.hpp` (2). Each extracted type lives in `include/merovingian/<module>/<TypeName>.hpp`, with a matching `.cpp` where it has out-of-line members (`PersistentServerSigningKey`, `CorrelationScope`, `PendingStreamOrdering`, `PublishedStreamOrdering`).
+- A header that kept a primary type is renamed after it, with its source: `PersistentStore`, `Config`, `HomeserverRuntime`, `ClientServerRuntime`, `LocalMediaRepository`, `AppserviceClient` and `OutboundClient` (`.hpp`/`.cpp`). Headers with no primary type keep their names and hold only free functions and constants.
+- Files that used the old headers now include the headers for the types they use.
+- Coding rules: a helper class or struct used by one `.cpp` file stays in its anonymous namespace; a helper needed by a second file moves to its own file instead of being copied; nested types stay with their enclosing type (ADR-0513).
+- Coding rules: enums count as types for the one-type-per-file and filename rules (ADR-0514). The enums the split left beside a class or grouped in shared headers now each have their own `<EnumName>.hpp`, and `outbound_error.hpp` and `persistent_store_backend.hpp` are renamed `OutboundError.hpp` and `PersistentStoreBackend.hpp`.
+- The default federation deny list and the private/loopback range checks derive from one numeric table of special-use blocks instead of repeated address strings; `is_private_or_loopback_range` compares parsed values, so equal spellings such as `FC00::/7` are recognised (ADR-0516).
+- The outbound client matches the URL scheme by name; its cleartext opt-in is unchanged.
+- `PersistentStore` and `FederationRuntimeState` hold their mutexes by value through `core::CopyableMutex` and `core::CopyableConditionVariable`, instead of behind `unique_ptr`/`shared_ptr`; a copy or move gets a fresh, unlocked mutex (ADR-0517).
+- The federation state mutex is a plain `std::mutex`. The one path that locked it twice (recording a completed transaction) now uses a helper that expects the lock to be held (ADR-0518).
+- The runtime state rings are `std::list` instead of `std::deque` (and the test-only captured statements a `std::vector`), so `FederationRuntimeState`, `LocalDatabase`, `AppserviceEphemeralQueue` and `PersistentStore` move without throwing; a `static_assert` keeps it so (ADR-0519, superseding ADR-0268).
+- `HttpServeStats` and `ExaminedRows` use the default memory order (ADR-0520).
+- The room position index is a `RoomPositionIndex` class with its own lock; a moved index starts empty and rebuilds on use (ADR-0521).
+- `RuntimeMutex`'s lock functions are `const` and `HomeserverRuntime::mutex` is no longer `mutable`; the runtime mutex is locked through `homeserver::RuntimeLock` (ADR-0522).
+- Identifiers named `module`, a C++20 contextual keyword, are renamed `module_name`.
+- The CodeQL warnings PR #563's check counted are cleared in code. `std::ignore = x;` on a plain variable (`cpp/useless-expression`) is gone: an unused parameter or RAII guard is marked `[[maybe_unused]]` or unnamed, an unused structured binding reads the pair member it needs, a discarded result is written `std::ignore = call(...)`, and a no-op `log_modules` branch in `validate` is deleted. Functions over 100 lines with almost no comments (`cpp/poorly-documented-function`) get comments inside the body, chiefly `apply_config_value`, `build_reload_plan`, `load_persistent_rows` and long test scenarios. No behaviour changes.
+- `main` (0.12.78) is merged in, and this branch's version moves to 0.12.79.
+
+### Fixed
+
+- SonarCloud's reliability findings on this branch are fixed in code: `net::is_loopback_ip_literal` compares an IPv6 address as a byte array, not with `memcmp` over `in6_addr` (S5000); `RoomPositionIndex` touches its cache only in `find`, under its lock, and move assignment marks the cache stale; `CopyableConditionVariable`'s operations are non-`const` and its member is not `mutable`; `RuntimeMutex` implements its recursion over a plain `std::mutex` with an atomic depth (ADR-0524); and `sync::UnreadEventClassifier`'s questions are non-`const`, so `PushRuleUnreadClassifier`'s lazy caches are no longer `mutable` (ADR-0525). No behaviour changes.
+- A copy of `database::PersistentStore` now carries `state_transitions` and `state_transition_index`. The hand-written copy operations listed every member but these two, added later, so `find_state_transition` on a copy found nothing (no `unsigned.replaces_state`, and narrower history visibility and room read access). Only tests copy a store, so no running server was affected. The copy operations are now defaulted (ADR-0523). New unit test `test_persistent_store_copy.cpp` (`[store_copy]`).
+
 ## 0.12.78
 
 The high-severity CodeQL alerts open on `main` are cleared, so a large pull request no longer fails CodeQL on alerts it did not introduce.

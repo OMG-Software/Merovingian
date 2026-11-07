@@ -11,8 +11,8 @@ current in-process runtime path.
   upload bytes (magic-byte signatures for PNG/JPEG/GIF/PDF, a printable-ASCII
   heuristic for `text/plain`, falling back to `application/octet-stream`),
   and `evaluate_media_upload()`'s declared-vs-sniffed mismatch check
-  quarantines uploads where the two disagree. `client_server.cpp` sniffs the
-  client's raw request body for local uploads; `repository.cpp`'s
+  quarantines uploads where the two disagree. `ClientServerRuntime.cpp` sniffs the
+  client's raw request body for local uploads; `LocalMediaRepository.cpp`'s
   `fetch_remote_media` sniffs the raw response body for federated fetches — a
   remote server's declared `Content-Type` is equally untrustworthy. A
   `Content-Type` header containing `|` is rejected with `400 M_BAD_REQUEST`
@@ -43,7 +43,7 @@ current in-process runtime path.
   stops a browser from executing it as markup.
 - `media_id` validation is unified across every gate (issues #443/#444):
   `security.cpp`'s `media_id_is_valid()` (used for remote-fetch requests) now
-  rejects embedded spaces exactly like `repository.cpp`'s stricter
+  rejects embedded spaces exactly like `LocalMediaRepository.cpp`'s stricter
   `media_id_is_safe()` (used at the storage boundary), and the download/
   thumbnail route parser (`local_media_download_parts()` in
   `local_http_router.cpp`) rejects `..` and embedded spaces in the
@@ -181,7 +181,7 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
   `docs/user-manual.md`), which defaults remote-fetched media to
   `quarantine` rather than blindly trusting it.
-  **Local uploads (issue #418):** `client_server.cpp` previously hardcoded
+  **Local uploads (issue #418):** `ClientServerRuntime.cpp` previously hardcoded
   `scanner_clean` to the literal `"clean"` in the internal pipe body
   regardless of upload content, making the quarantine-on-infection path
   structurally unreachable even with `enable_av_scanner=true`. It now runs
@@ -354,7 +354,7 @@ privilege separation comes from outside the server process
 
 Client-facing download and thumbnail responses previously carried only
 `Content-Type` and the CORS headers. `apply_media_security_headers()`
-(`src/homeserver/client_server.cpp`) now also sets:
+(`src/homeserver/ClientServerRuntime.cpp`) now also sets:
 
 - `Content-Security-Policy: sandbox; default-src 'none'; script-src 'none';
   plugin-types application/pdf; style-src 'unsafe-inline'; object-src

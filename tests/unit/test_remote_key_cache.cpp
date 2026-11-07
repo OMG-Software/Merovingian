@@ -23,13 +23,15 @@
 
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <atomic>
@@ -39,8 +41,6 @@
 #include <string_view>
 #include <thread>
 #include <vector>
-
-#include <sodium.h>
 
 namespace
 {

@@ -189,6 +189,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
 {
     GIVEN("a request that allows a 1 KiB response")
     {
+        // The request fixes the contract (a 1 KiB cap); each WHEN varies only the worker's reply against it.
         auto request = merovingian::http::OutboundRequest{};
         request.max_response_body_bytes = 1024U;
 
@@ -209,6 +210,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
             }
         }
 
+        // One byte over the cap is a failure: a worker cannot make main buffer more than it asked for.
         WHEN("the worker's reply body is larger than the request allowed")
         {
             reply.response.body = std::string(1025U, 'x');
@@ -221,6 +223,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
             }
         }
 
+        // The cap is inclusive, so a reply of exactly the cap must not be rejected.
         WHEN("the worker's reply body is exactly the cap")
         {
             reply.response.body = std::string(1024U, 'x');
@@ -233,6 +236,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
             }
         }
 
+        // Statuses no server can send are refused; sweeping the values shows the boundaries on both sides.
         WHEN("the worker's success reply has a status outside 100 to 599")
         {
             auto const statuses = std::vector<std::uint16_t>{0U, 99U, 600U, 1000U};
@@ -266,6 +270,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
             }
         }
 
+        // A failure must not carry a status or body, or callers could mistake it for a real remote answer.
         WHEN("the worker reports a failure but attaches a status and a body as if the remote had answered")
         {
             reply.ok = false;
@@ -281,6 +286,7 @@ SCENARIO("A federation worker's outbound reply is checked against the request be
             }
         }
 
+        // The error text is relayed into logs and responses, so it is bounded and scrubbed.
         WHEN("the worker's error detail is long and holds control characters")
         {
             reply.ok = false;

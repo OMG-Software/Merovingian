@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/config/config_parser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -63,6 +63,7 @@ SCENARIO("Token lifetime admission preserves values and enforces project upper b
                     LifetimeField{"security.refresh_token_lifetime_ms",
                                   healthy.config.security().refresh_token_lifetime_ms, 31536000000, false}
                 };
+                // Selects the access or refresh lifetime so one loop body covers both token kinds.
                 auto const lifetime = [](auto& config, bool access) -> auto& {
                     return access ? config.security().access_token_lifetime_ms
                                   : config.security().refresh_token_lifetime_ms;
@@ -70,6 +71,8 @@ SCENARIO("Token lifetime admission preserves values and enforces project upper b
 
                 for (auto const& field : fields)
                 {
+                    // Boundary values: zero (the sentinel), the smallest positive, the default, the cap itself, one
+                    // over it, and the integer maximum.
                     auto const inputs = std::array{
                         LifetimeInput{0,                                        true },
                         LifetimeInput{1,                                        true },
@@ -82,9 +85,12 @@ SCENARIO("Token lifetime admission preserves values and enforces project upper b
                     {
                         INFO("lifetime field: " << field.name << ", milliseconds: " << input.value);
 
+                        // Path one: the value arrives through the config parser and its own validation.
                         auto const parsed = merovingian::config::parse_key_value_config(
                             field.name + "=" + std::to_string(input.value) + "\n");
                         CHECK(lifetime(parsed.config, field.access) == input.value);
+                        // The parsed value is kept exactly as written even when oversized: rejection is reported as a
+                        // finding, never by clamping.
                         auto const parsed_findings = merovingian::config::validate(parsed.config);
                         auto const parser_has_field_finding =
                             std::ranges::any_of(parsed.findings, [&field](auto const& finding) {
@@ -110,6 +116,8 @@ SCENARIO("Token lifetime admission preserves values and enforces project upper b
                         }
                         CHECK(lifetime(parsed.config, field.access) == input.value);
 
+                        // Path two: a typed config mutated directly must be caught by validate() as well, not only by
+                        // the parser.
                         auto typed = healthy.config;
                         lifetime(typed, field.access) = input.value;
                         CHECK(lifetime(typed, field.access) == input.value);

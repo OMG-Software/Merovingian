@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/FederationWorkerConfig.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundRequest.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/net/thread_pool.hpp"
 

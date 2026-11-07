@@ -5,7 +5,8 @@
 #include "../support/room_history_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/bundled_aggregations.hpp"
 #include "merovingian/sync/history_visibility.hpp"
 

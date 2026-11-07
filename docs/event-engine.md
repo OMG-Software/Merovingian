@@ -898,7 +898,7 @@ at ingest time.
 
 **Client-delivery filtering.** Every path that serves room timeline events
 excludes `status == "rejected"` and `status == "soft_failed"`: `/sync`
-(`client_server.cpp`), MSC4186 sliding sync
+(`ClientServerRuntime.cpp`), MSC4186 sliding sync
 (`sync/sliding_sync_room_builder.cpp`), `GET .../messages`, `GET
 .../context/{eventId}` (both its `events_before`/`events_after` window and
 the target-event lookup, which 404s the same as a nonexistent event id),

@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/appservice_delivery.hpp"
 
-#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/AppserviceCallResult.hpp"
+#include "merovingian/appservice/AppserviceClient.hpp"
+#include "merovingian/appservice/AppservicePingResult.hpp"
+#include "merovingian/appservice/AppserviceTransaction.hpp"
+#include "merovingian/appservice/AppserviceTransactionEvent.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/http/outbound_client.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/http/OutboundError.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -175,7 +181,7 @@ namespace
     // Sends `transaction` to the appservice with runtime.mutex released for the call, and advances
     // `clock_now` by how long it took. Called with `lock` held (exactly one level: the drainer is
     // never called under the lock).
-    [[nodiscard]] auto send_over_network(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
+    [[nodiscard]] auto send_over_network(HomeserverRuntime& runtime, RuntimeLock& lock,
                                          appservice::AppserviceRegistration const& registration,
                                          appservice::AppserviceTransaction const& transaction,
                                          std::chrono::steady_clock::time_point& clock_now)
@@ -213,7 +219,7 @@ namespace
     // fresh transaction whose ID comes from the cursor (its next_txn_id is persisted, nothing
     // else is). Returns false when the attempt failed or could not be made, in which case the
     // caller stops for this appservice until its back-off ends.
-    [[nodiscard]] auto send_ephemeral_only(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
+    [[nodiscard]] auto send_ephemeral_only(HomeserverRuntime& runtime, RuntimeLock& lock,
                                            appservice::AppserviceRegistration const& registration,
                                            std::chrono::steady_clock::time_point& clock_now) -> bool
     {
@@ -258,7 +264,7 @@ namespace
 
     // Sends the transactions queued for one appservice. Called with `lock` held; releases it
     // around every network call and holds it again on return.
-    auto drain_one_appservice(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
+    auto drain_one_appservice(HomeserverRuntime& runtime, RuntimeLock& lock,
                               appservice::AppserviceRegistration const& registration, StopFlag const& stop,
                               std::chrono::steady_clock::time_point& clock_now) -> AppserviceDrainOutcome
     {
@@ -473,7 +479,7 @@ auto enqueue_appservice_delivery(HomeserverRuntime& runtime, std::string_view ro
     }
     // Recursive: free for a caller that already holds it. Taken here so the store and the room's
     // member list are never read unguarded.
-    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const lock = RuntimeLock{runtime.mutex};
     auto& store = runtime.database.persistent_store;
     auto const& server_name = runtime.config.server().server_name;
 
@@ -540,7 +546,7 @@ auto drain_appservice_queues(HomeserverRuntime& runtime, StopFlag const& stop,
         return idle_delay;
     }
 
-    auto lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto lock = RuntimeLock{runtime.mutex};
     auto more_queued = false;
     for (auto const& registration : runtime.appservices.all())
     {

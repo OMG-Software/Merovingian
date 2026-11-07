@@ -21,7 +21,8 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"

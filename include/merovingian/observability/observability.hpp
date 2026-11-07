@@ -3,7 +3,21 @@
 #pragma once
 
 #include "merovingian/database/statement.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/observability/AdminControlSurface.hpp"
+#include "merovingian/observability/AdminOperation.hpp"
+#include "merovingian/observability/AdminRoute.hpp"
+#include "merovingian/observability/AdminRouteMatch.hpp"
+#include "merovingian/observability/AdminSurface.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
+#include "merovingian/observability/CorrelationContext.hpp"
+#include "merovingian/observability/HealthCheckSnapshot.hpp"
+#include "merovingian/observability/HealthStatus.hpp"
+#include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/ObservabilitySnapshot.hpp"
+#include "merovingian/observability/StructuredLogEvent.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstddef>
@@ -15,169 +29,6 @@
 
 namespace merovingian::observability
 {
-
-enum class AdminSurface
-{
-    local_socket,
-    loopback_http,
-};
-
-// One value per operator route this server serves under /_merovingian/admin/. The table behind
-// admin_routes() is the only list of them (ADR-0504): the dispatcher, the local router and the rate
-// limiter's counter key all read it. There is deliberately no operation that stops the server
-// (ADR-0505).
-enum class AdminOperation
-{
-    health,
-    metrics,
-    media_metrics,
-    audit_query,
-    account_summary,
-    account_action,
-    review_action,
-    media_quarantine,
-    media_release,
-    media_remove,
-};
-
-enum class AuditCategory
-{
-    auth,
-    key_lifecycle,
-    policy,
-    moderation,
-    admin,
-};
-
-enum class HealthStatus
-{
-    ok,
-    degraded,
-    failed,
-};
-
-struct AdminControlSurface final
-{
-    AdminSurface surface{AdminSurface::local_socket};
-    std::string bind_address{};
-    bool enabled{false};
-    bool local_only{true};
-    bool requires_admin_token{true};
-    bool tls_required{false};
-};
-
-struct AdminRoute final
-{
-    std::string method{};
-    std::string path_template{};
-    AdminOperation operation{AdminOperation::health};
-    bool requires_admin{true};
-    http::RateLimitPolicy rate_limit{};
-};
-
-struct AdminRouteMatch final
-{
-    bool matched{false};
-    AdminRoute route{};
-    std::string reason{};
-};
-
-// NOTE (L-11, security-audit-report-2026-09.md): this struct previously
-// carried an `append_only` flag initialized to `true` that nothing ever
-// consulted -- `audit_log_insert_statement()` never emits anything but
-// INSERT, so the flag asserted a guarantee the code did not actually
-// enforce. The only real enforcement point is a database-level trigger
-// rejecting UPDATE/DELETE on `audit_log`, which belongs in a migration
-// and is out of scope here. Rather than keep a field that lies about a
-// guarantee, it was removed; `audit_log_insert_statement()` below is the
-// append-only guarantee that actually exists today.
-struct AuditLogEvent final
-{
-    AuditCategory category{AuditCategory::admin};
-    std::string event_type{};
-    std::string actor{};
-    std::string target{};
-    std::string reason_code{};
-    std::string request_id{};
-};
-
-struct StructuredLogField final
-{
-    std::string key{};
-    std::string value{};
-    bool sensitive{false};
-};
-
-struct StructuredLogEvent final
-{
-    std::string logger{};
-    std::string level{};
-    std::vector<StructuredLogField> fields{};
-};
-
-enum class MetricType
-{
-    counter,
-    gauge,
-};
-
-struct MetricLabel final
-{
-    std::string key{};
-    std::string value{};
-    bool secret_safe{true};
-};
-
-struct MetricSample final
-{
-    std::string name{};
-    std::int64_t value{0};
-    bool secret_safe{true};
-    MetricType type{MetricType::gauge};
-    std::string help{};
-    std::vector<MetricLabel> labels{};
-};
-
-struct HealthCheckComponent final
-{
-    std::string name{};
-    HealthStatus status{HealthStatus::ok};
-    std::string summary{};
-};
-
-struct HealthCheckSnapshot final
-{
-    HealthStatus status{HealthStatus::ok};
-    std::vector<HealthCheckComponent> components{};
-};
-
-struct ObservabilitySnapshot final
-{
-    HealthCheckSnapshot health{};
-    std::vector<MetricSample> metrics{};
-    std::vector<std::string> hardening_summaries{};
-};
-
-struct CorrelationContext final
-{
-    std::string request_id{};
-    std::string trace_id{};
-    std::string span_id{};
-};
-
-class CorrelationScope final
-{
-public:
-    explicit CorrelationScope(CorrelationContext const& context) noexcept;
-    CorrelationScope(CorrelationScope const& other) = delete;
-    auto operator=(CorrelationScope const& other) -> CorrelationScope& = delete;
-    CorrelationScope(CorrelationScope&& other) = delete;
-    auto operator=(CorrelationScope&& other) -> CorrelationScope& = delete;
-    ~CorrelationScope();
-
-private:
-    CorrelationContext const* previous_{nullptr};
-};
 
 [[nodiscard]] auto admin_surface_name(AdminSurface surface) noexcept -> char const*;
 [[nodiscard]] auto admin_operation_name(AdminOperation operation) noexcept -> char const*;
@@ -254,6 +105,8 @@ inline constexpr auto max_log_field_value_bytes = std::size_t{2048U};
 [[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
                                           std::vector<StructuredLogField> fields) -> std::string;
 [[nodiscard]] auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext;
+// The context the calling thread's innermost open CorrelationScope published, or null. The pointer is to the thread's
+// own slot: read it at once, since opening or closing a scope on the thread changes what it points at.
 [[nodiscard]] auto current_correlation_context() noexcept -> CorrelationContext const*;
 [[nodiscard]] auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)
     -> std::vector<StructuredLogField>;

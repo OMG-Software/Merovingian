@@ -1,6 +1,6 @@
 # Runtime state structs keep their implicit, possibly throwing, moves
 
-* Status: accepted
+* Status: superseded by [ADR-0519](0519-runtime-state-rings-use-std-list-so-moves-cannot-throw.md)
 * Date: 2026-10-29
 
 Technical Story: SonarQube Cloud rule `cpp:S5018` (3 open findings, triaged 2026-10-29)

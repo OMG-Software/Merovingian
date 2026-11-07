@@ -16,7 +16,7 @@ namespace merovingian::homeserver
 // directly (`.m.rule.invite_for_me`'s state_key match, `.m.rule.is_user_mention`'s
 // `content.m\.mentions.user_ids` match).
 //
-// Shared by client_server.cpp (which serves this verbatim to clients over
+// Shared by ClientServerRuntime.cpp (which serves this verbatim to clients over
 // GET /pushrules) and room_service.cpp (which parses it via
 // push::parse_push_ruleset to gate real delivery), so the ruleset a client is
 // told it has and the ruleset that actually decides whether a push fires can

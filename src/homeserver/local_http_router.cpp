@@ -11,7 +11,19 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentDeviceKey.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentInvite.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentRoom.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -19,6 +31,13 @@
 #include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/events/unsigned_data.hpp"
+#include "merovingian/federation/FederationDirectory.hpp"
+#include "merovingian/federation/FederationKeyRecord.hpp"
+#include "merovingian/federation/FederationProfile.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationResponse.hpp"
+#include "merovingian/federation/FederationThumbnailQuery.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -28,10 +47,20 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -42,17 +71,23 @@
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_residency.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/client_address.hpp"
-#include "merovingian/media/repository.hpp"
+#include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
+#include "merovingian/observability/AdminOperation.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/CorrelationContext.hpp"
+#include "merovingian/observability/CorrelationScope.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -622,7 +657,7 @@ namespace
             {
                 continue;
             }
-            // Shared with client_server.cpp's broadcast so both carry the
+            // Shared with ClientServerRuntime.cpp's broadcast so both carry the
             // device keys with the owner's cross-signing signatures.
             auto const content = federation::build_device_list_update_content(store, user_id, device.device_id,
                                                                               static_cast<std::int64_t>(stream_id));
@@ -940,7 +975,7 @@ namespace
     // Parses the path suffix after /_matrix/client/v3/rooms/ for a
     // PUT .../state/{eventType}[/{stateKey}] request.  The room_id,
     // event type and optional state key are percent-decoded exactly as
-    // the full client-server path parser does in client_server.cpp.
+    // the full client-server path parser does in ClientServerRuntime.cpp.
     [[nodiscard]] auto room_state_put_path_parts(std::string_view suffix) -> std::optional<StatePutPathParts>
     {
         auto constexpr marker = std::string_view{"/state/"};
@@ -1412,7 +1447,7 @@ namespace
         // window: another thread's copy of the same EDU must not slip between
         // them. The mutex is recursive, so this is harmless when the caller
         // already holds it.
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto const now = federation::EduIdempotenceWindow::Clock::now();
         if (runtime.inbound_to_device_window.seen(origin, *sender, *message_id, now))
         {
@@ -1516,7 +1551,7 @@ namespace
         auto const server_name = path.substr(0U, separator);
         auto const media_id = path.substr(separator + 1U);
         // #444: reject the same traversal/whitespace shapes the repository
-        // boundary (media_id_is_safe() in repository.cpp) rejects, so a
+        // boundary (media_id_is_safe() in LocalMediaRepository.cpp) rejects, so a
         // crafted URL never parses into a media_id any downstream code could
         // mistake for a safe value before the repository layer catches it.
         if (media_id.empty() || media_id.find('/') != std::string_view::npos ||
@@ -1572,7 +1607,7 @@ namespace
     // routes above. Strips any query string, then rejects anything that
     // isn't a safe single path segment: non-empty, no '/', no "..", no
     // embedded space (the same constraints media::upload_local_media applies
-    // via media_id_is_safe() in repository.cpp when it mints a media ID).
+    // via media_id_is_safe() in LocalMediaRepository.cpp when it mints a media ID).
     // Without this, a request like
     // ".../admin/media/remove/m1_digest?reason=x" would treat the query
     // string as part of the media ID and silently act on the wrong object
@@ -1627,7 +1662,7 @@ namespace
                     // membership event, the user it is about. The set is read in the same hold as the position.
                     auto audience = std::vector<std::string>{};
                     auto const visible = [&] {
-                        auto const lock = std::unique_lock<RuntimeMutex>{rt->mutex};
+                        auto const lock = RuntimeLock{rt->mutex};
                         audience = sync_audience_of_room(
                             rt->database.persistent_store, envelope.room_id,
                             {envelope.event_type == "m.room.member" && envelope.state_key.has_value()
@@ -1654,7 +1689,7 @@ namespace
                 // CSAZ-11: a redaction that has not been applied is not sent to clients
                 // (rooms/v3.md "Handling redactions"), so it raises no notification either.
                 auto const redaction_withheld = [&]() {
-                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    auto const guard = RuntimeLock{rt->mutex};
                     return database::redaction_is_withheld(rt->database.persistent_store, envelope.event_id);
                 }();
                 if (!redaction_withheld)
@@ -1702,7 +1737,7 @@ namespace
                 // typing-expiry job and the client typing route scan and erase
                 // typing_users under it (R13, ADR-0199). Every read and write of
                 // runtime state below happens under the lock; none of it blocks.
-                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                auto const guard = RuntimeLock{rt->mutex};
                 // 0.12.5 audit, finding 12: bound what a peer can put here. The
                 // primary bound is membership — this server has no use for
                 // typing state in a room it is not in, and without the check a
@@ -1780,7 +1815,7 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::receipt: {
-                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                auto const guard = RuntimeLock{rt->mutex};
                 auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
                 auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
@@ -1951,7 +1986,7 @@ namespace
                 auto const result = accept_inbound_presence(*rt, envelope.origin, envelope.content_json);
                 if (presence_enabled(*rt) && rt->sync_notifier != nullptr)
                 {
-                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    auto const guard = RuntimeLock{rt->mutex};
                     rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
@@ -2015,7 +2050,7 @@ namespace
                 if (rt->sync_notifier != nullptr)
                 {
                     // Read under runtime.mutex, which the enqueue above took and released.
-                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    auto const guard = RuntimeLock{rt->mutex};
                     rt->sync_notifier->publish(visible_stream_position(rt->database),
                                                rt->database.persistent_store.next_sync_stream_id);
                 }
@@ -2064,7 +2099,7 @@ namespace
                 }
                 // The sink runs without runtime.mutex: room membership, the device-list
                 // changes and the visible stream position are all read and written under it.
-                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                auto const guard = RuntimeLock{rt->mutex};
                 if (!user_id->empty())
                 {
                     // Audit FED-7. Only a local user who shares a joined room
@@ -2109,7 +2144,7 @@ namespace
             // Reads room state and the event graph, which the membership
             // acceptor and ingest paths write under rt->mutex (recursive, so
             // safe from the worker-relay handler too). No network I/O here.
-            auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            auto const guard = RuntimeLock{rt->mutex};
             auto const& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
                 return r.room_id == room_id;
@@ -2252,7 +2287,7 @@ namespace
             //   - the worker-relay path (worker_pool.cpp's
             //     handle_membership_ingest_request) already holds rt->mutex when
             //     it calls this callback.
-            // rt->mutex is a std::recursive_mutex, so acquiring it here is safe in
+            // rt->mutex is recursive (RuntimeMutex), so acquiring it here is safe in
             // both cases (fresh lock or reentrant re-lock on the same thread).
             // Deliberately taking only the global mutex, not a room stripe mutex:
             // ingest_pdu_event documents a stripe-then-global lock order, and
@@ -2263,7 +2298,7 @@ namespace
             // network I/O under this lock (unlike outbound calls elsewhere in
             // this file), so holding the global mutex for the whole callback
             // does not risk blocking on a remote round trip.
-            auto guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            auto guard = RuntimeLock{rt->mutex};
             auto& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
                 return r.room_id == room_id;
@@ -2809,7 +2844,7 @@ namespace
             // rt->mutex. Take only the global recursive mutex, never a room
             // stripe mutex, so the lock order can never invert against
             // ingest_pdu_event's documented stripe-then-global ordering.
-            auto guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            auto guard = RuntimeLock{rt->mutex};
             auto parsed = canonicaljson::parse_lossless(invite.invite_event_json);
             if (parsed.error != canonicaljson::ParseError::none ||
                 std::get_if<canonicaljson::Object>(&parsed.value.storage()) == nullptr)
@@ -3110,7 +3145,7 @@ namespace
         runtime.federation.timestamp_to_event_query_provider =
             [rt](std::string_view room_id, std::int64_t ts, database::TimeDirection direction,
                  std::string_view origin) -> federation::RoomReadResult {
-            auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+            auto const guard = RuntimeLock{rt->mutex};
             return federation::build_timestamp_to_event_response(rt->database.persistent_store, room_id, ts, direction,
                                                                  origin);
         };
@@ -3879,12 +3914,11 @@ namespace
     // Returns true when the event was stored (or was already present), false when
     // it failed verification.
     [[nodiscard]] auto verify_and_store_backfilled_event(
-        HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin, std::string_view event_json,
-        rooms::RoomVersionPolicy const& policy, BackfillBudget& budget,
+        HomeserverRuntime& runtime, std::string_view room_id, [[maybe_unused]] std::string_view origin,
+        std::string_view event_json, rooms::RoomVersionPolicy const& policy, BackfillBudget& budget,
         std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt,
         bool allow_auth_events_only = false) -> bool
     {
-        std::ignore = origin;
         if (budget.key_resolution_locally_denied || event_json.empty() || event_json.front() != '{')
         {
             return false;
@@ -3922,7 +3956,7 @@ namespace
             auto const* raw_event_id = raw_obj == nullptr ? nullptr : string_member(*raw_obj, "event_id");
             auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto global_guard = RuntimeLock{runtime.mutex};
             auto const same_stored_event = [&](database::PersistentEvent const& evt) {
                 if (raw_event_id == nullptr || evt.event_id != *raw_event_id)
                 {
@@ -4032,7 +4066,7 @@ namespace
         // insertion into the event table.
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-        auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto global_guard = RuntimeLock{runtime.mutex};
 
         auto const envelope_opt = federation::parse_inbound_pdu_envelope(stored_json, policy.id);
         if (!envelope_opt.has_value())
@@ -4260,7 +4294,7 @@ namespace
             return true;
         }
 
-        auto const [stream_ordering, sync_stream_id] = [&]() {
+        [[maybe_unused]] auto const [stream_ordering, sync_stream_id] = [&]() {
             auto const ordering = allocate_stream_ordering(runtime.database);
             auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
             return std::make_pair(ordering, sync_id);
@@ -4315,7 +4349,6 @@ namespace
         {
             record_state_group(*state_after);
         }
-        std::ignore = sync_stream_id;
         return true;
     }
 
@@ -4415,7 +4448,7 @@ namespace
             {
                 auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                auto global_guard = RuntimeLock{runtime.mutex};
                 // Already stored: it was verified when stored, or was created
                 // here. ADR-0070: an /event_auth outlier has no state group,
                 // so testing for one would re-fetch and re-verify it on every
@@ -4483,7 +4516,7 @@ namespace
             {
                 auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                auto global_guard = RuntimeLock{runtime.mutex};
                 prev_events_known = prev_events_have_state_groups(runtime.database.persistent_store, policy, json);
             }
             if (prev_events_known)
@@ -4541,7 +4574,7 @@ namespace
         {
             auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto global_guard = RuntimeLock{runtime.mutex};
             snapshot_state.reserve(pdu_ids.size());
             auto seen_keys = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
@@ -4785,7 +4818,7 @@ namespace
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto collect = [&]() {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto global_guard = RuntimeLock{runtime.mutex};
             return collect_missing_pdu_references(runtime.database.persistent_store, envelope);
         };
         auto [missing_auth, missing_prev] = collect();
@@ -4816,7 +4849,7 @@ namespace
             // events it is missing.
             auto earliest_events = [&]() {
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                auto global_guard = RuntimeLock{runtime.mutex};
                 return database::find_forward_extremities(runtime.database.persistent_store, room_id);
             }();
             std::ranges::sort(earliest_events);
@@ -4885,7 +4918,7 @@ namespace
         // event, not its content, that is missing.
         auto const is_stored = [&](std::string const& id) {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto global_guard = RuntimeLock{runtime.mutex};
             return runtime.database.persistent_store.events.contains(id);
         };
         auto const fetch_and_place = [&](std::string const& id) {
@@ -4931,7 +4964,7 @@ namespace
         // once the state at the gap is in, the held PDUs above it are placed.
         auto const targets = [&]() {
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
-            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto global_guard = RuntimeLock{runtime.mutex};
             return state_snapshot_targets(runtime.database.persistent_store, held, missing_prev,
                                           static_cast<std::size_t>(limits.max_outbound_calls));
         }();
@@ -5033,7 +5066,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         auto& store = runtime.database.persistent_store;
         // A room whose held state is not current (ADR-0301) takes the rescission path: its invite was
         // stored as an outlier, and ordinary receipt checks would need history this server lacks.
@@ -5117,7 +5150,7 @@ namespace
     // under the room stripe, where it is decisive.
     auto stored_version = std::optional<std::string>{};
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         if (auto const stored = answer_for_stored_pdu(runtime, envelope); stored.has_value())
         {
             return *stored;
@@ -5188,7 +5221,7 @@ namespace
     auto stream_ordering = std::uint64_t{0U};
     auto sync_stream_id = std::uint64_t{0U};
     {
-        auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto global_guard = RuntimeLock{runtime.mutex};
         // Admission and allocation are atomic under the runtime mutex. Nothing
         // below (including missing-history fetches) runs for an unsolicited
         // room. The explicit /send_join state bootstrap and verified, requested
@@ -5232,7 +5265,7 @@ namespace
     // sequence so per-room ordering is preserved. The global mutex protects all
     // in-memory PersistentStore / LocalDatabase vectors; it is released only
     // for the backend commit so independent rooms can commit in parallel.
-    auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto global_guard = RuntimeLock{runtime.mutex};
 
     // R03 (ADR-0165): a PDU this server cannot yet place is kept, as it would
     // have been stored (`stored_json`, which is the redacted copy after a
@@ -5283,7 +5316,6 @@ namespace
             // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
             auto const stripe_released = ScopedStripeReacquire{stripe_guard};
-            std::ignore = stripe_released;
             auto const backfill = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
             if (backfill.locally_denied)
             {
@@ -5616,7 +5648,7 @@ namespace
 
 auto pdu_event_already_stored(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id) -> bool
 {
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     return stored_copy_of(runtime.database.persistent_store, room_id, event_id) == StoredCopy::in_room;
 }
 
@@ -5757,7 +5789,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
-    auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto guard = RuntimeLock{runtime.mutex};
     // Publish the guard so a blocking network call further down the stack —
     // notably a remote media fetch — can release it for the duration. See
     // RuntimeLockRelease in request_lock.hpp.
@@ -6114,7 +6146,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         // create_room self-locks (see room_service.cpp); release this
         // handler's own guard first so it is not double-locked, matching the
-        // join_room delegation just above and the equivalent client_server.cpp
+        // join_room delegation just above and the equivalent ClientServerRuntime.cpp
         // call sites.
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
@@ -6293,7 +6325,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     auto onbind_request = false;
 
     {
-        auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto guard = RuntimeLock{runtime.mutex};
         if (!runtime.started)
         {
             return response(503U, matrix_error("M_UNKNOWN", "runtime not started"));
@@ -6445,7 +6477,7 @@ auto fetch_remote_event_into_store(HomeserverRuntime& runtime, std::string_view 
 {
     rooms::RoomVersionPolicy const* policy = nullptr;
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         if (runtime.database.persistent_store.events.find_in_room(room_id, event_id) !=
             runtime.database.persistent_store.events.end())
         {

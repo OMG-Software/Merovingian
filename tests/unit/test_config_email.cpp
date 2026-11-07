@@ -3,7 +3,8 @@
 //
 // Configuration parsing, validation and reload classification for server.email.* (email pushers).
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"

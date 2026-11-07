@@ -26,14 +26,29 @@
 #include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <poll.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -51,9 +66,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-
-#include <poll.h>
-#include <unistd.h>
 
 namespace
 {

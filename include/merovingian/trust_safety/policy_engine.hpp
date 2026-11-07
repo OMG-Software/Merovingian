@@ -3,155 +3,29 @@
 #pragma once
 
 #include "merovingian/database/statement.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/trust_safety/EnforcementReason.hpp"
+#include "merovingian/trust_safety/FederationPolicyRequest.hpp"
+#include "merovingian/trust_safety/MediaPolicyRequest.hpp"
+#include "merovingian/trust_safety/PolicyAction.hpp"
+#include "merovingian/trust_safety/PolicyDecision.hpp"
+#include "merovingian/trust_safety/PolicyServerHook.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
+#include "merovingian/trust_safety/RegistrationPolicyRequest.hpp"
+#include "merovingian/trust_safety/ReportingApiRoute.hpp"
+#include "merovingian/trust_safety/ReportingApiRouteMatch.hpp"
+#include "merovingian/trust_safety/ReviewRecord.hpp"
+#include "merovingian/trust_safety/ReviewTarget.hpp"
+#include "merovingian/trust_safety/RoomPolicyRequest.hpp"
+#include "merovingian/trust_safety/SafetyAuditEvent.hpp"
+#include "merovingian/trust_safety/SafetyReportRequest.hpp"
+#include "merovingian/trust_safety/UserReportRequest.hpp"
 
-#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace merovingian::trust_safety
 {
-
-enum class PolicySurface
-{
-    federation,
-    media,
-    registration,
-    room,
-    account,
-};
-
-enum class PolicyAction
-{
-    allow,
-    deny,
-    quarantine,
-    lock_account,
-    suspend_account,
-    accept_report,
-};
-
-enum class ReviewTarget
-{
-    federation_server,
-    media,
-    room,
-};
-
-struct EnforcementReason final
-{
-    std::string code{};
-    std::string public_summary{};
-    std::string admin_detail{};
-    bool admin_visible{true};
-};
-
-struct PolicyDecision final
-{
-    bool allowed{false};
-    PolicySurface surface{PolicySurface::account};
-    PolicyAction action{PolicyAction::deny};
-    EnforcementReason reason{};
-    bool fail_closed{true};
-    std::string policy_server_rule_id{};
-};
-
-struct PolicyServerHook final
-{
-    bool enabled{false};
-    bool reachable{true};
-    bool allow_without_result{false};
-    bool decision_received{false};
-    PolicyAction action{PolicyAction::allow};
-    EnforcementReason reason{};
-    std::string rule_id{};
-    std::uint32_t timeout_milliseconds{250U};
-};
-
-struct RegistrationPolicyRequest final
-{
-    std::string requested_user_id{};
-    std::string requester_address{};
-    bool registrations_enabled{false};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
-struct FederationPolicyRequest final
-{
-    std::string origin_server{};
-    bool held_for_review{false};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
-struct MediaPolicyRequest final
-{
-    std::string media_id{};
-    bool held_for_review{false};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
-struct RoomPolicyRequest final
-{
-    std::string room_id{};
-    bool held_for_review{false};
-    bool blocked_by_local_policy{false};
-    PolicyServerHook policy_server{};
-};
-
-struct ReviewRecord final
-{
-    ReviewTarget target{ReviewTarget::media};
-    std::string target_id{};
-    bool active{false};
-    EnforcementReason reason{};
-};
-
-struct ReportingApiRoute final
-{
-    std::string method{};
-    std::string path_template{};
-    bool requires_access_token{true};
-    bool requires_admin{false};
-    http::RateLimitPolicy rate_limit{};
-};
-
-struct ReportingApiRouteMatch final
-{
-    bool matched{false};
-    ReportingApiRoute route{};
-    std::string reason{};
-};
-
-struct SafetyReportRequest final
-{
-    std::string reporter_user_id{};
-    std::string room_id{};
-    std::string event_id{};
-    std::string reason{};
-    std::int32_t score{0};
-};
-
-// A report about a user (CS API `POST /users/{userId}/report`, v1.14).
-struct UserReportRequest final
-{
-    std::string reporter_user_id{};
-    std::string reported_user_id{};
-    std::string reason{};
-};
-
-struct SafetyAuditEvent final
-{
-    std::string event_type{};
-    std::string actor{};
-    std::string entity{};
-    PolicySurface surface{PolicySurface::account};
-    PolicyAction action{PolicyAction::deny};
-    EnforcementReason reason{};
-};
 
 [[nodiscard]] auto policy_surface_name(PolicySurface surface) noexcept -> char const*;
 [[nodiscard]] auto policy_action_name(PolicyAction action) noexcept -> char const*;

@@ -4,8 +4,8 @@
 #include "merovingian/federation/transactions.hpp"
 
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>
@@ -209,10 +209,12 @@ auto federation_routes() -> std::vector<FederationRoute>
 
 auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch
 {
+    // Match on the path alone: the query string is never part of a route.
     auto const target_has_query = target.find('?');
     auto const target_path = target_has_query == std::string_view::npos ? target : target.substr(0U, target_has_query);
     for (auto const& candidate : federation_routes())
     {
+        // Exact templates (no placeholders) match literally; the dynamic routes below match on a prefix.
         if (candidate.method != method)
         {
             continue;
@@ -221,6 +223,8 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
+        // Each placeholder route requires the exact number of non-empty trailing segments, so a missing or extra
+        // segment is not routed.
         if (candidate.endpoint == FederationEndpoint::transaction &&
             candidate.path_template == "/_matrix/federation/v1/send/{txnId}" &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send/", 1U))
@@ -232,6 +236,8 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
+        // send_join, send_leave and invite exist as both v1 and v2; the template check keeps each version on its own
+        // route entry.
         if (candidate.endpoint == FederationEndpoint::send_join &&
             candidate.path_template == "/_matrix/federation/v2/send_join/{roomId}/{eventId}" &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v2/send_join/", 2U))
@@ -283,6 +289,7 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
+        // The remaining routes have a single template, so the endpoint and prefix are enough.
         if (candidate.endpoint == FederationEndpoint::backfill &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/backfill/", 1U))
         {
@@ -350,6 +357,7 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
     }
 
+    // No route matched this method and path; the caller turns this into M_UNRECOGNIZED rather than guessing.
     return {false, {}, "federation route not found"};
 }
 

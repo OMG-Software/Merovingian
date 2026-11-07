@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/search_room_index.hpp"
 
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/persistent_event.hpp"
-#include "merovingian/database/persistent_store.hpp"
 
 #include <algorithm>
 #include <cstddef>

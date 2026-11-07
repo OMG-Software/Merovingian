@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/federation/FederationDecision.hpp"
+#include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 
 #include <cstddef>

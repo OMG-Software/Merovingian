@@ -5,8 +5,12 @@
 // pin the cost by rows examined and transactions committed, never by time, and pin that the results are unchanged.
 
 #include "../support/e2ee_caps_support.hpp"
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <catch2/catch_test_macros.hpp>

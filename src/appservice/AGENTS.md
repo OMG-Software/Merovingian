@@ -9,17 +9,18 @@ assertion (`?user_id=`), and the outbound `/_matrix/app/v1/*` client.
 |---|---|
 | `registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
 | `registration_yaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
+| `cleartext_policy.cpp` | `appservice_url_problem`: the ADR-0515 rule for a registration `url` (scheme, userinfo, query, cleartext host) |
 | `masquerade_token.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
-| `appservice_client.cpp` | Outbound `PUT /transactions/{txnId}` (with the optional `ephemeral` array), `POST /ping`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
+| `AppserviceClient.cpp` | Outbound `PUT /transactions/{txnId}` (with the optional `ephemeral` array), `POST /ping`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
 
 ## Third-party lookups
 
 The client-server `GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},
 location,location/{p},user,user/{p}}` routes (routed in
-`homeserver/client_server.cpp`) are backed by `AppserviceClient::
+`homeserver/ClientServerRuntime.cpp`) are backed by `AppserviceClient::
 query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
 `query_thirdparty_location_by_protocol`/`query_thirdparty_user_by_userid`/
-`query_thirdparty_user_by_protocol` in `appservice_client.cpp`.
+`query_thirdparty_user_by_protocol` in `AppserviceClient.cpp`.
 
 - **Ownership**: a protocol name is "owned" by whichever registration lists
   it in `protocols:`. `protocol/{p}` and `location|user/{p}` route only to
@@ -45,7 +46,7 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   pure, network-free, and exported specifically so the bounded/type-checked
   extraction (dropped malformed entries, non-string `fields` members
   dropped, capped array/object sizes — see the constants at the top of
-  `appservice_client.cpp`) is unit-testable without a mock server. A bridge
+  `AppserviceClient.cpp`) is unit-testable without a mock server. A bridge
   is not a trusted peer: never widen these bounds without updating the
   corresponding unit test.
 
@@ -119,6 +120,15 @@ directory network (appservice, protocol) it names without asking the appservice 
 
 ## Security rules
 
+- **Cleartext http only to a loopback IP literal or a listed host (ADR-0515).** A registration `url` with
+  scheme `http` is accepted only when its host is an IPv4 address in 127.0.0.0/8, `::1`
+  (`net::is_loopback_ip_literal`, shared with SMTP), or an exact, ASCII-case-insensitive entry of
+  `appservice.allow_cleartext_hosts`. `localhost` is a name, not a literal. A `url` with userinfo, a query or a
+  scheme other than http/https is refused. `https` is unchanged and a null `url` stays valid. The rule is
+  `appservice_url_problem()` in `cleartext_policy.cpp`, applied by `load_registrations` (a per-file finding that
+  never contains a token) and again by `AppserviceClient` before any lookup (defence in depth; the client takes
+  the list from `config::AppserviceConfig`). `AppserviceClient.cpp` holds no `http://`/`https://` literal: it
+  rebuilds the request URL from `http::parse_outbound_url` parts.
 - `as_token` and `hs_token` live in `core::SecretBuffer`. Never log them. The
   `hs_token` must stay reversible because it is transmitted to the appservice;
   it cannot be stored as a hash.
@@ -153,7 +163,7 @@ homeserver asks that appservice before answering 404 — a bridge materialises
 users and rooms on demand, so a flat 404 makes the namespace pointless.
 
 - Wired at `GET /_matrix/client/v3/directory/room/{roomAlias}` and
-  `GET /_matrix/client/v3/profile/{userId}` in `homeserver/client_server.cpp`,
+  `GET /_matrix/client/v3/profile/{userId}` in `homeserver/ClientServerRuntime.cpp`,
   backed by `AppserviceClient::query_room_alias` / `query_user`.
 - **Only the owning appservice is queried.** The spec limits queries to an
   appservice's own namespace, and fanning out would leak which aliases and
@@ -192,7 +202,7 @@ never self-compares — flagging that would refuse to start every correct bridge
 ## Timestamp massaging
 
 `?ts=` on `PUT /rooms/{roomId}/send/...` and `PUT /rooms/{roomId}/state/...` sets the resulting event's
-`origin_server_ts` (Application Service API, "Timestamp massaging"; ADR-0303). `homeserver/client_server.cpp`
+`origin_server_ts` (Application Service API, "Timestamp massaging"; ADR-0303). `homeserver/ClientServerRuntime.cpp`
 `massaged_timestamp()` reads it only when `req.access_token` is the masquerade token minted from a matched
 `as_token`, validates it (decimal integer, `[-(2**53)+1, (2**53)-1]`, else `400 M_INVALID_PARAM`) and hands it to the
 local router in `LocalHttpRequest::origin_server_ts`, then `send_event(..., origin_server_ts)` and

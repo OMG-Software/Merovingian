@@ -3,11 +3,12 @@
 
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
 
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/logger.hpp"
-#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -137,7 +138,7 @@ auto defer_unresolved_pdu(HomeserverRuntime& runtime, federation::InboundPduEnve
 auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view room_id, std::string_view event_id)
     -> void
 {
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     // The store indexes retained PDUs by the events they are missing (ADR-0326), so this costs the
     // rows that wait for `event_id`, never a search of the room's retained JSON.
     auto const woken = database::take_deferred_pdus_awaiting(runtime.database.persistent_store, room_id, event_id);
@@ -170,7 +171,7 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
     };
     auto due = std::vector<DueRow>{};
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         auto const now = std::chrono::steady_clock::now();
         auto const now_ms = wall_clock_ms();
         auto dropped = std::vector<Dropped>{};
@@ -228,7 +229,7 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
         auto const envelope = federation::rebuild_inbound_pdu_envelope(row.pdu_json, item.room_version, row.origin);
         if (!envelope.has_value() || envelope->event_id != row.event_id || envelope->room_id != row.room_id)
         {
-            auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            auto const guard = RuntimeLock{runtime.mutex};
             drop_deferral(runtime, row, "retained PDU no longer parses as the event it was kept for");
             continue;
         }
@@ -237,7 +238,7 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
         auto const result =
             runtime.federation.pdu_sink ? runtime.federation.pdu_sink(*envelope) : ingest_pdu_event(runtime, *envelope);
 
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const guard = RuntimeLock{runtime.mutex};
         if (retry_is_finished(result.status))
         {
             LOG_INFO("Retained federation PDU resolved; event_id=" + row.event_id + " room_id=" + row.room_id +
@@ -261,7 +262,7 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
     }
 
     // Phase 3: when to come back.
-    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const guard = RuntimeLock{runtime.mutex};
     auto const now = std::chrono::steady_clock::now();
     auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(deferred_pdu_idle_delay);
     for (auto const& row : runtime.database.persistent_store.deferred_pdus)
@@ -291,7 +292,7 @@ DeferredPduRetryJob::~DeferredPduRetryJob()
 auto DeferredPduRetryJob::start() -> bool
 {
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime_.mutex};
+        auto const guard = RuntimeLock{runtime_.mutex};
         runtime_.deferred_pdu_retry_wake = [this]() {
             job_.wake();
         };
@@ -307,7 +308,7 @@ auto DeferredPduRetryJob::start() -> bool
 auto DeferredPduRetryJob::stop() noexcept -> void
 {
     {
-        auto const guard = std::unique_lock<RuntimeMutex>{runtime_.mutex};
+        auto const guard = RuntimeLock{runtime_.mutex};
         runtime_.deferred_pdu_retry_wake = nullptr;
     }
     job_.stop();

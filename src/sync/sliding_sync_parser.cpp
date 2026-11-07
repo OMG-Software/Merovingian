@@ -456,6 +456,8 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
         return SlidingSyncRequest{};
     }
 
+    // The canonical parser refuses floats and exponents, so range bounds and timeouts arrive as exact integers or the
+    // request fails here.
     auto const parsed = canonicaljson::parse_lossless(body);
     if (parsed.error != canonicaljson::ParseError::none)
     {
@@ -467,6 +469,7 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
         return std::nullopt;
     }
 
+    // A field of the wrong type is ignored, except `lists`: a malformed list or range fails the whole request.
     auto req = SlidingSyncRequest{};
 
     if (auto const* v = find_member(*root, "conn_id"); v != nullptr)
@@ -486,6 +489,7 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
         }
         for (auto const& member : *lists_obj)
         {
+            // A list that is not an object is malformed, so reject the whole request.
             auto const* list_obj = as_object(*member.value);
             if (list_obj == nullptr)
             {
@@ -507,6 +511,7 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
         {
             for (auto const& member : *subs_obj)
             {
+                // Unlike lists, a malformed subscription is skipped so one bad room does not fail the request.
                 auto const* sub_obj = as_object(*member.value);
                 if (sub_obj == nullptr)
                 {
@@ -566,9 +571,8 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     {
         return "too many lists";
     }
-    for (auto const& [name, list] : request.lists)
+    for ([[maybe_unused]] auto const& [name, list] : request.lists)
     {
-        std::ignore = name;
         if (list.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a list";
@@ -582,9 +586,8 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
             return "too many bump_event_types in a list";
         }
     }
-    for (auto const& [room_id, subscription] : request.room_subscriptions)
+    for ([[maybe_unused]] auto const& [room_id, subscription] : request.room_subscriptions)
     {
-        std::ignore = room_id;
         if (subscription.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a room subscription";

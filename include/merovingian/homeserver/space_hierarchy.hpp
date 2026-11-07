@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 
 #include <cstddef>
 #include <cstdint>

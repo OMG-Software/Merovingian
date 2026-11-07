@@ -229,6 +229,8 @@ SCENARIO("Federation media download bypasses the worker pool because the worker 
 
 SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[federation][routing][room-id]")
 {
+    // The room ID picks the worker shard, so every room-scoped route must yield it; a missed route would be handled by
+    // the wrong shard.
     GIVEN("a request to a room-scoped federation endpoint")
     {
         auto const room_id = std::string{"!room:example.com"};
@@ -260,6 +262,7 @@ SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[fe
             }
         }
 
+        // A query string is not part of the path segment and must not leak into the room ID.
         WHEN("the target is /_matrix/federation/v1/backfill/{roomId}")
         {
             auto const request = make_request("/_matrix/federation/v1/backfill/" + room_id + "?limit=10");
@@ -323,6 +326,7 @@ SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[fe
             }
         }
 
+        // Routes with a trailing event ID must still yield only the room ID segment.
         WHEN("the target is /_matrix/federation/v1/invite/{roomId}/{eventId}")
         {
             auto const request = make_request("/_matrix/federation/v1/invite/" + room_id + "/$event");
@@ -341,6 +345,7 @@ SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[fe
             }
         }
 
+        // Same rule for the DAG-gap query endpoint, which a remote server can aim at any room.
         WHEN("the target is /_matrix/federation/v1/get_missing_events/{roomId}")
         {
             auto const request = make_request("/_matrix/federation/v1/get_missing_events/" + room_id);

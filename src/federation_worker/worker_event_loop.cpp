@@ -6,7 +6,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -14,10 +15,16 @@
 #include "merovingian/federation_worker/db_uri_fd.hpp"
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
 #include "merovingian/federation_worker/store_read_guard.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_ipc_limits.hpp"
-#include "merovingian/http/outbound_client.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+#include "merovingian/http/OutboundError.hpp"
+#include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -760,10 +767,11 @@ auto WorkerEventLoop::run() -> void
     // join genuinely succeeded. See docs/architecture.md, "Federation worker
     // room staleness".
     runtime.federation.membership_acceptor =
-        [channel_ptr](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
+        [channel_ptr](federation::FederationEndpoint endpoint, [[maybe_unused]] std::string_view room_id,
+                      [[maybe_unused]] std::string_view event_id,
                       federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
-        std::ignore = room_id;  // envelope.room_id carries the same value
-        std::ignore = event_id; // unused by the default implementation too
+        // room_id is redundant (envelope.room_id carries the same value) and event_id is
+        // unused by the default implementation too.
         auto const json_body = serialize_membership_ingest(endpoint, envelope);
         auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
         if (!reply.has_value())

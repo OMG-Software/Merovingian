@@ -3,8 +3,11 @@
 #pragma once
 
 #include "merovingian/auth/identity.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/config/RegistrationSecurityConfig.hpp"
+#include "merovingian/config/SsoConfig.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/SessionRefreshResult.hpp"
 
 #include <cstddef>
 #include <cstdint>

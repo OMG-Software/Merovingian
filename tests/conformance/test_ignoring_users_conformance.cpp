@@ -24,8 +24,14 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
@@ -736,7 +742,7 @@ SCENARIO("an ignored user's messages are not counted in the ignoring user's push
         {
             auto const badge = [&] {
                 auto const guard =
-                    std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.homeserver.mutex};
+                    merovingian::homeserver::RuntimeLock{started.runtime.homeserver.mutex};
                 auto const ruleset = merovingian::homeserver::load_push_ruleset(
                     started.runtime.homeserver.database.persistent_store, "@alice:example.org", 200U);
                 return merovingian::homeserver::count_push_badge(started.runtime.homeserver, "@alice:example.org",

@@ -4,8 +4,9 @@
 #include "merovingian/homeserver/push_badge_count.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/read_markers.hpp"
 
 #include <algorithm>
@@ -114,7 +115,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     }
     ++result.table_walks;
 
-    auto const classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
+    auto classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
     auto unsettled = rooms.size();
     auto const settle = [&unsettled](BadgeRoom& room) {
         if (!room.settled)

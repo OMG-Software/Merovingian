@@ -3,7 +3,24 @@
 
 #include "merovingian/observability/observability.hpp"
 
+#include "merovingian/observability/AdminControlSurface.hpp"
+#include "merovingian/observability/AdminOperation.hpp"
+#include "merovingian/observability/AdminRoute.hpp"
+#include "merovingian/observability/AdminRouteMatch.hpp"
+#include "merovingian/observability/AdminSurface.hpp"
+#include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
+#include "merovingian/observability/CorrelationContext.hpp"
+#include "merovingian/observability/HealthCheckSnapshot.hpp"
+#include "merovingian/observability/HealthStatus.hpp"
+#include "merovingian/observability/MetricLabel.hpp"
+#include "merovingian/observability/MetricSample.hpp"
+#include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/ObservabilitySnapshot.hpp"
+#include "merovingian/observability/StructuredLogEvent.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
+#include "merovingian/observability/observability_internal.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -147,12 +164,6 @@ namespace
         return label_name_is_safe(value);
     }
 
-    auto correlation_slot() noexcept -> CorrelationContext const*&
-    {
-        thread_local auto* context = static_cast<CorrelationContext const*>(nullptr);
-        return context;
-    }
-
     // A query parameter name with its %XX escapes decoded, so `access%5Ftoken` is judged as
     // `access_token`. A malformed escape is kept as written.
     [[nodiscard]] auto decoded_query_name(std::string_view name) -> std::string
@@ -223,6 +234,17 @@ namespace
     }
 
 } // namespace
+
+namespace detail
+{
+
+    auto correlation_slot() noexcept -> std::optional<CorrelationContext>&
+    {
+        thread_local auto context = std::optional<CorrelationContext>{};
+        return context;
+    }
+
+} // namespace detail
 
 auto admin_surface_name(AdminSurface surface) noexcept -> char const*
 {
@@ -705,7 +727,8 @@ auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext
 
 auto current_correlation_context() noexcept -> CorrelationContext const*
 {
-    return correlation_slot();
+    auto const& slot = detail::correlation_slot();
+    return slot.has_value() ? &*slot : nullptr;
 }
 
 auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)
@@ -828,17 +851,6 @@ auto observability_snapshot_is_safe(ObservabilitySnapshot const& snapshot) noexc
            std::ranges::all_of(snapshot.hardening_summaries, [](std::string const& summary) {
                return !summary.empty();
            });
-}
-
-CorrelationScope::CorrelationScope(CorrelationContext const& context) noexcept
-    : previous_{correlation_slot()}
-{
-    correlation_slot() = &context;
-}
-
-CorrelationScope::~CorrelationScope()
-{
-    correlation_slot() = previous_;
 }
 
 } // namespace merovingian::observability

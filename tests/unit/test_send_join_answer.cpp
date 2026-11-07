@@ -18,16 +18,26 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/config/config.hpp"
-#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/Config.hpp"
+#include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/DatabaseConfig.hpp"
+#include "merovingian/config/ListenersConfig.hpp"
+#include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/SecurityConfig.hpp"
+#include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/send_join_answer.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -719,6 +729,8 @@ SCENARIO("A join sent a second time is answered again, not refused", "[homeserve
 SCENARIO("A make_join template is built from the room's own state and tips",
          "[homeserver][send_join_answer][f19][make_join]")
 {
+    // 25 tips exceed the 20-entry prev_events cap, and the rejected event with a huge depth
+    // and a real tip as prev_event shows that rejected events never feed the template.
     GIVEN("a public room with 25 tips and a rejected event that names the real tip")
     {
         auto const path = unique_sqlite_path();
@@ -749,6 +761,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
         auto const& provider = runtime.federation.membership_template_provider;
         REQUIRE(provider != nullptr);
 
+        // The template provider is the same callback the federation make_join endpoint uses.
         WHEN("bob's server asks for a join template")
         {
             auto const tmpl = provider(FederationEndpoint::make_join, room.room_id, bob, {});
@@ -775,6 +788,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
             }
         }
 
+        // The template depends only on the one room, not on how many other rooms the server holds.
         WHEN("thirty unrelated rooms are added and the template is asked for again")
         {
             auto const before = provider(FederationEndpoint::make_join, room.room_id, bob, {});
@@ -796,6 +810,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
             }
         }
 
+        // An invited user's join must be authorised by that invite, so the template names it.
         WHEN("a user who has an invite asks for a join template")
         {
             seed(runtime, room.room_id, "$bobinvite:local.example.org", "m.room.member", std::string{bob},
@@ -814,6 +829,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
         std::filesystem::remove(path);
     }
 
+    // After leaving, the server holds state but no forward extremities (ADR-0301).
     GIVEN("a room this server holds state for but no tips (ADR-0301: it left the room)")
     {
         auto const path = unique_sqlite_path();
@@ -832,6 +848,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
             auto const tmpl =
                 runtime.federation.membership_template_provider(FederationEndpoint::make_join, room.room_id, bob, {});
 
+            // No template at all is safer than one that detaches the join from the room's graph.
             THEN("there is none: an empty prev_events would detach the join from the room's graph")
             {
                 REQUIRE_FALSE(tmpl.has_value());
@@ -1007,6 +1024,7 @@ SCENARIO("A restricted-join decision reads the rooms it names, not the server",
 SCENARIO("A join sent again after the room moved on is not answered with older state",
          "[homeserver][send_join_answer][f23][resend]")
 {
+    // Checks whether any serialised state event carries the given membership value.
     auto const holds_membership = [](std::vector<std::string> const& events, std::string const& membership) {
         auto const wanted = R"("membership":")" + membership + "\"";
         return std::ranges::any_of(events, [&wanted](std::string const& json) {
@@ -1014,6 +1032,7 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
         });
     };
 
+    // The ban lands after the join envelope was built, so a stale re-answer would omit it.
     GIVEN("a join built on the room's tip, and then carol banned before the join arrives")
     {
         auto const path = unique_sqlite_path();
@@ -1039,6 +1058,8 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
         seed_state_after(runtime, room, "$ban:local.example.org", "m.room.member", carol_user, std::string{admin},
                          R"({"membership":"ban"})");
 
+        // Re-sending the same join must be answered from the room's state before the join, as the
+        // first answer was, even though the room has since moved on.
         WHEN("the join is accepted and sent again")
         {
             auto const first = accept(runtime, envelope);
@@ -1058,6 +1079,7 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
             }
         }
 
+        // With omit_members the answer drops member events but must still report the same servers_in_room.
         WHEN("the join asks for omit_members and is sent again")
         {
             envelope.omit_members = true;
@@ -1078,6 +1100,7 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
         std::filesystem::remove(path);
     }
 
+    // A rejoin after a leave: the state before the join holds bob's leave, not a join.
     GIVEN("bob, who left the room, joining it again")
     {
         auto const path = unique_sqlite_path();
@@ -1111,6 +1134,8 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
         std::filesystem::remove(path);
     }
 
+    // A ban applied after the join was built means the join cannot alter the room's state;
+    // the resent answer still must not lose the ban.
     GIVEN("bob banned after his join was built, so that his join does not change the room's state")
     {
         auto const path = unique_sqlite_path();

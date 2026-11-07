@@ -4,7 +4,7 @@
 // AUTH-2 (security-audit-report-2026-09-29.md): the login failure throttle's
 // per-source threshold, per-account ceiling and window are operator-tunable.
 
-#include "merovingian/config/config.hpp"
+#include "merovingian/config/Config.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"

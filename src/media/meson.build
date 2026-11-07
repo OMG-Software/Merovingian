@@ -1,6 +1,6 @@
 media_sources = files(
   'decoder_hardening.cpp',
-  'repository.cpp',
+  'LocalMediaRepository.cpp',
   'runtime_media.cpp',
   'security.cpp',
   'thumbnail_cache.cpp',

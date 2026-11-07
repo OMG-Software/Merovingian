@@ -8,7 +8,7 @@
 // |                                                                         |
 // |  This token never appears on the wire — it is an internal substitute   |
 // |  for `access_token` used only for the remainder of one dispatch call,  |
-// |  once client_server.cpp has already verified the presented as_token.   |
+// |  once ClientServerRuntime.cpp has already verified the presented as_token.   |
 // |  The property under test here is the round trip and, more importantly,|
 // |  that a corrupted/foreign string never partially decodes.             |
 // +-------------------------------------------------------------------------+

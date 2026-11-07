@@ -49,6 +49,8 @@ namespace
         // name, both of which contain '/' or '_' characters. We handle them
         // with prefix-matching before the literal-key branches so the rest
         // of the parser remains a clean if/else chain.
+        // State resolution bounds: caps on state groups, events per group, total events and
+        // conflicted keys keep a hostile fork from forcing unbounded work in the resolver.
         if (key == "security.federation.state_resolution.max_state_groups")
         {
             if (!parse_u32_value(value, security.federation.state_resolution.max_state_groups))
@@ -91,6 +93,8 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Client-API resource caps. Each bounds a per-user, per-device or global table so one
+        // account or remote cannot grow memory or database rows without limit.
         else if (key == "server.client_api.max_registration_validation_sessions")
         {
             if (!parse_u32_value(value, server.client_api.max_registration_validation_sessions))
@@ -112,6 +116,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Retention and page-size limits for reports and notifications.
         else if (key == "server.client_api.max_safety_report_rows")
         {
             if (!parse_u32_value(value, server.client_api.max_safety_report_rows))
@@ -133,6 +138,8 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // To-device queue limits: message count, per-message size and total bytes per device,
+        // so an offline device cannot accumulate unbounded queued traffic.
         else if (key == "server.client_api.max_to_device_messages_per_user_device")
         {
             if (!parse_u32_value(value, server.client_api.max_to_device_messages_per_user_device))
@@ -154,6 +161,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // End-to-end key material limits (one-time keys, cross-signing signatures).
         else if (key == "server.client_api.max_one_time_keys_per_device")
         {
             if (!parse_u32_value(value, server.client_api.max_one_time_keys_per_device))
@@ -168,6 +176,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Per-user stored data caps: filters, account data and push rules.
         else if (key == "server.client_api.max_filters_per_user")
         {
             if (!parse_u32_value(value, server.client_api.max_filters_per_user))
@@ -196,6 +205,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Queued to-device messages expire after this many seconds.
         else if (key == "server.client_api.to_device_message_ttl_seconds")
         {
             if (!parse_u32_value(value, server.client_api.to_device_message_ttl_seconds))
@@ -203,6 +213,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Page-size ceilings for threads and relations listings.
         else if (key == "server.client_api.max_threads_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_threads_page_size))
@@ -245,6 +256,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // createRoom request limits: invites and initial_state entries are bounded before any event is built.
         else if (key == "server.client_api.max_create_room_invites")
         {
             if (!parse_u32_value(value, server.client_api.max_create_room_invites))
@@ -259,6 +271,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Directory and space hierarchy page sizes.
         else if (key == "server.client_api.max_public_rooms_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_public_rooms_page_size))
@@ -273,6 +286,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Outbound federation delivery: queue depth, worker threads and retry ceiling.
         else if (key == "security.federation.outbound_queue_capacity")
         {
             if (!parse_u32_value(value, security.federation.outbound_queue_capacity))
@@ -294,6 +308,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Application-service outbound client: connect and total timeouts, response size and queue bound.
         else if (key == "appservice.connect_timeout_seconds")
         {
             if (!parse_u32_value(value, appservice.connect_timeout_seconds))
@@ -319,6 +334,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Sync and search work bounds: rooms and events visited per request.
         else if (key == "server.client_api.max_sync_rooms")
         {
             if (!parse_u32_value(value, server.client_api.max_sync_rooms))
@@ -340,6 +356,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // /messages and /context bounds: events examined and returned per request.
         else if (key == "server.client_api.max_messages_events_examined")
         {
             if (!parse_u32_value(value, server.client_api.max_messages_events_examined))
@@ -361,6 +378,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Search page and context-window limits.
         else if (key == "server.client_api.max_search_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_search_page_size))
@@ -375,6 +393,8 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Sliding sync (MSC4186) limits: timeline length, room subscriptions, required_state
+        // entries and concurrent connections per device.
         else if (key == "server.client_api.sliding_sync_max_timeline_limit")
         {
             if (!parse_u32_value(value, server.client_api.sliding_sync_max_timeline_limit))
@@ -403,6 +423,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Dedicated long-poll pool for /sync so slow pollers cannot starve the main request pool.
         else if (key == "server.http.sync_threads")
         {
             if (!parse_u32_value(value, server.http.sync_threads))
@@ -431,6 +452,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Dedicated pool for remote media fetches, with global and per-client in-flight caps.
         else if (key == "server.http.media_fetch_threads")
         {
             if (!parse_u32_value(value, server.http.media_fetch_threads))
@@ -452,6 +474,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Request-framing limits applied before any body is read.
         else if (key == "server.http.max_start_line_bytes")
         {
             if (!parse_u32_value(value, server.http.max_start_line_bytes))
@@ -526,6 +549,8 @@ namespace
         {
             security.federation.backfill.timeout = std::string{value};
         }
+        // Federation in-memory caches: accepted transactions, audited events, resolved keys and bad
+        // signatures. Each is capped so a remote cannot grow them without bound.
         else if (key == "security.federation.accepted_transaction_cache_entries")
         {
             if (!parse_u32_value(value, security.federation.accepted_transaction_cache_entries))
@@ -554,6 +579,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Pending-join bookkeeping caps (rooms and PDUs held while a join completes).
         else if (key == "security.federation.pending_join_max_rooms")
         {
             if (!parse_u32_value(value, security.federation.pending_join_max_rooms))
@@ -568,6 +594,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Push delivery limits: fan-out per event, concurrent deliveries and pushers per user.
         else if (key == "server.push.max_pushers_per_delivery")
         {
             if (!parse_u32_value(value, server.push.max_pushers_per_delivery))
@@ -589,6 +616,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Push gateway circuit breaker: failures before a gateway is skipped, and the cooldown.
         else if (key == "server.push.gateway_failure_threshold")
         {
             if (!parse_u32_value(value, server.push.gateway_failure_threshold))
@@ -603,6 +631,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Request body size limits are size strings (e.g. 1MiB), parsed by the size helper.
         else if (key == "server.client_api.max_body_size")
         {
             server.client_api.max_body_size = std::string{value};
@@ -615,6 +644,7 @@ namespace
         {
             security.federation.backfill.response_max_size = std::string{value};
         }
+        // Size-string limits for pending joins and the bad-signature per-IP rate.
         else if (key == "security.federation.pending_join_max_size")
         {
             security.federation.pending_join_max_size = std::string{value};
@@ -685,6 +715,7 @@ namespace
             }
             return;
         }
+        // Client rate-limit defaults and per-route maps; see the prefix handling at the top.
         else if (key == "client_rate_limits.default_per_ip")
         {
             auto const policy = parse_rate_limit_policy(value);
@@ -715,6 +746,7 @@ namespace
             return;
         }
 
+        // Core server identity keys.
         else if (key == "server.name")
         {
             server.server_name = std::string{value};
@@ -727,6 +759,7 @@ namespace
         {
             server.trusted_proxies = parse_string_list(value);
         }
+        // CORS policy keys.
         else if (key == "server.cors.allowed_origins")
         {
             server.cors.allowed_origins = parse_string_list(value);
@@ -765,6 +798,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        // HTTP keep-alive and connection-count tunables.
         else if (key == "server.http.keep_alive")
         {
             if (!parse_bool_value(value, server.http.keep_alive))
@@ -873,6 +907,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected an integer in 1..128");
             }
         }
+        // TURN (VoIP) credentials: static username/password or a shared secret read from a file.
         else if (key == "server.turn.server")
         {
             server.turn.server = std::string{value};
@@ -908,6 +943,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        // OIDC delegation: discovery endpoints advertised to clients when an external issuer is used.
         else if (key == "server.oidc.enabled")
         {
             if (!parse_bool_value(value, server.oidc.enabled))
@@ -947,6 +983,7 @@ namespace
         {
             server.oidc.account_management_actions_supported = parse_string_list(value);
         }
+        // Identity server client: allowlists and timeouts for outbound 3PID calls.
         else if (key == "server.identity_server.trusted_servers")
         {
             server.identity_server.trusted_servers = parse_string_list(value);
@@ -993,6 +1030,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        // Push gateway client switch and timeouts.
         else if (key == "server.push.enabled")
         {
             if (!parse_bool_value(value, server.push.enabled))
@@ -1038,6 +1076,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        // Outbound email: relay URL, TLS requirement, credentials by file, timeouts and digest delays.
         else if (key == "server.email.smtp_url")
         {
             server.email.smtp_url = std::string{value};
@@ -1113,6 +1152,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        // SSO login: only listed redirect URLs are accepted after authentication.
         else if (key == "server.sso.enabled")
         {
             if (!parse_bool_value(value, server.sso.enabled))
@@ -1171,6 +1211,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected field name|icon|brand");
             }
         }
+        // Client listener: bind address, TLS material and reverse-proxy mode.
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};
@@ -1197,6 +1238,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Media storage quotas: total size, per-user size and record counts.
         else if (key == "security.media.max_total_size")
         {
             security.media.max_total_size = std::string{value};
@@ -1219,6 +1261,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        // Accept-queue bound shared by both listeners.
         else if (key == "listeners.max_queued_connections")
         {
             if (!parse_u32_value(value, listeners.max_queued_connections))
@@ -1226,6 +1269,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        // Federation listener: same shape as the client listener.
         else if (key == "listeners.federation.bind")
         {
             listeners.federation.bind = std::string{value};
@@ -1252,6 +1296,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Database selection and connection settings. Credentials come from a file, never inline.
         else if (key == "database.backend")
         {
             auto const backend = parse_database_backend(value);
@@ -1288,6 +1333,7 @@ namespace
         {
             database.runtime_role = std::string{value};
         }
+        // SQLite file path and pool size.
         else if (key == "database.sqlite_path")
         {
             database.sqlite_path = std::string{value};
@@ -1299,6 +1345,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer value");
             }
         }
+        // Registration policy: open registration and token requirements are independent switches.
         else if (key == "security.registration.enabled")
         {
             if (!parse_bool_value(value, security.registration.enabled))
@@ -1324,6 +1371,7 @@ namespace
         {
             security.registration.token_file = std::string{value};
         }
+        // Presence switch.
         else if (key == "presence.enabled")
         {
             if (!parse_bool_value(value, presence.enabled))
@@ -1331,6 +1379,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Password policy and hashing concurrency.
         else if (key == "security.password_policy.min_length")
         {
             if (!parse_u32_value(value, security.password_policy.min_length))
@@ -1352,6 +1401,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Login throttling: failure budgets per source and per account within a window.
         else if (key == "security.login_throttle.max_failures_per_source")
         {
             if (!parse_u32_value(value, security.login_throttle.max_failures_per_source))
@@ -1370,6 +1420,7 @@ namespace
         {
             security.login_throttle.window = std::string{value};
         }
+        // Token lifetimes and audit-log retention.
         else if (key == "security.access_token_lifetime_ms")
         {
             if (!parse_i64_value(value, security.access_token_lifetime_ms))
@@ -1391,6 +1442,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer day count");
             }
         }
+        // Room encryption policy switches (default, required for DMs/private rooms, public-room exceptions).
         else if (key == "security.encryption.default_for_new_rooms")
         {
             if (!parse_bool_value(value, security.encryption.default_for_new_rooms))
@@ -1426,6 +1478,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Federation master switch and server allow/deny policy.
         else if (key == "security.federation.enabled")
         {
             if (!parse_bool_value(value, security.federation.enabled))
@@ -1445,6 +1498,7 @@ namespace
         {
             security.federation.denied_servers = parse_string_list(value);
         }
+        // Transport and signature verification requirements for remote servers.
         else if (key == "security.federation.require_valid_tls")
         {
             if (!parse_bool_value(value, security.federation.require_valid_tls))
@@ -1459,6 +1513,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // IP range filtering for outbound federation targets (SSRF defence).
         else if (key == "security.federation.deny_ip_ranges")
         {
             security.federation.deny_ip_ranges = parse_string_list(value);
@@ -1467,6 +1522,7 @@ namespace
         {
             security.federation.allow_private_ip_ranges = parse_string_list(value);
         }
+        // Inbound transaction size and PDU/EDU count limits.
         else if (key == "security.federation.max_transaction_size")
         {
             security.federation.max_transaction_size = std::string{value};
@@ -1485,6 +1541,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer value");
             }
         }
+        // Per-origin rate limits: transactions, PDUs, EDUs and requests.
         else if (key == "security.federation.per_origin_transaction_rate")
         {
             auto const policy = parse_rate_limit_policy(value);
@@ -1537,6 +1594,7 @@ namespace
                 security.federation.per_origin_request_rate = *policy;
             }
         }
+        // Remote key resolution throttles: rate, concurrency and failure TTL.
         else if (key == "security.federation.key_resolution_per_ip_rate")
         {
             auto const policy = parse_rate_limit_policy(value);
@@ -1561,6 +1619,7 @@ namespace
         {
             security.federation.key_resolution_failure_ttl = std::string{value};
         }
+        // Federation timeouts, and join concurrency / candidate / response limits.
         else if (key == "security.federation.remote_timeout")
         {
             security.federation.remote_timeout = std::string{value};
@@ -1598,6 +1657,7 @@ namespace
         {
             security.federation.join_response_max_size = std::string{value};
         }
+        // Upload policy: size, MIME allowlist, quarantine and scanning.
         else if (key == "security.media.max_upload_size")
         {
             security.media.max_upload_size = std::string{value};
@@ -1620,6 +1680,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Remote fetch policy: private-IP blocking, timeouts, sandboxed decoding and cache sizing.
         else if (key == "security.media.local_upload_policy")
         {
             security.media.local_upload_policy = std::string{value};
@@ -1675,6 +1736,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // Pending upload reservations: lifetime and per-user and global caps.
         else if (key == "security.media.pending_upload_ttl_seconds")
         {
             if (!parse_u32_value(value, security.media.pending_upload_ttl_seconds))
@@ -1703,6 +1765,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // URL preview: size, timeout, redirect and cache limits.
         else if (key == "security.media.url_preview_enabled")
         {
             if (!parse_bool_value(value, security.media.url_preview_enabled))
@@ -1753,6 +1816,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        // Trust and safety policy server settings.
         else if (key == "security.trust_safety.enabled")
         {
             if (!parse_bool_value(value, security.trust_safety.enabled))
@@ -1775,6 +1839,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Log redaction switches.
         else if (key == "security.logging.redact_tokens")
         {
             if (!parse_bool_value(value, security.logging.redact_tokens))
@@ -1789,10 +1854,12 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        // Master key location (file path only; the key never appears in config).
         else if (key == "security.secrets.master_key_file")
         {
             security.secrets.master_key_file = std::string{value};
         }
+        // Federation worker process: IPC limits, thread counts, shards and hardening switches.
         else if (key == "federation.worker.request_timeout_seconds")
         {
             if (!parse_u32_value(value, federation_worker.request_timeout_seconds))
@@ -1871,9 +1938,14 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
+        // Application-service registration files and cleartext host allowance.
         else if (key == "appservice.registration_files")
         {
             appservice.registration_files = parse_string_list(value);
+        }
+        else if (key == "appservice.allow_cleartext_hosts")
+        {
+            appservice.allow_cleartext_hosts = parse_string_list(value);
         }
         else
         {

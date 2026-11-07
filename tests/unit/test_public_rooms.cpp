@@ -7,6 +7,9 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
+#include "merovingian/federation/FederationRemoteRuntime.hpp"
+#include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
