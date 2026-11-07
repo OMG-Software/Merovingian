@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <catch2/catch_test_macros.hpp>

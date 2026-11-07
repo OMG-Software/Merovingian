@@ -19,7 +19,6 @@
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"

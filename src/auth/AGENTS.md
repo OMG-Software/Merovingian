@@ -12,14 +12,14 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
 | `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
-| `failure_window_table.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
+| `FailureWindowTable.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `key_api.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
 UIAA and `/whoami` are implemented in `src/homeserver/ClientServerRuntime.cpp`, not in this module.
 
 ## Security rules — non-negotiable
 
-1. **Never log tokens or passwords.** Wrap in `SecretBuffer` from `core/secret_buffer.hpp`.
+1. **Never log tokens or passwords.** Wrap in `SecretBuffer` from `core/SecretBuffer.hpp`.
 2. **Always hash tokens before storing.** Store a token hash, never the raw token. Hashes are
    BLAKE2b (`crypto_generichash`): the `v2` scheme is unkeyed; `v3` and `v4` are keyed with
    `crypto::TokenHmacKey`, derived from the operator master key in `crypto/token_key.cpp`.

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"

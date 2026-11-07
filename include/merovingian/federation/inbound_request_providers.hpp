@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/event_table.hpp"
+#include "merovingian/database/TimeDirection.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
-#include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/federation/room_read_result.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
+#include "merovingian/federation/RoomReadResult.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 
 #include <cstdint>

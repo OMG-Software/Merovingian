@@ -29,7 +29,7 @@ class TheOverride(unittest.TestCase):
         for name in OVERRIDDEN:
             with self.subTest(executable=name):
                 self.assertIn("link_args: password_hash_cost_link_args", all_executables[name])
-                self.assertIn("'support/password_hash_cost.cpp'", all_executables[name])
+                self.assertIn("'support/RealPasswordHashCost.cpp'", all_executables[name])
 
     def test_given_any_other_test_binary_when_it_links_then_it_keeps_the_real_hash(self) -> None:
         for name, definition in executables().items():

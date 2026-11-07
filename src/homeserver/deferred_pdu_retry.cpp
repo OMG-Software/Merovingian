@@ -8,7 +8,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -274,44 +274,6 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> st
         delay = std::min(delay, wait);
     }
     return std::max(delay, std::chrono::milliseconds{1000});
-}
-
-DeferredPduRetryJob::DeferredPduRetryJob(HomeserverRuntime& runtime)
-    : runtime_{runtime}
-    , job_{"deferred-pdu-retry", [&runtime](StopFlag const& stop) {
-               return retry_deferred_pdus(runtime, stop);
-           }}
-{
-}
-
-DeferredPduRetryJob::~DeferredPduRetryJob()
-{
-    stop();
-}
-
-auto DeferredPduRetryJob::start() -> bool
-{
-    {
-        auto const guard = RuntimeLock{runtime_.mutex};
-        runtime_.deferred_pdu_retry_wake = [this]() {
-            job_.wake();
-        };
-    }
-    if (!job_.start())
-    {
-        stop();
-        return false;
-    }
-    return true;
-}
-
-auto DeferredPduRetryJob::stop() noexcept -> void
-{
-    {
-        auto const guard = RuntimeLock{runtime_.mutex};
-        runtime_.deferred_pdu_retry_wake = nullptr;
-    }
-    job_.stop();
 }
 
 } // namespace merovingian::homeserver

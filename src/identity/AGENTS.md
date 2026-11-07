@@ -8,7 +8,7 @@ endpoints, only calls them.
 
 | File | Responsibility |
 |---|---|
-| `identity_client.cpp` | `IdentityServerClient`: `store-invite`, `lookup`, `bind`, `unbind`, `request_email_token`, `request_msisdn_token`, `get_validated_3pid`; pure URL/body/response helpers |
+| `IdentityServerClient.cpp` | `IdentityServerClient`: `store-invite`, `lookup`, `bind`, `unbind`, `request_email_token`, `request_msisdn_token`, `get_validated_3pid`; pure URL/body/response helpers |
 
 ## Security rules (non-negotiable)
 

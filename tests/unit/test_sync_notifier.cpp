@@ -3,7 +3,8 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/sync/LongPollStep.hpp"
+#include "merovingian/sync/SyncNotifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

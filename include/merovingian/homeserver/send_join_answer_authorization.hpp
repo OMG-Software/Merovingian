@@ -3,8 +3,9 @@
 
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstddef>
 #include <string>
@@ -12,17 +13,6 @@
 
 namespace merovingian::homeserver
 {
-
-// What is left of a resident's send_join answer once the auth rules have judged it (F-45, ADR-0369).
-struct AuthorizedSendJoinAnswer final
-{
-    canonicaljson::Array state{};
-    canonicaljson::Array auth_chain{};
-    // Entries of `state` and `auth_chain` that failed, counted once per array entry.
-    std::size_t dropped{0U};
-    // Why the join cannot go ahead on this answer, or empty when it can.
-    std::string refusal{};
-};
 
 // Spec: Server-Server API v1.19, "Checks performed on receipt of a PDU", step 4: each event must pass the
 // authorisation rules based on its own auth events. `state` and `auth_chain` have already passed the room filter

@@ -11,9 +11,11 @@
 
 #include "../support/state_group_scan.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/database/state_group_tables.hpp"
+#include "merovingian/database/StateGroupEntryTable.hpp"
+#include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/events/limits.hpp"
 
 #include <catch2/catch_test_macros.hpp>

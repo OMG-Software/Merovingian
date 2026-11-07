@@ -4,8 +4,9 @@
 // Third-party invite bodies are chosen by whoever sends them (ADR-0484): what the parsers refuse or drop, and where the
 // two endpoints are answered.
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/third_party_invite.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"

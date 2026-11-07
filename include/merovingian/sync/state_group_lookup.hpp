@@ -3,25 +3,12 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/sync/GroupLookupResult.hpp"
 
 #include <string_view>
 
 namespace merovingian::sync
 {
-
-enum class GroupLookup
-{
-    found,
-    absent,
-    broken,
-};
-
-struct GroupLookupResult final
-{
-    GroupLookup outcome{GroupLookup::broken};
-    // Names an entry of the store; valid while the store's state group rows are not changed.
-    std::string_view event_id{};
-};
 
 // The event ID that `group_id`'s full state holds for (event_type, state_key), walking the delta chain newest
 // first exactly as database::read_state_group_full_state does: bounded, cycle-checked, and `broken` (not

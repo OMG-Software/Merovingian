@@ -12,15 +12,15 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
 | `migration_files.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
 | `connection.cpp` | Connection lifecycle and pool management |
-| `statement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
+| `PreparedStatement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
 | `schema.cpp` | Schema introspection helpers |
-| `state_group_tables.cpp` | `StateGroupTable`, `StateGroupEntryTable`, `EventStateGroupTable`: the state-group tables with their hash indexes (ADR-0325) |
-| `runtime_database.cpp` | Exposes the live store to the rest of the server |
+| `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `state_group_table_support.hpp` |
+| `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
 ## Security rules — non-negotiable
 
 1. **Never interpolate values into SQL strings.** Always use prepared statements with bound
-   parameters. SQL injection is a critical vulnerability — `statement.hpp` enforces this.
+   parameters. SQL injection is a critical vulnerability — `PreparedStatement.hpp` enforces this.
 2. **Never log raw query parameters** that may contain tokens, passwords, or PII.
 3. **Schema changes go in `migrations/`**, not in ad-hoc `ALTER TABLE` calls in code.
 4. **Every write to a `BLOB` column sets `BoundValue::binary`.** PostgreSQL then binds the

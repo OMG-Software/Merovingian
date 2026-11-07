@@ -499,3 +499,4 @@
 * [0527 - CodeQL drops every result on vendored and build directories](0527-codeql-drops-every-result-on-vendored-and-build-directories.md)
 * [0528 - CodeQL drops path injection sourced only from command-line arguments](0528-codeql-drops-path-injection-sourced-only-from-command-line-arguments.md)
 * [0529 - Thread scopes publish values, not their own addresses](0529-thread-scopes-publish-values-not-their-own-addresses.md)
+* [0530 - A header is renamed after its type only when it is about that type](0530-a-header-is-renamed-after-its-type-only-when-it-is-about-that-type.md)

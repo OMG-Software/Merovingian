@@ -10,9 +10,10 @@
 // |  URL:  ../../docs/matrix-v1.19-spec/application-service-api.md          |
 // +-------------------------------------------------------------------------+
 
+#include "../support/MockAppservice.hpp"
+#include "../support/TestAppservice.hpp"
 #include "../support/appservice_test_config.hpp"
 #include "../support/json_test_support.hpp"
-#include "../support/mock_appservice.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

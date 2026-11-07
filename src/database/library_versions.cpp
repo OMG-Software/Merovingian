@@ -3,14 +3,14 @@
 
 #include "merovingian/database/library_versions.hpp"
 
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+
+#include <libpq-fe.h>
+#include <sqlite3.h>
 
 #include <bit>
 #include <string>
 #include <vector>
-
-#include <libpq-fe.h>
-#include <sqlite3.h>
 
 #ifndef MEROVINGIAN_LIBPQ_BUILD_VERSION
 #error "MEROVINGIAN_LIBPQ_BUILD_VERSION must be defined by the build (src/database/meson.build)"

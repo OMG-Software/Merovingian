@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/media/DecoderHardeningOps.hpp"
 #include "merovingian/media/decoder_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sys/resource.h>
 
 #include <cstdint>
 #include <string>
-
-#include <sys/resource.h>
 
 #if defined(__linux__)
 #include <sys/prctl.h>

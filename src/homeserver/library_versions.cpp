@@ -4,17 +4,17 @@
 #include "merovingian/homeserver/library_versions.hpp"
 
 #include "merovingian/canonicaljson/library_versions.hpp"
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/crypto/library_versions.hpp"
 #include "merovingian/database/library_versions.hpp"
 #include "merovingian/http/library_versions.hpp"
 
+#include <openssl/crypto.h>
+#include <openssl/opensslv.h>
+
 #include <iterator>
 #include <string_view>
 #include <vector>
-
-#include <openssl/crypto.h>
-#include <openssl/opensslv.h>
 
 namespace merovingian::homeserver
 {

@@ -11,8 +11,9 @@
 // |  reset re-seat — the three behaviours the runtime relies on.           |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/auth/RegistrationPolicy.hpp"
 #include "merovingian/auth/session.hpp"
-#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/LocalDatabaseScope.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

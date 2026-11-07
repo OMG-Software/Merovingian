@@ -48,7 +48,7 @@ production stalls turned on.
 
 The unit, conformance and integration binaries hash passwords and registration tokens at libsodium's minimum Argon2id cost
 ([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)). `-Wl,--wrap=crypto_pwhash_str` sends the
-production code's call to `tests/support/password_hash_cost.cpp`, so no production code changes.
+production code's call to `tests/support/RealPasswordHashCost.cpp`, so no production code changes.
 
 - The override refuses any cost but the one production asks for, so a downgrade in `src/auth/password.cpp` makes every
   registration and login fail rather than go unnoticed.
@@ -86,7 +86,7 @@ background workers then write to the store whenever a retry falls due. A scenari
 on every write the store commits (`enable_statement_capture` and an empty
 `captured_statements`), or that needs an empty schema, runs on a database of its own:
 `merovingian::tests::ScratchPostgresqlDatabase`
-(`tests/integration/scratch_postgresql_database.hpp`), declared before anything that
+(`tests/integration/ScratchPostgresqlDatabase.hpp`), declared before anything that
 connects to it so it is dropped last. Do not narrow the assertion instead, by
 filtering statement names, stopping a worker or capturing one thread only: each of
 those also hides a write the code under test makes (ADR-0227).

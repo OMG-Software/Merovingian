@@ -5,28 +5,35 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
+#include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
 #include "merovingian/homeserver/SyncAdmissionCaps.hpp"
-#include "merovingian/homeserver/federation_proxy.hpp"
+#include "merovingian/homeserver/TlsConnection.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/ConnectionLimiter.hpp"
+#include "merovingian/http/ConnectionPreference.hpp"
+#include "merovingian/http/HttpVersion.hpp"
+#include "merovingian/http/KeepAlivePolicy.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
+#include "merovingian/http/RequestHead.hpp"
+#include "merovingian/http/RequestLimits.hpp"
 #include "merovingian/http/client_address.hpp"
-#include "merovingian/http/connection_guard.hpp"
-#include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/keep_alive.hpp"
 #include "merovingian/http/request.hpp"
-#include "merovingian/http/request_limits.hpp"
-#include "merovingian/net/connection_parker.hpp"
+#include "merovingian/net/ConnectionParker.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
@@ -2331,7 +2338,7 @@ namespace
             // SOCK_CLOEXEC: accepted client sockets must not leak into worker
             // subprocesses spawned via posix_spawn/fork() (federation workers,
             // thumbnail worker) while a connection is still open. Matches the
-            // SOCK_CLOEXEC listening-socket pattern in net/tcp_acceptor.cpp.
+            // SOCK_CLOEXEC listening-socket pattern in net/TcpAcceptor.cpp.
             //
             // SOCK_NONBLOCK: the socket is non-blocking from the instant it
             // exists, as ADR-0054 requires for the life of the connection; the

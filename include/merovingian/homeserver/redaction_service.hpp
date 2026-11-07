@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/LocalRedactionCheck.hpp"
 
 #include <cstddef>
 #include <string_view>
@@ -35,15 +36,6 @@ auto reconcile_all_redactions(database::PersistentStore& store) -> std::size_t;
 
 // Makes the persistent store run reconcile_redactions_for_event after every event it stores.
 auto install_redaction_reconciler(database::PersistentStore& store) -> void;
-
-enum class LocalRedactionCheck
-{
-    permitted,
-    // The event the redaction names is held here, but in another room.
-    target_unknown,
-    // The sender may not redact it (or it may not be redacted at all).
-    forbidden,
-};
 
 // Spec (Client-Server API, PUT /redact): "Any user with a power level greater than or equal to the
 // `m.room.redaction` event power level may send redactions for their own events in the room. If

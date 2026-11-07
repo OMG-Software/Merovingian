@@ -20,7 +20,12 @@
 // |  authority for which algorithm applies to each room version.             |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/AuthRules.hpp"
+#include "merovingian/rooms/EventFormat.hpp"
+#include "merovingian/rooms/EventIdFormat.hpp"
+#include "merovingian/rooms/RedactionRules.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

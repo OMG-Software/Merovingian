@@ -3,15 +3,15 @@
 #include "../support/master_key.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
+#include "ScratchPostgresqlDatabase.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "scratch_postgresql_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>
 #include <merovingian/canonicaljson/parser.hpp>
 #include <merovingian/canonicaljson/serializer.hpp>
 #include <merovingian/config/Config.hpp>
-#include <merovingian/core/file_descriptor.hpp>
+#include <merovingian/core/FileDescriptor.hpp>
 #include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/postgresql_store.hpp>
@@ -20,9 +20,9 @@
 #include <merovingian/events/event_signer.hpp>
 #include <merovingian/federation/remote_key_cache.hpp>
 #include <merovingian/homeserver/HomeserverRuntime.hpp>
+#include <merovingian/homeserver/WorkerPool.hpp>
 #include <merovingian/homeserver/local_http_router.hpp>
 #include <merovingian/homeserver/room_service.hpp>
-#include <merovingian/homeserver/worker_pool.hpp>
 #include <sys/stat.h>
 #include <unistd.h>
 

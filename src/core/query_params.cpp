@@ -3,6 +3,8 @@
 
 #include "merovingian/core/query_params.hpp"
 
+#include "merovingian/core/SyncRequest.hpp"
+
 #include <cctype>
 #include <limits>
 #include <optional>

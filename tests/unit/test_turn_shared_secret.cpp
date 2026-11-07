@@ -13,15 +13,15 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
+#include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/reload_plan.hpp"
 #include "merovingian/crypto/hmac_sha1.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/turn_credentials.hpp"
+#include "merovingian/homeserver/TurnCredentials.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

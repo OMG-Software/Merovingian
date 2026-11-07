@@ -3,6 +3,8 @@
 
 #include "merovingian/canonicaljson/serializer.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/SerializeResult.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 
 #include <algorithm>

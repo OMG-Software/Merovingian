@@ -19,8 +19,9 @@
 // |  believes, because only the former distinguishes those cases.           |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/homeserver/request_lock.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

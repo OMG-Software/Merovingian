@@ -19,9 +19,12 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -35,9 +38,9 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>

@@ -23,6 +23,8 @@
 
 #include "../support/master_key.hpp"
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -32,11 +34,21 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/SignatureResult.hpp"
+#include "merovingian/crypto/SigningKeyLookupResult.hpp"
+#include "merovingian/crypto/SigningKeyRecord.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/crypto/VerificationResult.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/EduDispositionResult.hpp"
+#include "merovingian/federation/EduDispositionStatus.hpp"
+#include "merovingian/federation/EduType.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundEduEnvelope.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
@@ -44,8 +56,8 @@
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
-#include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/sync/DeviceListDelta.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
@@ -820,7 +832,7 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
     //
     // This scenario drives that realistic shape through
     // handle_federation_http_request() — the same entry point a real worker
-    // process calls for a relayed transaction (worker_pool.cpp's fed_request
+    // process calls for a relayed transaction (WorkerPool.cpp's fed_request
     // dispatch). handle_local_http_request()'s own /_matrix/federation/
     // branch looks similar but is a test-harness-only shortcut (see its
     // comment: "never wired by main.cpp") that calls

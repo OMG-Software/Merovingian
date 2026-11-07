@@ -17,6 +17,7 @@
 // |  the outbound half existed as dead code before and still compiled.      |
 // +-------------------------------------------------------------------------+
 
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
@@ -28,7 +29,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <unistd.h>

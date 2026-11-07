@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/homeserver/worker_env.hpp"
-#include "merovingian/homeserver/worker_supervisor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/homeserver/MinimalWorkerEnv.hpp"
+#include "merovingian/homeserver/WorkerSupervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -15,10 +18,6 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
-
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace
 {

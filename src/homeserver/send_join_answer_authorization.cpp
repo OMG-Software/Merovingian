@@ -3,8 +3,11 @@
 
 #include "merovingian/homeserver/send_join_answer_authorization.hpp"
 
+#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/AuthEventSlots.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
 
 #include <algorithm>
 #include <cstddef>

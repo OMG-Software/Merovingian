@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
 #include "merovingian/database/PersistentAppserviceTxnCursor.hpp"
@@ -24,10 +28,14 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
-#include "merovingian/database/connection_pool.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/SqliteConnectionDeleter.hpp"
+#include "merovingian/database/SqliteWritePool.hpp"
+#include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <fcntl.h>
 #include <sqlite3.h>
@@ -61,16 +69,6 @@ namespace
     {
         observability::log_diagnostic("sqlite_store", event, fields, severity);
     }
-
-    struct SqliteConnectionDeleter final
-    {
-        auto operator()(sqlite3* connection) const noexcept -> void
-        {
-            sqlite3_close(connection);
-        }
-    };
-
-    using SqliteConnection = std::unique_ptr<sqlite3, SqliteConnectionDeleter>;
 
     struct SqliteStatementDeleter final
     {
@@ -1548,15 +1546,6 @@ namespace
 
 namespace detail
 {
-
-    struct SqliteWritePool final
-    {
-        explicit SqliteWritePool(std::uint32_t limit)
-            : pool{limit}
-        {
-        }
-        ConnectionPool<SqliteConnection> pool;
-    };
 
     auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void
     {

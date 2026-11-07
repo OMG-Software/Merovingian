@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/http/ConnectionPhase.hpp"
+#include "merovingian/http/ConnectionPreference.hpp"
+#include "merovingian/http/HttpVersion.hpp"
+#include "merovingian/http/KeepAlivePolicy.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
+#include "merovingian/http/SlowlorisPolicy.hpp"
 #include "merovingian/http/connection_guard.hpp"
 #include "merovingian/http/keep_alive.hpp"
 #include "merovingian/http/request.hpp"

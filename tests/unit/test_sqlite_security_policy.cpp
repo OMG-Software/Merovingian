@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -9,13 +9,14 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>

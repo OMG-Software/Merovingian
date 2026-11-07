@@ -17,6 +17,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -25,10 +26,11 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/security.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -38,7 +40,7 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

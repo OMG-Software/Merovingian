@@ -1,11 +1,11 @@
 federation_worker_lib = static_library(
   'merovingian-federation-worker',
   sources: files(
-    'args.cpp',
+    'ParsedWorkerArgs.cpp',
     'db_uri_fd.cpp',
     'ipc_key_fd.cpp',
-    'store_read_guard.cpp',
-    'worker_event_loop.cpp',
+    'StoreReadGuard.cpp',
+    'WorkerEventLoop.cpp',
   ),
   include_directories: [inc, include_directories('.')],
   dependencies: [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],

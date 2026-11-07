@@ -3,6 +3,8 @@
 #include "merovingian/sync/state_group_lookup.hpp"
 
 #include "merovingian/events/limits.hpp"
+#include "merovingian/sync/GroupLookup.hpp"
+#include "merovingian/sync/GroupLookupResult.hpp"
 
 #include <unordered_set>
 

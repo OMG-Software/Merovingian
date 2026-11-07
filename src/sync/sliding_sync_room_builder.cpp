@@ -3,13 +3,18 @@
 
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/redaction_view.hpp"
-#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
-#include "merovingian/sync/bundled_aggregations.hpp"
-#include "merovingian/sync/viewer_event_unsigned.hpp"
+#include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
+#include "merovingian/sync/BundledAggregations.hpp"
+#include "merovingian/sync/ThreadNotificationCounts.hpp"
+#include "merovingian/sync/TimelineExpansion.hpp"
+#include "merovingian/sync/ViewerEventUnsigned.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
@@ -448,17 +453,6 @@ namespace
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
-
-auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
-{
-    auto sum = NotificationCounts{};
-    for (auto const& [thread_id, counts] : threads)
-    {
-        sum.notification_count += counts.notification_count;
-        sum.highlight_count += counts.highlight_count;
-    }
-    return sum;
-}
 
 // Counts the events `markers` do not cover — relative to the user's read
 // receipts, NOT the sync position (#417) — per thread, as the spec asks: "the

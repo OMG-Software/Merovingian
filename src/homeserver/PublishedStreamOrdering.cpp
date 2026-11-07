@@ -4,7 +4,7 @@
 #include "merovingian/homeserver/PublishedStreamOrdering.hpp"
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/sync/SyncNotifier.hpp"
 
 #include <cstdint>
 #include <mutex>

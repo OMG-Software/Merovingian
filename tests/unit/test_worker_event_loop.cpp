@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../../src/federation_worker/worker_event_loop.hpp"
-#include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/net/thread_pool.hpp"
+#include "../../src/federation_worker/WorkerEventLoop.hpp"
+#include "merovingian/crypto/IpcAuthKey.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
@@ -13,8 +14,6 @@
 #include <cstdint>
 #include <thread>
 #include <vector>
-
-#include <unistd.h>
 
 namespace
 {

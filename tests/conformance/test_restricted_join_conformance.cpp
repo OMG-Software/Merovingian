@@ -9,7 +9,6 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

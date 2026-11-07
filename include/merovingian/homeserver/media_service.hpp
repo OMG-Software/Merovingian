@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/FederationMediaPart.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/MediaRedirectResolutionResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
 
 #include <cstdint>
 #include <string>
@@ -35,27 +39,6 @@ namespace merovingian::homeserver
                                         std::string_view media_id, std::string_view declared_mime_type,
                                         std::string_view sniffed_mime_type, bool scanner_clean, std::string_view bytes,
                                         std::string_view upload_name = {}) -> OperationResult;
-// What a remote-media request carries beyond the media it names. Ignored for
-// media hosted on this server.
-struct RemoteMediaRequestContext final
-{
-    // The client the request is attributed to (rate_limit_client_key), which the
-    // per-client cap of the client-outbound budget counts under (ADR-0079).
-    // "unknown" is what a request with no peer address is keyed as.
-    std::string client_key{"unknown"};
-    // The authenticated user, empty when the request carries no valid token.
-    // The per-requester thumbnail decode cap (MED-4) counts under it, or under
-    // client_key when it is empty.
-    std::string requester{};
-    // The `allow_remote` query parameter (default true). False means the caller
-    // does not want this server to go and fetch remote media (OUT-7).
-    bool allow_remote{true};
-    // ADR-0212: the `timeout_ms` query parameter (spec default 20000): how long
-    // a download of a reserved but not yet uploaded local media ID may wait.
-    // Capped by security.media.pending_upload_max_wait_ms.
-    std::uint32_t timeout_ms{20000U};
-};
-
 // Download / thumbnail of `server_name`/`media_id`. For a remote `server_name`:
 // 404 (nothing leaves the server) unless security.media.remote_fetch_enabled is
 // set and `remote.allow_remote` is true; 429 when the client-outbound budget is
@@ -116,43 +99,12 @@ struct RemoteMediaRequestContext final
 [[nodiscard]] auto remote_federation_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
                                                         std::string_view media_id) -> std::string;
 
-// Result of parsing a 200 response from the authenticated federation media
-// download endpoint. Per spec the response is always `multipart/mixed` with
-// exactly two parts: an (currently always empty) JSON metadata part, and
-// either the media bytes or a `Location` redirect header. `ok` is false when
-// the response could not be parsed as a well-formed two-part multipart body.
-// `is_redirect` is true when the second part carries a `Location` header
-// instead of inline bytes; `location` is only populated in that case.
-struct FederationMediaPart final
-{
-    bool ok{false};
-    bool is_redirect{false};
-    std::string content_type{};
-    std::string bytes{};
-    std::string location{};
-    // R17: the filename in the media part's Content-Disposition, if any.
-    std::string filename{};
-};
-
 // Parses the multipart/mixed body of a /_matrix/federation/v1/media/download/{mediaId}
 // 200 response. `content_type_header` is the outer response's Content-Type header
 // value (used to extract the boundary parameter); `body` is the raw response body.
 // Pure function; performs no I/O. Exposed for unit testing.
 [[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
     -> FederationMediaPart;
-
-// Result of resolving a `Location` redirect URL from the authenticated
-// federation media download endpoint. `ok` is true when the URL uses HTTPS,
-// has a resolvable host, and resolves only to non-private/non-loopback
-// addresses. `discovery` carries the pinned addresses when resolution
-// succeeds; `reason` explains the failure when it does not.
-struct MediaRedirectResolutionResult final
-{
-    bool ok{false};
-    std::string reason{};
-    federation::ServerDiscoveryResult discovery{};
-    std::string url{}; // Canonical URL from the transport's parser; use this for the fetch.
-};
 
 // Resolves a media redirect URL in an SSRF-safe way so the caller can fetch
 // it with pinned addresses. `location_url` must be an absolute https:// URL;

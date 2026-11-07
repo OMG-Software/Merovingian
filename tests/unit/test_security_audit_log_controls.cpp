@@ -5,7 +5,8 @@
 // not forge extra log lines or reach the operator's terminal raw. Asserted at
 // the real synchronous console sink rather than at a formatting helper.
 
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

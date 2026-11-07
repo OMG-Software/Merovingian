@@ -17,17 +17,18 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/remote_room_fixture.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,7 +81,7 @@ constexpr auto relay_paths = std::array{RelayPath::pdu, RelayPath::membership, R
     return canonicaljson::Value{std::move(array)};
 }
 
-// The frame a worker sends, built the way worker_event_loop.cpp's append_envelope_fields does. `origin` is the
+// The frame a worker sends, built the way WorkerEventLoop.cpp's append_envelope_fields does. `origin` is the
 // transport origin the worker names; the event is signed by the remote server whatever it is.
 [[nodiscard]] auto relay_frame(RelayPath path, InboundPduEnvelope const& env, std::string_view origin) -> std::string
 {
@@ -267,8 +268,6 @@ auto prepare(homeserver::HomeserverRuntime& runtime) -> void
     runtime.federation.remote_key_resolver = genuine_key_resolver();
 }
 
-} // namespace
-
 // A fresh main runtime with a room and a valid signed event for `path`. Each check below starts from one, so a
 // refusal is never the leftover of an earlier relay. The runtime is built in place and never moved once its
 // federation callbacks are wired (they capture its address).
@@ -312,6 +311,8 @@ private:
     StartedMain main_runtime_;
     RelayedEvent event_;
 };
+
+} // namespace
 
 // F-24: the worker that relayed the event had a snapshot without the room's current ACL.
 // (The checks loop inside THEN: a Catch2 section inside a loop runs for its first pass only.)

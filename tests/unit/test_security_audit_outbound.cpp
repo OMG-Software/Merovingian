@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/media_service.hpp"

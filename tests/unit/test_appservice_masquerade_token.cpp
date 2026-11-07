@@ -13,6 +13,7 @@
 // |  that a corrupted/foreign string never partially decodes.             |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/appservice/MasqueradeIdentity.hpp"
 #include "merovingian/appservice/masquerade_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>

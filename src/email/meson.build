@@ -2,7 +2,7 @@ email_sources = files(
   'mailbox_address.cpp',
   'notification_email.cpp',
   'smtp_client.cpp',
-  'smtp_endpoint.cpp',
+  'SmtpEndpoint.cpp',
 )
 
 email_lib = static_library(

@@ -22,7 +22,8 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

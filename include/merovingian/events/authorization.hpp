@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/AuthEventSlots.hpp"
+#include "merovingian/events/EventAuthorizationDecision.hpp"
+#include "merovingian/events/MembershipState.hpp"
+#include "merovingian/events/PowerLevelEncoding.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -14,39 +19,6 @@
 
 namespace merovingian::events
 {
-
-enum class MembershipState
-{
-    leave,
-    invite,
-    join,
-    ban,
-    knock,
-    restricted,
-};
-
-struct EventAuthorizationDecision final
-{
-    bool allowed{false};
-    std::string rule_hook{};
-    std::string rule_step{};
-    std::string reason{};
-};
-
-struct AuthEventMap final
-{
-    canonicaljson::Value create{};
-    // The event ID is stored separately from the signed PDU JSON. Callers that
-    // build this map from persistent state must preserve the authoritative ID
-    // for the create event so first-join authorization can verify prev_events.
-    std::string create_event_id{};
-    canonicaljson::Value power_levels{};
-    canonicaljson::Value join_rules{};
-    canonicaljson::Value sender_member{};
-    canonicaljson::Value target_member{};
-    canonicaljson::Value authorising_user_member{};
-    canonicaljson::Value third_party_invite{};
-};
 
 [[nodiscard]] auto membership_name(MembershipState membership) noexcept -> char const*;
 // Why `content` is not a valid m.room.power_levels content for the room version
@@ -74,19 +46,6 @@ struct AuthEventMap final
                                              std::optional<std::string> const& state_key,
                                              std::string_view third_party_invite_token)
     -> std::vector<std::pair<std::string, std::string>>;
-
-// What decides which slots of an AuthEventMap a state event fills, for the event being judged.
-struct AuthEventSlots final
-{
-    std::string_view sender{};
-    std::string_view target_state_key{};
-    std::string_view event_type{};
-    std::string_view third_party_invite_token{};
-    // A join's content.join_authorised_via_users_server (join_authorising_user). The authorising
-    // server's signature is verified before any of this, on every ingestion path (ADR-0171); the
-    // map only lets the membership and power checks run.
-    std::string_view authorising_user{};
-};
 
 // Puts one state event into the slots of `map` it fills. `load` returns the event's JSON and is called
 // only for an event that fills a slot, so a caller that must parse it pays nothing for the others.
@@ -129,20 +88,6 @@ auto fill_auth_event_slot(AuthEventMap& map, AuthEventSlots const& slots, std::s
 }
 
 [[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>;
-// The forms a power level may take in a room version. Room versions 1-9 permit
-// an integer encoded as a string (rooms/v10.md removed it), and 1-5 also permit a
-// float, read by truncation (rooms/v3.md; v6 enforces Canonical JSON). Such
-// events are valid: reading a value as absent would silently apply a default
-// instead of the level the room actually set, so the encoding must follow the
-// room's own version (power_level_encoding) rather than be chosen per call
-// site. The parameters default to `integers` (strict) so a caller that has not
-// considered the question gets the v10+ behaviour, not a more permissive one.
-enum class PowerLevelEncoding : std::uint8_t
-{
-    integers,
-    integers_or_strings,
-    integers_strings_or_floats,
-};
 [[nodiscard]] auto power_level_encoding(rooms::RoomVersionPolicy const& policy) noexcept -> PowerLevelEncoding;
 // One power-level value (a top-level level, or an entry of `events`, `notifications` or `users`)
 // read as the authorization rules read it in `encoding`: an integer; under the legacy encodings

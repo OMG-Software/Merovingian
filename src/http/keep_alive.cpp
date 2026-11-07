@@ -3,6 +3,9 @@
 
 #include "merovingian/http/keep_alive.hpp"
 
+#include "merovingian/http/ConnectionPreference.hpp"
+#include "merovingian/http/KeepAlivePolicy.hpp"
+
 #include <string>
 
 namespace merovingian::http

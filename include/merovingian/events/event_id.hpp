@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/EventHashResult.hpp"
+#include "merovingian/events/EventIdResult.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <cstdint>
 #include <string>
@@ -11,18 +13,6 @@
 
 namespace merovingian::events
 {
-
-struct EventIdResult final
-{
-    std::string event_id{};
-    std::string error{};
-};
-
-struct EventHashResult final
-{
-    std::string sha256{};
-    std::string error{};
-};
 
 [[nodiscard]] auto event_id_is_valid(std::string_view event_id) noexcept -> bool;
 // Whether a client or a remote server may name `event_id` in a receipt or read marker: a `$`

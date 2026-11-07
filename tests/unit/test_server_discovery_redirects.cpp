@@ -4,6 +4,11 @@
 // ADR-0483: the well-known fetch follows redirects, bounded and re-checked on every hop. The transport is a fake
 // that answers from a table, so nothing here touches the network.
 
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownHopResponse.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>

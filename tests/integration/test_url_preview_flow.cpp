@@ -8,6 +8,7 @@
 // time caps, OpenGraph extraction, image storage through the media pipeline,
 // and the cache.
 
+#include "../support/MockIdentityServer.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
@@ -19,7 +20,10 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

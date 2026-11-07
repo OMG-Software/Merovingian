@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/event.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/events/EventSignature.hpp"
+#include "merovingian/federation/FederationDiscoveryDecision.hpp"
+#include "merovingian/federation/FederationRequestSignature.hpp"
+#include "merovingian/federation/FederationVerificationDecision.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustDecision.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -14,59 +19,12 @@
 namespace merovingian::federation
 {
 
-struct RemoteServerRecord final
-{
-    std::string server_name{};
-    std::string well_known_host{};
-    std::string resolved_host{};
-    std::vector<std::string> resolved_addresses{};
-    bool tls_required{true};
-};
-
-struct FederationDiscoveryDecision final
-{
-    bool accepted{false};
-    std::string reason{};
-};
-
-struct FederationRequestSignature final
-{
-    std::string origin{};
-    std::string key_id{};
-    std::string signature{};
-    bool canonical_json_verified{false};
-};
-
-struct FederationVerificationDecision final
-{
-    bool accepted{false};
-    std::string reason{};
-};
-
 // Quiet period after which an origin's consecutive-failure backoff lapses. The
 // count only ever grows from failures attributable to the origin itself (see
 // ADR-0081), so this is a recovery path for a peer that misbehaved, not a
 // defence against forged traffic: it bounds how long a real peer stays refused
 // after a bad patch, so a backoff can never persist until restart.
 inline constexpr auto remote_backoff_decay_window = std::chrono::minutes{5};
-
-struct RemoteTrustState final
-{
-    std::uint32_t consecutive_failures{0U};
-    // When the most recent failure was recorded. A default (epoch) value means
-    // "unknown", which never decays: fail closed.
-    std::chrono::steady_clock::time_point last_failure_at{};
-    std::uint32_t reputation_score{100U};
-    bool quarantined{false};
-    bool circuit_open{false};
-};
-
-struct RemoteTrustDecision final
-{
-    bool accepted{false};
-    bool apply_backoff{false};
-    std::string reason{};
-};
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool;

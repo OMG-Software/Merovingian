@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/federation/ServerAclDecision.hpp"
+#include "merovingian/federation/ServerAclEvent.hpp"
 #include "merovingian/federation/server_acl.hpp"
 
 #include <catch2/catch_test_macros.hpp>

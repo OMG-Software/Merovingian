@@ -1,5 +1,7 @@
 auth_sources = files(
-  'failure_window_table.cpp',
+  'Argon2idAdmission.cpp',
+  'Argon2idSlot.cpp',
+  'FailureWindowTable.cpp',
   'identity.cpp',
   'key_api.cpp',
   'oidc_discovery.cpp',

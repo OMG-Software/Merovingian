@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
 
 #include <chrono>
 

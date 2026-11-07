@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentDeviceKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/DeviceDisplayNames.hpp"
 
 #include <map>
 #include <optional>
@@ -56,25 +57,6 @@ namespace merovingian::federation
 auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::PersistentStore const& store,
                                   std::string_view target_user_id, std::string_view target_key_id,
                                   std::optional<std::string_view> viewer_user_id) -> void;
-
-// The display names of the devices of a set of users, read from `store.devices` in one pass. A key query
-// names its users up front; building this once for them keeps the lookup for every published key off the
-// device table, which holds every device on the server and is scanned under the runtime lock (work there is
-// bounded by the request). Holds views into `store`, so it is valid only while `store.devices` is unchanged:
-// build it inside the request and drop it with the response.
-class DeviceDisplayNames final
-{
-public:
-    DeviceDisplayNames(database::PersistentStore const& store, std::span<std::string_view const> users);
-
-    // The device's display name, empty when it has none. std::nullopt when the lookup holds no row for the
-    // device: it does not exist, or its user was not among those the lookup was built for.
-    [[nodiscard]] auto find(std::string_view user_id, std::string_view device_id) const
-        -> std::optional<std::string_view>;
-
-private:
-    std::map<std::pair<std::string_view, std::string_view>, std::string_view> names_{};
-};
 
 // `device_key` as published to `viewer_user_id`: the stored DeviceKeys object
 // with the visible signatures merged and `unsigned.device_display_name` set to

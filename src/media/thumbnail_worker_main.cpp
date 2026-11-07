@@ -27,10 +27,20 @@
 // answered after the same hardening with the libpng and libjpeg-turbo versions
 // it runs; `--version` prints the same report, also after hardening.
 
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
+#include "merovingian/media/ThumbnailSourceFormat.hpp"
+#include "merovingian/media/ThumbnailWorkerRequest.hpp"
+#include "merovingian/media/ThumbnailWorkerResponse.hpp"
+#include "merovingian/media/ThumbnailWorkerStatus.hpp"
 #include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 #include "merovingian/platform/signal_hardening.hpp"
+
+#include <png.h>
+#include <sys/stat.h>
+#include <turbojpeg.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -43,11 +53,6 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
-
-#include <png.h>
-#include <sys/stat.h>
-#include <turbojpeg.h>
-#include <unistd.h>
 
 #if !defined(MEROVINGIAN_VERSION) || !defined(MEROVINGIAN_TURBOJPEG_BUILD_VERSION)
 #error "MEROVINGIAN_VERSION and MEROVINGIAN_TURBOJPEG_BUILD_VERSION must be defined by the build (src/meson.build)"

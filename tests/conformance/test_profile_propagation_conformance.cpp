@@ -20,9 +20,9 @@
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

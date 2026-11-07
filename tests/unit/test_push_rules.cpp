@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/push/PushEvaluationContext.hpp"
 #include "merovingian/push/push_rules.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -21,6 +21,12 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/federation/FederationDestination.hpp"
+#include "merovingian/federation/LiteralDiscoveryOptIn.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -5,10 +5,11 @@
 // without a token is refused at startup unless the operator acknowledges it.
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigParseResult.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
+#include "merovingian/config/ReloadPlan.hpp"
+#include "merovingian/config/ReloadPolicy.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/reload_plan.hpp"
-#include "merovingian/config/reload_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/observability/AdminControlSurface.hpp"
 #include "merovingian/observability/AdminOperation.hpp"
 #include "merovingian/observability/AdminSurface.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
+#include "merovingian/observability/AuditSinkFields.hpp"
+#include "merovingian/observability/DropEpisodePolicy.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/HealthStatus.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/LowSeverityFlushPolicy.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
+#include "merovingian/platform/HardeningStatus.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -626,7 +631,7 @@ SCENARIO("redact_log_message redacts key=value tokens carrying secret markers in
     // macros pass a caller-built std::string straight to SingleLog, so they
     // cannot carry a StructuredLogField's `sensitive` bit. redact_log_message
     // is the boundary SingleLog::log() now applies to every line (see
-    // logger.hpp) so a plain-string call site cannot bypass redaction the
+    // SingleLog.hpp) so a plain-string call site cannot bypass redaction the
     // way structured `log_diagnostic` fields already could not.
     GIVEN("a message with no key=value tokens")
     {
@@ -777,7 +782,7 @@ namespace
 {
 
 // Test-only audit sink for the L-09 concurrency scenario below. AuditSink is
-// a plain function pointer (see logger.hpp), so this must be a free
+// a plain function pointer (see SingleLog.hpp), so this must be a free
 // function, not a capturing lambda.
 std::atomic<std::size_t> g_test_audit_sink_invocations{0U}; // NOLINT
 

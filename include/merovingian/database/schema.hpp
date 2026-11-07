@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/SchemaIndexDefinition.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -10,20 +13,6 @@
 
 namespace merovingian::database
 {
-
-struct SchemaTableDefinition final
-{
-    std::string_view name{};
-    std::string_view columns_sql{};
-};
-
-// A secondary index: `CREATE INDEX name ON table (columns_sql)`.
-struct SchemaIndexDefinition final
-{
-    std::string_view name{};
-    std::string_view table{};
-    std::string_view columns_sql{};
-};
 
 [[nodiscard]] auto current_schema_version() noexcept -> std::uint32_t;
 [[nodiscard]] auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>;

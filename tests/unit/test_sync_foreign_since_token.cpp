@@ -13,7 +13,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/sync/stream_token.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentEventStateGroup.hpp"
 #include "merovingian/database/PersistentInvite.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentRoom.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
-#include "merovingian/database/persistent_event.hpp"
-#include "merovingian/database/persistent_state_group.hpp"
+#include "merovingian/database/PersistentStateGroup.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 
 #include <optional>
 #include <string>

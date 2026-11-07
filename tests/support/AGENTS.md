@@ -7,11 +7,11 @@ Shared test utilities used across unit, conformance, and integration tests.
 | File | Purpose |
 |---|---|
 | `appservice_test_config.hpp` | `TestAppservice` and `appservice_test_config()`: write registration files for appservices with the as_token `as-token-<id>`, hs_token `hs-token-<id>` and sender `_<id>_bot`, and build a `Config` that loads them (token registration on, in-memory database). Adjust the returned `Config` (for example `appservice().max_queued_events`) before starting the runtime |
-| `mock_appservice.hpp` | `MockAppservice`: a loopback plain-HTTP appservice that records every request (method, target, `Authorization`, body), answers with a settable global status or per-target-prefix answers, and can `go_silent()` to make the homeserver's outbound timeout fire. Like `tls_mock_server.hpp` it breaks the no-I/O rule because conformance and integration suites share it |
-| `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
+| `MockAppservice.hpp` | `MockAppservice`: a loopback plain-HTTP appservice that records every request (method, target, `Authorization`, body), answers with a settable global status or per-target-prefix answers, and can `go_silent()` to make the homeserver's outbound timeout fire. Like `tls_mock_server.hpp` it breaks the no-I/O rule because conformance and integration suites share it |
+| `JoiningThreads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
-| `password_hash_cost.hpp` / `.cpp` | The minimum-cost `crypto_pwhash_str` the unit, conformance and integration binaries link through `--wrap` (ADR-0510), and `RealPasswordHashCost`, the guard for a scenario that races another request against the Argon2id window |
+| `RealPasswordHashCost.hpp` / `.cpp` | The minimum-cost `crypto_pwhash_str` the unit, conformance and integration binaries link through `--wrap` (ADR-0510), and `RealPasswordHashCost`, the guard for a scenario that races another request against the Argon2id window |
 | `process_tasks.hpp` | `count_process_tasks()`: number of threads in this process from `/proc/self/task`; used by the no-thread-before-hardening scenarios (ISO-1) |
 | `state_group_scan.hpp` | `state_group_index_mismatch()`: compares the store's indexed state-group lookups with a linear scan of the rows (empty string when they agree); `scanned_*` give the scan answers. Used after writes, hydration and reload (ADR-0325) |
 | `room_history_fixture.hpp` | `record_joined_state_for_room()`: for a fixture that writes events straight into a `PersistentStore`, records one state group in which a user is joined and maps the room's events to it, so the history-visibility filter (CSAZ-3) lets that user read them |
@@ -41,10 +41,10 @@ first rather than assuming every shared helper lives under `tests/support/`.
   belong in an anonymous namespace in the test file that uses them.
 - Helpers must not start a database, server, or any I/O — they are pure utilities.
   Any helper that requires I/O belongs in `tests/integration/` as a fixture class.
-- **Exceptions — `tls_mock_server.hpp`, `mock_appservice.hpp` and `appservice_test_config.hpp`.**
+- **Exceptions — `tls_mock_server.hpp`, `MockAppservice.hpp` and `appservice_test_config.hpp`.**
   `tls_mock_server.hpp` writes a temp certificate and accepts real loopback TLS connections
   (it creates the certificate and key owner-only with `open_owner_only_for_write`, never `fopen`),
-  `MockAppservice` (`mock_appservice.hpp`) accepts real loopback HTTP connections, and
+  `MockAppservice` (`MockAppservice.hpp`) accepts real loopback HTTP connections, and
   `appservice_test_config.hpp` writes registration files, so all three break the no-I/O rule.
   They live here because a `tests/integration/` fixture is not reachable from
   `tests/conformance/`, and both suites need the same mock peers and registrations. Keep the

@@ -5,8 +5,8 @@
 // (appservice transactions, deferred federation PDUs). Assertions run on the
 // test thread only; the job body touches nothing but atomics.
 
-#include "merovingian/homeserver/periodic_job.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

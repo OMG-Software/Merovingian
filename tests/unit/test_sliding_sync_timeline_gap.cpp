@@ -12,6 +12,7 @@
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
+#include "merovingian/sync/TimelineExpansion.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 
 #include <catch2/catch_test_macros.hpp>

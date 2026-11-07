@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
 
 #include <cstdint>
 #include <string>

@@ -10,10 +10,10 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `LocalMediaRepository.cpp` | Core media store: save, retrieve, deduplicate by content hash |
 | `security.cpp` | MIME type allow-list, size limits, quarantine policy |
 | `thumbnailer.cpp` | Generates thumbnails for image media |
-| `thumbnail_cache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
+| `ThumbnailCache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
 | `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
-| `runtime_media.cpp` | Wires the media service into the runtime |
+| `RuntimeMediaConfig.cpp` | Wires the media service into the runtime |
 | `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
 
 ## Upload names and reserved IDs

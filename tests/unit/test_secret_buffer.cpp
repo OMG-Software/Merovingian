@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 
 #include <catch2/catch_test_macros.hpp>

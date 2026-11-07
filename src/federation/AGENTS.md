@@ -357,18 +357,18 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
-| `edu_idempotence.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
-| `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
+| `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
+| `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
 | `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
-| `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
-| `runtime_federation.cpp` | Federation route registration and per-origin request caps |
+| `CachedServerDiscovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
+| `RuntimeFederationConfig.cpp` | Federation route registration and per-origin request caps |
 
 ## Adding a new federation endpoint
 
 1. Declare handler in the relevant `.hpp`
 2. Implement in the matching `.cpp`
-3. Register route in `runtime_federation.cpp`
+3. Register route in `RuntimeFederationConfig.cpp`
 4. Add a conformance test in `tests/conformance/` citing the spec section
 5. Add an integration test in `tests/integration/test_federation_*_flow.cpp`
 

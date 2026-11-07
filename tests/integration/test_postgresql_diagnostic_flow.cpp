@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/temp_directory.hpp"
+#include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
 #include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <cstdlib>
@@ -20,8 +23,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
 
 #ifndef _WIN32
 #include <sys/stat.h>

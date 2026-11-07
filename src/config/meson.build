@@ -1,9 +1,9 @@
 config_sources = files(
   'Config.cpp',
   'config_parser.cpp',
-  'reload_plan.cpp',
-  'reload_policy.cpp',
-  'runtime_config.cpp',
+  'ReloadPlan.cpp',
+  'ReloadPolicy.cpp',
+  'RuntimeConfigSnapshot.cpp',
 )
 
 config_lib = static_library(

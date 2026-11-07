@@ -4,7 +4,9 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
-#include "merovingian/database/migration.hpp"
+#include "merovingian/database/MigrationFileLoadResult.hpp"
+#include "merovingian/database/MigrationStep.hpp"
+#include "merovingian/database/OfflineMigrationPlanResult.hpp"
 
 #include <cstdint>
 #include <string>
@@ -12,20 +14,6 @@
 
 namespace merovingian::database
 {
-
-struct MigrationFileLoadResult final
-{
-    bool ok{false};
-    std::string reason{};
-    std::vector<MigrationStep> steps{};
-};
-
-struct OfflineMigrationPlanResult final
-{
-    bool ok{false};
-    std::string reason{};
-    MigrationPlan plan{};
-};
 
 [[nodiscard]] auto load_migration_files(std::string const& directory) -> MigrationFileLoadResult;
 [[nodiscard]] auto build_offline_migration_plan(config::DatabaseConfig const& database_config,

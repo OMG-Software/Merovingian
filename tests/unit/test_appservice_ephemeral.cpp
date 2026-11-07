@@ -11,7 +11,6 @@
 // |  the bounded, coalescing per-appservice queue (ADR-0190).               |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 
 #include <catch2/catch_test_macros.hpp>

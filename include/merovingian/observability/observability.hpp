@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/observability/AdminControlSurface.hpp"
 #include "merovingian/observability/AdminOperation.hpp"
 #include "merovingian/observability/AdminRoute.hpp"
@@ -18,7 +18,7 @@
 #include "merovingian/observability/ObservabilitySnapshot.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -62,7 +62,7 @@ namespace merovingian::observability
 // freeform log message when `key` matches the same sensitivity rules as
 // structured fields (see `log_field_is_sensitive`/`contains_sensitive_marker`).
 // This is the redaction boundary the legacy LOG_*/LOGF_* macros route through
-// at the `SingleLog` level (see logger.hpp), so no call site can bypass it by
+// at the `SingleLog` level (see SingleLog.hpp), so no call site can bypass it by
 // building a plain std::string instead of using StructuredLogField. Tokens
 // are whitespace-delimited; a sensitive value that itself contains embedded
 // whitespace is only redacted up to the first space, matching the "key=value"
@@ -75,7 +75,7 @@ namespace merovingian::observability
 // those two-character escapes, every other C0 control and DEL becomes `\xHH`,
 // and a UTF-8 encoded C1 control (U+0080-U+009F) becomes `\u00HH`. All other
 // bytes, including the rest of UTF-8, pass through unchanged. `SingleLog`
-// applies it to every line it writes (see logger.hpp).
+// applies it to every line it writes (see SingleLog.hpp).
 [[nodiscard]] auto escape_log_controls(std::string_view text) -> std::string;
 // AUTH-9 (security-audit-report-2026-09-29.md): the longest a single structured
 // log field value may be in the emitted line. A client controls values such as a

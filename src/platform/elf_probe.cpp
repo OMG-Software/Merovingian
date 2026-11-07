@@ -3,11 +3,13 @@
 
 #include "merovingian/platform/elf_probe.hpp"
 
+#include "merovingian/platform/ElfHardeningResult.hpp"
+
+#include <link.h>
+
 #include <cstddef>
 #include <span>
 #include <tuple>
-
-#include <link.h>
 
 namespace merovingian::platform
 {

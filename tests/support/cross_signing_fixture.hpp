@@ -7,11 +7,15 @@
 // user-signing keys' signatures by the master key (Client-Server API, CrossSigningKey), so a fixture with
 // invented key text and signature text cannot be uploaded.
 
+#include "CrossSigningKeyPair.hpp"
+#include "CrossSigningSet.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/signable.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 
@@ -23,12 +27,6 @@
 
 namespace merovingian::tests
 {
-
-struct CrossSigningKeyPair final
-{
-    std::string public_key{}; // unpadded base64, the key's ID without "ed25519:"
-    core::SecretBuffer secret_key{};
-};
 
 [[nodiscard]] inline auto generate_cross_signing_key_pair_once() -> CrossSigningKeyPair
 {
@@ -94,58 +92,6 @@ struct CrossSigningKeyPair final
     REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
     return serialized.output;
 }
-
-// A user's three cross-signing keys: the master key unsigned, the self-signing and user-signing keys signed
-// by the master key. Each key's JSON is a complete `CrossSigningKey` object.
-struct CrossSigningSet final
-{
-    std::string user_id{};
-    CrossSigningKeyPair master{};
-    CrossSigningKeyPair self_signing{};
-    CrossSigningKeyPair user_signing{};
-    std::string master_json{};
-    std::string self_signing_json{};
-    std::string user_signing_json{};
-
-    [[nodiscard]] auto master_member() const -> std::string
-    {
-        return R"("master_key":)" + master_json;
-    }
-
-    [[nodiscard]] auto self_signing_member() const -> std::string
-    {
-        return R"("self_signing_key":)" + self_signing_json;
-    }
-
-    [[nodiscard]] auto user_signing_member() const -> std::string
-    {
-        return R"("user_signing_key":)" + user_signing_json;
-    }
-
-    // The chosen keys' members, comma separated, for a request body without braces.
-    [[nodiscard]] auto selected_members(bool master_key, bool self_signing_key, bool user_signing_key) const
-        -> std::string
-    {
-        auto members = std::string{};
-        auto const add = [&members](bool wanted, std::string member) {
-            if (wanted)
-            {
-                members += (members.empty() ? "" : ",") + member;
-            }
-        };
-        add(master_key, master_member());
-        add(self_signing_key, self_signing_member());
-        add(user_signing_key, user_signing_member());
-        return members;
-    }
-
-    // `"master_key":…,"self_signing_key":…,"user_signing_key":…` for a request body, without braces.
-    [[nodiscard]] auto members() const -> std::string
-    {
-        return R"("master_key":)" + master_json + R"(,"self_signing_key":)" + self_signing_json +
-               R"(,"user_signing_key":)" + user_signing_json;
-    }
-};
 
 // The body of POST /keys/device_signing/upload: `members` (see CrossSigningSet) with password UIA.
 [[nodiscard]] inline auto cross_signing_upload_body(std::string const& members,

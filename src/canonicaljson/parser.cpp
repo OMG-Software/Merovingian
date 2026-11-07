@@ -3,6 +3,8 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/ParseResult.hpp"
 #include "yyjson_adapter.h"
 
 #include <algorithm>

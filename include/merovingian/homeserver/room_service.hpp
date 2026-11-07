@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/events/event.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/third_party_invite.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
+#include "merovingian/federation/ThirdPartyBindNotification.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchange.hpp"
 #include "merovingian/homeserver/BoundedOutboundLimits.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
 #include "merovingian/homeserver/FetchRelationsRequest.hpp"
@@ -21,8 +22,9 @@
 #include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
 #include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
 #include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
-#include "merovingian/sync/bundled_aggregations.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
+#include "merovingian/sync/BundledAggregations.hpp"
+#include "merovingian/sync/HistoryVisibility.hpp"
 
 #include <chrono>
 #include <cstddef>

@@ -27,10 +27,12 @@
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/MockIdentityServer.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -42,7 +44,6 @@
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"

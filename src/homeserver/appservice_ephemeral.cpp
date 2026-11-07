@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 
+#include "merovingian/appservice/AppserviceRegistration.hpp"
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/sync/receipt_content_builder.hpp"
+#include "merovingian/sync/ReceiptContentBuilder.hpp"
 
 #include <algorithm>
 #include <cstdint>

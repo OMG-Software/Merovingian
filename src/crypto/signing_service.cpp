@@ -3,8 +3,13 @@
 
 #include "merovingian/crypto/signing_service.hpp"
 
+#include "merovingian/crypto/ServerSignatureResult.hpp"
+#include "merovingian/crypto/SigningKeyRecord.hpp"
+#include "merovingian/crypto/SigningKeyStore.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <string>
 #include <vector>
@@ -26,16 +31,6 @@ auto signing_key_record_is_usable(SigningKeyRecord const& key) noexcept -> bool
 {
     return key.active && !key.server_name.empty() && ed25519_key_id_is_valid(key.key_id) &&
            ed25519_public_key_shape_is_valid(key.public_key);
-}
-
-auto SigningKeyStore::active_keys_for_server(std::string_view server_name) -> std::vector<SigningKeyRecord>
-{
-    auto result = active_key_for_server(server_name);
-    if (!result.error.empty() || !signing_key_record_is_usable(result.key))
-    {
-        return {};
-    }
-    return {std::move(result.key)};
 }
 
 auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std::string_view server_name,

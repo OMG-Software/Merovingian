@@ -3,8 +3,12 @@
 
 #include "merovingian/events/event.hpp"
 
+#include "merovingian/events/EventEnvelope.hpp"
+#include "merovingian/events/EventParseResult.hpp"
+#include "merovingian/events/EventSignature.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <cstddef>
 #include <optional>

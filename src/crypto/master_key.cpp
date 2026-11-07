@@ -3,7 +3,10 @@
 
 #include "merovingian/crypto/master_key.hpp"
 
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/crypto/OpenedMasterKeyFile.hpp"
+#include "merovingian/crypto/secret_box.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 
 #include <sodium.h>

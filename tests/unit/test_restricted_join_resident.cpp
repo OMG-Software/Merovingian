@@ -12,9 +12,11 @@
 // 4.3.5.
 
 #include "../support/master_key.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -28,21 +30,20 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

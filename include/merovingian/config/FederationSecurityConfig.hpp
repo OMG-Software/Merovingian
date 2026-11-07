@@ -6,7 +6,7 @@
 #include "merovingian/config/FederationQueryConfig.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/config/special_use_ip_ranges.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
 
 #include <cstdint>
 #include <string>
@@ -123,7 +123,7 @@ struct FederationSecurityConfig final
     // rejected outright with `response_too_large` even after join_timeout
     // gave it enough wall-clock time. Restart required: this also sizes the
     // federation-worker IPC frame cap, which is fixed at worker spawn time
-    // (see reload_policy.cpp).
+    // (see ReloadPolicy.cpp).
     std::string join_response_max_size{"64MiB"};
 };
 

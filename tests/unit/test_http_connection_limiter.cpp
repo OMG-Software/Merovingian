@@ -4,9 +4,9 @@
 // 0.12.13 audit item 1: a per-IP cap on open connections, decided at accept
 // time, with IPv6 clients grouped by prefix. Tags: [http][connection_limit].
 
-#include "../support/joining_threads.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/http/ConnectionLimiter.hpp"
 #include "merovingian/http/client_address.hpp"
-#include "merovingian/http/connection_limiter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

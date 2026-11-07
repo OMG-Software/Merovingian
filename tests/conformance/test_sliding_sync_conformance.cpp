@@ -22,8 +22,8 @@
 // |                  = true for matrix-rust-sdk compatibility              |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/sliding_sync_parser.hpp"
-#include "merovingian/sync/stream_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

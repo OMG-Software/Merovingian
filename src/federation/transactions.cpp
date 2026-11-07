@@ -3,9 +3,15 @@
 
 #include "merovingian/federation/transactions.hpp"
 
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationRoute.hpp"
+#include "merovingian/federation/FederationRouteMatch.hpp"
+#include "merovingian/federation/FederationTransaction.hpp"
+#include "merovingian/federation/FederationTransactionDecision.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <string>

@@ -10,6 +10,7 @@
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#extensions-to-sync
 // (to-device messages are delivered once, and the `next_batch` of /sync
 // acknowledges only what the response carried) and MSC4186 to_device pagination.
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"

@@ -3,6 +3,8 @@
 
 #include "merovingian/canonicaljson/signable.hpp"
 
+#include "merovingian/canonicaljson/serializer.hpp"
+
 #include <algorithm>
 #include <utility>
 #include <variant>

@@ -3,7 +3,7 @@
 
 #include "merovingian/homeserver/worker_ipc_limits.hpp"
 
-#include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 
 #include <algorithm>
 

@@ -8,6 +8,7 @@
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysdevice_signingupload
 //      ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeys
 
+#include "../support/CrossSigningKeyPair.hpp"
 #include "../support/cross_signing_fixture.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"

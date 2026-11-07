@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/bootstrap/exit_code.hpp"
+#include "merovingian/bootstrap/ExitCode.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
 #include "merovingian/config/DatabaseRole.hpp"
@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.79"};
+constexpr auto version = std::string_view{"0.12.80"};
 
 auto print_help() -> void
 {

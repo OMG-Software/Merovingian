@@ -21,10 +21,14 @@
 // |  dispatch_push_deliveries).                                             |
 // +-------------------------------------------------------------------------+
 
+#include "../support/ScopedThreadJoin.hpp"
+#include "../support/StallingTlsServerState.hpp"
+#include "../support/TlsTestCertificate.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -32,12 +36,13 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/PersistentPusher.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_id.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -47,9 +52,10 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/push/PushGatewayClient.hpp"
+#include "merovingian/push/TestForcedPushGatewayResolution.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

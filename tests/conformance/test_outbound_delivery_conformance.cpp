@@ -26,11 +26,15 @@
 // +-------------------------------------------------------------------------+
 
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/federation/FederationDestination.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
+#include "merovingian/federation/OutboundTransactionResult.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

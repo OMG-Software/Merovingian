@@ -3,8 +3,9 @@
 
 #include "merovingian/config/config_parser.hpp"
 
+#include "merovingian/config/ConfigParseResult.hpp"
 #include "merovingian/http/rate_limit.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <limits>

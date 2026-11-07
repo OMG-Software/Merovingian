@@ -10,8 +10,13 @@
 // carries one.
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 

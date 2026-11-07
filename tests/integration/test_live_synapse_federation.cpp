@@ -8,6 +8,7 @@
 // checks connectivity first and SKIP()s if the remote is unreachable.
 
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"

@@ -7,7 +7,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/media/RuntimeMediaConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

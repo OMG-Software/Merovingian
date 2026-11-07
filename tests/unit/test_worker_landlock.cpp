@@ -10,10 +10,14 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
+#include "merovingian/config/ReloadPlan.hpp"
+#include "merovingian/config/ReloadPolicy.hpp"
 #include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/reload_plan.hpp"
-#include "merovingian/config/reload_policy.hpp"
-#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/platform/LandlockAccess.hpp"
+#include "merovingian/platform/LandlockAddRuleOutcome.hpp"
+#include "merovingian/platform/LandlockHardeningOps.hpp"
+#include "merovingian/platform/LandlockPathRule.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>

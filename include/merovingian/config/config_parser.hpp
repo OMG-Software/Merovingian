@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigParseResult.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
 
 #include <cstddef>
@@ -16,12 +17,6 @@ namespace merovingian::config
 
 inline constexpr auto max_config_bytes = std::size_t{1024U} * std::size_t{1024U};
 inline constexpr auto max_config_line_bytes = std::size_t{4096U};
-
-struct ConfigParseResult final
-{
-    Config config{};
-    std::vector<ConfigValidationFinding> findings{};
-};
 
 [[nodiscard]] auto trim_ascii(std::string_view value) noexcept -> std::string_view;
 [[nodiscard]] auto parse_bool_value(std::string_view value, bool& output) noexcept -> bool;

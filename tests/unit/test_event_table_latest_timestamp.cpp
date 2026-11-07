@@ -5,7 +5,7 @@
 // every status, kept as rows come and go, so a sliding sync room's `timestamp` costs one lookup rather than a parse of
 // the room's history.
 
-#include "merovingian/database/event_table.hpp"
+#include "merovingian/database/EventTable.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

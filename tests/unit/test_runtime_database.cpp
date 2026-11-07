@@ -8,7 +8,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/database/runtime_database.hpp"
+#include "merovingian/database/RuntimeDatabaseConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

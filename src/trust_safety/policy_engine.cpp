@@ -3,8 +3,9 @@
 
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 #include "merovingian/trust_safety/EnforcementReason.hpp"
 #include "merovingian/trust_safety/FederationPolicyRequest.hpp"
 #include "merovingian/trust_safety/MediaPolicyRequest.hpp"

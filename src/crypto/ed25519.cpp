@@ -3,9 +3,14 @@
 
 #include "merovingian/crypto/ed25519.hpp"
 
-#include <algorithm>
+#include "merovingian/crypto/Ed25519Keypair.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/VerificationResult.hpp"
 
 #include <sodium.h>
+
+#include <algorithm>
 
 namespace merovingian::crypto
 {

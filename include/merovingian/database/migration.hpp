@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/MigrationApplyResult.hpp"
+#include "merovingian/database/MigrationDirection.hpp"
+#include "merovingian/database/MigrationPlan.hpp"
+#include "merovingian/database/MigrationStep.hpp"
+#include "merovingian/database/MigrationValidationResult.hpp"
+#include "merovingian/database/SchemaState.hpp"
 
 #include <cstdint>
 #include <string>
@@ -11,55 +16,6 @@
 
 namespace merovingian::database
 {
-
-enum class MigrationDirection
-{
-    upgrade,
-    downgrade,
-};
-
-struct MigrationStep final
-{
-    std::uint32_t version{0U};
-    std::string name{};
-    std::vector<PreparedStatement> statements{};
-    MigrationDirection direction{MigrationDirection::upgrade};
-};
-
-struct MigrationPlan final
-{
-    std::uint32_t current_version{0U};
-    std::uint32_t target_version{0U};
-    std::vector<MigrationStep> steps{};
-    MigrationDirection direction{MigrationDirection::upgrade};
-};
-
-struct MigrationValidationResult final
-{
-    bool valid{false};
-    std::string reason{};
-};
-
-struct MigrationRecord final
-{
-    std::uint32_t version{0U};
-    std::string name{};
-    MigrationDirection direction{MigrationDirection::upgrade};
-};
-
-struct SchemaState final
-{
-    std::uint32_t version{0U};
-    std::vector<std::string> tables{};
-    std::vector<MigrationRecord> applied_migrations{};
-};
-
-struct MigrationApplyResult final
-{
-    bool ok{false};
-    std::string reason{};
-    SchemaState state{};
-};
 
 [[nodiscard]] auto migration_direction_name(MigrationDirection direction) noexcept -> std::string_view;
 [[nodiscard]] auto migration_step_is_valid(MigrationStep const& step) -> MigrationValidationResult;

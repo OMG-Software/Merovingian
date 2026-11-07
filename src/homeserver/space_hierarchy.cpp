@@ -3,11 +3,14 @@
 
 #include "merovingian/homeserver/space_hierarchy.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
@@ -16,9 +19,12 @@
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
+#include "merovingian/homeserver/SpaceHierarchyResult.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 
 #include <algorithm>

@@ -3,10 +3,11 @@
 // The test binaries hash at minimum cost, and only ever in place of the cost production asks for (ADR-0510).
 // tests/password_cost/ proves the production cost in a binary without this override.
 
-#include "../support/password_hash_cost.hpp"
+#include "../support/RealPasswordHashCost.hpp"
 #include "merovingian/auth/password.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <cstddef>
@@ -14,8 +15,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-
-#include <sodium.h>
 
 namespace
 {

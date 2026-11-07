@@ -5,9 +5,10 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/read_markers.hpp"
+#include "merovingian/sync/ReadMarkers.hpp"
+#include "merovingian/sync/UnreadEventClassifier.hpp"
+#include "merovingian/sync/UnreadEventOutcome.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
-#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

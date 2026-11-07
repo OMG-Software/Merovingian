@@ -23,7 +23,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -32,8 +32,8 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/push_badge_count.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/PushBadgeCount.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 
 #include <catch2/catch_test_macros.hpp>

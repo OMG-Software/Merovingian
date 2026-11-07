@@ -3,6 +3,12 @@
 
 #include "merovingian/rooms/encryption_policy.hpp"
 
+#include "merovingian/rooms/EncryptedEventLogSummary.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionDecision.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomPreset.hpp"
+
 #include <algorithm>
 #include <span>
 #include <string>

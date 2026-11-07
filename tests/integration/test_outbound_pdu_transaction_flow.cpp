@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/TestAppservice.hpp"
 #include "../support/appservice_test_config.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
@@ -16,9 +17,11 @@
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -28,9 +31,10 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentAppserviceOutboxEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"

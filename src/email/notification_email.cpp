@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/email/notification_email.hpp"
 
+#include "merovingian/email/PasswordResetEmail.hpp"
+#include "merovingian/email/UnreadNotificationEmail.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 
 #include <algorithm>
@@ -12,7 +14,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-
 #include <time.h>
 
 namespace merovingian::email

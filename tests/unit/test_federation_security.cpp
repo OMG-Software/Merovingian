@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/events/event.hpp"
-#include "merovingian/federation/cached_server_discovery.hpp"
+#include "merovingian/events/EventSignature.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/FederationRequestSignature.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/security.hpp"
-#include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

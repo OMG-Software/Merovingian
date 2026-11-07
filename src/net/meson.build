@@ -1,10 +1,10 @@
 net_sources = files(
-  'connection_parker.cpp',
-  'listener.cpp',
+  'ConnectionParker.cpp',
+  'RuntimeListeners.cpp',
   'loopback_literal.cpp',
-  'shutdown_signal.cpp',
-  'tcp_acceptor.cpp',
-  'thread_pool.cpp',
+  'ShutdownSignal.cpp',
+  'TcpAcceptor.cpp',
+  'ThreadPool.cpp',
 )
 
 net_lib = static_library(

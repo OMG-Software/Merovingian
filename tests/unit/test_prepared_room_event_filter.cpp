@@ -9,7 +9,9 @@
 // event types, where `*` stands for a wildcard, and "A matching type will be excluded even if it is listed
 // in the `types` filter". The spec sets no maximum length for any list.
 
-#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/PreparedRoomEventFilter.hpp"
+#include "merovingian/sync/RoomFilter.hpp"
+#include "merovingian/sync/SyncFilter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -15,6 +15,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "bounded_connect.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -29,9 +30,9 @@
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/net/shutdown_signal.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
-#include "merovingian/net/thread_pool.hpp"
+#include "merovingian/net/ShutdownSignal.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
+#include "merovingian/net/ThreadPool.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>

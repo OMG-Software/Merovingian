@@ -6,10 +6,14 @@
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
+#include "merovingian/database/EventStateGroupTable.hpp"
+#include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
+#include "merovingian/database/MigrationApplyResult.hpp"
+#include "merovingian/database/MigrationValidationResult.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -25,6 +29,7 @@
 #include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentDeviceKey.hpp"
 #include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentEventAuth.hpp"
 #include "merovingian/database/PersistentEventEdge.hpp"
 #include "merovingian/database/PersistentEventSignature.hpp"
@@ -57,6 +62,8 @@
 #include "merovingian/database/PersistentRoomAlias.hpp"
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
+#include "merovingian/database/PersistentStateGroup.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStateTransition.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
@@ -65,15 +72,14 @@
 #include "merovingian/database/PreparedCurrentState.hpp"
 #include "merovingian/database/PreparedStateGroup.hpp"
 #include "merovingian/database/PreparedStateUpdate.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/RedactionState.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/StateGroupEntryTable.hpp"
+#include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
-#include "merovingian/database/event_table.hpp"
-#include "merovingian/database/migration.hpp"
-#include "merovingian/database/state_group_tables.hpp"
-#include "merovingian/database/statement.hpp"
-#include "merovingian/events/event.hpp"
 
 #include <array>
 #include <atomic>
@@ -105,7 +111,7 @@ namespace merovingian::database
 //
 // Each entry was derived by tracing every FederationRuntimeState callback
 // NOT overridden by WorkerEventLoop::run() (see
-// src/federation_worker/worker_event_loop.cpp and
+// src/federation_worker/WorkerEventLoop.cpp and
 // src/federation_worker/AGENTS.md rule 3 for the overridden/relayed set —
 // pdu_sink, membership_acceptor, invite_handler, edu_sink,
 // one_time_keys_claim_provider, user_devices_provider,
@@ -413,7 +419,7 @@ struct PersistentStore final
     // The state-group tables (ADR-0064) with their hash indexes (ADR-0325). Read-only through the
     // tables; every change goes through them, so a writer cannot leave an index behind. Lookups:
     // `event_state_groups.state_group_of(event_id)`, `state_groups.find(id)`,
-    // `state_group_state.entries_of(id)`; see state_group_tables.hpp for the reader discipline.
+    // `state_group_state.entries_of(id)`; see state_group_table_support.hpp for the reader discipline.
     StateGroupTable state_groups{};
     StateGroupEntryTable state_group_state{};
     EventStateGroupTable event_state_groups{};

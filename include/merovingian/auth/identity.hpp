@@ -2,40 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/LoginPolicyDecision.hpp"
+#include "merovingian/auth/PasswordPolicy.hpp"
+#include "merovingian/auth/UserIdentity.hpp"
+
 #include <cstddef>
 #include <string>
 #include <string_view>
 
 namespace merovingian::auth
 {
-
-enum class AccountState
-{
-    active,
-    locked,
-    suspended,
-};
-
-struct UserIdentity final
-{
-    std::string user_id{};
-    AccountState state{AccountState::active};
-    bool password_login_enabled{true};
-    bool admin{false};
-};
-
-struct DeviceIdentity final
-{
-    std::string user_id{};
-    std::string device_id{};
-    std::string display_name{};
-};
-
-struct LoginPolicyDecision final
-{
-    bool allowed{false};
-    std::string reason{};
-};
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
 
@@ -80,16 +56,6 @@ struct LoginPolicyDecision final
 [[nodiscard]] auto identifier_server_name(std::string_view identifier) noexcept -> std::string_view;
 
 [[nodiscard]] auto device_id_is_valid(std::string_view device_id) noexcept -> bool;
-
-// The rule a password a person chooses must meet (security.password_policy,
-// ADR-0236). The defaults are the rule the server enforced before it was
-// configurable: at least 12 bytes, with a lower-case and an upper-case ASCII
-// letter, an ASCII digit and an ASCII symbol. An empty password never passes.
-struct PasswordPolicy final
-{
-    std::size_t min_length{12U};
-    bool require_character_classes{true};
-};
 
 [[nodiscard]] auto password_is_acceptable(std::string_view password, PasswordPolicy const& policy) noexcept -> bool;
 [[nodiscard]] auto login_policy(UserIdentity const& user) -> LoginPolicyDecision;

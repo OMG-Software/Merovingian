@@ -8,8 +8,8 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>

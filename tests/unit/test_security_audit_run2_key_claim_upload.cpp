@@ -17,7 +17,6 @@
 // key is `string|KeyObject`; a KeyObject is `{key, signatures, fallback?}`).
 
 #include "../support/e2ee_caps_support.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

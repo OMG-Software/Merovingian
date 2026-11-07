@@ -23,7 +23,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/AuditRateGate.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -4,7 +4,7 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/migration.hpp"
+#include "merovingian/database/SchemaState.hpp"
 
 #include <cstdint>
 

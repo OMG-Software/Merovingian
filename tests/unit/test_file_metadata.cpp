@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/platform/FileKind.hpp"
+#include "merovingian/platform/FileMetadata.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 
 #include <catch2/catch_test_macros.hpp>

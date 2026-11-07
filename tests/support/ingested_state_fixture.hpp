@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

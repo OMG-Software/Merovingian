@@ -7,7 +7,8 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/net/listener.hpp"
+#include "merovingian/net/ListenerRole.hpp"
+#include "merovingian/net/RuntimeListeners.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -3,12 +3,23 @@
 
 #include "merovingian/database/postgresql_store.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/database/connection_pool.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/PostgresqlConnection.hpp"
+#include "merovingian/database/PostgresqlConnectionDeleter.hpp"
+#include "merovingian/database/PostgresqlConnectionHandle.hpp"
+#include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
+#include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
+#include "merovingian/database/PostgresqlWritePool.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <arpa/inet.h>
 #include <libpq-fe.h>
@@ -108,14 +119,6 @@ namespace
         return result;
     }
 
-    struct PostgresqlConnectionDeleter final
-    {
-        auto operator()(PGconn* connection) const noexcept -> void
-        {
-            PQfinish(connection);
-        }
-    };
-
     struct PostgresqlResultDeleter final
     {
         auto operator()(PGresult* result) const noexcept -> void
@@ -124,7 +127,6 @@ namespace
         }
     };
 
-    using PostgresqlConnectionPtr = std::unique_ptr<PGconn, PostgresqlConnectionDeleter>;
     using PostgresqlResultPtr = std::unique_ptr<PGresult, PostgresqlResultDeleter>;
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
@@ -1896,11 +1898,6 @@ namespace
 
 } // namespace
 
-struct PostgresqlConnectionHandle final
-{
-    PostgresqlConnectionPtr connection{};
-};
-
 PostgresqlConnection::PostgresqlConnection() noexcept = default;
 PostgresqlConnection::PostgresqlConnection(std::unique_ptr<PostgresqlConnectionHandle> handle) noexcept
     : handle_{std::move(handle)}
@@ -1946,15 +1943,6 @@ auto PostgresqlConnection::reusable() noexcept -> bool
 
 namespace detail
 {
-
-    struct PostgresqlWritePool final
-    {
-        explicit PostgresqlWritePool(std::uint32_t limit)
-            : pool{limit}
-        {
-        }
-        ConnectionPool<PostgresqlConnection> pool;
-    };
 
     auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void
     {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/session_table.hpp"
+#include "merovingian/homeserver/SessionTable.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -25,6 +25,7 @@
 // Spec: Matrix Server-Server API v1.19, m.signing_key_update
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#msigning_key_update
 
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/cross_signing_fixture.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
@@ -36,14 +37,16 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
+#include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -122,19 +122,19 @@ fi
 # pure comments that merely NAMED a libsodium symbol.
 #
 # Crypto-boundary rule (src/crypto/AGENTS.md): only src/crypto/, src/events/,
-# src/auth/, and src/core/secret_buffer.cpp (memory locking/zeroing) may call
+# src/auth/, and src/core/SecretBuffer.cpp (memory locking/zeroing) may call
 # libsodium functions directly.  Anything else must route through crypto/ or
 # auth/ wrappers.
 SODIUM_HITS=$("$PCRE_GREP" -R --line-number --extended-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' --include='*.c' \
   '\b(sodium_|randombytes_|crypto_(generichash|pwhash|sign|secretbox|aead|kx|scalarmult|box|hash|core|verify|onetimeauth|shorthash|auth|kdf|secretstream|stream))([A-Za-z0-9_]*)[[:space:]]*\(' \
   include src \
-  | grep -vE '^(src/crypto/|src/events/|src/auth/|src/core/secret_buffer\.cpp|include/merovingian/crypto/|include/merovingian/events/|include/merovingian/auth/)' \
+  | grep -vE '^(src/crypto/|src/events/|src/auth/|src/core/SecretBuffer\.cpp|include/merovingian/crypto/|include/merovingian/events/|include/merovingian/auth/)' \
   | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' \
   || true)
 if [ -n "$SODIUM_HITS" ]; then
   printf '%s\n' "$SODIUM_HITS"
-  echo "Rejected pattern detected: direct libsodium call outside src/crypto/, src/events/, src/auth/, or src/core/secret_buffer.cpp"
+  echo "Rejected pattern detected: direct libsodium call outside src/crypto/, src/events/, src/auth/, or src/core/SecretBuffer.cpp"
   exit 1
 fi
 
@@ -142,10 +142,10 @@ SODIUM_INCLUDES=$("$PCRE_GREP" -R --line-number --extended-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' --include='*.c' \
   '#include[[:space:]]+(<sodium\.h>|"sodium\.h")' \
   include src \
-  | grep -vE '^(src/crypto/|src/events/|src/auth/|src/core/secret_buffer\.cpp|include/merovingian/crypto/|include/merovingian/events/|include/merovingian/auth/)' \
+  | grep -vE '^(src/crypto/|src/events/|src/auth/|src/core/SecretBuffer\.cpp|include/merovingian/crypto/|include/merovingian/events/|include/merovingian/auth/)' \
   || true)
 if [ -n "$SODIUM_INCLUDES" ]; then
   printf '%s\n' "$SODIUM_INCLUDES"
-  echo "Rejected pattern detected: <sodium.h> included outside src/crypto/, src/events/, src/auth/, or src/core/secret_buffer.cpp"
+  echo "Rejected pattern detected: <sodium.h> included outside src/crypto/, src/events/, src/auth/, or src/core/SecretBuffer.cpp"
   exit 1
 fi

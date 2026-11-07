@@ -3,10 +3,10 @@
 #pragma once
 
 #include "merovingian/config/PushConfig.hpp"
-#include "merovingian/homeserver/periodic_job.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
-#include "merovingian/push/push_gateway_client.hpp"
-#include "merovingian/push/push_retry_queue.hpp"
+#include "merovingian/homeserver/PeriodicJob.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
+#include "merovingian/push/PushGatewayClient.hpp"
+#include "merovingian/push/PushRetry.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -72,31 +72,5 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
                                              std::chrono::steady_clock::time_point now,
                                              std::chrono::milliseconds budget = push_retry_batch_budget)
     -> std::chrono::milliseconds;
-
-// Runs retry_due_push_deliveries on its own thread and points the retry queue's wake hook at it,
-// so a newly scheduled retry is noticed at once. The thread starts only in start(), after process
-// hardening (ADR-0082). stop() (and the destructor) clear the hook before stopping the thread, so
-// no delivery task can wake a job that no longer exists; call it before the runtime is torn down.
-class PushRetryJob final
-{
-public:
-    explicit PushRetryJob(HomeserverRuntime& runtime);
-    ~PushRetryJob();
-
-    PushRetryJob(PushRetryJob const&) = delete;
-    PushRetryJob(PushRetryJob&&) = delete;
-    auto operator=(PushRetryJob const&) -> PushRetryJob& = delete;
-    auto operator=(PushRetryJob&&) -> PushRetryJob& = delete;
-
-    // Starts the thread and installs the wake hook. False if the thread could not be started (the
-    // hook is then left unset).
-    [[nodiscard]] auto start() -> bool;
-    // Clears the wake hook, then stops and joins the thread. Idempotent.
-    auto stop() noexcept -> void;
-
-private:
-    HomeserverRuntime& runtime_;
-    PeriodicJob job_;
-};
 
 } // namespace merovingian::homeserver

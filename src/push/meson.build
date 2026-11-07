@@ -1,11 +1,11 @@
 push_sources = files(
-  'email_digest_queue.cpp',
-  'gateway_circuit_breaker.cpp',
-  'gateway_in_flight_limiter.cpp',
-  'push_gateway_client.cpp',
-  'push_retry_queue.cpp',
+  'EmailDigestQueue.cpp',
+  'GatewayCircuitBreaker.cpp',
+  'GatewayInFlightLimiter.cpp',
+  'PushGatewayClient.cpp',
+  'PushRetryQueue.cpp',
   'push_rules.cpp',
-  'user_push_rules.cpp',
+  'UserPushRules.cpp',
 )
 
 push_lib = static_library(

@@ -6,9 +6,13 @@
 // with an OS update; a statically linked one changes only with a rebuild.
 
 #include "merovingian/canonicaljson/library_versions.hpp"
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
+#include "merovingian/core/Linkage.hpp"
 #include "merovingian/database/library_versions.hpp"
 #include "merovingian/homeserver/library_versions.hpp"
+#include "merovingian/media/ThumbnailMethod.hpp"
+#include "merovingian/media/ThumbnailSourceFormat.hpp"
+#include "merovingian/media/ThumbnailWorkerRequest.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>

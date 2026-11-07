@@ -1,5 +1,5 @@
 observability_sources = files(
-  'audit_rate_gate.cpp',
+  'AuditRateGate.cpp',
   'bounded_text.cpp',
   'CorrelationScope.cpp',
   'observability.cpp',

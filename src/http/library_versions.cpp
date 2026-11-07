@@ -3,7 +3,7 @@
 
 #include "merovingian/http/library_versions.hpp"
 
-#include "merovingian/core/library_version.hpp"
+#include "merovingian/core/LibraryVersion.hpp"
 
 #include <curl/curl.h>
 

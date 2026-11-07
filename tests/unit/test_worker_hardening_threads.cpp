@@ -16,10 +16,12 @@
 // status. A kernel without seccomp or Landlock makes the scenario SKIP with a
 // message; it never passes silently.
 
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/HardeningPlanDecision.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
-#include "merovingian/platform/landlock_hardening.hpp"
+#include "merovingian/platform/LandlockAccess.hpp"
+#include "merovingian/platform/LandlockHardeningOps.hpp"
+#include "merovingian/platform/LandlockPathRule.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
@@ -31,6 +33,7 @@
 #ifdef __linux__
 #include "../support/process_tasks.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/platform/landlock_hardening.hpp"
 
 #include <fcntl.h>
 #include <linux/seccomp.h>

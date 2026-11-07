@@ -3,10 +3,12 @@
 
 #pragma once
 
-#include "merovingian/appservice/registration.hpp"
-#include "merovingian/federation/public_rooms.hpp"
+#include "merovingian/appservice/AppserviceRegistry.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"
+#include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/PublicRoomsScope.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -24,17 +26,6 @@ namespace merovingian::homeserver
 // (at most twice the size) and again base64-encoded (kIpcMaxFrameBytes is 24 MiB). A page always holds at
 // least one room, so paging always advances.
 inline constexpr auto max_public_rooms_page_bytes = std::size_t{8U * 1024U * 1024U};
-
-// Which rooms are listed: the homeserver's own published directory by default; one third-party network's
-// when a request names it with `third_party_instance_id`; both, plus every network's, with
-// `include_all_networks`.
-struct PublicRoomsScope final
-{
-    bool include_all_networks{false};
-    // The (appservice id, protocol) a `third_party_instance_id` resolved to; empty strings for an id that
-    // names no network, which lists nothing.
-    std::optional<std::pair<std::string, std::string>> network{};
-};
 
 // The prefix of every `instance_id` minted for one protocol of one appservice (ADR-0192):
 // `<registration id>:<protocol>:`, both parts percent-encoded so the colons between them are the only

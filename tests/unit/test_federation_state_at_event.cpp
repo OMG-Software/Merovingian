@@ -11,7 +11,6 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

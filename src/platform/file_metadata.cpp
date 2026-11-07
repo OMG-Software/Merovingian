@@ -3,16 +3,21 @@
 
 #include "merovingian/platform/file_metadata.hpp"
 
+#include "merovingian/platform/FileKind.hpp"
+#include "merovingian/platform/FileMetadata.hpp"
+#include "merovingian/platform/FileMetadataResult.hpp"
+#include "merovingian/platform/PosixFileMode.hpp"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <new>
 #include <string>
 #include <utility>
-
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace merovingian::platform
 {

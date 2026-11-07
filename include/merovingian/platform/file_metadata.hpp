@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/platform/FileMetadata.hpp"
+#include "merovingian/platform/FileMetadataResult.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -12,40 +14,6 @@
 
 namespace merovingian::platform
 {
-
-enum class FileKind : std::uint8_t
-{
-    missing,
-    regular,
-    directory,
-    symlink,
-    other,
-};
-
-struct PosixFileMode final
-{
-    bool owner_read{false};
-    bool owner_write{false};
-    bool owner_execute{false};
-    bool group_read{false};
-    bool group_write{false};
-    bool group_execute{false};
-    bool other_read{false};
-    bool other_write{false};
-    bool other_execute{false};
-};
-
-struct FileMetadata final
-{
-    FileKind kind{FileKind::missing};
-    PosixFileMode mode{};
-};
-
-struct FileMetadataResult final
-{
-    std::optional<FileMetadata> metadata{};
-    std::string error{};
-};
 
 // Validate the opened object, not a path inspected before opening. The caller
 // may read or identify the same descriptor without reopening a replaceable path.

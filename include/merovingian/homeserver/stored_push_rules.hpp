@@ -3,8 +3,8 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/push/push_rules.hpp"
-#include "merovingian/push/user_push_rules.hpp"
+#include "merovingian/push/PushRuleset.hpp"
+#include "merovingian/push/UserPushRules.hpp"
 
 #include <cstddef>
 #include <optional>

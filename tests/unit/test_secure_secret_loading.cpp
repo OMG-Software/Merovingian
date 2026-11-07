@@ -156,9 +156,9 @@ SCENARIO("All text secret loaders use the descriptor-bound locked reader", "[pla
             THEN("they share the bounded validated reader without file stream plaintext buffers")
             {
                 for (auto const& entry : std::array{
-                         std::pair{"src/homeserver/HomeserverRuntime.cpp",     "auto read_database_uri_file("       },
-                         std::pair{"src/homeserver/worker_pool.cpp", "auto read_worker_database_uri_file("},
-                         std::pair{"src/main.cpp",                   "auto read_bootstrap_admin_password("}
+                         std::pair{"src/homeserver/HomeserverRuntime.cpp", "auto read_database_uri_file("       },
+                         std::pair{"src/homeserver/WorkerPool.cpp",        "auto read_worker_database_uri_file("},
+                         std::pair{"src/main.cpp",                         "auto read_bootstrap_admin_password("}
                 })
                 {
                     auto const text = source(entry.first);

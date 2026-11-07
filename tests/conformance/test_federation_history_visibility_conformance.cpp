@@ -19,13 +19,14 @@
 // |  or remove assertions to make CI pass.                                  |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/event_query.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/EncryptionSecurityConfig.hpp"
+#include "merovingian/rooms/EncryptedEventLogSummary.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionDecision.hpp"
+#include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomEncryptionRequest.hpp"
+#include "merovingian/rooms/RoomPreset.hpp"
 
 #include <span>
 #include <string>
@@ -11,46 +16,6 @@
 
 namespace merovingian::rooms
 {
-
-enum class RoomPreset
-{
-    public_chat,
-    private_chat,
-    trusted_private_chat,
-};
-
-enum class RoomEncryptionRequest
-{
-    unspecified,
-    encrypted,
-    unencrypted,
-};
-
-struct RoomCreationEncryptionRequest final
-{
-    RoomPreset preset{RoomPreset::private_chat};
-    bool direct_message{false};
-    bool federated{false};
-    RoomEncryptionRequest encryption{RoomEncryptionRequest::unspecified};
-    config::EncryptionSecurityConfig settings{};
-};
-
-struct RoomCreationEncryptionDecision final
-{
-    bool allowed{false};
-    bool encryption_required{false};
-    bool encryption_enabled_by_default{false};
-    bool encryption_enabled{false};
-    std::string reason{};
-};
-
-struct EncryptedEventLogSummary final
-{
-    std::string event_type{};
-    std::string room_id{};
-    std::string sender{};
-    std::string payload{};
-};
 
 // The only algorithm the spec lists for m.room.encryption `algorithm` ("One of: `[m.megolm.v1.aes-sha2]`").
 // This is the only place that names it: createRoom's effective entry and the state PUT both ask it.

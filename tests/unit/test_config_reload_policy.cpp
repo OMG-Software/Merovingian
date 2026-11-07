@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/reload_policy.hpp"
+#include "merovingian/config/ReloadPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

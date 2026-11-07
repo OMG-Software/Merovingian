@@ -4,8 +4,8 @@
 // HTTP-2 / ADR-0079: an admission guard for operations that block a request
 // thread on a peer this server does not control. Tags: [http-2][http].
 
-#include "../support/joining_threads.hpp"
-#include "merovingian/http/in_flight_budget.hpp"
+#include "../support/JoiningThreads.hpp"
+#include "merovingian/http/InFlightBudget.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

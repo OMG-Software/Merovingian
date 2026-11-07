@@ -3,7 +3,11 @@
 
 #include "merovingian/federation/server_acl.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/federation/ServerAclDecision.hpp"
+#include "merovingian/federation/ServerAclEvaluation.hpp"
+#include "merovingian/federation/ServerAclEvent.hpp"
 #include "merovingian/federation/security.hpp"
 
 #include <algorithm>

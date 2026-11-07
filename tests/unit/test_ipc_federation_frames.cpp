@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>

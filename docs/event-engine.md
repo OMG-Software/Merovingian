@@ -302,7 +302,7 @@ Not implemented yet:
 - (done, see "Third-party invites over federation" below) the `exchange_third_party_invite` endpoint and
   `3pid/onbind`
 - room versions 1 and 2: deliberately unsupported (ADR-0076). The registry in
-  `room_version_policy.cpp` holds room versions 3 to 12 only, and
+  `RoomVersionPolicy.cpp` holds room versions 3 to 12 only, and
   `find_room_version_policy()` returns no policy for 1 and 2, so every path
   (createRoom, joins, invites, PDUs) refuses them. `EventFormat` has the single
   value `room_v3_plus` and `EventIdFormat` the single value `reference_hash`, so the
@@ -920,8 +920,8 @@ soft-failed PDUs still returns 200 with per-PDU accounting (spec: "If an
 event in an incoming transaction is rejected, this should not cause the
 transaction request to be responded to with an error response").
 `PduIngestionStatus` gained `soft_failed`, threaded through the worker IPC
-status mapping (`src/homeserver/worker_pool.cpp`,
-`src/federation_worker/worker_event_loop.cpp`) and the `/send` transaction
+status mapping (`src/homeserver/WorkerPool.cpp`,
+`src/federation_worker/WorkerEventLoop.cpp`) and the `/send` transaction
 per-PDU switch (`src/federation/inbound_request.cpp`) alongside the
 existing `missing_prev_state`.
 

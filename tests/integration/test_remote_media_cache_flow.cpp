@@ -7,12 +7,14 @@
 // restart, TTL expiry or eviction strands a stored record, and records pile up
 // until max_records refuses every upload.
 
+#include "../support/ScopedThreadJoin.hpp"
+#include "../support/TlsTestCertificate.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "bounded_connect.hpp"
-#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

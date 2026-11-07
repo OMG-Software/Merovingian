@@ -35,7 +35,6 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

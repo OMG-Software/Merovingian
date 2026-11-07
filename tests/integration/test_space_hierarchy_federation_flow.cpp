@@ -17,6 +17,7 @@
 // Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/hierarchy/{roomId}
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1hierarchyroomid
 
+#include "../support/TlsTestCertificate.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -33,9 +34,10 @@
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

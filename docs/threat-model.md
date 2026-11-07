@@ -501,7 +501,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
   signature check: a compromised worker, or a future bug that relayed before
   verifying, could have made main persist events impersonating any sender the
-  room's state authorised. Now `homeserver/worker_pool.cpp`'s
+  room's state authorised. Now `homeserver/WorkerPool.cpp`'s
   `handle_pdu_ingest_request`, `handle_membership_ingest_request` and
   `handle_invite_ingest_request` each verify the signature of the sender's
   server (`federation::authorize_federation_pdu`, the check the worker runs)
@@ -1317,7 +1317,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   after a PDU is accepted. This lambda is the single convergence point for
   every accepted PDU regardless of origin — both the direct main-process
   federation path (`inbound_request.cpp` calling `runtime.pdu_sink`
-  synchronously) and the worker-relayed path (`worker_pool.cpp`'s
+  synchronously) and the worker-relayed path (`WorkerPool.cpp`'s
   `pdu_ingest` IPC handler calling the same `runtime_.federation.pdu_sink`
   on main) — so wiring the call in exactly one place cannot result in a PDU
   being delivered twice. Reuses `build_pending_push_deliveries`/

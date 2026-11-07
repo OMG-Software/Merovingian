@@ -14,14 +14,14 @@ because it is the process most exposed to hostile input, holds as little trust a
 | File | Responsibility |
 |---|---|
 | `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC, IPC-key, and (when present) db-uri fds, applies worker hardening, runs the event loop |
-| `args.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
+| `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
 | `ipc_key_fd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
 | `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
-| `store_read_guard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
-| `worker_event_loop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
+| `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
+| `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
-`worker_event_loop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
+`WorkerEventLoop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
 one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 ## Rules — non-negotiable
@@ -73,7 +73,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    `profile_query_provider`, `directory_query_provider` (an alias made after the worker started), `public_rooms_provider` (a directory that names no room and reads appservice registrations, ADR-0461) and `event_query_provider` all relay to main over IPC. Each was a
    shipped bug when it did not (worker-accepted joins and invites invisible to main, split-brain
    one-time-key claims, stale device and profile reads); see the comments above each override in
-   `worker_event_loop.cpp`. `membership_template_provider` relays `make_join` (only) as
+   `WorkerEventLoop.cpp`. `membership_template_provider` relays `make_join` (only) as
    `membership_template_ingest`: a restricted room's allow conditions name rooms another shard
    owns (R04, ADR-0184).
    The one table the worker re-reads on demand is `server_signing_keys`, and only for the public

@@ -17,7 +17,8 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

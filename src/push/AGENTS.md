@@ -11,12 +11,12 @@ Spec authority:
 | File | Responsibility |
 |---|---|
 | `push_rules.cpp` | `parse_push_ruleset` / `evaluate_push_rules`: pure, in-memory rule evaluation against an event |
-| `user_push_rules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
-| `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
-| `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
-| `gateway_in_flight_limiter.cpp` | `GatewayInFlightLimiter`: requests in flight per gateway host and per resolved address, capped; `PushGatewayClient::notify` holds a slot for the length of a request (F-79, ADR-0409) |
-| `push_retry_queue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
-| `email_digest_queue.cpp` | `EmailDigestQueue`, `email_digest_backoff`: which kind `"email"` pushers have a digest email due, and when; the delay, throttle, fold and retry policy (ADR-0219) |
+| `UserPushRules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
+| `PushGatewayClient.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
+| `GatewayCircuitBreaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
+| `GatewayInFlightLimiter.cpp` | `GatewayInFlightLimiter`: requests in flight per gateway host and per resolved address, capped; `PushGatewayClient::notify` holds a slot for the length of a request (F-79, ADR-0409) |
+| `PushRetryQueue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
+| `EmailDigestQueue.cpp` | `EmailDigestQueue`, `email_digest_backoff`: which kind `"email"` pushers have a digest email due, and when; the delay, throttle, fold and retry policy (ADR-0219) |
 
 The server-default ruleset is in `homeserver/default_push_ruleset.cpp`; delivery scheduling and the
 concurrency caps are in `homeserver/room_service.cpp`; every attempt and the retry job are in
@@ -73,7 +73,7 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
     `PushRuleUnreadClassifier` is bounded by calling the same function.
 12. **A user's rules are bounded before they are stored, and again when they are read**
     (ADR-0204). `UserPushRules` refuses a rule past `server.client_api.max_push_rules_per_user`
-    and any rule over the per-rule bounds in `user_push_rules.hpp` (ID, pattern and string
+    and any rule over the per-rule bounds in `UserPushRules.hpp` (ID, pattern and string
     lengths, condition and action counts, canonical size). The stored `m.push_rules` content is
     read through the same validator, so a rule that would be refused now is skipped. Do not add a
     path that evaluates stored rules without going through `UserPushRules`

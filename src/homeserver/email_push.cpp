@@ -8,17 +8,24 @@
 #include "merovingian/database/PersistentPusher.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/email/SmtpEndpoint.hpp"
+#include "merovingian/email/SmtpSendResult.hpp"
+#include "merovingian/email/SmtpSettings.hpp"
+#include "merovingian/email/UnreadNotificationEmail.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/email/notification_email.hpp"
 #include "merovingian/email/smtp_client.hpp"
-#include "merovingian/email/smtp_endpoint.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/PushBadgeCount.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
-#include "merovingian/observability/logger.hpp"
-#include "merovingian/push/email_digest_queue.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/push/EmailDigestKey.hpp"
+#include "merovingian/push/EmailDigestOutcome.hpp"
+#include "merovingian/push/EmailDigestPolicy.hpp"
+#include "merovingian/push/EmailDigestQueue.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -335,50 +342,6 @@ auto send_due_email_notifications(HomeserverRuntime& runtime, StopFlag const& st
     }
     auto const wait = std::chrono::duration_cast<std::chrono::milliseconds>(*next - current());
     return std::clamp(wait, std::chrono::milliseconds{std::chrono::seconds{1}}, idle);
-}
-
-EmailPushJob::EmailPushJob(HomeserverRuntime& runtime)
-    : runtime_{runtime}
-    , job_{"email-push", [&runtime](StopFlag const& stop) {
-               return send_due_email_notifications(runtime, stop, std::chrono::steady_clock::now());
-           }}
-{
-}
-
-EmailPushJob::~EmailPushJob()
-{
-    stop();
-}
-
-auto EmailPushJob::start() -> bool
-{
-    if (!job_.start())
-    {
-        return false;
-    }
-    if (runtime_.email_digest_queue_ != nullptr)
-    {
-        runtime_.email_digest_queue_->set_wake([this]() {
-            job_.wake();
-        });
-    }
-    return true;
-}
-
-auto EmailPushJob::stop() noexcept -> void
-{
-    if (runtime_.email_digest_queue_ != nullptr)
-    {
-        try
-        {
-            runtime_.email_digest_queue_->set_wake({});
-        }
-        catch (...)
-        {
-            // Clearing a std::function does not throw; set_wake's mutex could, in principle.
-        }
-    }
-    job_.stop();
 }
 
 } // namespace merovingian::homeserver

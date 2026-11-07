@@ -3,16 +3,26 @@
 
 #include "merovingian/federation/server_discovery.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/FederationTlsOriginDecision.hpp"
+#include "merovingian/federation/LiteralDiscoveryOptIn.hpp"
+#include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
+#include "merovingian/federation/SrvRecord.hpp"
+#include "merovingian/federation/WellKnownHopResponse.hpp"
+#include "merovingian/federation/WellKnownServerResult.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundHeader.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/ParsedOutboundUrl.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <arpa/inet.h>
 #include <arpa/nameser.h>

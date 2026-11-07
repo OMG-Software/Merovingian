@@ -10,9 +10,9 @@
 #include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation_worker/args.hpp"
+#include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
 #include "merovingian/federation_worker/db_uri_fd.hpp"
-#include "merovingian/homeserver/worker_supervisor.hpp"
+#include "merovingian/homeserver/WorkerSupervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>

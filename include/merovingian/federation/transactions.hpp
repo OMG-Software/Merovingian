@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationRoute.hpp"
+#include "merovingian/federation/FederationRouteMatch.hpp"
+#include "merovingian/federation/FederationTransaction.hpp"
+#include "merovingian/federation/FederationTransactionDecision.hpp"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -12,68 +18,6 @@ namespace merovingian::federation
 
 inline constexpr auto max_federation_transaction_pdus = std::uint32_t{50U};
 inline constexpr auto max_federation_transaction_edus = std::uint32_t{100U};
-
-enum class FederationEndpoint
-{
-    transaction,
-    make_join,
-    send_join,
-    make_leave,
-    send_leave,
-    make_knock,
-    send_knock,
-    invite,
-    backfill,
-    edu,
-    query_directory,
-    public_rooms,
-    query_profile,
-    query_keys,
-    claim_keys,
-    query_user_devices,
-    query_event,
-    query_state,
-    query_state_ids,
-    event_auth,
-    get_missing_events,
-    space_hierarchy,
-    timestamp_to_event,
-    media_download,
-    media_thumbnail,
-    exchange_third_party_invite,
-};
-
-struct FederationTransaction final
-{
-    std::string origin{};
-    std::string transaction_id{};
-    std::vector<std::string> pdus{};
-    std::vector<std::string> edus{};
-    std::size_t byte_size{0U};
-};
-
-struct FederationTransactionDecision final
-{
-    bool accepted{false};
-    std::string reason{};
-};
-
-struct FederationRoute final
-{
-    std::string method{};
-    std::string path_template{};
-    FederationEndpoint endpoint{FederationEndpoint::transaction};
-    bool requires_request_signature{true};
-    bool requires_event_signatures{true};
-};
-
-struct FederationRouteMatch final
-{
-    bool matched{false};
-    FederationRoute route{};
-    std::string reason{};
-};
-
 
 [[nodiscard]] auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char const*;
 // True when handling this endpoint can block a federation worker thread on a

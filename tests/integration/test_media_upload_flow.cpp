@@ -10,12 +10,12 @@
 // is not admitted answers 504 M_NOT_YET_UPLOADED at once, which the spec allows
 // ("The content repository MAY respond before the timeout").
 
+#include "../support/JoiningThreads.hpp"
+#include "../support/SqliteInsertFault.hpp"
 #include "../support/in_memory_database_config.hpp"
-#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"

@@ -5,7 +5,7 @@
 #include "merovingian/sync/SlidingSyncLimits.hpp"
 #include "merovingian/sync/SlidingSyncRange.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
-#include "merovingian/sync/stream_token.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 
 #include <cstdint>
 #include <optional>

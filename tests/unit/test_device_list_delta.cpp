@@ -9,7 +9,7 @@
 // encrypted room is shared any more, since the previous sync response.
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/sync/DeviceListDelta.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

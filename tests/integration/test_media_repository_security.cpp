@@ -15,7 +15,12 @@
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/media/AdminQuarantineAction.hpp"
+#include "merovingian/media/AdminQuarantineRequest.hpp"
+#include "merovingian/media/DecoderSafetyPolicy.hpp"
+#include "merovingian/media/DecoderSafetyRequest.hpp"
+#include "merovingian/media/MediaDisposition.hpp"
+#include "merovingian/media/RemoteMediaFetchRequest.hpp"
 #include "merovingian/media/security.hpp"
 
 #include <catch2/catch_test_macros.hpp>

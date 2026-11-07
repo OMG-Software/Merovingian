@@ -43,7 +43,7 @@ question it can act on — `held_by_current_thread()` — rather than one a
 reviewer has to answer by hand for every future call site.
 
 `homeserver::RuntimeMutex`
-([`runtime_mutex.hpp`](../../include/merovingian/homeserver/runtime_mutex.hpp))
+([`runtime_mutex.hpp`](../../include/merovingian/homeserver/RuntimeMutex.hpp))
 holds the owning thread id in an atomic and the recursion depth under the mutex
 itself. It satisfies `Lockable`, so `std::unique_lock`, `std::lock_guard` and
 `std::scoped_lock` work on it unchanged.

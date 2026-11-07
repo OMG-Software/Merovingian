@@ -17,6 +17,8 @@
 // |  bearer token (identity-service-api.md §3pid/unbind).                  |
 // +-------------------------------------------------------------------------+
 
+#include "../support/MockIdentityServer.hpp"
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -32,9 +34,10 @@
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
-#include "merovingian/identity/identity_client.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
+#include "merovingian/identity/IdentityServerClient.hpp"
+#include "merovingian/identity/TestForcedIdentityResolution.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

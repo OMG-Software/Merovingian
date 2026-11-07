@@ -23,7 +23,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/homeserver/RuntimeMutex.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

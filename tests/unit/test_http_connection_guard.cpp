@@ -2,13 +2,13 @@
 
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/SlowlorisPolicy.hpp"
 #include "merovingian/http/connection_guard.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <openssl/ssl.h>
 
 #include <string>
-
-#include <openssl/ssl.h>
 
 SCENARIO("HTTP slowloris policy validates conservative bounds", "[http][slowloris]")
 {

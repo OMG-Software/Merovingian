@@ -248,7 +248,7 @@ value. Test fixtures that do not exercise persistence select it through
   persist, look up, list, and remove pushers, following the same pattern as
   `PersistentThreePidBinding` above; implemented for both SQLite and
   PostgreSQL, hydrated on backend open. `merovingian::push::PushGatewayClient`
-  (`push_gateway_client.hpp`) forwards a device's `data_extra` members
+  (`PushGatewayClient.hpp`) forwards a device's `data_extra` members
   verbatim into the notify request body, and — since the PR #479 follow-up —
   `ClientServerRuntime.cpp`'s `parse_pusher_set_body()` captures every `data`
   member beyond `url`/`format` at registration time and `room_service.cpp`'s
@@ -560,7 +560,7 @@ value. Test fixtures that do not exercise persistence select it through
 
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
-  (`state_group_tables.hpp`), which own the rows and keep hash indexes by
+  (`StateGroupTable.hpp`, `StateGroupEntryTable.hpp`, `EventStateGroupTable.hpp`), which own the rows and keep hash indexes by
   `state_group_id` and `event_id`, so `find_event_state_group`, `find_state_group`
   and `read_state_group_full_state` cost the rows they return and not a pass over
   every room's. They are filled by hydration and `reload_room` through the tables'
@@ -1341,7 +1341,7 @@ the whole load (ADR-0161).
 
 ### Event table indexes (0.12.39)
 
-`PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
+`PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/EventTable.hpp`),
 not a `std::vector`. It owns the in-memory rows of the `events` table and keeps four indexes over them
 (the third since 0.12.64, the fourth since 0.12.72), all holding positions in its row vector so they survive reallocation (ADR-0215):
 

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/database/event_table.hpp"
-#include "merovingian/events/event.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/crypto/Ed25519Provider.hpp"
+#include "merovingian/database/EventTable.hpp"
+#include "merovingian/events/EventSignature.hpp"
 #include "merovingian/federation/AuthorisingSignatureKey.hpp"
 #include "merovingian/federation/FederationAcceptedTransaction.hpp"
 #include "merovingian/federation/FederationDecision.hpp"
@@ -15,22 +16,15 @@
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/FederationSigningKey.hpp"
 #include "merovingian/federation/InboundSignatureVerification.hpp"
+#include "merovingian/federation/RoomReadResult.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/XMatrixCredentials.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request_providers.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/federation/room_read_result.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
-#include "merovingian/federation/security.hpp"
-#include "merovingian/federation/third_party_invite.hpp"
-#include "merovingian/federation/transactions.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
-#include "merovingian/media/thumbnailer.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <chrono>
 #include <condition_variable>

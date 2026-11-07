@@ -7,13 +7,13 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#rooms
 
 | File | Responsibility |
 |---|---|
-| `room_version_policy.cpp` | Maps room version strings to their policy (auth rules, event format, state resolution algorithm) |
+| `RoomVersionPolicy.cpp` | Maps room version strings to their policy (auth rules, event format, state resolution algorithm) |
 | `encryption_policy.cpp` | Enforces `m.room.encryption` state; tracks per-room encryption requirement |
 
 ## Room version policy
 
 `RoomVersionPolicy` is the authoritative source of which rules apply to a given room.
-Always obtain a `RoomVersionPolicy` from `room_version_policy.hpp` before:
+Always obtain a `RoomVersionPolicy` from `RoomVersionPolicy.hpp` before:
 - Evaluating authorization rules (`events/authorization.hpp`)
 - Running state resolution (`events/state_resolution.hpp`)
 - Constructing event IDs (`events/event_id.hpp`)

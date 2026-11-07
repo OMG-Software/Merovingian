@@ -5,10 +5,13 @@
 // for input on one thread, and hands them out only when readable, under a
 // global and a per-client cap. Tags: [net][http-1].
 
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/net/connection_parker.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/net/ConnectionParker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
@@ -21,10 +24,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace
 {

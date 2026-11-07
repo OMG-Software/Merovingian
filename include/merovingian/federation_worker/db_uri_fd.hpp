@@ -3,8 +3,8 @@
 #pragma once
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/core/file_descriptor.hpp"
-#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 
 #include <cstddef>
 #include <optional>

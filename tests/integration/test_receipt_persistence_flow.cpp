@@ -5,10 +5,11 @@
 // client is sent are both computed from them. They are kept in the database so that a server
 // restart neither marks every room unread again nor loses what other members have read.
 
+#include "../support/SqliteCloser.hpp"
+#include "../support/SqliteInsertFault.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"

@@ -6,7 +6,7 @@
 # docs/hardening.md ("Build-time toolchain hardening") are missing.
 #
 # This is the CI-time counterpart to the runtime probe in
-# src/platform/elf_probe.cpp / hardening_self_check.cpp. The runtime
+# src/platform/elf_probe.cpp / HardeningSelfCheck.cpp. The runtime
 # self-check can only run *inside a live merovingian-server process*, which
 # in CI is gated behind conditions that are frequently unmet (root
 # containers can never satisfy the privilege-drop check; non-root runners

@@ -3,9 +3,9 @@
 #pragma once
 
 #include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
-#include "merovingian/database/persistent_event.hpp"
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 
 #include <optional>
 #include <string>

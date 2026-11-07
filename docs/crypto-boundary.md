@@ -242,7 +242,7 @@ The boundary provides these guarantees:
 ## IPC channel key exchange
 
 The encrypted channel between `merovingian-server` and `merovingian-fed-worker`
-(`src/ipc/channel.cpp`) uses libsodium key exchange and authenticated encryption:
+(`src/ipc/IpcChannel.cpp`) uses libsodium key exchange and authenticated encryption:
 
 - **Ephemeral key pair**: each side generates a fresh `crypto_kx_keypair` on
   every connection. Neither party persists the IPC key material; compromise of

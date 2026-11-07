@@ -23,10 +23,11 @@
 // |  can still answer.                                                     |
 // +-------------------------------------------------------------------------+
 
+#include "../support/MockAppservice.hpp"
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/appservice_test_config.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
-#include "../support/mock_appservice.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -38,7 +39,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>

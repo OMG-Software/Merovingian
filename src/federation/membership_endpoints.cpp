@@ -3,12 +3,19 @@
 
 #include "merovingian/federation/membership_endpoints.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/federation/BackfillRequest.hpp"
+#include "merovingian/federation/FederationQueryPolicy.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/MembershipPathParams.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <algorithm>
 #include <cstddef>

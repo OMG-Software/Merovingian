@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/sync/room_access.hpp"
+#include "merovingian/sync/RoomAccess.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

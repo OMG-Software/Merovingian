@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/appservice/AppserviceRegistration.hpp"
+#include "merovingian/appservice/AppserviceRegistrationParseResult.hpp"
+#include "merovingian/appservice/Namespace.hpp"
 #include "merovingian/appservice/registration.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <array>

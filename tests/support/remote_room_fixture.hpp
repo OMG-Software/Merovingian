@@ -4,8 +4,9 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "master_key.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -14,9 +15,9 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 

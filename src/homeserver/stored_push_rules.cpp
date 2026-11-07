@@ -3,9 +3,12 @@
 
 #include "merovingian/homeserver/stored_push_rules.hpp"
 
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
+#include "merovingian/push/push_rules.hpp"
 
 #include <algorithm>
 #include <utility>

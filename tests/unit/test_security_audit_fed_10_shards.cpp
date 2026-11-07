@@ -13,7 +13,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"

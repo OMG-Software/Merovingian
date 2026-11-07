@@ -5,7 +5,8 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -246,50 +247,6 @@ auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
     }
     auto const wait = std::chrono::duration_cast<std::chrono::milliseconds>(*next - current());
     return std::clamp(wait, std::chrono::milliseconds{std::chrono::seconds{1}}, idle);
-}
-
-PushRetryJob::PushRetryJob(HomeserverRuntime& runtime)
-    : runtime_{runtime}
-    , job_{"push-retry", [&runtime](StopFlag const& stop) {
-               return retry_due_push_deliveries(runtime, stop, std::chrono::steady_clock::now());
-           }}
-{
-}
-
-PushRetryJob::~PushRetryJob()
-{
-    stop();
-}
-
-auto PushRetryJob::start() -> bool
-{
-    if (!job_.start())
-    {
-        return false;
-    }
-    if (runtime_.push_retry_queue_ != nullptr)
-    {
-        runtime_.push_retry_queue_->set_wake([this]() {
-            job_.wake();
-        });
-    }
-    return true;
-}
-
-auto PushRetryJob::stop() noexcept -> void
-{
-    if (runtime_.push_retry_queue_ != nullptr)
-    {
-        try
-        {
-            runtime_.push_retry_queue_->set_wake({});
-        }
-        catch (...)
-        {
-            // Clearing a std::function does not throw; set_wake's mutex could, in principle.
-        }
-    }
-    job_.stop();
 }
 
 } // namespace merovingian::homeserver

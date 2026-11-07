@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/PersistentStateGroup.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 
 #include <algorithm>

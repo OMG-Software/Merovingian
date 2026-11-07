@@ -16,12 +16,11 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>

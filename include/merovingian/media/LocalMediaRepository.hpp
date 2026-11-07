@@ -19,8 +19,8 @@
 #include "merovingian/media/RemoteMediaCacheEntry.hpp"
 #include "merovingian/media/RemoteMediaDownloadRequest.hpp"
 #include "merovingian/media/RemoteMediaDownloadResult.hpp"
-#include "merovingian/media/runtime_media.hpp"
-#include "merovingian/media/thumbnail_cache.hpp"
+#include "merovingian/media/RuntimeMediaConfig.hpp"
+#include "merovingian/media/ThumbnailCache.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 
 #include <cstddef>

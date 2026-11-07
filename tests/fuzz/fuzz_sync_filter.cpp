@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/SyncFilter.hpp"
 
 #include <cstddef>
 #include <cstdint>

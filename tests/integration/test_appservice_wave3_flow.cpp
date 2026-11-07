@@ -13,15 +13,16 @@
 // |  so no scenario sleeps and no PeriodicJob thread runs.                   |
 // +-------------------------------------------------------------------------+
 
+#include "../support/JoiningThreads.hpp"
+#include "../support/MockAppservice.hpp"
+#include "../support/TestAppservice.hpp"
 #include "../support/appservice_test_config.hpp"
-#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
-#include "../support/mock_appservice.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -29,10 +30,10 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/StopFlag.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/stop_flag.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

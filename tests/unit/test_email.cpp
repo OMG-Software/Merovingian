@@ -6,9 +6,10 @@
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md, POST /_matrix/client/v3/pushers/set —
 // kind "email" "makes a pusher that emails the user with unread notifications".
 
+#include "merovingian/email/SmtpEndpoint.hpp"
+#include "merovingian/email/UnreadNotificationEmail.hpp"
 #include "merovingian/email/mailbox_address.hpp"
 #include "merovingian/email/notification_email.hpp"
-#include "merovingian/email/smtp_endpoint.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

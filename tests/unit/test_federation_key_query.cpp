@@ -15,10 +15,11 @@
 // |    -> Fix the IMPLEMENTATION, not the assertion.                        |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/DeviceDisplayNames.hpp"
 #include "merovingian/federation/key_query.hpp"
-#include "merovingian/federation/key_signatures.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -3,6 +3,9 @@
 
 #include "merovingian/database/schema.hpp"
 
+#include "merovingian/database/SchemaIndexDefinition.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+
 #include <algorithm>
 #include <array>
 

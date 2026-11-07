@@ -12,13 +12,14 @@
 // |  drive a real loopback mock appservice and assert on what it received.  |
 // +-------------------------------------------------------------------------+
 
+#include "../support/JoiningThreads.hpp"
+#include "../support/MockAppservice.hpp"
+#include "../support/TestAppservice.hpp"
 #include "../support/appservice_test_config.hpp"
-#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
-#include "../support/mock_appservice.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

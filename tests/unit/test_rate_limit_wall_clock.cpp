@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/http/RateLimitConfig.hpp"
+#include "merovingian/http/RateLimitDecision.hpp"
+#include "merovingian/http/RateLimitEngine.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
 #include <catch2/catch_test_macros.hpp>

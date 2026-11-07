@@ -4,6 +4,8 @@
 #pragma once
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
+#include "merovingian/homeserver/SpaceHierarchyResult.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,33 +15,6 @@
 
 namespace merovingian::homeserver
 {
-
-struct SpaceHierarchyRequest final
-{
-    std::string room_id{};
-    std::optional<std::string> from{};
-    std::optional<std::size_t> limit{};
-    std::optional<std::size_t> max_depth{};
-    bool suggested_only{false};
-    // Client-side operational page ceiling. Federation hierarchy responses
-    // use their separate unpaginated response shape and do not consume this.
-    std::size_t max_rooms{1000U};
-    // The caller's address as the rate limiter keys it (rate_limit_client_key).
-    // A child room this server does not hold is asked for over federation, which
-    // takes a slot in the client-outbound budget under this key (ADR-0079).
-    std::string client_key{};
-};
-
-struct SpaceHierarchyResult final
-{
-    std::uint16_t status{200U};
-    std::string body{};
-    // Set with status 429: the delay to advertise as `retry_after_ms`.
-    std::uint32_t retry_after_ms{0U};
-    // The rooms the walk looked at to answer (ADR-0345): bounded by the page asked for and by
-    // `max_hierarchy_walk_visits`, never by the size of the space.
-    std::size_t rooms_visited{0U};
-};
 
 // The most rooms one GET /hierarchy request looks at, whatever the size of the space and the page
 // asked for (ADR-0345). A room beyond it is not listed and the answer carries no `next_batch` for it.

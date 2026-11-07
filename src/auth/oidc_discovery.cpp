@@ -3,7 +3,9 @@
 
 #include "merovingian/auth/oidc_discovery.hpp"
 
-#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/auth/AuthMetadata.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 
 #include <string>
 #include <string_view>

@@ -3,12 +3,15 @@
 
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/crypto/encoding.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
+#include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/ipc/MembershipTemplateIngest.hpp"
 
 #include <cstddef>
 #include <cstdint>

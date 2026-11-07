@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/core/query_params.hpp"
-#include "merovingian/database/statement.hpp"
+#include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/events/event.hpp"
+
 #include <catch2/catch_test_macros.hpp>
+
 #include <stdexcept>
 #include <string>
 

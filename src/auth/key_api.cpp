@@ -3,6 +3,11 @@
 
 #include "merovingian/auth/key_api.hpp"
 
+#include "merovingian/auth/KeyApiBoundaryPlan.hpp"
+#include "merovingian/auth/KeyApiEndpoint.hpp"
+#include "merovingian/auth/KeyApiRoute.hpp"
+#include "merovingian/auth/KeyApiRouteMatch.hpp"
+
 #include <string>
 #include <utility>
 #include <vector>

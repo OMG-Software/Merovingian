@@ -5,6 +5,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -15,10 +16,10 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MigrationDirection.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -32,8 +33,9 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/observability/LogLevel.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

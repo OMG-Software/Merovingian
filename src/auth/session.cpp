@@ -3,9 +3,13 @@
 
 #include "merovingian/auth/session.hpp"
 
+#include "merovingian/auth/RegistrationPolicy.hpp"
+#include "merovingian/auth/RegistrationPolicyDecision.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/AuditSinkFields.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/logger.hpp"
 
 #include <string>
 #include <vector>

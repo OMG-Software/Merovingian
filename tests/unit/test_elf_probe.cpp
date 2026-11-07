@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/platform/ElfHardeningResult.hpp"
+#include "merovingian/platform/HardeningSelfCheck.hpp"
+#include "merovingian/platform/HardeningStatus.hpp"
 #include "merovingian/platform/elf_probe.hpp"
-#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <link.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-
-#include <link.h>
 
 #ifdef __linux__
 #include <fstream>

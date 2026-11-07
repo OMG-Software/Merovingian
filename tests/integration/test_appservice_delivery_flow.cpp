@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/TestAppservice.hpp"
 #include "../support/appservice_test_config.hpp"
 #include "../support/in_memory_database_config.hpp"
 //
@@ -21,9 +22,9 @@
 // |  clock, so no test sleeps and no PeriodicJob thread runs.               |
 // +-------------------------------------------------------------------------+
 
+#include "../support/SqliteInsertFault.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
-#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -44,7 +45,7 @@
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>
