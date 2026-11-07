@@ -1,6 +1,6 @@
 # Media downloads are streamed from the database in chunks
 
-* Status: accepted; supersedes the "single in-memory blob copy" part of [ADR-0113](0113-default-media-quotas-and-a-single-in-memory-blob-copy.md)
+* Status: accepted; supersedes the "single in-memory blob copy" part of [ADR-0113](0113-default-media-quotas-and-single-blob-copy.md)
 * Deciders: James Chapman
 * Date: 2026-11-07
 
@@ -65,5 +65,5 @@ request answered just before the quarantine.
 
 ## Links
 
-* Supersedes the in-memory copy decision of [ADR-0113](0113-default-media-quotas-and-a-single-in-memory-blob-copy.md)
+* Supersedes the in-memory copy decision of [ADR-0113](0113-default-media-quotas-and-single-blob-copy.md)
 * Refines [ADR-0119](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
