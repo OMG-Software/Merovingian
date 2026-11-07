@@ -85,7 +85,11 @@ Rejected:
 * A new job in `ci.yml` or `packages.yml` must need the gate or another job. One that needs the gate directly carries
   `if: ${{ !cancelled() }}`. One that needs another job does not: `!cancelled()` alone would run it after what it needs
   had failed. It states its condition on its own needs, as above, never with `success()` or `failure()`. The tooling
-  test fails on any of these. A new workflow that runs for pull requests adds to the jobs that start at once; past 20, it needs a
+  test fails when such a job has no `if`, uses `success()` or `failure()`, or uses `!cancelled()` without a
+  `needs.<job>.result` check. It accepts `always()`, which runs a job whatever its needs did, because the test cannot
+  read steps. The Fedora and RPM aggregates fail in a step unless their legs succeeded. Staging fails on a missing
+  artifact, and signing checks every package job's result by name, because a package can fail after uploading. A new
+  job on `always()` must judge its needs the same way. A new workflow that runs for pull requests adds to the jobs that start at once; past 20, it needs a
   gate of its own.
 * The cap of 20 is the plan's. If the plan changes, update `RUNNER_CAP` in the tooling test.
 

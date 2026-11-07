@@ -362,7 +362,8 @@ condition matters: without it a failed gate skips the jobs, and a skipped requir
 A job that waits for the gate through another job states its condition on its own needs (`needs.<job>.result`, with
 `!cancelled()` or `always()`), never `success()` or `failure()`, written or implicit: both look at every ancestor, the
 gate included. `tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when a job behind the gate
-breaks either condition rule, when an analysis waits for anything, or when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
+has no `if`, uses `success()` or `failure()`, or uses `!cancelled()` without a `needs.<job>.result` check (a job on
+`always()` must judge its needs in its steps, which the test cannot read), when an analysis waits for anything, or when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
 
 ## Catch2 example
 

@@ -177,6 +177,14 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                     # AND it names no status check that looks at every ancestor: a failed gate would stop signing
                     # and publishing although every package built.
                     self.assertNotRegex(condition, r"\b(success|failure)\(\)", "judge `needs.<job>.result` instead")
+                    # AND `!cancelled()` comes with a check of what the job needs: alone, it would run the job after
+                    # that had failed. A job on `always()` runs whatever its needs did and judges them in its steps.
+                    if "!cancelled()" in condition:
+                        self.assertRegex(
+                            condition,
+                            r"needs\.[A-Za-z0-9_*-]+\.result",
+                            "`!cancelled()` alone runs this job after what it needs has failed",
+                        )
 
     def test_given_the_gate_when_it_runs_then_it_is_quick_and_never_skipped(self) -> None:
         for workflow in GATED_WORKFLOWS:
