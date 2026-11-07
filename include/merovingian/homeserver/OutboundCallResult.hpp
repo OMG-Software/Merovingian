@@ -17,6 +17,9 @@ struct OutboundCallResult final
     bool ok{false};
     std::string body{};
     std::uint16_t remote_status{0U};
+    // The `errcode` of a non-2xx answer's Matrix error body when it is `M_INVITE_BLOCKED` (SS7), else empty. A remote
+    // body is untrusted, so only this one fixed value is carried, never the remote's text.
+    std::string remote_errcode{};
 };
 
 } // namespace merovingian::homeserver

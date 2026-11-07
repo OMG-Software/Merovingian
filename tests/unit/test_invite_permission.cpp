@@ -77,12 +77,11 @@ auto constexpr config_path_prefix = "/_matrix/client/v3/";
 // Registers `name` and returns its access token.
 [[nodiscard]] auto register_user(ClientServerRuntime& runtime, std::string const& name) -> std::string
 {
-    REQUIRE(merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register",
-                          {},
-                          merovingian::tests::registration_json(name, "CorrectHorse7!")})
-                .response.status == 200U);
+    REQUIRE(
+        merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json(name, "CorrectHorse7!")})
+            .response.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST",
                   "/_matrix/client/v3/login",
@@ -229,9 +228,8 @@ SCENARIO("A client invite to a local user who blocks invites is refused with M_I
 
         WHEN("alice invites bob with PUT /rooms/{roomId}/state/m.room.member/{stateKey}")
         {
-            auto const answered = call(runtime, "PUT",
-                                       "rooms/" + room_id + "/state/m.room.member/%40bob%3Aexample.org", alice,
-                                       R"({"membership":"invite"})");
+            auto const answered = call(runtime, "PUT", "rooms/" + room_id + "/state/m.room.member/%40bob%3Aexample.org",
+                                       alice, R"({"membership":"invite"})");
 
             THEN("the answer is 403 M_INVITE_BLOCKED and no membership is stored for bob")
             {
@@ -257,11 +255,10 @@ SCENARIO("A client invite to a local user who blocks invites is refused with M_I
 
         WHEN("bob sets a default_action that is not block and alice invites him")
         {
-            auto const content = GENERATE(std::string{R"({"default_action":"allow"})"},
-                                          std::string{R"({"default_action":"BLOCK"})"},
-                                          std::string{R"({"default_action":5})"},
-                                          std::string{R"({"default_action":["block"]})"},
-                                          std::string{R"({"default_action":null})"});
+            auto const content =
+                GENERATE(std::string{R"({"default_action":"allow"})"}, std::string{R"({"default_action":"BLOCK"})"},
+                         std::string{R"({"default_action":5})"}, std::string{R"({"default_action":["block"]})"},
+                         std::string{R"({"default_action":null})"});
             REQUIRE(set_invite_permission(runtime, "bob", bob, content) == 200U);
             auto const answered =
                 call(runtime, "POST", "rooms/" + room_id + "/invite", alice, R"({"user_id":"@bob:example.org"})");
@@ -293,8 +290,9 @@ SCENARIO("createRoom refuses an invite list that names a local user who blocks i
 
         WHEN("alice creates a room inviting carol and bob")
         {
-            auto const answered = call(runtime, "POST", "createRoom", alice,
-                                       R"({"preset":"private_chat","invite":["@carol:example.org","@bob:example.org"]})");
+            auto const answered =
+                call(runtime, "POST", "createRoom", alice,
+                     R"({"preset":"private_chat","invite":["@carol:example.org","@bob:example.org"]})");
 
             THEN("the answer is 403 M_INVITE_BLOCKED and no room, event or invite exists")
             {
@@ -308,8 +306,8 @@ SCENARIO("createRoom refuses an invite list that names a local user who blocks i
 
         WHEN("alice creates a room inviting only carol")
         {
-            auto const answered =
-                call(runtime, "POST", "createRoom", alice, R"({"preset":"private_chat","invite":["@carol:example.org"]})");
+            auto const answered = call(runtime, "POST", "createRoom", alice,
+                                       R"({"preset":"private_chat","invite":["@carol:example.org"]})");
 
             THEN("the room is created")
             {
@@ -357,8 +355,8 @@ SCENARIO("A federation invite to a local user who blocks invites is refused with
         {
             auto const alice = register_user(runtime, "alice");
             auto const room_id = create_room_for(runtime, alice);
-            auto const version = merovingian::homeserver::stored_room_version(runtime.homeserver.database.persistent_store,
-                                                                              room_id);
+            auto const version =
+                merovingian::homeserver::stored_room_version(runtime.homeserver.database.persistent_store, room_id);
             REQUIRE(version.has_value());
             auto const events_held = runtime.homeserver.database.persistent_store.events.size();
             auto const invite = make_signed_invite(room_id, bob_id, *version);

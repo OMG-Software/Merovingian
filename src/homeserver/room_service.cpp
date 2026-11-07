@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/invite_permission.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/presence_service.hpp"
@@ -351,6 +352,13 @@ namespace
     {
         auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 413U);
         result.errcode = "M_TOO_LARGE";
+        return result;
+    }
+    // SS7: 403 M_INVITE_BLOCKED, for an invite to a local user whose m.invite_permission_config blocks invites.
+    [[nodiscard]] auto invite_blocked_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "the invited user is not accepting invites", 403U);
+        result.errcode = std::string{invite_blocked_errcode};
         return result;
     }
     [[nodiscard]] auto invalid_state_key_result() -> OperationResult
@@ -2709,6 +2717,24 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
     return {result.ok, std::move(result.body)};
 }
 
+namespace
+{
+
+    // "M_INVITE_BLOCKED" when a remote error body's `errcode` is exactly that, else empty (SS7). The body is a
+    // remote server's, so nothing else of it is kept.
+    [[nodiscard]] auto remote_invite_blocked_errcode(std::string_view body) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(body);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        auto const* errcode = root == nullptr ? nullptr : string_member(*root, "errcode");
+        return errcode != nullptr && *errcode == invite_blocked_errcode ? std::string{invite_blocked_errcode}
+                                                                        : std::string{};
+    }
+
+} // namespace
+
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
                                          std::string_view room_id, federation::OutboundTransaction const& transaction,
                                          std::string_view key_id, core::SecretBuffer secret_key,
@@ -2897,7 +2923,8 @@ auto apply_membership_to_roster(HomeserverRuntime& runtime, std::string_view roo
         return {false,
                 outcome.error_detail.empty() ? "remote server returned " + std::to_string(outcome.response.status)
                                              : outcome.error_detail,
-                outcome.ok ? outcome.response.status : std::uint16_t{0U}};
+                outcome.ok ? outcome.response.status : std::uint16_t{0U},
+                outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{}};
     }
     return {true, outcome.response.body, outcome.response.status};
 }
@@ -7228,8 +7255,12 @@ namespace
     auto const final_refusal = status >= 400U && status < 500U && status != 408U && status != 429U;
     if (final_refusal)
     {
-        return {RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
-                "the invited user's server refused the invite"};
+        auto const blocked = status == 403U && call.remote_errcode == invite_blocked_errcode;
+        auto refusal = RemoteInviteResult{
+            RemoteInviteOutcome::refused, status == 403U ? std::uint16_t{403U} : std::uint16_t{502U},
+            blocked ? "the invited user is not accepting invites" : "the invited user's server refused the invite"};
+        refusal.errcode = blocked ? std::string{invite_blocked_errcode} : std::string{};
+        return refusal;
     }
     return {RemoteInviteOutcome::unreachable, 502U, call.body};
 }
@@ -7326,7 +7357,9 @@ namespace
                 : RemoteInviteResult{RemoteInviteOutcome::unreachable, 503U, "no client-outbound slot for the offer"};
         if (delivery.outcome == RemoteInviteOutcome::refused)
         {
-            return make_operation_result(false, {}, delivery.reason, delivery.status);
+            auto refused = make_operation_result(false, {}, delivery.reason, delivery.status);
+            refused.errcode = delivery.errcode;
+            return refused;
         }
 
         // runtime.mutex was down for the exchange: the room, or the inviter's place in it, may have changed.
@@ -7409,6 +7442,10 @@ namespace
     auto const invitee_server = std::string{auth::user_id_server_name(target_user_id)};
     if (invitee_server.empty() || invitee_server == runtime.config.server().server_name)
     {
+        if (invite_permission_blocks(runtime.database.persistent_store, target_user_id))
+        {
+            return invite_blocked_result();
+        }
         auto const result = persist_membership_transition(runtime, room_id, *user_id, target_user_id, "invite", reason);
         if (!result.ok)
         {
@@ -9071,6 +9108,18 @@ namespace
 namespace
 {
 
+    // True when the composed m.room.member event's `content.membership` is "invite".
+    [[nodiscard]] auto composed_membership_is_invite(std::string_view event_json) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        auto const* content = root == nullptr ? nullptr : object_member_as_object(*root, "content");
+        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+        return membership != nullptr && *membership == "invite";
+    }
+
     // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
@@ -9127,6 +9176,15 @@ namespace
             return event_too_large_result();
         }
         auto const& composed = composition.event;
+        // SS7: PUT .../state/m.room.member/{stateKey} with membership invite is refused for a local invitee who
+        // blocks invites, before anything is stored.
+        if (composed.has_value() && composed->event_type == "m.room.member" && composed->state_key.has_value() &&
+            auth::user_id_server_name(*composed->state_key) == runtime.config.server().server_name &&
+            composed_membership_is_invite(composed->json) &&
+            invite_permission_blocks(runtime.database.persistent_store, *composed->state_key))
+        {
+            return invite_blocked_result();
+        }
         if (!composed.has_value())
         {
             log_diagnostic("room.event.rejected", {
