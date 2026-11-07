@@ -7,6 +7,7 @@
 #include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
@@ -15,10 +16,12 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
+#include "merovingian/homeserver/StreamedBodyResult.hpp"
 #include "merovingian/homeserver/SyncAdmissionCaps.hpp"
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/streamed_body.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/ConnectionLimiter.hpp"
 #include "merovingian/http/ConnectionPreference.hpp"
@@ -889,13 +892,16 @@ namespace
     // itself is non-standard but universally understood). Error responses and
     // every path that keeps today's one-request-per-connection behaviour use
     // the default `close`.
-    [[nodiscard]] auto format_response(std::uint16_t status, std::string_view body,
-                                       std::vector<std::pair<std::string, std::string>> const& headers = {},
-                                       http::ConnectionPreference connection = http::ConnectionPreference::close,
-                                       std::uint32_t keep_alive_timeout_seconds = 0U) -> std::string
+    //
+    // The head is formatted for a body of `body_length` bytes (ADR-0574: a streamed body is not in memory, so its
+    // length is given); format_response appends the body.
+    [[nodiscard]] auto format_response_head(std::uint16_t status, std::uint64_t body_length,
+                                            std::vector<std::pair<std::string, std::string>> const& headers,
+                                            http::ConnectionPreference connection,
+                                            std::uint32_t keep_alive_timeout_seconds) -> std::string
     {
         auto response = std::string{};
-        response.reserve(body.size() + 128U + 256U * headers.size());
+        response.reserve(128U + 256U * headers.size());
         response.append("HTTP/1.1 ");
         response.append(std::to_string(status));
         response.push_back(' ');
@@ -930,7 +936,7 @@ namespace
             response.append("\r\nX-Content-Type-Options: nosniff");
         }
         response.append("\r\nContent-Length: ");
-        response.append(std::to_string(body.size()));
+        response.append(std::to_string(body_length));
         if (content_type.empty())
         {
             content_type = "application/json";
@@ -950,6 +956,15 @@ namespace
             response.append("\r\nConnection: close");
         }
         response.append("\r\n\r\n");
+        return response;
+    }
+
+    [[nodiscard]] auto format_response(std::uint16_t status, std::string_view body,
+                                       std::vector<std::pair<std::string, std::string>> const& headers = {},
+                                       http::ConnectionPreference connection = http::ConnectionPreference::close,
+                                       std::uint32_t keep_alive_timeout_seconds = 0U) -> std::string
+    {
+        auto response = format_response_head(status, body.size(), headers, connection, keep_alive_timeout_seconds);
         response.append(body);
         return response;
     }
@@ -967,6 +982,52 @@ namespace
             remaining.remove_prefix(static_cast<std::size_t>(sent));
         }
         return true;
+    }
+
+    // The size the "response_bytes" log field reports: a streamed body is not in `body`.
+    [[nodiscard]] auto response_body_bytes(LocalHttpResponse const& response) -> std::uint64_t
+    {
+        return response.body_stream.has_value() ? response.body_stream->size_bytes : response.body.size();
+    }
+
+    // Writes one response. A body held in memory goes out with its head in one buffer. A streamed body (ADR-0574)
+    // goes out as the head, then chunks read from the database one at a time with no runtime lock held: each read
+    // is on a connection closed before the chunk is written, so a client that stops reading holds no database
+    // connection. The stream's write timeouts apply to each chunk. The status line is already sent when a read
+    // fails, so the only answer left is to report false and let the caller close the connection.
+    [[nodiscard]] auto write_response(ConnectionStream& stream, LocalHttpResponse const& response,
+                                      http::ConnectionPreference connection, std::uint32_t keep_alive_timeout_seconds)
+        -> bool
+    {
+        if (!response.body_stream.has_value())
+        {
+            return send_all(stream, format_response(response.status, response.body, response.headers, connection,
+                                                    keep_alive_timeout_seconds));
+        }
+        auto const& source = *response.body_stream;
+        if (!send_all(stream, format_response_head(response.status, source.size_bytes, response.headers, connection,
+                                                   keep_alive_timeout_seconds)))
+        {
+            return false;
+        }
+        auto const result = write_streamed_body(
+            source.size_bytes, database::media_blob_chunk_bytes,
+            [&source](std::uint64_t offset, std::size_t length) {
+                return database::read_media_blob_chunk(source.blob, source.size_bytes, offset, length);
+            },
+            [&stream](std::string_view chunk) {
+                return send_all(stream, chunk);
+            });
+        if (result == StreamedBodyResult::read_failed)
+        {
+            log_diagnostic("response.stream_read_failed",
+                           {
+                               {"storage_id", source.blob.storage_id,            false},
+                               {"size_bytes", std::to_string(source.size_bytes), false}
+            },
+                           observability::LogEventSeverity::error);
+        }
+        return result == StreamedBodyResult::complete;
     }
 
     [[nodiscard]] auto find_header_value(http::RequestHead const& head, std::string_view name) -> std::string
@@ -1688,14 +1749,13 @@ namespace
                            {"method",         handoff.request.method,                                       false},
                            {"target",         observability::sanitized_http_target(handoff.request.target), false},
                            {"status",         std::to_string(final_result.response.status),                 false},
-                           {"response_bytes", std::to_string(final_result.response.body.size()),            false}
+                           {"response_bytes", std::to_string(response_body_bytes(final_result.response)),            false}
         });
         auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
-        auto const formatted =
-            format_response(final_result.response.status, final_result.response.body, final_result.response.headers,
-                            decision, keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
         auto stream = make_connection_stream(connection);
-        auto const written = stream != nullptr && send_all(*stream, formatted);
+        auto const written =
+            stream != nullptr && write_response(*stream, final_result.response, decision,
+                                                keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
         stream.reset();
         if (written && decision == http::ConnectionPreference::keep_alive && handoff.ctx.dispatcher != nullptr)
         {
@@ -1825,13 +1885,13 @@ namespace
                            {"method",         handoff.request.method,                                       false},
                            {"target",         observability::sanitized_http_target(handoff.request.target), false},
                            {"status",         std::to_string(result.response.status),                       false},
-                           {"response_bytes", std::to_string(result.response.body.size()),                  false}
+                           {"response_bytes", std::to_string(response_body_bytes(result.response)),                  false}
         });
         auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
-        auto const formatted = format_response(result.response.status, result.response.body, result.response.headers,
-                                               decision, keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
         auto stream = make_connection_stream(connection);
-        auto const written = stream != nullptr && send_all(*stream, formatted);
+        auto const written =
+            stream != nullptr &&
+            write_response(*stream, result.response, decision, keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
         stream.reset();
         if (written && decision == http::ConnectionPreference::keep_alive && handoff.ctx.dispatcher != nullptr)
         {
@@ -2154,12 +2214,10 @@ namespace
                            {"method",         local_request.method,                                       false},
                            {"target",         observability::sanitized_http_target(local_request.target), false},
                            {"status",         std::to_string(result.response.status),                     false},
-                           {"response_bytes", std::to_string(result.response.body.size()),                false}
+                           {"response_bytes", std::to_string(response_body_bytes(result.response)),                false}
         });
         auto const decision = decide_connection(ctx, connection, parse.request.version, connection_header);
-        auto const formatted = format_response(result.response.status, result.response.body, result.response.headers,
-                                               decision, keep_alive_policy_for(ctx).idle_timeout_seconds);
-        if (!send_all(*stream, formatted))
+        if (!write_response(*stream, result.response, decision, keep_alive_policy_for(ctx).idle_timeout_seconds))
         {
             return RoundOutcome::close_connection;
         }

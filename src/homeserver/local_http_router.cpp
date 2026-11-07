@@ -495,6 +495,7 @@ namespace
             // in a field, never a header; the client API builds
             // Content-Disposition from it.
             out.media_filename = result.media_filename;
+            out.body_stream = result.body_stream;
         }
         if (result.retry_after_ms > 0U)
         {

@@ -21,6 +21,7 @@ homeserver_sources = files(
   'local_http_router.cpp',
   'local_services.cpp',
   'media_service.cpp',
+  'streamed_body.cpp',
   'MediaUploadNotifier.cpp',
   'operator_admin.cpp',
   'url_preview_service.cpp',

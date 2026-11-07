@@ -547,6 +547,34 @@ namespace
         return bytes;
     }
 
+    // ADR-0574: the answer for a download of media already resolved under the runtime mutex. A file larger than one
+    // chunk, on a database backend, is not read here at all: the result carries a MediaBodyStream and the HTTP
+    // layer reads it chunk by chunk as it writes, so no request holds the file. Anything else is read whole, as
+    // before, which is still at most one chunk. Runs with the runtime mutex held. nullopt when the bytes cannot
+    // be read or the media is no longer servable.
+    [[nodiscard]] auto serve_servable_media(HomeserverRuntime& runtime, std::string_view media_id,
+                                            std::string_view storage_id, bool legacy_endpoint,
+                                            std::string_view content_type) -> std::optional<OperationResult>
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const* blob = media::find_local_media_blob(runtime.media_repository, storage_id);
+        if (blob != nullptr && store.backend != database::PersistentStoreBackend::memory &&
+            blob->size_bytes > database::media_blob_chunk_bytes &&
+            media::local_media_still_servable(runtime.media_repository, media_id, storage_id, legacy_endpoint))
+        {
+            auto streamed = make_operation_result(true, std::string{content_type} + "|", {}, 200U);
+            streamed.body_stream = MediaBodyStream{database::prepare_media_blob_read(store, storage_id),
+                                                   blob->size_bytes};
+            return streamed;
+        }
+        auto bytes = read_servable_media_bytes(runtime, media_id, storage_id, legacy_endpoint);
+        if (!bytes.has_value())
+        {
+            return std::nullopt;
+        }
+        return make_operation_result(true, std::string{content_type} + "|" + *bytes, {}, 200U);
+    }
+
     // DB-5 / ADR-0119: makes media the repository has just admitted durable,
     // record and blob in one transaction. `new_blob` writes `bytes`; otherwise
     // only the shared blob's reference count changes. On failure the admission
@@ -958,8 +986,8 @@ namespace
         auto const storage_id = cached->storage_id;
         auto const content_type = cached->content_type;
         auto const upload_name = cached->upload_name;
-        auto const bytes = read_servable_media_bytes(runtime, local_media_id, storage_id, false);
-        if (!bytes.has_value())
+        auto served = serve_servable_media(runtime, local_media_id, storage_id, false, content_type);
+        if (!served.has_value())
         {
             return std::nullopt;
         }
@@ -967,8 +995,7 @@ namespace
                                                      {"origin_server", std::string{origin_server}, false},
                                                      {"media_id",      std::string{media_id},      false}
         });
-        auto served = make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
-        served.media_filename = upload_name;
+        served->media_filename = upload_name;
         return served;
     }
 
@@ -1890,8 +1917,8 @@ namespace
         auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
         return record == nullptr ? std::string{} : record->upload_name;
     }();
-    auto const bytes = read_servable_media_bytes(runtime, media_id, target.storage_id, legacy_endpoint);
-    if (!bytes.has_value())
+    auto served = serve_servable_media(runtime, media_id, target.storage_id, legacy_endpoint, target.content_type);
+    if (!served.has_value())
     {
         log_diagnostic("download.unavailable", {
                                                    {"media_id", std::string{media_id}, false}
@@ -1903,9 +1930,8 @@ namespace
                        {"media_id",     std::string{media_id}, false},
                        {"content_type", target.content_type,   false}
     });
-    auto served = make_operation_result(true, target.content_type + "|" + *bytes, {}, 200U);
-    served.media_filename = upload_name;
-    return served;
+    served->media_filename = upload_name;
+    return std::move(*served);
 }
 
 [[nodiscard]] auto download_local_media_for_federation(HomeserverRuntime& runtime, std::string_view media_id)
