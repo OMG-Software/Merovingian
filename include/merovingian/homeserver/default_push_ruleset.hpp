@@ -20,9 +20,10 @@ namespace merovingian::homeserver
 // GET /pushrules) and room_service.cpp (which parses it via
 // push::parse_push_ruleset to gate real delivery), so the ruleset a client is
 // told it has and the ruleset that actually decides whether a push fires can
-// never drift apart. Merovingian does not yet persist per-user rule
-// customisation (no PUT to /pushrules/... is implemented), so this default
-// ruleset — not a stored one — is authoritative for every user.
+// never drift apart. Per-user rule customisation made through PUT
+// /pushrules/... is stored (src/push/UserPushRules.cpp,
+// src/homeserver/stored_push_rules.cpp) and layered over this default
+// ruleset, which supplies the rules a user has not changed.
 [[nodiscard]] auto default_push_ruleset(std::string_view user_id) -> canonicaljson::Object;
 
 } // namespace merovingian::homeserver

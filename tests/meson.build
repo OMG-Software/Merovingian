@@ -243,6 +243,7 @@ shell = find_program('sh')
       'unit/test_failure_window_table.cpp',
       'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
+      'unit/test_client_server_input_validation.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_email.cpp',
       'unit/test_token_lifetime_policy.cpp',

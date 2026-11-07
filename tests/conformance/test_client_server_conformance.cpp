@@ -4852,7 +4852,8 @@ SCENARIO("A suspended account cannot reach a blocked action by naming a path seg
         WHEN("the suspended user reads room messages normally")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?limit=10", token, {}});
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&limit=10", token, {}});
 
             THEN("the permitted read still works")
             {
@@ -5752,6 +5753,63 @@ SCENARIO("GET /capabilities returns the server capabilities object", "[conforman
                 auto const* default_ver = string_member(*rv, "default");
                 REQUIRE(default_ver != nullptr);
                 REQUIRE(!default_ver->empty());
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v3/capabilities: m.account_moderation ----------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3capabilities
+//
+// `m.account_moderation` (added in v1.18) says whether the caller can lock and suspend accounts
+// through the server administration endpoints (`lock`, `suspend` booleans). "This property should
+// be omitted altogether if `suspend` and `lock` would be `false`."
+SCENARIO("GET /capabilities advertises m.account_moderation to server admins only",
+         "[conformance][client-server][capabilities][server-admin]")
+{
+    GIVEN("a running client-server with an admin and an ordinary user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const non_admin = logged_in_token(started.runtime);
+        auto const admin = admin_token(started.runtime, "admin");
+
+        WHEN("a server admin fetches the capabilities")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/capabilities", admin, {}});
+
+            THEN("m.account_moderation reports that lock and suspend are available")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* caps = object_member_as_object(body, "capabilities");
+                REQUIRE(caps != nullptr);
+                // Spec: AccountModerationCapability has `lock` and `suspend` booleans.
+                auto const* moderation = object_member_as_object(*caps, "m.account_moderation");
+                REQUIRE(moderation != nullptr);
+                auto const* lock = bool_member(*moderation, "lock");
+                auto const* suspend = bool_member(*moderation, "suspend");
+                REQUIRE(lock != nullptr);
+                REQUIRE(suspend != nullptr);
+                REQUIRE(*lock);
+                REQUIRE(*suspend);
+            }
+        }
+
+        WHEN("an ordinary user fetches the capabilities")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/capabilities", non_admin, {}});
+
+            THEN("m.account_moderation is omitted altogether")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* caps = object_member_as_object(body, "capabilities");
+                REQUIRE(caps != nullptr);
+                // Spec: omitted when both `suspend` and `lock` would be false.
+                REQUIRE(object_member(*caps, "m.account_moderation") == nullptr);
             }
         }
     }

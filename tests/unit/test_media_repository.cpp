@@ -207,6 +207,30 @@ SCENARIO("Remote media fetches fail closed for the MVP", "[media][repository][re
     }
 }
 
+SCENARIO("The disabled remote media fetch stub says this server does not fetch remote media",
+         "[media][repository][remote]")
+{
+    GIVEN("remote fetching is enabled in the repository but only the disabled stub is called")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+
+        WHEN("a remote media fetch from a public address is requested")
+        {
+            auto const result = merovingian::media::fetch_remote_media_disabled(
+                repository, {"remote.example.org", "media123", "remote.example.org", {"203.0.113.20"}});
+
+            THEN("the refusal names the server as not fetching remote media and counts it")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 501U);
+                REQUIRE(result.reason == "remote media fetching is disabled on this server");
+                REQUIRE(repository.metrics.remote_fetch_rejections == 1U);
+            }
+        }
+    }
+}
+
 SCENARIO("Remote media fetch stores fetched bytes only after policy and processing boundaries pass",
          "[media][repository][remote]")
 {

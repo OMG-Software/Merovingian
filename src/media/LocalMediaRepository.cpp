@@ -1494,7 +1494,7 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDo
     {
         return {false, 502U, decision.reason};
     }
-    return {false, 501U, "remote media fetch is not implemented in this milestone"};
+    return {false, 501U, "remote media fetching is disabled on this server"};
 }
 
 auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request, std::uint64_t now)
