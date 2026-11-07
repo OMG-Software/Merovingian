@@ -1811,6 +1811,29 @@ namespace
         return body_out;
     }
 
+    // Spec (POST /ban, /kick, /unban): `user_id` is required. These three reuse the /invite body parser,
+    // which also accepts the third-party triple with no `user_id`; that shape has no target here, so a
+    // missing `user_id` is M_BAD_JSON and a malformed one M_INVALID_PARAM, before any room state is read.
+    struct MembershipTargetRefusal final
+    {
+        std::string_view errcode{};
+        std::string message{};
+    };
+
+    [[nodiscard]] auto membership_target_refusal(std::optional<MembershipActionBody> const& body,
+                                                 std::string_view action) -> std::optional<MembershipTargetRefusal>
+    {
+        if (!body.has_value() || body->user_id.empty())
+        {
+            return MembershipTargetRefusal{"M_BAD_JSON", std::string{action} + " body must contain user_id"};
+        }
+        if (!auth::user_id_is_valid(body->user_id))
+        {
+            return MembershipTargetRefusal{"M_INVALID_PARAM", "user_id is not a valid Matrix user ID"};
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Object const*
     {
@@ -3030,8 +3053,9 @@ namespace
     // Validates the body. A kind:null request deletes the pusher and only
     // requires app_id and pushkey. Non-null kinds require the full set of
     // display-name, data, and lang fields; http pushers additionally require a
-    // valid HTTPS notify URL. Merovingian does not yet deliver notifications,
-    // so the handler only validates and returns 200 {}.
+    // valid HTTPS notify URL. Delivery to the registered gateway is done by the
+    // push gateway client (src/push/PushGatewayClient.cpp); this handler only
+    // validates and stores the pusher.
     [[nodiscard]] auto matrix_pusher_url_is_valid(std::string_view url) noexcept -> bool
     {
         auto const scheme_end = url.find("://");
@@ -4194,6 +4218,15 @@ namespace
             return d.user_id == user && d.device_id == device;
         });
         return it == rt.devices.end() ? nullptr : &(*it);
+    }
+
+    // The percent-decoded {deviceId} of a /devices/{deviceId} request path. The request
+    // dispatcher has already refused a path holding NUL, so the decode cannot throw; a
+    // decoded ID that is not a valid device ID matches no device and answers 404.
+    [[nodiscard]] auto device_id_from_device_path(std::string_view request_path) -> std::string
+    {
+        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        return core::percent_decode_path_component(request_path.substr(dev_prefix.size()));
     }
 
     [[nodiscard]] auto authenticated_request_device_id(ClientServerRuntime const& rt, std::string_view access_token)
@@ -6230,7 +6263,6 @@ namespace
                 timeline_events.push_back(
                     aggregations.apply(**it, viewer_unsigned.apply(**it, client_event_with_id(store, **it))));
             }
-            auto const event_count = timeline_events.size();
 
             // prev_batch lets clients backfill older history via
             // /rooms/{roomId}/messages?from=<prev_batch>&dir=b, which returns
@@ -6344,13 +6376,11 @@ namespace
 
             ++join_count;
             auto joined_room = canonicaljson::Object{
-                json_member("timeline",
-                            json_obj({
-                                json_member("events", json_arr(std::move(timeline_events))),
-                                json_member("limited", json_bool(limited)),
-                                json_member("prev_batch", json_str(prev_batch)),
-                                json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
-                            })),
+                json_member("timeline", json_obj({
+                                            json_member("events", json_arr(std::move(timeline_events))),
+                                            json_member("limited", json_bool(limited)),
+                                            json_member("prev_batch", json_str(prev_batch)),
+                                        })),
                 json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
                 json_member("account_data", json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
                 json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
@@ -8483,6 +8513,37 @@ namespace
                                                 }));
     }
 
+    // A remote server may ignore the device list it was sent, so drop from one user's answer every device
+    // the client did not ask for. An empty requested list asks for every device and keeps them all.
+    // `requested_by_user` maps each user asked of this server to the device IDs asked for. Both lookups are
+    // hashed: the client chooses the request and the remote server the answer, and this runs under
+    // runtime.mutex, so the cost must stay linear in both (src/homeserver/AGENTS.md).
+    auto keep_requested_devices(
+        canonicaljson::ObjectMember& user_devices,
+        std::unordered_map<std::string_view, std::vector<std::string> const*> const& requested_by_user) -> void
+    {
+        auto const requested = requested_by_user.find(user_devices.key);
+        if (requested == requested_by_user.end() || requested->second->empty() || user_devices.value == nullptr)
+        {
+            return;
+        }
+        auto const* devices = std::get_if<canonicaljson::Object>(&user_devices.value->storage());
+        if (devices == nullptr)
+        {
+            return;
+        }
+        auto const wanted = std::unordered_set<std::string_view>{requested->second->begin(), requested->second->end()};
+        auto kept = canonicaljson::Object{};
+        for (auto const& device : *devices)
+        {
+            if (wanted.contains(device.key))
+            {
+                kept.push_back(device);
+            }
+        }
+        user_devices.value = std::make_unique<canonicaljson::Value>(json_obj(std::move(kept)));
+    }
+
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
                                         std::string_view body, std::string client_key) -> LocalHttpResponse
     {
@@ -8500,9 +8561,9 @@ namespace
         auto const& local_server = rt.homeserver.config.server().server_name;
         auto const& store = rt.homeserver.database.persistent_store;
 
-        // remote_by_server accumulates remote user IDs grouped by their home
-        // server so we can make a single federation key query per server.
-        auto remote_by_server = std::map<std::string, std::vector<std::string>>{};
+        // remote_by_server accumulates remote user IDs, each with the device IDs asked for (empty: every
+        // device), grouped by their home server so we can make a single federation key query per server.
+        auto remote_by_server = std::map<std::string, std::vector<std::pair<std::string, std::vector<std::string>>>>{};
 
         // The display names of every queried user's devices, read from the device table once.
         auto const display_names = [&] {
@@ -8529,7 +8590,17 @@ namespace
             auto const user_server = std::string{auth::user_id_server_name(user_request.key)};
             if (!user_server.empty() && user_server != local_server)
             {
-                remote_by_server[user_server].push_back(user_request.key);
+                auto remote_device_ids = std::vector<std::string>{};
+                for (auto const& requested_device : *requested_devices)
+                {
+                    auto const* requested_device_id = std::get_if<std::string>(&requested_device.storage());
+                    if (requested_device_id == nullptr)
+                    {
+                        return err(400U, "M_BAD_JSON", "device_keys entries must be device IDs");
+                    }
+                    remote_device_ids.push_back(*requested_device_id);
+                }
+                remote_by_server[user_server].emplace_back(user_request.key, std::move(remote_device_ids));
                 continue;
             }
 
@@ -8618,17 +8689,25 @@ namespace
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const signing_secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
             auto remote_calls = RemoteKeyCalls{rt, std::move(client_key)};
-            for (auto const& [server, uid_list] : remote_by_server)
+            for (auto const& [server, remote_requests] : remote_by_server)
             {
                 if (auto const refusal = remote_calls.admit_next_server(); !refusal.empty())
                 {
                     failures.push_back(key_failure_member(server, "M_LIMIT_EXCEEDED", refusal));
                     continue;
                 }
+                auto uid_list = std::vector<std::string>{};
                 auto remote_dk = canonicaljson::Object{};
-                for (auto const& uid : uid_list)
+                for (auto const& [uid, device_ids] : remote_requests)
                 {
-                    remote_dk.push_back(json_member(uid, json_arr(canonicaljson::Array{})));
+                    uid_list.push_back(uid);
+                    // Spec (POST /keys/query, `device_keys`): an empty list asks for every device.
+                    auto device_array = canonicaljson::Array{};
+                    for (auto const& device_id : device_ids)
+                    {
+                        device_array.push_back(json_str(device_id));
+                    }
+                    remote_dk.push_back(json_member(uid, json_arr(std::move(device_array))));
                 }
                 auto q_body_obj = canonicaljson::Object{};
                 q_body_obj.push_back(json_member("device_keys", json_obj(std::move(remote_dk))));
@@ -8659,8 +8738,15 @@ namespace
                                 })));
                     continue;
                 }
+                auto requested_by_user = std::unordered_map<std::string_view, std::vector<std::string> const*>{};
+                requested_by_user.reserve(remote_requests.size());
+                for (auto const& [uid, device_ids] : remote_requests)
+                {
+                    requested_by_user.emplace(uid, &device_ids);
+                }
                 for (auto& user_devices : accepted->device_keys)
                 {
+                    keep_requested_devices(user_devices, requested_by_user);
                     users.push_back(std::move(user_devices));
                 }
                 // The master key is what a client checks its own user-signing
@@ -8720,6 +8806,25 @@ namespace
         if (requests == nullptr)
         {
             return err(400U, "M_BAD_JSON", "key claim body must contain one_time_keys");
+        }
+
+        // Validate the whole body before any key is claimed: a claim burns a one-time key, so a malformed
+        // entry found after earlier devices were served would answer 400 for keys already consumed.
+        for (auto const& user_request : *requests)
+        {
+            auto const* requested_devices = std::get_if<canonicaljson::Object>(&user_request.value->storage());
+            if (requested_devices == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "one_time_keys values must be device maps");
+            }
+            for (auto const& device_request : *requested_devices)
+            {
+                auto const* algorithm = std::get_if<std::string>(&device_request.value->storage());
+                if (algorithm == nullptr || algorithm->empty())
+                {
+                    return err(400U, "M_BAD_JSON", "one_time_keys entries must name a key algorithm");
+                }
+            }
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
@@ -10113,8 +10218,8 @@ namespace
                                      std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
-        auto const dir = messages_query_value(target, "dir");
-        auto const backwards = dir != "f"; // both default and "b" walk backward
+        // The route has already refused a `dir` that is missing or not "b" or "f".
+        auto const backwards = messages_query_value(target, "dir") != "f";
         auto const from_text = messages_query_value(target, "from");
         // `from` "can be obtained from a prev_batch or next_batch token returned by the /sync
         // endpoint, or from an end token returned by a previous request to this endpoint". A
@@ -12829,8 +12934,7 @@ namespace
         // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
         // display name and notify all local users who share a room with
         // this user that their device list has changed.
-        auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-        auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
+        auto const device_id_from_path = device_id_from_device_path(target_path(req.target));
         auto* device = find_device(rt, user, device_id_from_path);
         if (device == nullptr)
         {
@@ -16912,22 +17016,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             available_versions.push_back(json_member(std::string{policy.id}, json_str("stable")));
         }
+        auto capabilities = canonicaljson::Object{
+            json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
+            json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
+            // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
+            // no allowed or disallowed list.
+            json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
+            json_member("m.room_versions", json_obj({
+                                               json_member("default", json_str("12")),
+                                               json_member("available", json_obj(std::move(available_versions))),
+                                           })),
+        };
+        // Spec (m.account_moderation, v1.18): whether the caller can lock and suspend accounts, "omitted
+        // altogether if `suspend` and `lock` would be `false`". Both endpoints need a server admin, so
+        // the two flags are always equal.
+        if (authenticated_admin_user(rt.homeserver, req.access_token).has_value())
+        {
+            capabilities.push_back(json_member("m.account_moderation", json_obj({
+                                                                           json_member("lock", json_bool(true)),
+                                                                           json_member("suspend", json_bool(true)),
+                                                                       })));
+        }
         return dispatch_resp(
-            req, rt, 200U,
-            json_serialize(json_obj(
-                {json_member("capabilities",
-                             json_obj({
-                                 json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
-                                 json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
-                                 // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
-                                 // no allowed or disallowed list.
-                                 json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),
-                                 json_member("m.room_versions",
-                                             json_obj({
-                                                 json_member("default", json_str("12")),
-                                                 json_member("available", json_obj(std::move(available_versions))),
-                                             })),
-                             }))})));
+            req, rt, 200U, json_serialize(json_obj({json_member("capabilities", json_obj(std::move(capabilities)))})));
     }
     // GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},location,
     // location/{p},user,user/{p}} — Matrix v1.19 CS API "Third-party
@@ -17777,7 +17888,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
     if (req.method == "GET" && starts_with(req.target, dev_prefix))
     {
-        auto const device_id = request_path.substr(dev_prefix.size());
+        auto const device_id = device_id_from_device_path(request_path);
         auto const* device = find_device(rt, *user, device_id);
         if (device == nullptr)
         {
@@ -17830,7 +17941,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
         }
-        auto const device_id = request_path.substr(dev_prefix.size());
+        auto const device_id = device_id_from_device_path(request_path);
         // The servers to tell, read before the device is removed.
         auto const destinations = remote_servers_for_user(rt.homeserver, *user);
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
@@ -19589,6 +19700,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
+                // Spec (GET /messages, `dir`): required, "One of: [b, f]". A missing value is
+                // M_MISSING_PARAM and any other M_INVALID_PARAM, as on /timestamp_to_event, never a
+                // silent backward page.
+                if (auto const dir_text = messages_query_value(req.target, "dir"); dir_text.empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "dir query parameter is required");
+                }
+                else if (dir_text != "f" && dir_text != "b")
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "dir must be f or b");
+                }
                 // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
                 // /context, never silently dropped for an unfiltered page.
                 if (!sync::parse_room_event_filter_argument(messages_query_value(req.target, "filter")).has_value())
@@ -19657,9 +19779,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - ban_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "ban"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "ban body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result = merovingian::homeserver::ban_user(rt.homeserver, req.access_token, room_id,
                                                                   body->user_id, body->reason);
@@ -19674,9 +19796,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - kick_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "kick"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "kick body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result = merovingian::homeserver::kick_user(rt.homeserver, req.access_token, room_id,
                                                                    body->user_id, body->reason);
@@ -19691,9 +19813,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - unban_s.size()));
             auto const body = parse_membership_action_body(req.body);
-            if (!body.has_value())
+            if (auto const refusal = membership_target_refusal(body, "unban"); refusal.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "unban body must contain user_id");
+                return dispatch_err(req, rt, 400U, refusal->errcode, refusal->message);
             }
             auto const result =
                 merovingian::homeserver::unban_user(rt.homeserver, req.access_token, room_id, body->user_id);

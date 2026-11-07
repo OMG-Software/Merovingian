@@ -540,6 +540,19 @@ The client-server runtime applies `server.client_api` policy to sync room/timeli
 
 Room account data (`GET`/`PUT /user/{userId}/rooms/{roomId}/account_data/{type}`) is routed. Both account-data `PUT`s require a JSON object body (`400 M_NOT_JSON` / `M_BAD_JSON`) and refuse the server-managed `m.fully_read` and `m.push_rules` with `405 M_BAD_JSON`. A room `PUT` needs a membership row in the room and stops new types at `server.client_api.max_room_account_data_per_room` (ADR-0197). `POST /register` without `username` gets a generated localpart (ADR-0198). `PUT /rooms/{roomId}/typing/{userId}` requires a boolean `typing`, and typing expires after its `timeout`, at most 120 s (ADR-0199). `POST /search` covers rooms the user has left, up to the point they left.
 
+## Request validation tightened (0.12.81)
+
+- `GET /rooms/{roomId}/messages` requires `dir` (`b` or `f`): missing is `400 M_MISSING_PARAM`, any other value `400 M_INVALID_PARAM`.
+  `GET .../relations/{eventId}` rejects a `dir` outside `b`/`f` with `400 M_INVALID_PARAM` (absent still means `b`) and offers
+  `next_batch` only when the `limit` cut the page, not when `to` ended the range.
+- `POST /rooms/{roomId}/ban`, `/kick` and `/unban` require a non-empty, valid `user_id` (`400 M_BAD_JSON` when absent,
+  `400 M_INVALID_PARAM` when malformed); the third-party invite triple is accepted by `/invite` only.
+- `GET`, `PUT` and `DELETE /devices/{deviceId}` percent-decode the device ID.
+- `POST /keys/claim` validates the whole body before it claims any one-time key. A remote `POST /keys/query` sends the requested
+  device IDs to the remote server and returns only those devices.
+- `GET /capabilities` carries `m.account_moderation` (`lock`, `suspend`) for server admins and omits it for other users.
+- A joined room's `/sync` timeline no longer carries the unspecified `event_count`.
+
 ## Event lookup by timestamp (0.12.64)
 
 `GET /rooms/{roomId}/timestamp_to_event?ts=&dir=` (ADR-0299, ADR-0300) returns `{event_id, origin_server_ts}` of the event

@@ -360,6 +360,20 @@ namespace
         return result;
     }
 
+    // Defence in depth for ban, kick and unban: the route refuses a missing or malformed `user_id`, but a
+    // caller of the service must not be able to compose an m.room.member with an empty or invalid state_key.
+    [[nodiscard]] auto refuse_invalid_membership_target(std::string_view target_user_id)
+        -> std::optional<OperationResult>
+    {
+        if (auth::user_id_is_valid(target_user_id))
+        {
+            return std::nullopt;
+        }
+        auto result = make_operation_result(false, {}, "target user_id is not a valid Matrix user ID", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> PersistOutcome;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -7903,6 +7917,10 @@ namespace
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
+    }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
@@ -7932,6 +7950,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
@@ -7977,6 +7999,10 @@ namespace
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (auto refused = refuse_invalid_membership_target(target_user_id); refused.has_value())
+    {
+        return *refused;
     }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
@@ -9736,6 +9762,15 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
+    // Spec (GET /relations, `dir`): "One of: [b, f]", default b. A value outside the enum is a bad
+    // request, not a silent backward page.
+    if (request.dir.has_value() && *request.dir != "b" && *request.dir != "f")
+    {
+        auto result = make_operation_result(false, {}, "dir must be one of: b, f", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     // Spec: "404 The parent event was not found or the user does not have permission to read this event
     // (it might be contained in history that is not accessible to the user)". A user who left, or a peek of a
     // world_readable room, is not refused here: the per-event HistoryVisibility below decides.
@@ -9951,6 +9986,9 @@ namespace
         }
     }
 
+    // `end` is now the end of the requested range. A page cut by `limit` ends before it and has a
+    // next_batch; a range that `to` closed has no more results to offer.
+    auto const range_end = end;
     if (end - start > static_cast<std::size_t>(limit))
     {
         end = start + static_cast<std::size_t>(limit);
@@ -9971,7 +10009,7 @@ namespace
         response.push_back(canonicaljson::make_member(
             "prev_batch", canonicaljson::Value{std::to_string(matches[start - 1U]->stream_ordering)}));
     }
-    if (end < matches.size())
+    if (end < range_end)
     {
         response.push_back(canonicaljson::make_member(
             "next_batch", canonicaljson::Value{std::to_string(matches[end]->stream_ordering)}));

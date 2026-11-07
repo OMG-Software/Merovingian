@@ -316,6 +316,73 @@ SCENARIO("A key query for a remote user returns that user's cross-signing keys",
     }
 }
 
+// What bob's server answers when it ignores the device list it was sent and returns both its devices.
+[[nodiscard]] auto bobs_two_device_response() -> std::string
+{
+    return std::string{
+        R"({"device_keys":{"@bob:remote.example.org":{)"
+        R"("BDEV":{"algorithms":["m.megolm.v1.aes-sha2"],"device_id":"BDEV","keys":{"ed25519:BDEV":"bdev"},"user_id":"@bob:remote.example.org"},)"
+        R"("BOTHER":{"algorithms":["m.megolm.v1.aes-sha2"],"device_id":"BOTHER","keys":{"ed25519:BOTHER":"bother"},"user_id":"@bob:remote.example.org"}}}})"};
+}
+
+SCENARIO("A key query for named devices of a remote user asks for, and returns, only those devices",
+         "[integration][federation][e2ee][keys][analysis-lows]")
+{
+    GIVEN("bob's server returns every device whatever it was asked for")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_user(runtime, "alice");
+
+        auto const certificate = tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.homeserver.test_forced_outbound_resolution[std::string{remote_server}] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto const http_response = tls_mock::json_http_response("200 OK", bobs_two_device_response());
+        auto captured_request = std::string{};
+        auto server_thread = std::thread{[&]() {
+            tls_mock::run_one_shot_tls_server(acceptor, *tls_context.context, http_response, &captured_request);
+        }};
+
+        WHEN("alice queries only device BDEV")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", alice.access_token,
+                          R"({"device_keys":{"@bob:remote.example.org":["BDEV"]}})"});
+            server_thread.join();
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+
+            THEN("the federation request names BDEV, not an empty list")
+            {
+                // Spec (POST /user/keys/query, `device_keys`): an empty list means every device.
+                REQUIRE(captured_request.find(R"("@bob:remote.example.org":["BDEV"])") != std::string::npos);
+            }
+
+            AND_THEN("the client gets BDEV only, though the remote server also sent BOTHER")
+            {
+                auto const* device_keys = object_member_as_object(body, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* bob_devices = object_member_as_object(*device_keys, bob);
+                REQUIRE(bob_devices != nullptr);
+                REQUIRE(object_member(*bob_devices, "BDEV") != nullptr);
+                REQUIRE(object_member(*bob_devices, "BOTHER") == nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("Publishing cross-signing keys tells the servers alice shares rooms with",
          "[integration][federation][e2ee][keys][cross-signing][edu][regression]")
 {
