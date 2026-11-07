@@ -19,7 +19,7 @@ auto ParkedPollRegistry::request_stop() -> void
 
 auto ParkedPollRegistry::running() const -> bool
 {
-    return false;
+    return m_started && !m_stopping && m_next_ticket == 0U;
 }
 
 auto ParkedPollRegistry::park(std::string_view, std::chrono::steady_clock::time_point, std::unique_ptr<ParkedPoll>&)
