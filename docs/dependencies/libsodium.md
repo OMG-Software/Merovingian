@@ -47,6 +47,4 @@ operating-system package.
 
 ## Current limitations
 
-- Runtime local signing-key materialization is deterministic scaffolding and
-  must be replaced by a reviewed production key loader.
 - Hardware-backed key storage remains future work.

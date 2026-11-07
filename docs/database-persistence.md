@@ -123,6 +123,11 @@ value. Test fixtures that do not exercise persistence select it through
   admission displaces, sets those blobs' reference counts (clearing bytes at zero),
   and inserts the new media, blob and `remote_media` rows. `remote_media` carries
   `local_media_id` and `fetched_at_ms`.
+  Since 0.12.81 (ADR-0574) a SQLite download larger than
+  `database::media_blob_chunk_bytes` (256 KiB) is read in chunks:
+  `read_media_blob_chunk` reads one chunk on a short-lived read-only
+  connection. PostgreSQL stays buffered, because each `substring()` of a
+  compressed TOASTed `bytea` decompresses the whole value.
 - `room_aliases` carries `creator_user_id` (CSAZ-12, ADR-0127):
   `store_room_alias` writes the creating user, and `delete_room_alias` removes a mapping, in the database and
   in memory, for `DELETE /directory/room/{roomAlias}`.
@@ -137,12 +142,15 @@ value. Test fixtures that do not exercise persistence select it through
   rewrites `BLOB` to `BYTEA` (whole-word, so it cannot mangle an identifier)
   wherever a `SchemaTableDefinition` becomes DDL for that backend — both the
   bootstrap path and any later migration step.
-- Every SQLite connection pins `PRAGMA synchronous = FULL` and
-  `PRAGMA journal_mode = DELETE` at open (#447), so an environment that
-  installs global default pragmas cannot silently weaken durability.
+- Every SQLite connection pins `PRAGMA secure_delete = ON`,
+  `PRAGMA trusted_schema = OFF` and `PRAGMA synchronous = FULL` at open
+  (#447), and a read-write connection also pins `PRAGMA journal_mode = DELETE`,
+  so an environment that installs global default pragmas cannot silently weaken
+  durability. The stores also enable `PRAGMA foreign_keys = ON` on their
+  connections.
 - SQLite hydration fails closed when a row query cannot be prepared or stepped
   to completion.
-- SQLite connections use a non-zero busy timeout for short-lived lock
+- SQLite connections use a 5000 ms busy timeout for short-lived lock
   contention.
 - `libpq` dependency review and a PostgreSQL RAII connection/result wrapper.
 - PostgreSQL current-schema bootstrap, row hydration, and write-through
@@ -942,21 +950,9 @@ The boundary provides these guarantees:
   identity and generic parser/connection-status refusal reasons rather than
   reconstructing a supplied option summary or forwarding library error text.
   Host/database values are suppressed too because they can contain sensitive
-  material. The existing unit checks pass 6 / 1; new actual DEBUG-console
-  coverage passes 85 / 2, including malformed quoted options and four admitted
-  quoted/spaced/escaped/URI forms reaching a real libpq failure against an owned
-  private nonexistent socket path. It checks required records, whole/partial
-  marker absence, returned identity/reason and environment/stdout/owned-path
-  restoration. Normal database integration passes 2628 / 58; these are
-  first-GREEN coverage of the existing guard, not a new production repair.
-  Bounded independent source review passed without security or logic findings;
-  reviewed files match executed manifests. Current database units pass 18363 / 174,
-  DB-8 units 48 / 2 and DB-6 integration 2733 / 15. Fresh combined acceptance
-  passed 56 OK targets with all return codes zero, no failures/timeouts and 139
-  unchanged snapshotted files including all 30 focused sources. Source freeze
-  ended after completed-archive/current-source inspection. Native Windows socket
-  execution, live authentication/TLS/ready branches and
-  general SQL-result error confidentiality are not established by these checks.
+  material. These are first-GREEN coverage of the existing guard, not a new production
+  repair. Native Windows socket execution, live authentication/TLS/ready branches
+  and general SQL-result error confidentiality are not established by these checks.
   See [ADR-0139](adr/0139-suppress-postgresql-connection-options-in-diagnostics.md).
 - **Remote PostgreSQL TLS admission (DB-8):** every effective host and host-address
   entry is checked. Unless all destinations are local Unix sockets or recognized
@@ -967,17 +963,10 @@ The boundary provides these guarantees:
   unsupported. The opener disables preferential GSS encryption and database-name
   expansion; private credential readers, role handling, binary bindings and
   transaction semantics are unchanged. Certificate trust and sandbox accessibility
-  must be provisioned for each process. The new deterministic unit regression
-  failed 4 / 28 assertions before repair and passes 28 / 1 afterward; all DB-8
-  checks pass 48 / 2 and database units pass 18363 / 174. Live TLS/hostname/certificate
-  refusal and worker trust-file access are not proven by admission tests;
-  independent source review passed without security or logic findings. Fresh
-  combined acceptance passed 56 OK targets with all return codes zero, no
-  failures/timeouts and 135 unchanged snapshotted files, including all focused
-  sources; the source freeze ended after acceptance. Normal DB-6
-  integration passes 2733 / 15 and both isolated PostgreSQL modes pass 178 / 2
-  with verified teardown, fixture removal and current-source binding; these
-  local compatibility checks do not establish remote TLS transport. See
+  must be provisioned for each process. A deterministic unit regression covers the admission rule. Live
+  TLS/hostname/certificate refusal and worker trust-file access are not proven by
+  admission tests, and these local compatibility checks do not establish remote
+  TLS transport. See
   [ADR-0138](adr/0138-require-explicit-remote-postgresql-tls-policy.md).
 - Runtime startup requires `database.role=runtime`; offline migration planning
   requires `database.role=migration`.
@@ -1210,7 +1199,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (48 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (49 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1342,8 +1331,8 @@ the whole load (ADR-0161).
 ### Event table indexes (0.12.39)
 
 `PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/EventTable.hpp`),
-not a `std::vector`. It owns the in-memory rows of the `events` table and keeps four indexes over them
-(the third since 0.12.64, the fourth since 0.12.72), all holding positions in its row vector so they survive reallocation (ADR-0215):
+not a `std::vector`. It owns the in-memory rows of the `events` table and keeps five indexes over them
+(the room-and-time index since 0.12.64, the per-room stream-order and relation indexes since 0.12.72), all holding positions in its row vector so they survive reallocation (ADR-0215):
 
 - **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
   `events.find_in_room(room_id, id)` adds the room check. `events.with_id(id)` is a range of zero or

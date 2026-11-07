@@ -238,8 +238,8 @@ event families" below for the rest of what `append_local_audit` records.
 | Login refused by the failed-login throttle | `auth` | `auth` | `login.throttled` |
 | Access-token rejected | `auth` | `auth` | `access_token.rejected` |
 | Client-server request rejected | `client_server` | `policy` | `request.rejected` |
-| Locked-user request rejected | `client_server` | `auth` | `request.user_locked` |
-| Suspended-user request rejected | `client_server` | `auth` | `request.user_suspended` |
+| Locked-user request rejected | `auth` | `auth` | `request.user_locked` |
+| Suspended-user request rejected | `auth` | `auth` | `request.user_suspended` |
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
 | Federation ACL rejected | `federation` | `policy` | `federation.acl_rejected` |
 
@@ -260,7 +260,10 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `auth.refresh.rejected`, `auth.logout`, `auth.logout_all`,
   `auth.account_deactivated`, `auth.password_changed`,
   `auth.openid.request_token`, `auth.sso.login_token.issued`,
-  `auth.sso.login_token.redeemed`.
+  `auth.sso.login_token.redeemed`, `auth.login_token.issued`,
+  `auth.login_token.redeemed` (tokens from `POST /login/get_token`),
+  `auth.refresh.reuse_detected`, `auth.refresh.predecessor_revoke`,
+  `auth.password_reset`.
 - `device.*` (`src/homeserver/auth_service.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
   `device.deleted`, `device.updated`.
 - `account.locked` / `account.suspended` (`src/homeserver/ClientServerRuntime.cpp`,

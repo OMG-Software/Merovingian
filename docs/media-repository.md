@@ -63,11 +63,8 @@ current in-process runtime path.
   `RequestLockScope`; hook I/O uses the existing lock-release mechanism, and
   subsequent blob reads retain record/storage revalidation. This is admission
   policy, not a guarantee that a rule changed during hook or blob I/O cancels an
-  already admitted request. SQLite/signed-request regression and unavailable-hook
-  checks pass 132 assertions in two cases; independent source review passes.
-  The fresh normal full suite completes 56 OK with all return codes zero and
-  1,026 frozen files unchanged. This is bounded admission acceptance, not
-  live policy-server HTTP denial or whole-audit/release acceptance.
+  already admitted request. This is bounded admission acceptance, not live
+  policy-server HTTP denial or whole-audit/release acceptance.
 - Remote media fetches are opt-in (`security.media.remote_fetch_enabled`, built-in default `false`;
   `config/merovingian.conf.example` sets it to `true`) and
   the flag is checked first: `download_local_media` and `download_local_media_thumbnail` answer
@@ -88,7 +85,9 @@ current in-process runtime path.
   re-fetch after the TTL replaces the stored copy, and when `security.media.remote_media_cache_max_entries`
   is reached the least recently used remote copy is deleted, so stored remote media stays bounded. Each cache
   entry carries its file's size, so planning an admission is one pass over the cache, and an admission also
-  drops up to 16 expired entries (ADR-0341).
+  drops up to 16 expired entries (ADR-0341). `security.media.remote_media_cache_max_size`
+  (default `25GiB`, ADR-0120) caps the cached bytes: the least recently used remote copies are deleted to
+  stay under it, so remote caching never takes capacity from local uploads. An empty value means no byte limit.
   `remote_media_cache_max_entries = 0` disables the cache and keeps only the latest fetched copy;
   when fetching is off, downloads of a remote `serverName` answer 404 before any outbound work.
 - Media bytes are stored only in `media_blobs.bytes` and read for each download, thumbnail or
@@ -121,8 +120,7 @@ current in-process runtime path.
   quarantined or removed record. Refusal is 404 with no decoded PNG or fallback
   original. The existing decoder lock release remains intact. A real SQLite/
   socket/child-gate regression reproduces both moderation races with healthy
-  controls; normal GREEN, independent review and fresh full verification are
-  pending. This local-only slice does not establish remote-source revalidation,
+  controls. This local-only slice does not establish remote-source revalidation,
   generated-output caching, per-user decode admission or strict policy-rule
   revocation during I/O.
 - When enabled, a remote fetch runs on the media fetch pool, not the main request pool (ADR-0121;
@@ -141,53 +139,50 @@ current in-process runtime path.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
   mandatory authenticated endpoint first per spec (changed in v1.11):
-  `GET /_matrix/federation/v1/media/download/
-{
-    mediaId
-}
-` (`remote_federation_media_download_url()`),
-    signed with an X - Matrix Authorization header the same way outbound transactions are
-                           signed.The response is `multipart
-                           / mixed` with exactly two parts — an empty JSON metadata part and either the media bytes
-        or a `Location` redirect(`parse_federation_media_multipart()`).A `Location` redirect is now followed after SSRF
-               - safe resolution and address pinning via
-  `resolve_media_redirect_url()` and `federation::resolve_federation_destination()`;
-only when the redirect itself cannot be resolved safely does the homeserver fall back.Only on
-    a `404` (or an unusable `200`) does the homeserver fall back to the deprecated,
-    unauthenticated `GET / _matrix / media / v3 / download / {serverName} /
-{
-    mediaId
-}
-` endpoint with `allow_remote =
-    false` (`remote_media_download_url()`, percent - encoding both segments so a reserved character in either cannot be
-                                                         misread as an extra path segment or
-                                               a different route on the resolved host)
-        .Calling only the deprecated endpoint — the prior behavior — made every remote fetch 404 against servers that
-            disable it by default(current Synapse and Merovingian deployments),
-                which is why federated attachments could be sent but never received.Bytes from either path are ingested
-                    through the local blob store;
-remote host / IP policy is checked before bytes enter the store;
-rejected fetches are counted and audited.The private / loopback filter reuses the single source of truth
-  `federation::ip_address_is_private_or_loopback` (the `inet_pton`- based numeric path,
-                                                       which handles `172.16 /
-                                                           12` correctly) rather than a divergent string
-    - prefix check,
-    so media SSRF blocking and federation SSRF blocking cannot drift apart. `security.media
-        .remote_fetch_timeout` is parsed today,
-    but the live fetch path uses the fixed 30 s client-outbound deadline instead (ADR-0079).- Upload and remote
-        - ingest bytes pass through the same hardened processing boundary : upstream - supplied AV scanner result,
-    sandboxed worker requirement, decoder safety, decompression expansion limits,
-    and thumbnail metadata generation.Merovingian currently does not launch or configure an AV engine itself; `security.media.enable_av_scanner` only controls whether the policy
-  honors the supplied scanner verdict — and, as the "Encrypted media is never
-  scannable" section below explains, that verdict can only ever exist for
-  plaintext media in unencrypted rooms. Because no real scanner verdict is ever
-  produced for federated media, `fetch_remote_media_live()` reports
-  `scanner_clean=false` (never a fabricated `true`) for every remote fetch —
-  the final disposition is then decided by `MediaAcceptancePolicy` (see
+  `GET /_matrix/federation/v1/media/download/{mediaId}`
+  (`remote_federation_media_download_url()`), signed with an `X-Matrix`
+  `Authorization` header the same way outbound transactions are signed. The
+  response is `multipart/mixed` with exactly two parts: an empty JSON metadata
+  part and either the media bytes or a `Location` redirect
+  (`parse_federation_media_multipart()`). A `Location` redirect is followed
+  after SSRF-safe resolution and address pinning via
+  `resolve_media_redirect_url()` and
+  `federation::resolve_federation_destination()`; only when the redirect itself
+  cannot be resolved safely does the homeserver fall back. On a `404`, an
+  unusable `200`, a transport failure (no usable answer from the request), or
+  when no server signing key is available to sign it, the homeserver
+  falls back (while time remains) to the deprecated,
+  unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
+  endpoint with `allow_remote=false` (`remote_media_download_url()`,
+  percent-encoding both segments so a reserved character in either cannot be
+  misread as an extra path segment or a different route on the resolved host).
+  Calling only the deprecated endpoint, the prior behavior, made every remote
+  fetch 404 against servers that disable it by default (current Synapse and
+  Merovingian deployments), which is why federated attachments could be sent
+  but never received. Bytes from either path are ingested through the local
+  blob store; remote host and IP policy is checked before bytes enter the
+  store; rejected fetches are counted and audited. The private and loopback
+  filter reuses the single source of truth
+  `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based numeric
+  path, which handles `172.16/12` correctly) rather than a divergent string
+  prefix check, so media SSRF blocking and federation SSRF blocking cannot
+  drift apart. `security.media.remote_fetch_timeout` is parsed today, but the
+  live fetch path uses the fixed 30 s client-outbound deadline instead
+  (ADR-0079).
+- Upload and remote-ingest bytes pass through the same hardened processing
+  boundary: scanner verdict, sandboxed worker requirement, decoder safety,
+  decompression expansion limits, and thumbnail metadata generation.
+  Merovingian does not run an AV engine itself. Without
+  `security.media.clamd_socket_path` there is no scanner verdict: remote media
+  is reported with `scanner_clean=false` (never a fabricated `true`) and the
+  final disposition is decided by `MediaAcceptancePolicy` (see
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
-  `docs/user-manual.md`), which defaults remote-fetched media to
-  `quarantine` rather than blindly trusting it.
-  **clamd (G15, ADR-0565, ADR-0566):** with `security.media.clamd_socket_path` set, media whose policy is `allow-after-scan` is also sent to a local ClamAV daemon (`media::ClamdScanner`, `homeserver::clamd_media_cleared`) before it is admitted: local uploads (`POST /upload`, `PUT /upload/{server}/{id}`), URL-preview images, and remote media after fetch (so `remote_fetch_media_policy=allow-after-scan` now clears a clean file instead of always quarantining). Only `stream: OK` clears; infected, error, timeout, unreachable socket, no scan capacity and oversize (`clamd_max_scan_size`) all leave `scanner_clean=false` and the media quarantined. The scan runs with `runtime.mutex` released, at most `clamd_max_concurrent` at once. Infected and failed scans log and audit `media.scan_infected` / `media.scan_failed`. With the socket empty (the default) nothing changes: remote media keeps `scanner_clean=false`, which under the default `quarantine` policy means it is held for review. Not available on FreeBSD or OpenBSD.
+  `docs/user-manual.md`), which defaults remote-fetched media to `quarantine`
+  rather than blindly trusting it. With clamd configured, the verdict comes
+  from `homeserver::clamd_media_cleared`, and `security.media.enable_av_scanner`
+  must be on or the configuration is refused at load (the repository would
+  ignore the verdict).
+  **clamd (G15, ADR-0565, ADR-0566):** with `security.media.clamd_socket_path` set, media whose policy is `allow-after-scan` is also sent to a local ClamAV daemon (`media::ClamdScanner`, `homeserver::clamd_media_cleared`) before it is admitted: local uploads (`POST /upload`, `PUT /upload/{server}/{id}`), URL-preview images, and remote media after fetch (so `remote_fetch_media_policy=allow-after-scan` now clears a clean file instead of always quarantining). The protocol is `zINSTREAM` over an AF_UNIX socket. Only `stream: OK` clears; infected, error, timeout, unreachable socket, no scan capacity and oversize (`clamd_max_scan_size`) all leave `scanner_clean=false` and the media quarantined. The scan runs with `runtime.mutex` released, at most `clamd_max_concurrent` at once. Infected and failed scans log and audit `media.scan_infected` / `media.scan_failed`. Settings and bounds: `clamd_timeout_ms` 10000 (100 to 120000), `clamd_max_scan_size` 25MiB (at most 1GiB), `clamd_max_concurrent` 4 (1 to 64); the socket path must be absolute and at most 103 bytes. With the socket empty (the default) nothing changes: remote media keeps `scanner_clean=false`, which under the default `quarantine` policy means it is held for review. The server refuses to start on FreeBSD and OpenBSD when `clamd_socket_path` is set (ADR-0566).
   **Local uploads (issue #418):** `ClientServerRuntime.cpp` previously hardcoded
   `scanner_clean` to the literal `"clean"` in the internal pipe body
   regardless of upload content, making the quarantine-on-infection path
@@ -272,15 +267,22 @@ encrypted messages.
 
 Every "scanner verdict" mentioned in this document and in
 `security.media.enable_av_scanner` / `local_upload_policy` /
-`remote_fetch_media_policy` (`docs/user-manual.md`) therefore applies only
-to plaintext media uploaded to unencrypted rooms. For encrypted attachments,
-`allow-after-scan` behaves identically to `allow` today, since no scanner —
-real or hypothetical — is ever given a verdict to render.
+`remote_fetch_media_policy` (`docs/user-manual.md`) therefore says nothing
+about the plaintext of an encrypted attachment. With
+`security.media.clamd_socket_path` set, an encrypted attachment is scanned as
+opaque ciphertext. A clean verdict says nothing about the plaintext, so
+scanning cannot protect users of end-to-end encrypted rooms. clamd is invoked
+only for media whose applicable policy (`local_upload_policy` for uploads,
+`remote_fetch_media_policy` for remote fetches) is `allow-after-scan`; `allow`
+and `quarantine` never call it. Without clamd, the outcome of
+`allow-after-scan` differs by source. A remote fetch has no verdict, so it is
+`scanner_clean=false` and is quarantined (with `security.media.enable_av_scanner=true`).
+A local upload gets only the EICAR test-signature check and keeps its clean result,
+so an ordinary local upload passes like `allow`.
 
 ## Thumbnailing
 
-`GET /_matrix/media/v3/thumbnail/{serverName}/{
-    mediaId}` and the authenticated
+`GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and the authenticated
 `GET /_matrix/client/v1/media/thumbnail/...` honour the `width`, `height`, and
 `method` (`scale` or `crop`) query parameters and return a resampled
 `image/png`. Remote thumbnails fetch the media through the same federation
@@ -331,7 +333,7 @@ surface), so it runs in a short-lived, sandboxed child process:
   use an empty `internal_error` frame prepared after hardening and before input,
   rather than allocating another error string on the failure path. Admitted
   bilinear/center-crop geometry is unchanged. This is not an aggregate memory or
-  concurrency budget, nor a broader thumbnail conformance claim. See proposed
+  concurrency budget, nor a broader thumbnail conformance claim. See
   [ADR-0143](adr/0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md).
 - A worker's successful response is still untrusted: the parent checks the full
   PNG signature, initial 13-byte IHDR framing, and legal nonzero dimensions
@@ -521,6 +523,7 @@ The local HTTP router preserves the media repository status code instead of flat
 - `415` for disallowed MIME types when policy rejects instead of quarantines (the client API answers
   `403 M_FORBIDDEN`, as the spec's upload routes do; likewise `507` for an exhausted quota).
 - `451` for quarantined media download attempts.
+- A streamed SQLite download that fails after the status line and headers were sent (for example media removed during the transfer) ends by closing the connection; no status is sent (ADR-0574).
 - Local records have a server-wide cap (`max_records`, the memory bound) and each user a share of it
   (`max_records_per_user`, ADR-0340). The share counts the user's live local records, a deduplicated upload
   included, from an owner-to-count map kept in step on insert, erase, removal and hydration, so the check is O(1)

@@ -323,7 +323,7 @@ for every existing caller (federation, the push-gateway client, the
 identity-server client all stay https-only with no way to override it).
 Setting it to `true` additionally permits `http://` for that one request.
 There are exactly two sanctioned callers, matching the comment on the field
-in `include/merovingian/http/OutboundClient.hpp`:
+in `include/merovingian/http/OutboundRequest.hpp`:
 
 1. `appservice::AppserviceClient` (`src/appservice/AppserviceClient.cpp`):
    an appservice registration file's `url` is operator-configured — a local
@@ -433,7 +433,7 @@ apply to the `bind`, `unbind`, and `requestToken` handlers (v0.11.10); see
 
 `IdentityServerClient` accepts an optional
 `std::map<std::string, identity::TestForcedIdentityResolution> const*
-forced_resolution` (defined in `include/merovingian/identity/IdentityServerClient.hpp`,
+forced_resolution` (defined in `include/merovingian/identity/TestForcedIdentityResolution.hpp`,
 stored on `HomeserverRuntime::test_forced_identity_resolution` and keyed by IS
 host). When an entry exists for the target host, `perform()` uses the entry's
 `pinned_addresses` and in-memory `trusted_ca_pem` and skips
@@ -465,7 +465,7 @@ TLS startup fails closed when OpenSSL cannot initialise, load the certificate
 chain, load the private key, or verify that the private key matches the
 certificate. Handshakes use a bounded timeout aligned with the current
 per-connection read deadline. The server currently enforces TLS 1.2 or newer and
-keeps connection lifetime to a single HTTP request.
+keeps TLS connections alive across requests (see keep-alive above).
 
 **The client socket stays non-blocking for the life of the connection**, not
 just for the handshake (fixed in 0.12.7 — previously `accept_tls_connection`
@@ -500,7 +500,7 @@ path obeys it too. Accepted client sockets carry `SOCK_NONBLOCK` from `accept4`
 itself, so the descriptor is non-blocking from the instant it exists rather than
 from the instant a worker picks it up. `PlainConnectionStream::read` and
 `::write` retry on `EAGAIN` against a deadline, and the sync-pool's direct
-`send_all(fd, ...)` path waits for `POLLOUT` the same way.
+`send_all(ConnectionStream&, ...)` path goes through the same stream, so the `POLLOUT` wait lives in `PlainConnectionStream` and applies there too.
 
 Reads on a plaintext socket were already bounded by the HTTP layer's
 `poll(POLLIN)` — for a plaintext socket, unlike a TLS one, readable bytes really
@@ -769,7 +769,7 @@ Built-in per-endpoint refinements inside a tier: device and key APIs at
 120/60s, search at 20/60s, and thumbnails at 240/60s. Search requests do real
 work (a bounded in-memory
 scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
-lookup. The built-in per-user cap is 5/60s on `/login`.
+lookup. The built-in per-user caps are 5/60s on `/login`, 4/60s on `/login/get_token` (ADR-0548), 30/60s on the two `preview_url` routes (ADR-0213) and 30/60s on `/_matrix/media/v1/create` (ADR-0212).
 
 The per-user tier keys on the *authenticated* user, which before a login
 succeeds is nobody — so a `/login` guessing spree against one account spread
@@ -795,7 +795,7 @@ Per-IP policy resolution is most-specific-first:
    `client_rate_limits.default_per_ip`.
 
 Per-user resolution: `client_rate_limits.per_user.<target-prefix>` first, then
-the built-in 5/60s login cap; routes with neither have no per-user cap (the
+the built-in per-user caps (`/login`, `/login/get_token`, `preview_url`, media `create`); routes with neither have no per-user cap (the
 per-IP cap still applies). Tier names are `auth_sensitive`, `media`, `sync`,
 `federation`, `admin`, `generic`; an unknown name is a parse-time finding, not a
 silently ignored key. All `client_rate_limits.*` changes require a server
@@ -810,7 +810,7 @@ generic fallback.
 
 Different thumbnail media IDs normalize to the same per-IP action bucket.
 The 240/minute refinement accommodates ordinary room-rendering bursts while
-uploads and full media downloads retain the 20/minute tier default. Prefer a
+uploads and full media downloads retain the 120/minute media tier default. Prefer a
 thumbnail-prefix override over raising the whole media tier if local usage
 still needs a higher cap; the [user manual](user-manual.md) provides an
 example. Each denied request emits one `rate_limit.exceeded`
@@ -1076,8 +1076,8 @@ reads for 20–44 seconds at a time.
 The entry points now publish the mutex their guard locks through
 `homeserver::RequestLockScope` (never the guard's own address, ADR-0529), and each blocking network call runs inside a
 `homeserver::RuntimeLockRelease` scope that releases the mutex for the round trip
-and re-acquires it on exit — including when the call throws. Both types live in
-[`include/merovingian/homeserver/RequestLockScope.hpp`](../include/merovingian/homeserver/RequestLockScope.hpp).
+and re-acquires it on exit — including when the call throws. Each type lives in
+[`RequestLockScope.hpp`](../include/merovingian/homeserver/RequestLockScope.hpp) and [`RuntimeLockRelease.hpp`](../include/merovingian/homeserver/RuntimeLockRelease.hpp) respectively.
 
 Rules for anything added to these paths:
 
@@ -1135,7 +1135,7 @@ Rules:
 
 - **Budget.** `http::InFlightBudget` (RAII `Slot`, thread-safe, never waits),
   held by `HomeserverRuntime::client_outbound_budget`. Global cap half of the
-  main request pool (`server.http.request_threads / 2`, so 8 by default; the
+  main request pool (`server.http.request_threads / 2`, so 16 by default; the
   other half of the pool always serves requests that never leave this
   server); per-client cap 1, keyed by
   `rate_limit_client_key` (the same key the rate limiter uses, so
@@ -1167,8 +1167,9 @@ Rules:
   released for the call (`RuntimeLockRelease`); it is dropped on every exit path
   by its destructor.
 - **Constants, not configuration.** The caps and deadlines live in
-  `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/client_outbound_proxy.hpp`),
-  derived from the main request pool size (`client_outbound_proxy_policy_for_pool`,
+  `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/ClientOutboundProxyPolicy.hpp`),
+  derived from the main request pool size (`client_outbound_proxy_policy_for_pool` in
+  `client_outbound_proxy.hpp`,
   applied by `start_runtime` from `server.http.request_threads`, ADR-0077). A
   separate configuration key would let an operator raise the caps above the
   pool size, which is the defect. Tests lower the deadline through
@@ -1418,7 +1419,7 @@ change needs before/after evidence.
 
 ## Configurable transport budgets (0.12.18)
 
-`server.http` now configures sync workers/admission and HTTP start-line/header/body ceilings. Defaults are 128 sync workers and global long-polls, 8 per user and 4 per device; admission is clamped to the actual worker count. Head defaults remain 8KiB start-line, 32KiB headers and 100 headers. Generic HTTP bodies remain 1MiB. Federation `PUT /_matrix/federation/v1/send/{txnId}` uses `security.federation.max_transaction_size` (20MiB), rather than being shadowed by the generic body cap. Media uploads retain their early token check and media quota.
+`server.http` now configures sync workers/admission and HTTP start-line/header/body ceilings. Defaults are 128 sync workers, 512 global long-polls, 4 per user and 2 per device; the global cap is clamped to the worker count only when there is no sync pool (ADR-0570). Head defaults remain 8KiB start-line, 32KiB headers and 100 headers. Generic HTTP bodies remain 1MiB. Federation `PUT /_matrix/federation/v1/send/{txnId}` uses `security.federation.max_transaction_size` (20MiB), rather than being shadowed by the generic body cap. Media uploads retain their early token check and media quota.
 
 Worker IPC derives a common bidirectional frame ceiling from the larger of join/backfill response caps and the configured request limits. Response bytes expand by padded base64 (4/3); arbitrary request/head bytes nested in JSON can expand sixfold. Each budget reserves 2MiB envelope headroom and a 24MiB minimum; arithmetic saturates below the uint32 ciphertext length boundary, leaving space for the 17-byte tag. This is a per-frame allocation ceiling, not preallocated memory. Main and worker must restart together after a policy change.
 

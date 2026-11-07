@@ -99,8 +99,11 @@ Entry points: `src/main.cpp` (`merovingian-server`), `src/db_migrate.cpp`
 Modules form a layered dependency graph. Edge transport and routing sit at the
 top; protocol/domain services in the middle; shared foundations at the bottom.
 Dependencies point downward - foundations never depend on services, with one
-exception: `config` links `auth` (`src/config/meson.build`) because
-`Config.cpp` validates the server name via `auth::server_name_is_valid`.
+exception: `config` links `auth` and `email` (`src/config/meson.build`).
+`Config.cpp` validates the server name via `auth::server_name_is_valid` and
+the SMTP settings via `email/SmtpEndpoint.hpp` and `email/mailbox_address.hpp`. `email` in turn
+links `net` (an edge module) for the loopback-literal check
+(`src/email/meson.build`).
 
 ```mermaid
 flowchart TB
@@ -141,20 +144,23 @@ flowchart TB
     federation --> http
     identity --> http
     push --> http & federation
-    email --> http & platform
+    email --> http & platform & net
     config --> email
     sync --> trust_safety
     services --> database
     events --> crypto & canonicaljson & rooms
-    federation --> crypto & canonicaljson & events & rooms
-    auth --> crypto
+    federation --> crypto & canonicaljson & events & rooms & config
+    auth --> crypto & canonicaljson
+    database --> canonicaljson
+    sync --> canonicaljson
     services --> observability
     homeserver --> config
     config --> auth
 ```
 
-All foundation modules depend on `core` (RAII utilities, `not_null`,
-`secret_buffer`); it is the leaf of the graph.
+Most foundation modules use `core` (RAII utilities, `not_null`,
+`secret_buffer`); it is the leaf of the graph. `observability` and `config`
+do not use it directly. `http` and `email` link it.
 
 ## Runtime model
 
@@ -163,7 +169,16 @@ merovingian-server
   - main pool (`server.http.request_threads`, default 32): all non-sync
     requests; a worker is given a connection only once it is readable, and one
     client address may hold at most a quarter of the pool (ADR-0077)
-  - sync pool (`server.http.sync_threads`, default 128): classic and sliding-sync long-polls
+  - sync pool (`server.http.sync_threads`, default 128): runs a classic or
+    sliding-sync request only after the main pool's first `route_request`
+    returned `needs_wait`, and each resumed long-poll. A request that can be
+    answered at once never reaches it. A long-poll with nothing to return does
+    not hold a thread here: it parks (ADR-0569)
+  - long-poll registry thread (`sync::ParkedPollRegistry`, owned by
+    `SyncNotifier`, started by the connection dispatcher after hardening): holds
+    the parked polls, keeps their deadlines in one ordered map, and on a
+    publish that concerns the user, or on the deadline, resubmits the poll to
+    the sync pool. It never runs a request itself
   - connection dispatcher thread: holds every connection that is not being
     served (before its first byte, between keep-alive requests) in one
     `poll(2)` set and hands readable ones to the main pool (ADR-0077)
@@ -176,6 +191,17 @@ merovingian-server
     plus a handler pool that runs worker-to-main IPC request handlers off the
     per-channel dispatch thread
   - observability pipeline
+
+merovingian-thumbnail-worker  [built only when libpng and libturbojpeg are found]
+  Not a long-lived process: the server spawns one per thumbnail request (and
+  once at start-up for the library report) through `media::generate_thumbnail`,
+  with a fixed environment, pipes on stdin/stdout, and no inherited descriptors.
+  It applies rlimits and its platform sandbox before reading any input, decodes
+  the PNG or JPEG, and exits. The sandbox is no-new-privs plus a seccomp filter
+  on Linux (sanitizer builds skip the seccomp filter), pledge on OpenBSD and
+  Capsicum on FreeBSD; NetBSD has no primitive, so the worker refuses to decode. The parent enforces a wall-clock
+  timeout and kills an overrunning worker. It holds no secrets. See
+  `docs/media-repository.md` ("Thumbnailing").
 
 merovingian-fed-worker x N  [spawned when security.federation.enabled=true]
   Each worker owns a subset of room IDs by FNV-1a hash of the room ID.
@@ -195,7 +221,7 @@ Request flow:
 3. Authenticated client-server requests go to `handle_client_server_request()`.
 4. With federation enabled, `main.cpp` creates `FederationProxy` and starts the worker pool; proxy construction failure aborts startup. The proxy verifies inbound X-Matrix signatures in main, selects a worker shard (`fnv1a_32(room_id) % federation.worker.shards`) and forwards the verified identity over authenticated encrypted IPC. Raw peer authorization headers do not cross IPC. Main serves designated local endpoints, EDU-only transactions, completed transaction retries and requests for rooms whose worker snapshot reload failed; normal room requests go to the worker. A runtime constructed without a proxy (for example in-process tests) uses `handle_federation_http_request()` directly. There is no `federation.worker.enabled` configuration switch.
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
-6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
+6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex and parks the connection in the `SyncNotifier`'s `ParkedPollRegistry`, which gives up the sync-pool thread. A publish that concerns the user, or the deadline, resubmits the poll to the sync pool, which re-acquires the lock and rebuilds the response (ADR-0569). If the registry refuses the park, the request waits in its own thread as before. This offloading keeps the main pool free for real requests.
 
 For `PUT /_matrix/federation/v1/send/{txnId}`, the EDU-only worker bypass requires
 a parsed object with an explicitly present, empty `pdus` array. A missing or

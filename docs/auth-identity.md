@@ -612,8 +612,11 @@ external protocol is left to the operator's own SSO gateway, configured via
   `loginToken` query parameters stripped (per spec step 4) and the new one
   appended.
 - **`POST /login` with `type: m.login.token`**
-  (`homeserver::redeem_login_token`): consults only the `login_tokens`
-  table — deliberately independent of `authenticated_user`/`find_session`,
+  (`homeserver::redeem_login_token`): first tries a token minted by
+  `POST /login/get_token` (see "Login tokens from `get_token`" below, held
+  in memory and only when `security.login_token.enabled` is true), then
+  consults the `login_tokens` table, which holds the SSO-minted tokens.
+  The table lookup is deliberately independent of `authenticated_user`/`find_session`,
   mirroring `federation_openid_userinfo`'s structural separation from the
   access-token store — and consumes the token atomically
   (`database::consume_login_token`) so it cannot be redeemed twice. On
@@ -627,6 +630,53 @@ external protocol is left to the operator's own SSO gateway, configured via
   caller (`403 M_FORBIDDEN`), matching how password login already
   collapses "unknown user" and "bad password" into the same external
   result.
+
+## Login tokens from `get_token`
+
+`POST /_matrix/client/v1/login/get_token` (Matrix v1.19 CS API §"POST
+/login/get_token"; CS8, [ADR-0548](adr/0548-login-tokens-are-opt-in-single-use-and-held-in-memory.md))
+lets a signed-in user mint a token that logs another device in as them. A
+login token hands over a full session, so the feature is off unless
+`security.login_token.enabled` is `true` (`config::LoginTokenSecurityConfig`,
+default `false`).
+
+- **Off**: the endpoint answers `404 M_UNRECOGNIZED` for every method,
+  `GET /login` offers no `m.login.token` flow for it, and the
+  `m.get_login_token` capability reports `enabled: false`.
+- **On**: `GET /login` adds `{"type": "m.login.token", "get_login_token":
+  true}` to its flows, and the capability reports `enabled: true`. This is
+  separate from the `m.login.sso` flow, which is advertised only when SSO is
+  configured.
+- **UIA on every call**: the request must carry `auth` with
+  `type: m.login.password` and the account password. A UIA session id carries
+  no authority, so a password proved on an earlier call or an earlier session
+  grants nothing. The session that carried a correct password is spent. A wrong
+  or missing password is a `401` with a new UIA challenge.
+- **Token**: 256 bits from libsodium, returned once as `login_token` with
+  `expires_in_ms` (120000, the spec's recommended two minutes). It is single
+  use: the first `POST /login` attempt that names it spends it.
+- **Storage**: `homeserver::LoginTokenStore` holds only a BLAKE2b-256 hash, in
+  memory. There is no database table, so a restart drops every unredeemed
+  token. Redemption compares against every held hash in constant time.
+- **Caps**: at most 4 live tokens per user and 1024 on the server
+  (`ClientApiLimits`). Over either cap the call is `429 M_LIMIT_EXCEEDED` with
+  `retry_after_ms`. The store never evicts a live token to make room, so a
+  flood of requests cannot displace tokens other users are about to redeem.
+  The endpoint is also rate limited to 4 requests per 60 seconds per user.
+- **Audit**: `auth.login_token.issued` when a token is minted and
+  `auth.login_token.redeemed` when one is redeemed (category `auth`).
+
+## Admin whois
+
+`GET /_matrix/client/v3/admin/whois/{userId}` (Matrix v1.19 CS API §"GET
+/admin/whois/{userId}"; CS8) lets a server admin look up any local user, and
+any other user only themselves. The refusal (`403 M_FORBIDDEN`) comes before
+any lookup, so a non-admin learns nothing about other accounts. A user that is
+not local is `400 M_INVALID_PARAM`; an unknown or deactivated one is
+`404 M_NOT_FOUND`. The response lists the user's devices, each with one
+session whose `connections` array is empty: the server records no source
+address, user agent or last-seen time, and this endpoint does not start
+recording them.
 
 ## Account deactivation
 
@@ -703,6 +753,12 @@ place a client request reaches it shares one concurrency budget, `HomeserverRunt
 | Registration token check | slot, else 429 | none: no runtime state is used |
 | `POST /account/password` (`change_local_user_password`) | slot, else 429 | account exists, stored hash unchanged since the request started, access token still valid; otherwise refused with 403 and nothing written |
 | UIA password check (`verify_local_user_password`) | slot, else 429 | account exists, stored hash unchanged, access token still valid; otherwise not verified |
+
+Hashing uses `crypto_pwhash_str` with libsodium's `crypto_pwhash_OPSLIMIT_INTERACTIVE` and
+`crypto_pwhash_MEMLIMIT_INTERACTIVE` (about 27 ms and 64 MiB per hash), set in `src/auth/password.cpp` and not
+configurable. The unit, conformance and integration test binaries link a wrapper that first refuses any other cost
+and then hashes at the minimum cost; the production library is unchanged and `tests/password_cost/` proves the
+production cost ([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)).
 
 A refusal for lack of a slot is `429 M_LIMIT_EXCEEDED` carrying `retry_after_ms`, answered before any hash
 work. It changes nothing and is not a failed attempt: it counts toward neither the login throttle nor the

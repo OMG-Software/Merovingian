@@ -783,18 +783,23 @@ threat it closes; the controls above are the standing defences these reinforce.
   `scanner_clean=true` on every response fetched from a remote origin server,
   bypassing the AV-scanner gate for attacker-controlled federated media
   whenever `security.media.remote_fetch_enabled` is on. Fixed by reporting
-  `scanner_clean=false` (there is no real scanner verdict for remote content,
-  same as local uploads today — see `media-repository.md`) and introducing
+  `scanner_clean=false` (a verdict exists only when a local ClamAV daemon is
+  configured, since 0.12.81, ADR-0565; without `clamd_socket_path` there is still
+  none, as for local uploads — see `media-repository.md`) and introducing
   `MediaAcceptancePolicy` (`allow` / `allow-after-scan` / `quarantine` /
   `deny`), configured independently for local uploads
   (`security.media.local_upload_policy`, default `allow-after-scan`, preserving
   prior behaviour) and remote fetches
   (`security.media.remote_fetch_media_policy`, default `quarantine`, since
-  federated content has no accountable local uploader and no real scan ever
-  occurs). `decoder_marked_safe` is deliberately left `true` for remote
+  federated content has no accountable local uploader, and without a configured
+  ClamAV daemon no scan occurs). Without ClamAV the two sources differ: a remote
+  fetch has `scanner_clean=false`, so `allow-after-scan` quarantines it, while a
+  local upload gets only the EICAR test-signature check and keeps its clean
+  result, so an ordinary local upload passes `allow-after-scan` with no general
+  antivirus scan. `decoder_marked_safe` is deliberately left `true` for remote
   content: `unsafe_decoders_disabled` has no config knob today, so flipping it
   would hard-reject every remote fetch in every deployment rather than fail
-  safely — tracked as a follow-up alongside real AV-scanner integration.
+  safely — still a follow-up (the scanner itself landed in 0.12.81).
 - **Remote media download URL omitted the server-name path segment
   (2026-07 audit):** the outbound federation media fetch built
   `/_matrix/media/v3/download/{mediaId}` instead of the spec-required
@@ -1326,38 +1331,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   `push.enabled` gate, the same off-request-path `std::async` dispatch, and
   the same configurable push-delivery cap as the local path.
 
-- **Unbounded pushers per recipient (v0.11.11, fixed):** `POST /pushers/set`
-  has no per-user limit on the number of distinct `(app_id, pushkey)` pairs
-  a user may register. Before this fix, every notify-worthy event copied a
-  recipient's *entire* pusher list (`database::list_pushers_for_user`) and
-  processed it sequentially inside a single `dispatch_push_deliveries`
-  background task — up to `server.push.total_timeout_seconds` (default 30s)
-  per pusher. `k_max_in_flight_push_deliveries` (128) bounds how many
-  *tasks* may run concurrently, but nothing bounded the work inside one
-  task: an authenticated user (no special privilege required — any account
-  can call `POST /pushers/set` repeatedly) registering, say, 500 pushers
-  could keep a single delivery task — and, since every subsequent message
-  to that user repeats the same cost, potentially many of the 128 in-flight
-  slots over time — occupied for tens of minutes to hours, materially
-  degrading push delivery for every other user on a shared server. Fixed by
-  bounding delivery rather than registration: `room_service.cpp`'s
-  `k_max_pushers_per_delivery` (10) caps how many of a recipient's pushers
-  are actually contacted per event; the rest are skipped, logged at `WARN`
-  (`push.pushers.truncated`, mirroring the existing `push.delivery.dropped`
-  log for the task-level cap) rather than dropped silently. Registration
-  itself (`POST /pushers/set`) still accepts an unbounded number of pushers
-  — this is a delivery-side mitigation, not a registration-side limit — so
-  a user's excess pushers beyond the tenth are simply never contacted for
-  any given event rather than being rejected up front; a future
-  registration-time cap remains open work (see `docs/todos/capability-gaps.md`).
-  Notification-history recording (`GET /notifications`) is unaffected by
-  this cap — it happens once per `(user, event)` before the pusher list is
-  even read, so a user with more than ten pushers still sees every
-  notification in their history even though not every pusher is contacted.
-  As of 0.12.18, these deployment budgets are configurable:
-  `server.push.max_pushers_per_delivery` defaults to 25 and
-  `server.push.max_in_flight_deliveries` to 256. Both remain finite;
-  increasing them increases outbound work and concurrent resource use.
+- **Unbounded pushers per recipient (v0.11.11 delivery cap; registration cap added later, fixed):**
+  `POST /pushers/set` once had no per-user limit on distinct `(app_id, pushkey)`
+  pairs. Every notify-worthy event copied a recipient's *entire* pusher list
+  (`database::list_pushers_for_user`) and processed it sequentially inside a
+  single `dispatch_push_deliveries` background task, up to
+  `server.push.total_timeout_seconds` (default 30s) per pusher. An
+  authenticated user (any account can call `POST /pushers/set` repeatedly)
+  registering, say, 500 pushers could keep one delivery task occupied for tens
+  of minutes to hours, and, since every later message to that user repeats the
+  cost, many in-flight slots over time, degrading push delivery for every other
+  user on a shared server. Two bounds now apply. Delivery: v0.11.11 capped how
+  many of a recipient's pushers are contacted per event (then a constant of 10);
+  the cap is now `server.push.max_pushers_per_delivery`, default 25 (0.12.18).
+  The rest are skipped and logged at `WARN` (`push.pushers.truncated`, mirroring
+  the task-level `push.delivery.dropped` log), not dropped silently. Registration:
+  `server.push.max_pushers_per_user`, default 20 (ADR-0151), makes
+  `POST /pushers/set` refuse a new `(app_id, pushkey)` beyond the cap, so a
+  user's pushers normally all fit under the delivery cap. The task-level bound
+  was a constant of 128 and is now `server.push.max_in_flight_deliveries`,
+  default 256. Notification-history recording (`GET /notifications`) is
+  unaffected by the delivery cap: it happens once per `(user, event)` before
+  the pusher list is read. All three budgets remain finite; raising them
+  increases outbound work and concurrent resource use.
 
 - **OpenID token confusion (identified and mitigated during implementation,
   v0.11.11):** `POST /_matrix/client/v3/user/{userId}/openid/request_token`
@@ -1500,7 +1496,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   its response can leave the connection open and simply never send the next
   request. Until the 2026-09-29 audit (HTTP-1) a parked connection held a
   main-pool worker thread for its whole idle window, and the parked-connection
-  cap (`server.http.keep_alive_max_connections`, default 8) equalled the pool
+  cap (`server.http.keep_alive_max_connections`, default 8 at that time; now 256) equalled the pool
   size, so this text's earlier claim that the cap stopped "a single client
   [from converting] open sockets into held worker threads beyond the
   operator's budget" was wrong: eight sockets sending one request every
@@ -2692,6 +2688,17 @@ nothing, all from trusting the worker's view or the hook's transport.
   **Residual risk:** an origin that has any user in an allowed room sees the restricted room's
   summary, as the join rule intends.
 
+### Room summary over federation (0.12.81, G13, ADR-0556)
+
+- **A caller making this server contact servers it chose.** `GET /_matrix/client/v1/room_summary/{roomIdOrAlias}?via=`
+  now asks up to 3 of the `via` servers, through federation `GET /hierarchy/{roomId}`, for a room this server holds no
+  state for. The walk holds one client-outbound slot and one deadline; with no free slot it answers 429 at once, with or
+  without a token. A `via` that is not a server name is `400 M_INVALID_PARAM`, and this server's own name is never asked.
+- **A remote server forging a summary.** Local state always wins. A remote answer is shown only according to its own
+  `join_rule`, `world_readable` and `allowed_room_ids`. **Residual risk:** a caller, even an unauthenticated one, can make
+  this server contact up to 3 servers of its choosing per call, bounded by the outbound slot; and a remote server can
+  describe its own room falsely, as for the hierarchy above.
+
 ### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
 
 - **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we
@@ -2804,9 +2811,10 @@ nothing, all from trusting the worker's view or the hook's transport.
   `POST /publicRooms`, `POST /search` and `POST /user_directory/search` searched a room name or topic (up to 64 KiB),
   a message body (up to 64 KiB) or a display name (up to the body cap) with `std::search` / `find` for a term the
   caller sized. **Mitigation:** one linear-time matcher, at most two steps per byte of text, and a term over 1024
-  bytes refused `400 M_TOO_LARGE` (ADR-0330). **Residual risk:** a request still costs the bytes of text it searches,
-  so an unbounded display name (audit run-2 `profile.put-displayname-avatar-url-unvalidated-unbounded`) is read in
-  full for every directory search until that is bounded.
+  bytes refused `400 M_TOO_LARGE` (ADR-0330). **Residual risk:** a request still costs the bytes of text it searches.
+  A display name is no longer unbounded (audit run-2 F-63, ADR-0406, 0.12.71): a profile whose serialised
+  `{avatar_url, displayname}` plus extended fields reaches 64 KiB is refused `400 M_PROFILE_TOO_LARGE`, so a directory
+  search reads at most that much per profile.
 - **`POST /search` filter lists, context and the user directory's account scan multiplied client-chosen sizes (audit
   run-2 F-30, F-31, F-50).** **Mitigation:** the filter and `keys` lists are resolved to hash sets and a bit mask once
   per request (ADR-0332), result context is built only when `event_context` is sent and from one pass over the events
@@ -2918,3 +2926,61 @@ nothing, all from trusting the worker's view or the hook's transport.
   https only, re-resolved and checked against the deny-list and private-range rule, pinned to the checked addresses, and
   bounded by one shared deadline; a loop ends the chain. **Residual risk:** a remote operator can still make this server
   fetch from up to five hosts of its choosing per discovery, all public by the same address rules.
+
+### Login tokens, ClamAV scanning, parked long-polls and device-list cache (0.12.81, ADR-0548, ADR-0565, ADR-0569, ADR-0560)
+
+- **Minting a login token for another device (CS8, ADR-0548).** `POST /_matrix/client/v1/login/get_token` is off unless
+  `security.login_token.enabled` is set. Every call asks for the account password through user-interactive auth. A token is
+  single use, lasts 2 minutes and is held in memory only, so a restart discards every token. A user may hold 4 tokens and the
+  server 1024, and each user may make 4 requests a minute. **Residual risk:** someone who has phished the password and holds a
+  session can mint a token and sign in on another device.
+- **Malicious media admitted after a scan (G15, ADR-0565, ADR-0566).** With `security.media.clamd_socket_path` set, media
+  whose policy is `allow-after-scan` is sent to a local clamd with `zINSTREAM` over an AF_UNIX socket, with `runtime.mutex`
+  released. Only `stream: OK` clears it. An infected file, an error, a timeout, an unreachable socket, no free scan slot
+  or a file over `clamd_max_scan_size` keeps it quarantined, and infected or failed scans are logged and audited
+  (`media.scan_infected`, `media.scan_failed`). The server refuses to start on FreeBSD and OpenBSD with the socket set,
+  because the sandbox there forbids connecting to it. **Residual risk:** clamd is a trust dependency, and a compromised one
+  can clear malicious media. An attacker who uploads can occupy the `clamd_max_concurrent` slots (default 4) and delay
+  admission of other media. A scan of end-to-end encrypted ciphertext says nothing about the plaintext.
+- **Parked sync long-polls holding threads (P15a, ADR-0569, ADR-0570).** A `/sync` or sliding-sync wait with nothing to
+  return parks in the sync notifier's registry and gives up its sync-pool thread; a publish for the user or the deadline
+  resumes it. `server.http.sync_max_in_flight` (default 512, range 1..16384) bounds parked, queued and running waits
+  together. At shutdown, parked polls are closed rather than answered. **Residual risk:** a parked wait keeps its socket, so
+  the limit is file descriptors; the systemd unit allows 65536.
+- **A remote server controlling the device list of its users (G14, ADR-0560, ADR-0561).** The list of a remote user who
+  shares a joined room with a local user is fetched with federation `GET /user/devices/{userId}` and kept in memory, updated
+  by `m.device_list_update` EDUs in `stream_id` order. The cache holds at most 10,000 users, 512 devices and 1 MiB per user,
+  and 64 MiB in all; one `/keys/query` fills at most 4 lists, within its one slot and deadline. An update naming an unknown
+  `prev_id`, an unreadable update or an `m.signing_key_update` makes the next query fetch the list again. **Residual risk:**
+  a remote server controls its own users' lists, within those bounds; a missed EDU leaves a list stale until the next
+  refetch trigger.
+
+### Invites, whois, operator limits and the federation room directory (0.12.75, 0.12.76, 0.12.81)
+
+- **Invite harassment (SS7, ADR-0552).** A local user whose `m.invite_permission_config` has `default_action: "block"` is
+  refused every invite with `403 M_INVITE_BLOCKED` and nothing stored. Federation invites are decided on main before
+  anything is signed. Invites already stored are withheld from `/sync` and sliding sync while the block lasts.
+- **Looking up another user's devices (CS8).** `GET /_matrix/client/v3/admin/whois/{userId}` lets a server admin look up
+  any local user and anyone else only themselves. It returns devices only; the server records no connection data.
+- **Operator limits (0.12.76).** `security.audit_log_retention_days` (default 365, 0 keeps every row) and an hourly
+  `retention-sweep` delete old audit rows and unusable tokens in batches of at most 500 (ADR-0488, ADR-0489). A locked or
+  suspended administrator is refused by every admin route. `server.identity_server.allowed_bind_domains` is enforced with
+  `M_THREEPID_DENIED` (ADR-0498). `PUT /admin/safety/policy_rules/{scope}/{entity}` refuses a scope nothing reads
+  (ADR-0500).
+- **Reading the published room directory over federation (0.12.75, ADR-0460, ADR-0461).** `GET` and `POST
+  /_matrix/federation/v1/publicRooms` need X-Matrix authentication and count against the per-origin request cap. Only
+  published rooms are listed. A page holds at most 8 MiB of rooms. A worker relays the request to main and answers 503
+  rather than an empty directory if main gives no listing.
+- **A banned user reading past their leave in a lazy-loaded `state` (0.12.76, ADR-0450).** A left room's `state` never
+  reads past the event that ended the user's join, on every read path including the current-event fallback.
+
+### 0.12.71 audit follow-up
+
+- **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes
+  `unsigned` first; clients see only what this server computes.
+- **A server ACL with no `allow` entry (F-71).** It now denies every server; open federation needs `"allow":["*"]`.
+- **A second device's message dropped as a retransmission (F-52, ADR-0380).** The transaction ID is scoped to the device.
+- **A thumbnail decoder on a platform with no sandbox (F-78, ADR-0419).** It refuses to run, so NetBSD decodes nothing.
+- **A deactivated account's pushers (F-80, ADR-0411).** Deactivation deletes them, and delivery skips a deactivated recipient.
+- **A device ID equal to a cross-signing key ID (F-85).** Login answers `403 M_FORBIDDEN` for one, and
+  `POST /keys/device_signing/upload` refuses a key whose ID is one of the uploader's device IDs.

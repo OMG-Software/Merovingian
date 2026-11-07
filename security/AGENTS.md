@@ -9,6 +9,7 @@ exists, and which module `AGENTS.md` file owns it day to day.
 | File | Purpose |
 |---|---|
 | `coding-rules.md` | Pointer to `docs/security-coding-rules.md` (kept for backward-compatible links) |
+| `audit-findings-2026-09-04.md` | Historical record of the 2026-09-04 security audit findings, cited by ADR-0016. Not maintained as a list of open work |
 
 ## When to update `docs/security-coding-rules.md`
 

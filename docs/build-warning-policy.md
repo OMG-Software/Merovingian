@@ -6,7 +6,22 @@ local development, WSL, BSD, and CI jobs.
 ## Included now
 
 - Meson C++26 configuration with `werror=true`.
-- Project-owned warning flag set in `meson.build`.
+- Project-owned warning flag set in `meson.build`, added as project arguments
+  where the compiler supports each flag, on top of `warning_level=3` and
+  `werror=true` (the project's `default_options`): `-Wall`, `-Wextra`,
+  `-Wpedantic`, `-Wconversion`, `-Wsign-conversion`, `-Wshadow`,
+  `-Wnon-virtual-dtor`, `-Wold-style-cast`, `-Wcast-align`, `-Wunused`,
+  `-Woverloaded-virtual`, `-Wnull-dereference`, `-Wdouble-promotion`,
+  `-Wformat=2`, `-Wimplicit-fallthrough`, and `-Wno-c2y-extensions`. The last
+  is the one exception: it suppresses Clang 22's diagnostic for Catch2's use of
+  `__COUNTER__` for test names (see `dev-environment.md`).
+- The vendored SQLite subproject builds with `warning_level=0` and
+  `werror=false` (`meson.build`), so the project's warning policy applies to
+  project code only.
+- Discarding a result with a void cast is rejected by `scripts/reject-unsafe.sh`;
+  write `std::ignore = expression;`. GCC, unlike clang, does not let a void cast
+  silence `warn_unused_result`, so a cast that built on clang failed the GCC
+  coverage job under `-Werror`.
 - Compiler/linker hardening option enabled by default where supported.
 - Reusable Linux and BSD build wrappers.
 - Windows-to-WSL launchers (`build-wsl.cmd` and `scripts/build-wsl.ps1`) that
@@ -39,9 +54,10 @@ staged curl external-project library directories through `LD_LIBRARY_PATH`.
 This keeps Fedora and BSD test execution aligned with the wrap-built runtime
 library that can still be loaded from the current Meson tree.
 
-The aggregate Catch2 unit, conformance, and integration test binaries each have
-an explicit 600 second Meson timeout, and the load-test binary an explicit 900
-second timeout (`tests/meson.build`). Those test executables now cover enough
+The aggregate Catch2 test binaries have explicit Meson timeouts in
+`tests/meson.build`: 600 seconds for unit tests, 900 for conformance tests, 1800
+for integration tests (900 on FreeBSD, NetBSD and OpenBSD), and 900 for the
+load-test binary. Those test executables now cover enough
 runtime behavior that fallback, coverage, and sanitizer jobs can exceed
 Meson's 30 second default even when all assertions pass.
 

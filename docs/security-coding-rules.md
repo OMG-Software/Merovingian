@@ -690,6 +690,49 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (F-74, ADR-0395; refines ADR-0142).
   Source: `src/ipc/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
+- **The worker IPC key exchange is mutually authenticated, and the module holds no libsodium.** Main derives the
+  `crypto::IpcAuthKey` from the operator master key and hands the worker only that derived key over an inherited
+  fd (`--ipc-key-fd`); the worker never holds the master key. Both peers MAC each other's ephemeral `crypto_kx`
+  public keys with it before deriving session keys; a peer that cannot prove possession of the derived IPC key is
+  rejected. The AEAD stream
+  cipher is `crypto::IpcStreamCipher` in `src/crypto/IpcStreamCipher.cpp`; `scripts/reject-unsafe.sh` rejects direct
+  libsodium use in `src/ipc/`.
+  Why: confidentiality alone does not stop another local process that can reach the socketpair fd or a
+  man-in-the-middle from joining the channel (CWE-306 Missing Authentication for Critical Function).
+  Source: `src/ipc/AGENTS.md`.
+
+- **No IPC frame signs, and none carries the signing secret or a client credential.** A worker never signs and never
+  asks main to sign for it; main answers a `sign_request` with an error and no signature
+  (`homeserver::refuse_forbidden_worker_request`, no runtime lock). Never add a generic "sign these bytes" frame:
+  a worker that needs a signature gets a narrowly typed request in which main builds the payload. No Ed25519 secret
+  key, client access token or inbound `Authorization` / `X-Matrix` credential goes into a frame body. The one
+  exception is direction-specific: an outbound request frame carries this server's own request-bound
+  `Authorization: X-Matrix` signature (`serialize_outbound_http_request`; see `docs/crypto-boundary.md`), which is
+  not a reusable peer or client credential.
+  Why: a generic signing frame makes a compromised worker a signing oracle for the server's identity (ADR-0078,
+  superseding the signing-oracle part of ADR-0015).
+  Source: `src/ipc/AGENTS.md`, `docs/hardening.md`.
+
+- **An oversize IPC frame fails the send and is logged, never silently dropped; the cap comes from
+  `homeserver::worker_ipc_frame_bytes` alone.** Both processes derive `max_frame_bytes` through it from the same
+  `--config`, never a copy of the arithmetic and never negotiated over IPC. The cap applies to the built frame: an
+  over-cap response becomes `{"ipc_error":"response_too_large"}` and the requester gets "no response" at once,
+  `send_request` returns `nullopt` before registering a pending entry, and `send_notification` returns `false`.
+  Response bodies are base64, not JSON-string-escaped, because base64's 4/3 expansion is fixed and escaping's depends
+  on the payload.
+  Why: a silently dropped frame loses federation work, and a payload-dependent expansion could push a near-cap
+  response over the limit (ADR-0043, ADR-0368).
+  Source: `src/ipc/AGENTS.md`.
+
+- **Every frame a process writes is valid UTF-8, and only a failed read ends a channel.** `ipc_json_str` writes U+FFFD
+  for invalid sequences; a `fed_request` field holding bytes a remote server chose goes through
+  `append_lossless_member` (sent as `<key>_b64` when not UTF-8), and a new such field does the same. An authenticated
+  frame whose payload does not parse is logged and dropped by `reader_loop`; only `read_frame` failing (length, short
+  read, AEAD authentication) marks the channel unhealthy.
+  Why: the reader parses frames with a parser that refuses invalid UTF-8, so one attacker-chosen byte could otherwise
+  kill the channel for every request (ADR-0321, ADR-0322).
+  Source: `src/ipc/AGENTS.md`.
+
 - **Authorise an inbound `/invite` for a room we hold against the room's current state before
   signing it, never overwrite a `ban` from that path, and leave `current_state` to the
   transaction path.** The URL event ID must equal the event's own reference-hash ID.
@@ -1015,10 +1058,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `homeserver::admit_client_outbound_proxy` (key: `rate_limit_client_key`), answer `429
   M_LIMIT_EXCEEDED` with `retry_after_ms` when it is refused, hold the slot until the call has
   ended, and draw discovery and every request from one `OutboundDeadline`
-  (`homeserver/client_outbound_proxy.hpp`). Remote media additionally checks
-  `security.media.remote_fetch_enabled` and `allow_remote` before any discovery.
-  Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=`, a
-  remote alias lookup and remote media are reachable without authentication, and a peer that
+  (`homeserver/client_outbound_proxy.hpp`). Remote media is the exception: it runs on
+  the media fetch pool under `media_fetch_budget` (ADR-0121). On the main pool the fetch
+  runs in `RemoteMediaFetchMode::defer` and is handed to the pool, whose `admitted` run
+  takes no ADR-0079 slot; it still checks `security.media.remote_fetch_enabled` and
+  `allow_remote` before any discovery.
+  Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=` and a
+  remote alias lookup are reachable without authentication, and a peer that
   never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
   half of `server.http.request_threads`, never a separate setting. The `/thirdparty/*` lookups
   take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
@@ -1102,6 +1148,13 @@ media-fetch-pool task.
   CR/LF added header lines (CWE-113; ADR-0180).
   Source: `src/http/AGENTS.md`.
 
+- **A new per-client limit uses `http::client_address_key` and says which address it keys on.**
+  The per-IP connection cap (ADR-0072), the per-client worker share (ADR-0077) and the rate limiter share that key;
+  the first two use the TCP peer and exempt `server.trusted_proxies`.
+  Why: limits that key on different addresses (or group IPv6 differently) can be bypassed by whichever one is
+  looser (CWE-770 Allocation of Resources Without Limits or Throttling).
+  Source: `src/http/AGENTS.md`.
+
 ## Database
 
 - **Never interpolate values into SQL strings — always use prepared statements with bound
@@ -1172,6 +1225,13 @@ media-fetch-pool task.
   security-relevant state (e.g. a column meant to have been dropped silently isn't, in some
   environments). A `NOT NULL` column with no default fails the migration outright on
   existing rows, and dropping data is irreversible.
+  Source: `migrations/AGENTS.md`.
+
+- **Every table a migration creates is classified for the federation worker in the commit that adds it:
+  in `federation_worker_table_allowlist`, in the set of tables the worker never reads in
+  `tests/unit/test_worker_db_uri.cpp`, or as ungated infrastructure.**
+  Why: `test_worker_db_uri.cpp` parses every `CREATE TABLE` in `migrations/*.sql` and fails on an unclassified or
+  stale name, so the worker's database access never silently covers a table nobody decided it may read.
   Source: `migrations/AGENTS.md`.
 
 - **The whole schema is one v1 migration, frozen from 1.0.0; a ledger naming a migration
@@ -1449,6 +1509,13 @@ media-fetch-pool task.
   size of the server, not the request (CWE-400, CWE-407; security audit run-2 F-19, F-23, ADR-0366, ADR-0367, ADR-0368).
   Source: `src/homeserver/AGENTS.md`, `src/federation/AGENTS.md`, `src/ipc/AGENTS.md`.
 
+- **A resent `send_join` is answered again from current state, and the join is never stored or sent on a second time.**
+  A join already stored is answered by `resent_send_join_state`, never from the state at its `prev_events`; a stored
+  `rejected` join is refused 403 again.
+  Why: the `prev_events` date from `make_join` and may predate a ban, and storing or sending a join twice would
+  duplicate an event in the room (ADR-0372, refining ADR-0366).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Push notifications
 
 - **Glob matching for push rules is linear and never uses `std::regex`.** A pattern without
@@ -1549,6 +1616,20 @@ media-fetch-pool task.
   location instead of the intended one.
   Source: `packaging/AGENTS.md`.
 
+- **Complement image: only the release package goes in, the server never runs with privileges, and root never writes
+  where the server's user can create entries.** Never compile in the image or copy a locally built binary over the
+  package's. The entrypoint starts as root only because Complement passes no `--cap-drop`; its last command is the
+  `exec setpriv` hand-over with an empty bounding set and `no_new_privs`, and the image has no `USER` or `VOLUME`.
+  `SERVER_NAME` and the Landlock waiver reach the config and the certificate, so they are checked first and refused,
+  never cleaned, and a script fails before it writes anything. The master key and TLS key live in
+  `/var/lib/merovingian/secrets`, outside the directories Landlock grants the federation worker. The entrypoint writes
+  in `/var/lib/merovingian`, `secrets/` and `/etc/merovingian` as root on every start, so those are root-owned and only
+  `data/` belongs to `merovingian`; temporary files are removed, never written through.
+  Why: a run is evidence only about the bytes that ship; a compromised server must not be able to plant a link that
+  root follows on the next start (CWE-59 Improper Link Resolution Before File Access), and a worker that can read the
+  config directory must not be able to read the keys.
+  Source: `tests/complement/AGENTS.md`.
+
 ## Testing requirements for security-critical code
 
 - **Auth, crypto, and token tests require negative-path scenarios**: reject invalid inputs
@@ -1592,13 +1673,14 @@ media-fetch-pool task.
   correctness assertion but do trip a sanitizer.
   Source: `tests/integration/AGENTS.md`, `security/coding-rules.md`.
 
-- **`tests/support/master_key.hpp`'s deterministic test key must never reach a non-test
-  binary** — enforced by a `static_assert` that fires unless `MEROVINGIAN_TEST_BUILD` is
-  defined.
-  Why: a deterministic (fixed-seed) signing key is by definition not a secret — if it ever
-  ended up compiled into a production binary, every server built from that binary would
-  share the same, publicly-known-in-source signing key. The compile-time guard makes this a
-  build failure instead of a silent, catastrophic misconfiguration.
+- **`tests/support/master_key.hpp` is for test binaries only and must never be included
+  from a non-test binary.** `master_key_file()` writes a fresh random 256-bit master key to a
+  file in the system temporary directory (mode 0400) and returns its path. This is a
+  convention: no `static_assert` or build flag in the header prevents it from being linked
+  into a production binary, so review any include of it from outside `tests/`.
+  Why: a master key created on the fly in a shared temporary directory is not one the
+  operator provisioned, backed up or protected; a server using it would encrypt its secrets
+  under a key that is lost with the file, or readable to whoever controls that directory.
   Source: `tests/support/AGENTS.md`.
 
 ## Process: how these rules are enforced and kept current
@@ -1620,7 +1702,10 @@ media-fetch-pool task.
   patterns: raw `new`, `delete`, `malloc`, `free`, `calloc`, `realloc`, void-cast discards,
   unjustified `shared_ptr`, direct libsodium calls outside the crypto boundary, and
   unannotated manual lock release) — a new rule that can be grep-detected should be added to
-  that script.**
+  that script.** The platform hardening rules have two further gates: `scripts/check-elf-hardening.sh` inspects a
+  built ELF binary for PIE, RELRO, `BIND_NOW` and a non-executable stack, and
+  `scripts/check-startup-hardening-gate.sh` boots a packaged server and fails unless every startup hardening
+  self-check reports `enabled`.
   Why: automated enforcement catches violations at commit time, before a human reviewer even
   sees the diff, which is strictly more reliable than relying on every reviewer to remember
   every rule in this document.
@@ -1675,6 +1760,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/observability/AGENTS.md` | Secrets and logging |
 | `src/platform/AGENTS.md` | Platform hardening |
 | `src/federation_worker/AGENTS.md` | Platform hardening |
+| `src/ipc/AGENTS.md` | Federation |
 | `src/sync/AGENTS.md` | Sync |
 | `src/push/AGENTS.md` | Push notifications |
 | `src/email/AGENTS.md` | Push notifications |
@@ -1686,6 +1772,9 @@ For finding everything a specific file contributed, without re-reading the whole
 | `tests/fuzz/AGENTS.md` | Testing requirements |
 | `tests/integration/AGENTS.md` | Testing requirements |
 | `tests/support/AGENTS.md` | Testing requirements |
+| `tests/complement/AGENTS.md` | Packaging and deployment |
+
+`tests/smoke/AGENTS.md` and `tests/fixtures/AGENTS.md` state no security rules and contribute to no section.
 
 ## Related documents
 
@@ -1698,5 +1787,6 @@ For finding everything a specific file contributed, without re-reading the whole
   referenced above, with implementation-level detail this document doesn't repeat.
 - [`security-review-checklist.md`](security-review-checklist.md) — the pre-release
   verification checklist (a checklist of what to *check*, not a rule reference).
-- [`coding-rules.md`](coding-rules.md) — style-only conventions (naming, include order,
-  formatting) that are explicitly *not* security-relevant.
+- [`coding-rules.md`](coding-rules.md) — the project-wide coding rules (naming, include order,
+  formatting, and also ownership, `shared_ptr` review, lock release and error handling); the
+  ownership and lock rules in it are security-relevant and are summarised under memory safety above.

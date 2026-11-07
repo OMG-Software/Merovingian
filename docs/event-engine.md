@@ -68,10 +68,12 @@ Implemented now:
   skips rejected own-auth fallback entries without truncating auth-chain walks;
   `soft_failed` and `outlier` are not rejection. This does not blanket-remove
   rejected state-resolution candidates, which the spec can reauthorize.
-- **Remaining legacy compatibility gap (EVT-12(d)).** v3-v5 permit finite
-  floating power levels with truncation. The strict event parser and scalar
-  power-level validation still refuse these; this pass characterizes that
-  fail-closed divergence without relaxing the signed-event parsing boundary.
+- **Legacy floating power levels (EVT-12(d)), auth rules only.** v3-v5 permit finite
+  floating power levels with truncation. `RoomVersionPolicy::power_levels_accept_floats`
+  is set for those versions and `src/events/authorization.cpp` truncates
+  accordingly, but only for values that are already parsed. Hashing and parsing stay
+  strict, so a received event that contains a float still fails parsing before
+  authorization and cannot be accepted over federation ([ADR-0150](adr/0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)).
 - **rule 1 (`m.room.create`)**, complete since 0.12.4: no `prev_events`; the
   `room_id`/`sender` domain relationship for v1-v11 and the absence of
   `room_id` for v12 (MSC4291); a recognised `content.room_version`; and the
@@ -138,10 +140,10 @@ Implemented now:
   state only, before calling `store_event_with_state`; events that fail auth
   return `rejected_auth` without a non-200 HTTP status (per Matrix /send spec
   — non-200 causes the remote to back off all federation). **Superseded by
-  ADR-0064 phase B2** (above): the current-state check is now the *soft-fail*
+  ADR-0064 phase B2** (below): the current-state check is now the *soft-fail*
   step (step 6), run only after separate auth checks against the event's own
   `auth_events` (step 4, reject) and the state before the event (step 5,
-  reject) — see "Phase B2: the receipt-order auth checks themselves" above.
+  reject) — see "Phase B2: the receipt-order auth checks themselves" below.
 - auth checking wired into the federation membership endpoints — `send_join`,
   `send_leave`, and `send_knock` run the identical
   `authorize_event_against_auth_events` gate, against the room's current
@@ -276,8 +278,11 @@ Implemented now:
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution
 - **inbound federation PDU size and field-count limits enforced before
-  hashing/authorization (0.12.13, M3).** Raw PDU JSON is capped at 65 536
-  bytes, `prev_events` at 20, and `auth_events` at 10, all checked by
+  hashing/authorization (0.12.13, M3).** A PDU is capped at 65 536
+  bytes measured on the event without its `unsigned` member, which no
+  signature or hash covers ([ADR-0537](adr/0537-the-pdu-size-limit-is-judged-without-the-relays-unsigned.md)).
+  A raw body above four times that limit (`max_raw_pdu_bytes`) is refused
+  before parsing, as a bound on parse work only. `prev_events` at 20, and `auth_events` at 10, all checked by
   `pdu_format_violation` before any content hashing or signature work, on every
   path that takes events from another server: `parse_inbound_pdu_envelope`,
   `returned_pdu_is_well_formed` and `filter_verified_send_join_events` (ADR-0399). The same check refuses a PDU whose
@@ -295,7 +300,6 @@ Implemented now:
 
 Not implemented yet:
 
-- full Matrix room-version conformance fixture suite
 - sending an accepted `send_join` event on to the room's other servers is done
   (0.12.60); an ordinary (non-resident) federated join still stores its own
   signed copy of a restricted join, not the resident's co-signed `event`
@@ -392,9 +396,10 @@ defaulted version: an ID computed under the wrong room version does not match
 the one other servers derive.
 
 `verify_pdu_content_hash` extracts the claimed `hashes.sha256` field from an
-inbound PDU and compares it against the result of `make_content_hash`. Inbound
-federation PDUs are rejected before reaching the `pdu_sink` when this check
-fails, as required by Matrix Server-Server API v1.19.
+inbound PDU and compares it against the result of `make_content_hash`. A
+mismatch does not reject an inbound federation PDU: the event is redacted and
+processing continues with the redacted form, as Matrix Server-Server API v1.19
+requires (see "Checks performed on receipt of a PDU" below).
 
 For room version 12 (MSC4291) the room ID is the `m.room.create` event's
 reference hash with a `!` sigil — the same hash as the create event ID, which
@@ -406,7 +411,9 @@ each create event strictly after the previous one it composed
 (`HomeserverRuntime::last_create_event_ts_ms`) and moves past any timestamp whose
 room ID already exists, as after a restart with the clock stepped back
 ([ADR-0156](adr/0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)).
-The create event is also excluded from every other
+A received v12 `m.room.create` PDU has no `room_id`, so
+`room_id_for_received_event` (`src/federation/inbound_ingestion.cpp`) takes its room ID from
+its own event ID (0.12.81, F8). The create event is also excluded from every other
 event's `auth_events`, because the room ID already implies it. Room versions 10
 and 11 keep server-scoped IDs (`!opaque:server`), a `room_id` in the create event,
 and the create event in `auth_events`.
@@ -495,7 +502,7 @@ The auth-chain walk is bounded by
 (default 131,072 visits) and **fails closed**: a missing or
 unreachable event, an over-budget walk, or an exhausted lookup returns an
 unresolved `StateResolutionResult` rather than resolving on a partial chain —
-`compute_state_before`/`recompute_current_state` (phase B1/B2, above) treat
+`compute_state_before`/`recompute_current_state` (phase B1/B2, below) treat
 an unresolved result as `PduIngestionStatus::missing_prev_state`, not a
 rejection. This does not apply to the iterative auth checks' own `auth_events`
 fallback above, which is intentionally soft — an ancestor it cannot reach
@@ -641,8 +648,9 @@ apply after this admission boundary, not to arbitrary unknown-room traffic.
 
 Outbound joins acquire a room-scoped RAII reservation before releasing the
 runtime mutex for the network exchange. Otherwise-uninterested rooms defer PDUs
-in transient queues with configurable default caps of 32 rooms, 256 distinct event IDs and 4MiB of JSON
-per room. Duplicates do not consume more capacity; overlaps and excess are
+in transient queues with configurable default caps of 32 rooms
+(`security.federation.pending_join_max_rooms`, process-wide), 32 distinct event IDs
+(`pending_join_max_pdus`) and 512KiB of JSON (`pending_join_max_size`) per room. Duplicates do not consume more capacity; overlaps and excess are
 refused. Failure or exception discards the queue without storing its PDUs.
 
 After verified initial state and local membership commit, queued PDUs pass
@@ -935,11 +943,10 @@ unused by any production sink, purely so the worker IPC wire format remains
 a stable exhaustive set. `resolve_state_v2` itself is untouched: phase B1's
 `compute_state_before`/`recompute_current_state` remain its only callers.
 
-**Not covered by this phase.** The membership-acceptor path
-(`send_join`/`send_leave`/`send_knock` acceptance) still hard-rejects a
-content-hash mismatch instead of redacting, and does not run the
-auth_events/state-before/current-state three-way check — see
-`src/federation/AGENTS.md` and `docs/threat-model.md`.
+**Membership acceptor.** The membership-acceptor path
+(`send_join`/`send_leave`/`send_knock` acceptance) runs the same
+auth_events, state-before and current-state three-way check, and redacts on a
+content-hash mismatch instead of rejecting — see `src/federation/AGENTS.md`.
 
 ### Phase C: backfill of missing PDU references (ADR-0064)
 
@@ -1097,7 +1104,8 @@ Both endpoints, like `/event`, `/backfill` and `/get_missing_events`, answer
 `world_readable` (`federation::origin_may_read_room`). `/get_missing_events` walks
 `prev_events` breadth-first from `latest_events`, never returning or crossing
 `earliest_events` or the latest events themselves, skipping events below `min_depth`,
-and returns at most 20 events (default 10), oldest first.
+and returns oldest first. The request `limit` defaults to 10 and is capped at
+`security.federation.query.max_missing_events_pdus` (default 100, range 1..1000).
 
 **Federation reads and history visibility.** The S2S API defines no history visibility
 between servers, so `/event`, `/backfill` and `/get_missing_events` apply the
@@ -1192,7 +1200,10 @@ policy flags refine this further:
   strips any that arrive via `power_level_content_override`) for room version 12+,
   while pre-v12 rooms keep listing the creator at level 100.
 
-Later work must expand this with full Matrix room-version fixtures.
+Room-version conformance is covered by the suites under `tests/conformance/`: the room version table
+(`test_room_version_table_conformance.cpp`), PDU format, redaction, state resolution, the event graph
+(`state_ids`/auth chain) and the event authorization rules (`test_event_auth_rules.cpp`). New room-version
+behaviour adds scenarios to those files.
 
 The 0.12.18 operational recovery/query settings are documented in [operator budgets](user-manual.md#operational-budgets). Calls consume budgets even on failure; exhausting a call budget blocks another fetch but does not discard its successful final response. Deadline checks between steps do not preempt synchronous discovery, signature verification or database work already in progress. Increasing these bounds cannot restore an ordinary unresolved PDU that was never retained.
 

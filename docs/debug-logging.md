@@ -106,6 +106,17 @@ main takes `runtime.mutex` to read the room version of a PDU a federation worker
 whatever held the lock (a join, a send, a sync), which is part of a delivery's latency that no other
 line shows.
 
+## Media scan and sync watermark diagnostics
+
+The `media_service` module logs `media.scan_infected` (warning, with `actor`, `subject`, `verdict` and
+`signature`) and `media.scan_failed` (error, with `reason`) when the clamd scan of an upload finds malware
+or cannot give a clean verdict. Both also append a moderation audit row. The `signature` field is always
+rendered `<redacted>` (the logger treats the key as sensitive); the signature name is in the audit row's `reason`.
+
+The `persistent_store` module logs `sync_stream.watermark_persist_failed` (error, with `watermark`) when
+the sync stream high-water mark could not be written. The id is still issued (ADR-0540), and the next
+write that succeeds covers it; only a restart before any write succeeds can reissue it.
+
 ## Per-module level overrides (0.5.0)
 
 `--debug` lowers the **console sink** threshold to `debug`. It does not change
