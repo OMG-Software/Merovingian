@@ -1,3 +1,7 @@
+## 0.12.85
+
+The federation and event-auth low findings of security audit run 4.
+
 ## 0.12.84
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).
