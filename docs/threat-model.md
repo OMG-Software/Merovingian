@@ -2530,6 +2530,12 @@ run, so each was a way for one party to slow the whole server (CWE-407).
   account-data read scans. **Mitigation:** a configurable per-user cap on global types,
   `400 M_TOO_LARGE` beyond it (ADR-0173). Residual risk: the scans are still linear in the
   total row count; they are bounded, not indexed.
+- **Unbounded devices and device names (run-4 F-05).** A user could hold any number of devices, each with a name of
+  any length, and one device-list announcement scanned the device tables once per device under `runtime.mutex`
+  (about 5 s at 2,000 devices, repeatable at 120 a minute). **Mitigation:** a new device past 200 per user is
+  `403 M_FORBIDDEN`, a name over 256 bytes is `400 M_TOO_LARGE`, and an announcement builds one display-name lookup
+  and one key index for all the devices (ADR-0582). Residual risk: an account can still hold 200 devices; the
+  announcement is now linear in them.
 - **Appservice namespace regexes.** Each match compiled the regex again, for every member of
   every room an event reached. **Mitigation:** `appservice::Namespace` compiles once when it is
   built.

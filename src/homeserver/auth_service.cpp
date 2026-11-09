@@ -34,6 +34,7 @@
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/SsoRedirectResult.hpp"
+#include "merovingian/homeserver/device_limits.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -826,6 +827,56 @@ namespace
         return true;
     }
 
+    // What one pass over the device table finds for a login: whether the user already holds the device, and how
+    // many devices the user holds (security audit run-4 F-05, ADR-0582).
+    struct UserDeviceScan final
+    {
+        bool holds_device{false};
+        std::size_t device_count{0U};
+    };
+
+    [[nodiscard]] auto scan_user_devices(database::PersistentStore const& store, std::string_view user_id,
+                                         std::string_view device_id) -> UserDeviceScan
+    {
+        auto scan = UserDeviceScan{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id != user_id)
+            {
+                continue;
+            }
+            ++scan.device_count;
+            if (device.device_id == device_id)
+            {
+                scan.holds_device = true;
+            }
+        }
+        return scan;
+    }
+
+    // True, after auditing the refusal, when the login would create a device past `device_count_limit`. A device the
+    // user already holds is never refused. The caller answers 403 `M_FORBIDDEN` before any row is written, as it does
+    // for a device ID that names a cross-signing key.
+    [[nodiscard]] auto device_creation_over_cap(HomeserverRuntime& runtime, std::string_view user_id,
+                                                std::string_view device_id, UserDeviceScan const& scan) -> bool
+    {
+        if (scan.holds_device || scan.device_count < device_count_limit)
+        {
+            return false;
+        }
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"status",    "403",                  false},
+                                 {"reason",    "device limit reached", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, audit_claimed_device_id(device_id),
+                             "403:device limit reached");
+        return true;
+    }
+
     // Shared tail of login_local_user() and login_appservice_user(): device
     // validation, account-state (locked/suspended) policy, token issuance,
     // and session persistence. The two callers differ only in how they got
@@ -852,6 +903,11 @@ namespace
         if (device_id_is_cross_signing_key_id(runtime, user.user_id, device_id))
         {
             return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
+        }
+        auto const owned_devices = scan_user_devices(runtime.database.persistent_store, user.user_id, device_id);
+        if (device_creation_over_cap(runtime, user.user_id, device_id, owned_devices))
+        {
+            return make_operation_result(false, {}, "too many devices", 403U);
         }
 
         // A deactivated account can never log in again (spec: POST
@@ -922,12 +978,8 @@ namespace
                                  "login.rejected", user.user_id, std::string{device_id}, "token hashing failed");
             return make_operation_result(false, {}, "token key unavailable", 503U);
         }
-        auto const device_exists = std::ranges::any_of(
-            runtime.database.persistent_store.devices, [&user, device_id](database::PersistentDevice const& device) {
-                return device.user_id == user.user_id && device.device_id == device_id;
-            });
         auto device = std::optional<database::PersistentDevice>{};
-        if (!device_exists)
+        if (!owned_devices.holds_device)
         {
             device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{display_name}};
         }
@@ -1309,6 +1361,11 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
     {
         return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
     }
+    auto const owned_devices = scan_user_devices(runtime.database.persistent_store, user->user_id, device_id);
+    if (device_creation_over_cap(runtime, user->user_id, device_id, owned_devices))
+    {
+        return make_operation_result(false, {}, "too many devices", 403U);
+    }
 
     // See the deactivation gate in the shared helper above: permanent and
     // outranking the reversible moderation states.
@@ -1376,12 +1433,8 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
                              "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
         return make_operation_result(false, {}, "token key unavailable", 503U);
     }
-    auto const device_exists = std::ranges::any_of(
-        runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
-            return device.user_id == user->user_id && device.device_id == device_id;
-        });
     auto device = std::optional<database::PersistentDevice>{};
-    if (!device_exists)
+    if (!owned_devices.holds_device)
     {
         device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{display_name}};
     }

@@ -20,7 +20,20 @@ To be completed on this branch.
 
 ### F-05: devices and their names are capped, and a device-list announcement is linear
 
-To be completed on this branch.
+A user could hold any number of devices, each with a display name of any length (900 KiB was accepted and stored), and
+announcing the user's devices over federation scanned `store.devices` and `store.device_keys` once per device under
+`runtime.mutex`: about 5 seconds at 2,000 devices, repeatable at 120 requests a minute (ADR-0582).
+
+- **At most 200 devices per user.** `complete_login` and `login_local_user_by_id`, which every device-creating path
+  ends in, refuse a NEW device ID past `device_count_limit` with `403 M_FORBIDDEN` and write nothing. A device the user
+  already holds always logs in, at any count. The count comes from the pass that already looked for the device. Nothing
+  is evicted to make room.
+- **Display names are at most 256 bytes.** `POST /login` and `POST /register` (`initial_device_display_name`) and
+  `PUT /devices/{deviceId}` (`display_name`) answer `400 M_TOO_LARGE` over `ClientApiLimits::max_device_display_name_bytes`,
+  measured in bytes, and store nothing. A name is refused, never truncated.
+- **A device-list announcement is linear.** `broadcast_device_list_updates` and the join-time announcement build every
+  device's `m.device_list_update` through `federation::build_device_list_update_batch`: one `DeviceDisplayNames` and one
+  index of the user's device keys for the whole announcement. The EDU bytes are unchanged.
 
 ### F-06: redaction authority comes from the room's state, not from the event's own citation
 

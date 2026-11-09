@@ -624,30 +624,22 @@ namespace
         // reuse next_sync_stream_id since it is already monotonically bumped
         // on every device list change and to-device enqueue.
         auto const stream_id = static_cast<std::int64_t>(store.next_sync_stream_id);
-        for (auto const& device : store.devices)
+        // One display-name lookup and one key index for all of the user's devices (F-05, ADR-0582).
+        // The EDU carries the device identity keys so the receiving server
+        // (e.g. Synapse) updates its cache immediately without a separate
+        // GET /user/devices fetch. Without them there is a race window
+        // between the EDU and the async refetch: if the remote client
+        // encrypts during that window it uses stale keys, producing
+        // OlmError::MissingCiphertext on the Merovingian-side recipient
+        // (Matrix spec v1.19 §m.device_list_update). The keys include the
+        // owner's cross-signing signatures, or the remote side caches the
+        // device as not verified by its owner.
+        auto const batch = federation::build_device_list_update_batch(store, user_id, only_device, stream_id);
+        for (auto const& entry : batch.entries)
         {
-            if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
-            {
-                continue;
-            }
-            // The EDU carries the device identity keys so the receiving server
-            // (e.g. Synapse) updates its cache immediately without a separate
-            // GET /user/devices fetch. Without them there is a race window
-            // between the EDU and the async refetch: if the remote client
-            // encrypts during that window it uses stale keys, producing
-            // OlmError::MissingCiphertext on the Merovingian-side recipient
-            // (Matrix spec v1.19 §m.device_list_update). The keys include the
-            // owner's cross-signing signatures, or the remote side caches the
-            // device as not verified by its owner.
-            auto const content =
-                federation::build_device_list_update_content(store, user_id, device.device_id, stream_id);
-            if (!content.has_value())
-            {
-                continue;
-            }
             for (auto const& destination : destinations)
             {
-                std::ignore = dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", *content);
+                std::ignore = dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", entry.content);
             }
         }
     }
@@ -13284,6 +13276,9 @@ namespace
         return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
     }
 
+    // The answer to a device display name over `ClientApiLimits::max_device_display_name_bytes` (F-05, ADR-0582).
+    constexpr auto device_display_name_too_large_reason = std::string_view{"the device display name is too long"};
+
     // PUT /_matrix/client/v3/devices/{deviceId}: renames a device and announces the change.
     [[nodiscard]] auto handle_device_list_update(ClientServerRuntime& rt, std::string_view user,
                                                  LocalHttpRequest const& req) -> LocalHttpResponse
@@ -13301,6 +13296,10 @@ namespace
         if (!body.has_value())
         {
             return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
+        }
+        if (body->display_name.size() > rt.limits.max_device_display_name_bytes)
+        {
+            return err(400U, "M_TOO_LARGE", device_display_name_too_large_reason);
         }
         if (!database::sync_stream_has_write_reserve(rt.homeserver.database.persistent_store) ||
             !database::update_device_display_name(rt.homeserver.database.persistent_store, user, device_id_from_path,
@@ -15172,6 +15171,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "registration body must contain a password, and username must be a string");
         }
+        // F-05 (ADR-0582): a device name is judged before the account is created, so a refusal stores nothing.
+        if (body->display_name.size() > rt.limits.max_device_display_name_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE", device_display_name_too_large_reason);
+        }
         // Spec (POST /register, `username`): "If omitted, the homeserver MUST generate a
         // Matrix ID local part" (conformance audit R12, ADR-0198).
         if (!body->localpart.has_value())
@@ -15342,6 +15346,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "login body must be valid m.login.password or m.login.token JSON");
+        }
+        // F-05 (ADR-0582): measured in bytes, before the password is checked or a token redeemed; nothing is stored.
+        if (body->display_name.size() > rt.limits.max_device_display_name_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE", device_display_name_too_large_reason);
         }
         if (body->device_id.empty())
         {
