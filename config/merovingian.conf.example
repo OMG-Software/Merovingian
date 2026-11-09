@@ -746,6 +746,12 @@ server.client_api.max_room_account_data_per_room=100
 # counted). A PUT that would create one more is refused with M_TOO_LARGE; updating an existing rule always
 # succeeds. Range 1..10000.
 server.client_api.max_push_rules_per_user=200
+# Room aliases (ADR-0581). Most aliases one user may have created through PUT /directory/room/{roomAlias} and
+# createRoom's room_alias_name (a registered application service is exempt: bridges own many), and most aliases
+# one room may hold (no exemption). A new alias past either is refused with 400 M_TOO_LARGE; an alias that
+# already exists keeps its answer; a room upgrade moves aliases without the cap. Range 1..100000.
+server.client_api.max_room_aliases_per_user=100
+server.client_api.max_room_aliases_per_room=100
 server.client_api.max_body_size=1MiB
 
 # server.http

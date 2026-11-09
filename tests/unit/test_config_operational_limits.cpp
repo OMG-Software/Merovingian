@@ -153,6 +153,8 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
             REQUIRE(parsed.config.server().client_api.max_create_room_invites == 100U);
             REQUIRE(parsed.config.server().client_api.max_create_room_initial_state == 100U);
             REQUIRE(parsed.config.server().client_api.max_push_rules_per_user == 200U);
+            REQUIRE(parsed.config.server().client_api.max_room_aliases_per_user == 100U);
+            REQUIRE(parsed.config.server().client_api.max_room_aliases_per_room == 100U);
             REQUIRE(merovingian::config::validate(parsed.config).empty());
         }
     }
@@ -166,6 +168,8 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
                                                         "server.client_api.max_global_account_data_per_user=60\n"
                                                         "server.client_api.max_room_account_data_per_room=30\n"
                                                         "server.client_api.max_push_rules_per_user=75\n"
+                                                        "server.client_api.max_room_aliases_per_user=7\n"
+                                                        "server.client_api.max_room_aliases_per_room=9\n"
                                                         "server.client_api.max_create_room_invites=20\n"
                                                         "server.client_api.max_create_room_initial_state=25\n");
 
@@ -183,6 +187,8 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
                 REQUIRE(parsed.config.server().client_api.max_global_account_data_per_user == 60U);
                 REQUIRE(parsed.config.server().client_api.max_room_account_data_per_room == 30U);
                 REQUIRE(parsed.config.server().client_api.max_push_rules_per_user == 75U);
+                REQUIRE(parsed.config.server().client_api.max_room_aliases_per_user == 7U);
+                REQUIRE(parsed.config.server().client_api.max_room_aliases_per_room == 9U);
                 REQUIRE(parsed.config.server().client_api.max_create_room_invites == 20U);
                 REQUIRE(parsed.config.server().client_api.max_create_room_initial_state == 25U);
             }
@@ -295,6 +301,8 @@ SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
             "server.client_api.max_global_account_data_per_user=100001\n",
             "server.client_api.max_room_account_data_per_room=0\n",
             "server.client_api.max_room_account_data_per_room=100001\n",
+            "server.client_api.max_room_aliases_per_user=0\n", "server.client_api.max_room_aliases_per_user=100001\n",
+            "server.client_api.max_room_aliases_per_room=0\n", "server.client_api.max_room_aliases_per_room=100001\n",
             "server.client_api.max_push_rules_per_user=0\n", "server.client_api.max_push_rules_per_user=10001\n",
             "server.client_api.max_create_room_invites=0\n", "server.client_api.max_create_room_invites=10001\n",
             "server.client_api.max_create_room_initial_state=0\n",

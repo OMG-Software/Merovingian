@@ -2940,7 +2940,7 @@ SCENARIO("handle_directory_query_ingest_request reads a room alias from main's o
 
         auto const alias = std::string{"#老虎Â£я🤨👉ඞ:"} + config.server().server_name;
         auto const room_id = std::string{"!aliased:"} + config.server().server_name;
-        runtime.database.persistent_store.room_aliases.push_back(
+        runtime.database.persistent_store.room_aliases.insert(
             {alias, room_id, std::string{"@creator:"} + config.server().server_name});
 
         WHEN("a directory_query_ingest request shaped like a real worker's is handled")

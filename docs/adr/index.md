@@ -501,3 +501,4 @@
 * [0570 - sync_max_in_flight bounds parked waits, not sync-pool threads](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
 * [0574 - Media downloads are streamed from the database in chunks](0574-media-downloads-are-streamed-from-the-database-in-chunks.md)
 * [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)
+* [0581 - Room aliases are indexed in a table class and capped per user and per room](0581-room-aliases-are-indexed-in-a-table-class-and-capped-per-user-and-per-room.md)

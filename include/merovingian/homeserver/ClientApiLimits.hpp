@@ -58,6 +58,10 @@ struct ClientApiLimits final
     std::uint32_t max_room_account_data_per_room{100U};
     // User-defined push rules per user across all five kinds; over -> M_TOO_LARGE.
     std::uint32_t max_push_rules_per_user{200U};
+    // Security audit run-4 F-03 (ADR-0581): room aliases per creating user (an application service is exempt) and
+    // per room; a new alias over either -> 400 M_TOO_LARGE.
+    std::uint32_t max_room_aliases_per_user{100U};
+    std::uint32_t max_room_aliases_per_room{100U};
     // Security audit run-2 (ADR-0316): entries of one POST /createRoom; over -> M_TOO_LARGE.
     std::uint32_t max_create_room_invites{100U};
     std::uint32_t max_create_room_initial_state{100U};

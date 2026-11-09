@@ -73,6 +73,12 @@ struct ClientApiConfig final
     std::uint32_t max_global_account_data_per_user{1000U};
     std::uint32_t max_room_account_data_per_room{100U};
     std::uint32_t max_push_rules_per_user{200U};
+    // Security audit run-4 F-03 (ADR-0581): room aliases one user may have created through
+    // PUT /directory/room and createRoom's `room_alias_name` (an application service is exempt),
+    // and aliases one room may hold (nobody is exempt). A new alias past either is refused with
+    // M_TOO_LARGE; an alias that exists keeps its old answer.
+    std::uint32_t max_room_aliases_per_user{100U};
+    std::uint32_t max_room_aliases_per_room{100U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
     // Security audit run-2 (ADR-0316): entries of one POST /createRoom. Each stores one
