@@ -490,7 +490,8 @@ anything is persisted (ADR-0071). It also verifies a restricted join's
 authorising-server signature (`federation::verify_join_authorising_server_signature`,
 ADR-0171), as backfill ingestion does. Do it before taking `runtime.mutex`: resolving
 a key may go to the network. A new relay that carries a PDU follows the same
-pattern.
+pattern. `invite_ingest` also refuses a frame with a blank `origin` (so the invite handler's sender-equals-origin guard
+always runs) and judges the verified inviter's server against the room's ACL, as `pdu_ingest` and `membership_ingest` do (F-14).
 
 An EDU relay (`edu_ingest`, `handle_edu_ingest_request`) carries no signature, so it is bound to the body main
 authenticated instead (F-74, ADR-0395): `WorkerPool::handle` gives the pending request one digest per EDU of a verified

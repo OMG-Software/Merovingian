@@ -10,6 +10,10 @@ The check behind rule 9.3 (every key of `m.room.power_levels` `users` is a valid
 
 `audit_federation` copied the `origin` of a request whose signature had not been checked into the in-memory audit ring whole, and the `request.rejected` and `key_resolution.throttled` diagnostics logged it whole, so an unauthenticated peer could make the server hold and log up to the header budget (32 KiB by default) per rejected request. The audit actor and the `origin` field of the diagnostics now pass through `observability::bounded_utf8` at `max_audit_field_bytes` (255), as the persistent audit sink already did. `[f11]` in `tests/unit/test_federation_inbound_request.cpp` rejects 30000-byte origins by policy and by key-resolution throttle and checks the audit actors and the captured log. The `request.rejected` diagnostic is written at debug level, which the unit test binary does not emit, so only its audit row is asserted; its field is bounded by the same call as `key_resolution.throttled`.
 
+### F-14: a relayed invite is judged against the room ACL by its verified inviter
+
+`invite_ingest` (a federation worker handing a signed invite to main) checked the room's server ACL only against the `origin` the worker named, and it checked nothing when that was blank; the invite handler's rule that the sender's server equals the origin is also conditional on a non-empty origin. A faulty worker, with a server the ACL denies, could therefore place an invite from that server. Main now refuses a frame with a blank origin (`403`, `relayed frame names no origin`; it does not guess an origin from the sender, because an honest worker always names the X-Matrix-verified one), and after verifying the signature applies the room ACL to the server of the verified invite's sender (`403`, `server is denied by room ACL`), as `pdu_ingest` and `membership_ingest` already did. `[f14]` in `tests/integration/test_worker_policy_authority_flow.cpp` covers a blank origin with and without an ACL, an allowed relaying peer, and a control that is still taken in.
+
 ## 0.12.84
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).

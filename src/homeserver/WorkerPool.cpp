@@ -703,6 +703,8 @@ namespace
         std::string refusal{};
         bool locally_denied{false};
         bool policy_refused{false};
+        // The verified event's sender; empty when refused.
+        std::string sender{};
     };
 
     // `authorised_here` is this server's name when the relay is a send_join
@@ -767,7 +769,7 @@ namespace
             if (auto const authorising_key = federation::join_authorising_signature_key(parsed.value);
                 authorising_key.has_value() && authorising_key->server_name == authorised_here)
             {
-                return {pdu.event_id, {}};
+                return {pdu.event_id, {}, false, false, pdu.sender};
             }
         }
         auto const authorising = federation::verify_join_authorising_server_signature(parsed.value, *policy, resolve);
@@ -779,7 +781,7 @@ namespace
         {
             return {{}, "relayed event failed authorising-server verification: " + authorising.reason};
         }
-        return {pdu.event_id, {}};
+        return {pdu.event_id, {}, false, false, pdu.sender};
     }
 
     struct RelayedEnvelope final
@@ -1116,6 +1118,15 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
         result.reason = "invite_handler not wired";
         return serialize_invite_ingest_result(result);
     }
+    // F-14: an honest worker names the X-Matrix-verified origin. A blank one would skip the origin checks below and the
+    // invite handler's sender-equals-origin guard, so it is refused rather than guessed from the sender.
+    if (request.origin.empty())
+    {
+        log_relay_refused("invite_ingest", request.event_id, "relayed frame names no origin");
+        result.status = 403U;
+        result.reason = "relayed frame names no origin";
+        return serialize_invite_ingest_result(result);
+    }
     // F-21, F-24: the origin's policy rule and the room's ACL (the invite endpoint is one an ACL protects).
     if (auto const refusal = relay_origin_refusal(runtime, request.origin, request.room_id); !refusal.empty())
     {
@@ -1139,6 +1150,16 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
         log_relay_refused("invite_ingest", request.event_id, refusal);
         result.status = signature.locally_denied ? 503U : 403U;
         result.reason = refusal;
+        return serialize_invite_ingest_result(result);
+    }
+    // F-14: the server the verified invite's sender belongs to is judged by the room's ACL too, as pdu_ingest and
+    // membership_ingest do, so the worker's reading of the ACL (or its choice of origin) cannot let a denied server in.
+    if (auto const acl_refusal = relay_room_acl_refusal(runtime, request.room_id, {server_name_of(signature.sender)});
+        !acl_refusal.empty())
+    {
+        log_relay_refused("invite_ingest", request.event_id, acl_refusal);
+        result.status = 403U;
+        result.reason = acl_refusal;
         return serialize_invite_ingest_result(result);
     }
     // The stripped state travels in the same frame, so a compromised worker cannot hand main an
