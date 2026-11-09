@@ -2468,7 +2468,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
 
             auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} + escape(room_id) +
                                       R"(,"event_id":)" + escape(event_id_of(event_json)) + R"(,"room_version":"10",)" +
-                                      R"("invite_event_json":)" + escape(event_json) +
+                                      R"("origin":"matrix.example.org","invite_event_json":)" + escape(event_json) +
                                       R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
@@ -2534,10 +2534,11 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
             auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
                                                                {"$remote-create"}, 5, 1234);
 
-            auto const request_json =
-                std::string{R"({"type":"invite_ingest","room_id":)"} + ipc_escape_json_string(room_id) +
-                R"(,"event_id":)" + ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
-                R"("invite_event_json":)" + ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
+            auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} +
+                                      ipc_escape_json_string(room_id) + R"(,"event_id":)" +
+                                      ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
+                                      R"("origin":"matrix.example.org","invite_event_json":)" +
+                                      ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
 
