@@ -74,6 +74,7 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/RedactionState.hpp"
+#include "merovingian/database/RoomAliasTable.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
@@ -377,7 +378,8 @@ struct PersistentStore final
     std::vector<PersistentFilter> filters{};
     std::vector<PersistentProfile> profiles{};
     std::vector<PersistentThreePidBinding> account_threepids{};
-    std::vector<PersistentRoomAlias> room_aliases{};
+    // A table class (ADR-0581): look up with find/aliases_of_room/count_for_creator, never by looping the rows.
+    RoomAliasTable room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
     // Positions in `client_txn_ids`, so a request reads the records it needs without scanning every
     // record the server has ever stored (work under runtime.mutex is bounded by the request):

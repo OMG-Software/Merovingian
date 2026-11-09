@@ -206,6 +206,20 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_room_aliases_per_user")
+        {
+            if (!parse_u32_value(value, server.client_api.max_room_aliases_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_room_aliases_per_room")
+        {
+            if (!parse_u32_value(value, server.client_api.max_room_aliases_per_room))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         // Queued to-device messages expire after this many seconds.
         else if (key == "server.client_api.to_device_message_ttl_seconds")
         {

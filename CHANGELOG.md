@@ -12,7 +12,16 @@ A PDU naming a `prev_event` this server holds under another room is refused on e
 
 ### F-03: room aliases are capped and indexed
 
-To be completed on this branch.
+`PersistentStore::room_aliases` was an unindexed, uncapped vector that `GET /rooms/{roomId}/aliases`, the per-event
+`appservice_room_aliases` and every alias lookup scanned under `runtime.mutex`, so one account could create hundreds of
+thousands of aliases and make each listing hold the global lock for hundreds of milliseconds. It is now
+`database::RoomAliasTable` (ADR-0581, modelled on the state-group tables): it owns its rows and indexes them by alias, by
+room and by creator, so a lookup, a listing of one room, a delete, a reassign and a per-creator count never scan the table
+(an erase moves the last row into the hole). Two new caps, `server.client_api.max_room_aliases_per_user` and
+`server.client_api.max_room_aliases_per_room` (default 100 each, 1..100000), refuse a new alias with `400 M_TOO_LARGE`
+before anything is written, in `PUT /directory/room/{roomAlias}` and in `POST /createRoom` with `room_alias_name`
+(refused before any room is made). An alias that already exists keeps its old answer at the cap. A request authenticated
+as an application service is exempt from the per-user cap only; room upgrade moves aliases without a cap.
 
 ### F-04: shared history is not served to a server with no user in the room
 

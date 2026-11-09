@@ -211,9 +211,7 @@ namespace
 
     [[nodiscard]] auto room_alias_exists(PersistentStore const& store, std::string_view room_alias) -> bool
     {
-        return std::ranges::any_of(store.room_aliases, [room_alias](PersistentRoomAlias const& existing) {
-            return existing.room_alias == room_alias;
-        });
+        return store.room_aliases.contains(room_alias);
     }
 
     [[nodiscard]] auto membership_exists(PersistentStore const& store, PersistentMembership const& membership) -> bool
@@ -5696,25 +5694,19 @@ namespace
     {
         return false;
     }
-    store.room_aliases.push_back(std::move(alias));
-    return true;
+    return store.room_aliases.insert(std::move(alias));
 }
 
 [[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
     -> std::optional<PersistentRoomAlias>
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    return it == store.room_aliases.end() ? std::nullopt : std::optional<PersistentRoomAlias>{*it};
+    auto const* const found = store.room_aliases.find(room_alias);
+    return found == nullptr ? std::nullopt : std::optional<PersistentRoomAlias>{*found};
 }
 
 [[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    if (it == store.room_aliases.end())
+    if (!store.room_aliases.contains(room_alias))
     {
         return false;
     }
@@ -5724,17 +5716,13 @@ namespace
     {
         return false;
     }
-    store.room_aliases.erase(it);
-    return true;
+    return store.room_aliases.erase(room_alias);
 }
 
 [[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
                                        std::string_view new_room_id) -> bool
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    if (it == store.room_aliases.end() || !room_exists(store, std::string{new_room_id}))
+    if (!store.room_aliases.contains(room_alias) || !room_exists(store, std::string{new_room_id}))
     {
         return false;
     }
@@ -5744,8 +5732,7 @@ namespace
     {
         return false;
     }
-    it->room_id = std::string{new_room_id};
-    return true;
+    return store.room_aliases.reassign(room_alias, new_room_id);
 }
 
 [[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool

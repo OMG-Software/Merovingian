@@ -128,6 +128,10 @@ value. Test fixtures that do not exercise persistence select it through
   `read_media_blob_chunk` reads one chunk on a short-lived read-only
   connection. PostgreSQL stays buffered, because each `substring()` of a
   compressed TOASTed `bytea` decompresses the whole value.
+- `room_aliases` is held in memory as `database::RoomAliasTable` (F-03, ADR-0581), not a vector: it owns the rows and
+  indexes them by alias, by room ID and by creator, so `find_room_alias`, a room alias listing and a creator alias
+  count are hash lookups and a delete or reassign does not scan the table. Hydration (SQLite and PostgreSQL) inserts
+  through the class. `server.client_api.max_room_aliases_per_user` and `max_room_aliases_per_room` bound the rows.
 - `room_aliases` carries `creator_user_id` (CSAZ-12, ADR-0127):
   `store_room_alias` writes the creating user, and `delete_room_alias` removes a mapping, in the database and
   in memory, for `DELETE /directory/room/{roomAlias}`.

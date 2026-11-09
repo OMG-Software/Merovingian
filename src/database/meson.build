@@ -8,6 +8,7 @@ database_sources = files(
   'PersistentStore.cpp',
   'PersistentServerSigningKey.cpp',
   'PostgresqlConnectionDeleter.cpp',
+  'RoomAliasTable.cpp',
   'redaction_view.cpp',
   'postgresql_store.cpp',
   'RuntimeDatabaseConfig.cpp',

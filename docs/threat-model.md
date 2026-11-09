@@ -2537,6 +2537,16 @@ run, so each was a way for one party to slow the whole server (CWE-407).
   boundary a remote server chooses. **Mitigation:** boundaries over 70 characters are refused
   (RFC 2046) and the search is linear (ADR-0176).
 
+### Unbounded room aliases held the runtime lock (0.12.83, audit run 4 F-03, ADR-0581)
+
+One account could create an unlimited number of room aliases through `PUT /directory/room/{roomAlias}` or
+`POST /createRoom`, and every alias lookup, `GET /rooms/{roomId}/aliases` and the per-event appservice alias list scanned
+the whole unindexed table under `runtime.mutex`, so each such request could block every other request for hundreds of
+milliseconds (CWE-770, CWE-407). Aliases are now held in an indexed `RoomAliasTable`, and a new alias past
+`max_room_aliases_per_user` or `max_room_aliases_per_room` is refused with `400 M_TOO_LARGE` before it is written. An
+application service is exempt from the per-user cap (bridges own many aliases) but not the per-room cap, so a bridge cannot
+make a single room listing unbounded either; a room upgrade moves at most one room of aliases and is not capped.
+
 ### Run-1 low findings (0.12.34)
 
 Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.

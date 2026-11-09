@@ -13874,6 +13874,8 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_create_room_invites = client_api.max_create_room_invites;
     rt.limits.max_create_room_initial_state = client_api.max_create_room_initial_state;
     rt.limits.max_push_rules_per_user = client_api.max_push_rules_per_user;
+    rt.limits.max_room_aliases_per_user = client_api.max_room_aliases_per_user;
+    rt.limits.max_room_aliases_per_room = client_api.max_room_aliases_per_room;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -16542,6 +16544,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                        ? dispatch_resp(req, rt, 200U, "{}")
                        : dispatch_err(req, rt, 409U, "M_ROOM_IN_USE", "room alias already in use");
         }
+        // F-03 (ADR-0581): a NEW alias past either cap is refused before anything is written. An application
+        // service is exempt from the per-user cap only (bridges own many aliases); the per-room cap binds everyone.
+        if (rt.homeserver.database.persistent_store.room_aliases.count_for_room(*room_id) >=
+            rt.limits.max_room_aliases_per_room)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many aliases for this room");
+        }
+        if (!appservice::decode_masquerade_token(req.access_token).has_value() &&
+            rt.homeserver.database.persistent_store.room_aliases.count_for_creator(*user) >=
+                rt.limits.max_room_aliases_per_user)
+        {
+            return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many room aliases for this user");
+        }
         if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id, *user}))
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist room alias");
@@ -18605,6 +18620,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
             }
+            // F-03 (ADR-0581): the new room's alias counts toward the creator's cap, and the refusal comes before
+            // anything is created. An application service is exempt: bridges own many aliases.
+            if (!appservice::decode_masquerade_token(req.access_token).has_value() &&
+                rt.homeserver.database.persistent_store.room_aliases.count_for_creator(*user) >=
+                    rt.limits.max_room_aliases_per_user)
+            {
+                return dispatch_err(req, rt, 400U, "M_TOO_LARGE", "too many room aliases for this user");
+            }
         }
 
         // SS7: a local invitee who blocks invites refuses the request whole, before the room exists. A remote
@@ -19593,13 +19616,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
+                // The room's own aliases through the index (F-03, ADR-0581); sorted so the answer is stable.
+                auto room_aliases = store.room_aliases.aliases_of_room(room_id);
+                std::ranges::sort(room_aliases);
                 auto aliases = canonicaljson::Array{};
-                for (auto const& alias : store.room_aliases)
+                for (auto& alias : room_aliases)
                 {
-                    if (alias.room_id == room_id)
-                    {
-                        aliases.push_back(canonicaljson::Value{alias.room_alias});
-                    }
+                    aliases.push_back(canonicaljson::Value{std::move(alias)});
                 }
                 return dispatch_resp(req, rt, 200U,
                                      json_serialize(json_obj({json_member("aliases", json_arr(std::move(aliases)))})));
@@ -20680,17 +20703,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Spec: "Moves any local aliases to the new room." The tombstone is already sent, so a failed
             // write is reported as a server fault rather than a success that leaves an alias on the old room.
-            auto const aliases_to_move = std::invoke([&] {
-                auto moved = std::vector<std::string>{};
-                for (auto const& alias : rt.homeserver.database.persistent_store.room_aliases)
-                {
-                    if (alias.room_id == room_id)
-                    {
-                        moved.push_back(alias.room_alias);
-                    }
-                }
-                return moved;
-            });
+            auto const aliases_to_move = rt.homeserver.database.persistent_store.room_aliases.aliases_of_room(room_id);
             for (auto const& alias : aliases_to_move)
             {
                 if (!database::reassign_room_alias(rt.homeserver.database.persistent_store, alias, new_room_id))

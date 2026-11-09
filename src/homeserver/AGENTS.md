@@ -594,6 +594,12 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `parse_federation_media_multipart` runs under the lock on a body a remote server chooses. It
   refuses a boundary over 70 characters and finds delimiters with a linear scan; keep it linear
   (ADR-0176).
+- `PUT /directory/room/{roomAlias}` and `POST /createRoom` with `room_alias_name` refuse a new alias past
+  `max_room_aliases_per_user` (the creator aliases) or, for the PUT, `max_room_aliases_per_room` with `400 M_TOO_LARGE`,
+  after the validity, power, exclusivity and already-exists answers and before anything is written (createRoom before
+  any room is made). An application service (a masquerade token) is exempt from the per-user cap only; room upgrade
+  moves aliases uncapped. The alias listing and `appservice_room_aliases` use `room_aliases.aliases_of_room`, never a
+  loop over the table (ADR-0581).
 - `PUT /user/{userId}/account_data/{type}` refuses a new global type past
   `max_global_account_data_per_user` with `400 M_TOO_LARGE`, and always allows an update to a
   type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
