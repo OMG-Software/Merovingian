@@ -2754,8 +2754,8 @@ namespace
                                                                         : std::string{};
     }
 
-    // A make_join, make_leave or make_knock answer is the event plus `room_version`, so a quarter of the 64 KiB event
-    // limit's four-fold is ample headroom; the 16 MiB outbound default is not (F-13).
+    // A make_join, make_leave or make_knock answer is one event plus `room_version`, so four times the 64 KiB event
+    // limit is ample headroom; the 16 MiB outbound default is not (F-13).
     inline constexpr auto membership_template_max_response_bytes = std::uint64_t{4U * events::max_event_size_bytes};
 
     // Why a resident's template, completed as this server will hash, sign and store it, is outside the room version's
