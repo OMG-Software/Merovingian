@@ -595,7 +595,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
 
 - `parse_federation_media_multipart` runs under the lock on a body a remote server chooses. It
   refuses a boundary over 70 characters and finds delimiters with a linear scan; keep it linear
-  (ADR-0176).
+  (ADR-0176). It also stops splitting at a third part (`split_multipart_body` takes `max_parts` 2 and returns before it
+  parses or stores the part), so memory and parsing work do not grow with the delimiter count (F-15);
+  `FederationMediaPart::parts_parsed` is the counter a test reads.
 - `PUT /directory/room/{roomAlias}` and `POST /createRoom` with `room_alias_name` refuse a new alias past
   `max_room_aliases_per_user` (the creator aliases) or, for the PUT, `max_room_aliases_per_room` with `400 M_TOO_LARGE`,
   after the validity, power, exclusivity and already-exists answers and before anything is written (createRoom before

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <string>
 
 // Spec: Matrix Server-Server API v1.19
@@ -101,6 +102,68 @@ SCENARIO("parse_federation_media_multipart decodes the mandatory two-part multip
                 REQUIRE(parsed.ok);
                 REQUIRE(parsed.is_redirect);
                 REQUIRE(parsed.location == "https://cdn.example.org/abc123");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Content Repository - GET /_matrix/federation/v1/media/download/{mediaId}, 200 response
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
+//
+// Summary: the body "delineat[es] exactly two parts". The remote chooses the body, and the parse runs under
+// runtime.mutex, so a body of many delimiters must be refused as soon as a third part appears, with work that does not
+// grow with the number of delimiters (F-15).
+SCENARIO("parse_federation_media_multipart stops at a third part", "[federation][media][conformance][f15]")
+{
+    GIVEN("bodies made of the delimiter line repeated 10 times and 100000 times")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=x"};
+        auto const repeated = [](std::size_t count) {
+            auto body = std::string{};
+            for (auto i = std::size_t{0U}; i < count; ++i)
+            {
+                body += "--x\n";
+            }
+            return body;
+        };
+
+        WHEN("each is decoded")
+        {
+            auto const small = merovingian::homeserver::parse_federation_media_multipart(content_type, repeated(10U));
+            auto const large =
+                merovingian::homeserver::parse_federation_media_multipart(content_type, repeated(100000U));
+
+            THEN("both are refused and the parser examined the same, small number of parts")
+            {
+                // Spec MUST: exactly two parts; any other count is refused.
+                REQUIRE_FALSE(small.ok);
+                REQUIRE_FALSE(large.ok);
+                // Work must not grow with the delimiter count: parsing stopped at the third part.
+                REQUIRE(small.parts_parsed <= 3U);
+                REQUIRE(large.parts_parsed == small.parts_parsed);
+            }
+        }
+    }
+
+    GIVEN("a body with two parts, and one with three")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=x"};
+        auto const two =
+            std::string{"--x\nContent-Type: application/json\n\n{}\n--x\nContent-Type: image/png\n\nPNG\n--x--\n"};
+        auto const three = std::string{"--x\n\n{}\n--x\n\nA\n--x\n\nB\n--x--\n"};
+
+        WHEN("each is decoded")
+        {
+            auto const parsed_two = merovingian::homeserver::parse_federation_media_multipart(content_type, two);
+            auto const parsed_three = merovingian::homeserver::parse_federation_media_multipart(content_type, three);
+
+            THEN("the two-part body parses and the three-part body is refused")
+            {
+                // Spec MUST: exactly two parts.
+                REQUIRE(parsed_two.ok);
+                REQUIRE(parsed_two.bytes == "PNG");
+                REQUIRE_FALSE(parsed_three.ok);
             }
         }
     }

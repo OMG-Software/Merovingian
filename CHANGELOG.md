@@ -14,6 +14,10 @@ The check behind rule 9.3 (every key of `m.room.power_levels` `users` is a valid
 
 `invite_ingest` (a federation worker handing a signed invite to main) checked the room's server ACL only against the `origin` the worker named, and it checked nothing when that was blank; the invite handler's rule that the sender's server equals the origin is also conditional on a non-empty origin. A faulty worker, with a server the ACL denies, could therefore place an invite from that server. Main now refuses a frame with a blank origin (`403`, `relayed frame names no origin`; it does not guess an origin from the sender, because an honest worker always names the X-Matrix-verified one), and after verifying the signature applies the room ACL to the server of the verified invite's sender (`403`, `server is denied by room ACL`), as `pdu_ingest` and `membership_ingest` already did. `[f14]` in `tests/integration/test_worker_policy_authority_flow.cpp` covers a blank origin with and without an ACL, an allowed relaying peer, and a control that is still taken in.
 
+### F-15: the federation media multipart split stops at a third part
+
+`split_multipart_body` built one part for every delimiter in a body a remote server chooses, under `runtime.mutex`, and only afterwards did `parse_federation_media_multipart` check for the two parts the spec requires. A body of `--x` lines up to the response cap cost a few hundred MB and seconds of parsing for a fetch. The split now takes `max_parts` (2) and returns a failure marker (`std::nullopt`) before it parses or stores a third part, so the work no longer grows with the delimiter count. Its only caller is `parse_federation_media_multipart`, which needs exactly two parts, so 2 is right. `FederationMediaPart::parts_parsed` reports how many parts were parsed. `[f15]` in `tests/conformance/test_federation_media_conformance.cpp` refuses bodies of 10 and 100000 delimiter lines with the same parsed count, and still parses a valid two-part body.
+
 ## 0.12.84
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).

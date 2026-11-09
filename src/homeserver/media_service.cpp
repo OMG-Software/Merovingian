@@ -413,10 +413,16 @@ namespace
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
     // Requires the opening delimiter to start on a line boundary and ignores
     // boundary-like strings that are not preceded by a line break.
-    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
-        -> std::vector<RawMultipartPart>
+    //
+    // F-15: the remote chooses the body, so it chooses the part count, and this runs under runtime.mutex. It returns
+    // std::nullopt, before parsing or storing the part, as soon as a part beyond `max_parts` is found, so the work and
+    // the memory are bounded by `max_parts`, not by the number of delimiters. `parts_parsed` is how many parts were
+    // parsed (what the work was bounded by).
+    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary, std::size_t max_parts,
+                                            std::size_t& parts_parsed) -> std::optional<std::vector<RawMultipartPart>>
     {
         auto parts = std::vector<RawMultipartPart>{};
+        parts_parsed = 0U;
         if (boundary.empty())
         {
             return parts;
@@ -448,8 +454,13 @@ namespace
             {
                 break;
             }
+            if (parts.size() >= max_parts)
+            {
+                return std::nullopt;
+            }
             auto const raw_part = body.substr(pos, next - pos);
             parts.push_back(parse_multipart_part(raw_part));
+            parts_parsed = parts.size();
             pos = next + 2U + boundary.size();
         }
         return parts;
@@ -1589,17 +1600,22 @@ namespace
     -> FederationMediaPart
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
-    auto const parts = split_multipart_body(body, boundary);
     // Matrix Server-Server API v1.19 mandates exactly two parts: an
     // application/json metadata part and either an inline media part or a
-    // Location redirect part. Fail closed if the count differs.
-    if (parts.size() != 2U)
+    // Location redirect part. Fail closed if the count differs, and stop splitting at a third part (F-15).
+    auto parts_parsed = std::size_t{0U};
+    auto const split = split_multipart_body(body, boundary, 2U, parts_parsed);
+    if (!split.has_value() || split->size() != 2U)
     {
-        return {};
+        auto refused = FederationMediaPart{};
+        refused.parts_parsed = parts_parsed;
+        return refused;
     }
+    auto const& parts = *split;
 
     auto const& media_part = parts[1];
     auto result = FederationMediaPart{};
+    result.parts_parsed = parts_parsed;
     if (auto const location = find_raw_header_ci(media_part, "location"); location.has_value())
     {
         result.ok = true;
