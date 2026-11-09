@@ -361,17 +361,31 @@ SCENARIO("announcing all of a user's devices makes a fixed number of passes over
 
         WHEN("the announcement batch is built for the user in each")
         {
+            auto const small_before = small.device_table_rows_examined.value();
             auto const small_batch = fed::build_device_list_update_batch(small, "@alice:example.org", std::nullopt, 9);
+            auto const small_rows = small.device_table_rows_examined.value() - small_before;
+            auto const large_before = large.device_table_rows_examined.value();
             auto const large_batch = fed::build_device_list_update_batch(large, "@alice:example.org", std::nullopt, 9);
+            auto const large_rows = large.device_table_rows_examined.value() - large_before;
 
-            THEN("every device has one entry, and both builds make the same one-or-two passes")
+            THEN("every device has one entry, and each build reads the device table twice and the key table once")
             {
                 REQUIRE(small_batch.entries.size() == 4U);
                 REQUIRE(large_batch.entries.size() == 151U);
-                REQUIRE(small_batch.device_table_passes == large_batch.device_table_passes);
-                REQUIRE(small_batch.device_key_table_passes == large_batch.device_key_table_passes);
-                REQUIRE(large_batch.device_table_passes <= 2U);
-                REQUIRE(large_batch.device_key_table_passes == 1U);
+                REQUIRE(small_rows == 2U * small.devices.size() + small.device_keys.size());
+                REQUIRE(large_rows == 2U * large.devices.size() + large.device_keys.size());
+            }
+
+            THEN("announcing the devices one at a time reads far more, so the count would show that regression")
+            {
+                auto const per_device_before = large.device_table_rows_examined.value();
+                for (auto const& entry : large_batch.entries)
+                {
+                    REQUIRE(fed::build_device_list_update_content(large, "@alice:example.org", entry.device_id, 9)
+                                .has_value());
+                }
+                auto const per_device_rows = large.device_table_rows_examined.value() - per_device_before;
+                REQUIRE(per_device_rows > 50U * large_rows);
             }
 
             THEN("each entry is byte-for-byte what the single-device builder returns")

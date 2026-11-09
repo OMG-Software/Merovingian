@@ -350,12 +350,17 @@ SCENARIO("A federated redaction citing power levels from before its sender was d
         {
             auto const redaction = make_remote_redaction(fixture.room_id, remote_member, admin_message, {demoted},
                                                          {fixture.create_id, promoted, fixture.member_bob_id}, 7, 11);
-            std::ignore = merovingian::homeserver::ingest_pdu_event(fixture.runtime(), redaction);
+            auto const result = merovingian::homeserver::ingest_pdu_event(fixture.runtime(), redaction);
 
-            THEN("the message is unchanged")
+            THEN("the redaction is stored, judged and withheld, and the message is unchanged")
             {
+                // The event enters the graph, so what refuses it is the redaction check and not a receipt check.
+                REQUIRE(result.status == PduIngestionStatus::accepted);
                 // Spec: the sender's power level is below the redact level and the domains differ.
                 REQUIRE(fixture.body_of(admin_message) == std::optional<std::string>{"admin secret"});
+                // Spec: a server "should not" send clients a redaction it has not applied.
+                REQUIRE(merovingian::database::redaction_is_withheld(fixture.runtime().database.persistent_store,
+                                                                     redaction.event_id));
             }
         }
     }

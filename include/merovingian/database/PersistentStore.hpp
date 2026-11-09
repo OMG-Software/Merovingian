@@ -327,6 +327,9 @@ struct PersistentStore final
     std::vector<PersistentEventAuth> event_auth{};
     std::vector<PersistentEventSignature> event_signatures{};
     std::vector<PersistentDeviceKey> device_keys{};
+    // Rows of `devices` and `device_keys` read to announce a device list, counted where they are read, so a test
+    // can show the cost does not grow per device (ADR-0582).
+    ExaminedRows device_table_rows_examined{};
     std::vector<PersistentOneTimeKey> one_time_keys{};
     std::vector<PersistentFallbackKey> fallback_keys{};
     std::vector<PersistentCrossSigningKey> cross_signing_keys{};

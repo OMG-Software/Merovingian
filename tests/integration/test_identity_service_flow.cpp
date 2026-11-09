@@ -976,6 +976,46 @@ SCENARIO("A 3PID bound at an identity server stays off the account until POST /a
                 .response.body;
         };
 
+        WHEN("alice adds the address and then binds it with a session she validated before the add")
+        {
+            // Both sessions come first: once the address is on an account, requestToken refuses it.
+            REQUIRE(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", alice,
+                         request_token_body(false, "secret-add", &identity_server))
+                        .response.status == 200U);
+            REQUIRE(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", alice,
+                         request_token_body(false, "secret-bind", &identity_server))
+                        .response.status == 200U);
+            REQUIRE(post(runtime, "/_matrix/client/v3/account/3pid/add", alice,
+                         R"({"client_secret":"secret-add","sid":"is-sid-42",)" + uia_password_auth() + "}")
+                        .response.status == 200U);
+            // A marker no identity server reports, to show whether the bind wrote the row's validation time.
+            constexpr auto earlier_validation = std::uint64_t{1234U};
+            auto added_at = std::uint64_t{0U};
+            for (auto& row : runtime.homeserver.database.persistent_store.account_threepids)
+            {
+                if (row.user_id == "@alice:example.org" && row.address == email_address)
+                {
+                    row.validated_at_ms = earlier_validation;
+                    added_at = row.added_at_ms;
+                }
+            }
+            REQUIRE(added_at != 0U);
+            auto const bound = post(runtime, "/_matrix/client/v3/account/3pid/bind", alice,
+                                    R"({"client_secret":"secret-bind","sid":"is-sid-42","id_server":")" +
+                                        identity_server.host_port() + R"(","id_access_token":"opaque"})");
+            auto const after =
+                merovingian::database::find_account_threepid(store, "@alice:example.org", "email", email_address);
+
+            THEN("the bind is recorded and the address on the account is otherwise unchanged")
+            {
+                REQUIRE(bound.response.status == 200U);
+                REQUIRE(after.has_value());
+                REQUIRE(after->bound);
+                REQUIRE(after->added_at_ms == added_at);
+                REQUIRE(after->validated_at_ms == earlier_validation);
+            }
+        }
+
         WHEN("alice binds the address")
         {
             REQUIRE(bind_as(alice, "secret-alice").response.status == 200U);

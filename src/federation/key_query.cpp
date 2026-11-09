@@ -575,6 +575,7 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
 {
     auto const owner = std::array<std::string_view, 1U>{user_id};
     auto const display_names = DeviceDisplayNames{store, owner};
+    store.device_table_rows_examined.add(store.device_keys.size());
     auto const device_key =
         std::ranges::find_if(store.device_keys, [user_id, device_id](database::PersistentDeviceKey const& key) {
             return key.user_id == user_id && key.device_id == device_id;
@@ -591,9 +592,9 @@ auto build_device_list_update_batch(database::PersistentStore const& store, std:
     // One lookup of the display names of this user's devices (a pass over `store.devices`) ...
     auto const owner = std::array<std::string_view, 1U>{user_id};
     auto const display_names = DeviceDisplayNames{store, owner};
-    ++batch.device_table_passes;
     // ... and one index of this user's published keys. The first row for a device wins, as `find_if` did.
     auto keys_by_device = std::map<std::string_view, database::PersistentDeviceKey const*>{};
+    store.device_table_rows_examined.add(store.device_keys.size());
     for (auto const& key : store.device_keys)
     {
         if (key.user_id == user_id)
@@ -601,8 +602,8 @@ auto build_device_list_update_batch(database::PersistentStore const& store, std:
             keys_by_device.emplace(std::string_view{key.device_id}, &key);
         }
     }
-    ++batch.device_key_table_passes;
     // The devices themselves, in table order (the order the per-device loop announced them in).
+    store.device_table_rows_examined.add(store.devices.size());
     for (auto const& device : store.devices)
     {
         if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
@@ -617,7 +618,6 @@ auto build_device_list_update_batch(database::PersistentStore const& store, std:
             batch.entries.push_back({device.device_id, std::move(*content), key != nullptr});
         }
     }
-    ++batch.device_table_passes;
     return batch;
 }
 

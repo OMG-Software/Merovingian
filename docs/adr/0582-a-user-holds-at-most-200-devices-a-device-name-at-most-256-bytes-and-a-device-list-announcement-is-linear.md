@@ -50,13 +50,16 @@ lookup and one index", because it bounds both the stored data and the work, and 
 * **Refuse, do not truncate.** A silently shortened name differs from what the client sent and what it will display; a
   clear error lets the client choose.
 * **Linear announcement.** `build_device_list_update_batch` builds one `DeviceDisplayNames` and one index of the user's
-  device keys and makes the EDU content for every device from them; `DeviceListUpdateBatch::device_table_passes` and
-  `device_key_table_passes` count the passes so a test can prove the cost without timing. Each entry equals what
-  `build_device_list_update_content` returns for the same device, byte for byte.
+  device keys and makes the EDU content for every device from them. `PersistentStore::device_table_rows_examined`
+  counts the rows of both tables where they are read, so a test can prove the cost without timing and can show that
+  the per-device path reads far more. Each entry equals what `build_device_list_update_content` returns for the same
+  device, byte for byte.
 
 ### Positive Consequences
 
-* Announcing a user's devices is a fixed number of table passes plus work per device.
+* Announcing a user's devices is a fixed number of passes over the device tables plus work per device. That work
+  includes merging the signatures on the device's keys, which reads the rows naming this user through the per-target
+  index, once per device.
 * A user's device rows, and every scan keyed by user, are bounded.
 
 ### Negative Consequences

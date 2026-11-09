@@ -33,7 +33,8 @@ A row in `account_threepids` is one of two things, told apart by `added_at_ms` (
 * Zero: the address was only bound at an identity server. The row exists so the bind can be undone. It grants
   nothing, and any number of users may hold one, so `/bind` no longer asks `threepid_in_use`.
 
-A bind never changes a non-zero `added_at_ms`, and `/add` promotes a bound-only row. `POST /account/3pid/unbind` of
+A bind writes only its own fields on a row with a non-zero `added_at_ms`, never the times or country of an address on
+the account, and `/add` promotes a bound-only row. `POST /account/3pid/unbind` of
 an address on the account clears the bind and keeps the row; of a bound-only row it deletes the row, since nothing is
 left for it to record. There is no schema change: the column already exists and the primary key is
 `(user_id, medium, address)`.

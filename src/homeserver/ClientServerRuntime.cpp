@@ -2522,6 +2522,12 @@ namespace
         auto* existing = find_account_threepid(rt, user_id, medium, address);
         if (existing != nullptr)
         {
+            // A bind takes only an access token, so it changes nothing about an address on the account: the caller
+            // writes the bind's own fields and that is all (ADR-0584).
+            if (added_at_ms == 0U && existing->is_account_threepid())
+            {
+                return *existing;
+            }
             existing->validated_at_ms = validated_at_ms;
             existing->added_at_ms = existing->added_at_ms == 0U ? added_at_ms : existing->added_at_ms;
             if (country.has_value())

@@ -8,7 +8,7 @@ A PDU naming a `prev_event` this server holds under another room is refused on e
 
 ### F-02: an identity-server bind is not a recovery email
 
-`POST /account/3pid/bind` and `POST /account/3pid` now record the bind and nothing else. The address does not go on the account: it is not listed by `GET /account/3pid`, cannot reset the password, cannot receive email pushes, and may also be bound by another user, as the spec asks. `POST /account/3pid/add` still promotes it, with the password step (ADR-0584).
+`POST /account/3pid/bind` and `POST /account/3pid` now record the bind and nothing else. The address does not go on the account: it is not listed by `GET /account/3pid`, cannot reset the password, cannot receive email pushes, and may also be bound by another user, as the spec asks. `POST /account/3pid/add` still promotes it, with the password step, and a bind of an address already on the account changes nothing about it but the bind's own fields (ADR-0584).
 
 ### F-03: room aliases are capped and indexed
 

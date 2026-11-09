@@ -3772,9 +3772,13 @@ SCENARIO("Backfill does not store an event whose prev_event belongs to another r
         WHEN("the PDU that needs it is ingested")
         {
             std::ignore = fixture.ingest(pdu);
+            auto const requests = peer->requests();
 
             THEN("the bridging event is not stored and has no state")
             {
+                // It was offered, so what kept it out is the check and not a fetch that never happened.
+                REQUIRE(count_requests_starting_with(requests, "POST /_matrix/federation/v1/get_missing_events/") >=
+                        1U);
                 auto const& store = fixture.runtime().database.persistent_store;
                 REQUIRE(store.events.find(bridge.event_id) == store.events.end());
                 REQUIRE_FALSE(fixture.has_state_group(bridge.event_id));

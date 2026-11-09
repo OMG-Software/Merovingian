@@ -658,7 +658,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   same pass that looks for the device (`scan_user_devices`); a held device always logs in. `POST /login`, `POST /register`
   and `PUT /devices/{deviceId}` answer a longer name `400 M_TOO_LARGE` before any write, measured in bytes, never
   truncated. A device-list announcement builds all of a user's EDUs with `federation::build_device_list_update_batch`
-  (one `DeviceDisplayNames`, one key index; `DeviceListUpdateBatch::*_passes` count the passes). Never call
+  (one `DeviceDisplayNames`, one key index; `PersistentStore::device_table_rows_examined` counts the rows read). Never call
   `build_device_list_update_content` per device in a loop: it scans both device tables each call.
 - A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
   path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
