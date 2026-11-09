@@ -1,6 +1,6 @@
 # Redactions are applied once, at the store, and destroy the original content
 
-* Status: accepted
+* Status: accepted; the rule that a redaction is judged on its own `auth_events` is superseded by [ADR-0586](0586-a-redactions-authority-comes-from-the-state-this-server-holds.md)
 * Date: 2026-10-08
 
 Technical Story: 29 September 2026 security audit, finding CSAZ-11 (redactions are accepted and

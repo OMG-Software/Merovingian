@@ -88,7 +88,7 @@ auto sender_meets_redact_level(canonicaljson::Value const& redaction_event, Reda
 {
     auto const* redaction = object_of(redaction_event);
     auto const* sender = redaction == nullptr ? nullptr : string_of(*redaction, "sender");
-    if (sender == nullptr)
+    if (sender == nullptr || !context.power_levels_known)
     {
         return false;
     }

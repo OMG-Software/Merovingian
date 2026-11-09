@@ -23,13 +23,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace
 {
 
 using namespace merovingian::tests;
 using merovingian::homeserver::DispatchResult;
+using merovingian::homeserver::RegistrationValidationSession;
 
 [[nodiscard]] auto conformance_config() -> merovingian::config::Config
 {
@@ -103,6 +107,81 @@ auto register_alice_with_email(merovingian::homeserver::ClientServerRuntime& run
 // "M_THREEPID_NOT_FOUND may be returned if no account matching the given email address could be found" (may,
 // not must); "M_THREEPID_IN_USE may not be returned"; 200 carries `sid` (and `submit_url` when the homeserver
 // wants the client to submit the token); "Requires authentication: No".
+// Endpoint / Section: POST /_matrix/client/v3/account/password/email/requestToken
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpasswordemailrequesttoken
+//
+// The token goes to an address "associated with an account on this homeserver". A bind at an identity
+// server takes only an access token, so it is not that association (audit run 4, F-02): otherwise a
+// stolen access token could bind the thief's address and then reset the password with it.
+SCENARIO("A password reset is not offered for an address that was only bound at an identity server",
+         "[conformance][client-server][auth][password-reset][security][f02]")
+{
+    GIVEN("a server that can send email and an account whose address was only bound at an identity server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        enable_email(runtime);
+        register_alice_with_email(runtime);
+
+        auto bound_only = merovingian::database::PersistentThreePidBinding{};
+        bound_only.user_id = "@alice:example.org";
+        bound_only.medium = "email";
+        bound_only.address = "thief@example.net";
+        bound_only.id_server = "is.example.net";
+        bound_only.validated_at_ms = 1700000000000U;
+        bound_only.bound = true;
+        REQUIRE(
+            merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, bound_only));
+
+        auto const session_for = [&runtime](std::string_view address) -> RegistrationValidationSession const& {
+            auto const found = std::ranges::find_if(runtime.registration_validation_sessions,
+                                                    [address](RegistrationValidationSession const& session) {
+                                                        return session.address == address;
+                                                    });
+            REQUIRE(found != runtime.registration_validation_sessions.end());
+            return *found;
+        };
+
+        WHEN("a reset is requested for that address and for the account's own address")
+        {
+            auto const thief = request_token(runtime, "thief@example.net", "secret_one", 1);
+            auto const owner = request_token(runtime, "alice@example.net", "secret_two", 1);
+
+            THEN("both are answered alike, but only the account's own address is tied to the account")
+            {
+                // Spec: the answer must not reveal whether an address has an account.
+                REQUIRE(thief.response.status == 200U);
+                REQUIRE(owner.response.status == 200U);
+                REQUIRE_FALSE(session_for("thief@example.net").user_id.has_value());
+                REQUIRE(session_for("alice@example.net").user_id == std::optional<std::string>{"@alice:example.org"});
+            }
+        }
+
+        WHEN("a validated reset session names the account, but the address was only bound")
+        {
+            auto const sid = sid_of(request_token(runtime, "thief@example.net", "secret_one", 1));
+            auto& session = runtime.registration_validation_sessions.front();
+            session.user_id = "@alice:example.org";
+            session.validated_at_ms = 1700000000000U;
+
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/account/password",
+                 {},
+                 R"({"new_password":"BrandNewPass9!","auth":{"type":"m.login.email.identity","threepid_creds":{"sid":")" +
+                     sid + R"(","client_secret":"secret_one"}}})"});
+
+            THEN("the password is not reset")
+            {
+                REQUIRE(result.response.status == 401U);
+                REQUIRE(errcode_of(result) == "M_SESSION_NOT_VALIDATED");
+            }
+        }
+    }
+}
+
 // Endpoint / Section: POST /_matrix/client/v3/account/password/email/requestToken
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpasswordemailrequesttoken
 SCENARIO("POST /account/password/email/requestToken answers alike for an address with an account and one without",

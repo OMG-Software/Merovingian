@@ -642,9 +642,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (`docs/threat-model.md`, "Federation reads not limited to servers in the room").
   The gate is then followed by a per-event filter: `/event`, `/backfill` and
   `/get_missing_events` redact (never drop) an event none of the origin's users could see
-  under the history visibility in the state AT that event (`ServerEventFilter`); `/state`,
+  under the history visibility in the state AT that event (`ServerEventFilter`), and `shared`
+  needs a user of the origin joined now or in that state (ADR-0585); `/state`,
   `/state_ids` and `/event_auth` stay whole because state is part of the room's authorisation.
   Source: `src/federation/AGENTS.md`.
+
+- **An event builds only on events of its own room.** Every path that takes a PDU refuses a
+  `prev_event` held under another room (`database::find_event_in_other_room`, ADR-0583).
+  Source: `src/federation/AGENTS.md`.
+
+- **Authority comes from the state this server recorded, never from what an event cites.** A
+  redaction is judged on the state before it and on current state (ADR-0586); `auth_events` are
+  the sender's choice. Source: `src/events/AGENTS.md`.
+
+- **A row that only records a bind at an identity server is not ownership.** Anything that
+  treats a 3PID as proof asks `is_account_threepid` (ADR-0584). Source: `src/homeserver/AGENTS.md`.
 
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
   the users you asked that server about, and only records that describe the user they are

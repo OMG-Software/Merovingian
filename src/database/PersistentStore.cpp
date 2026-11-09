@@ -3037,6 +3037,38 @@ namespace
     return group == nullptr ? std::nullopt : std::optional<PersistentStateGroup>{*group};
 }
 
+[[nodiscard]] auto find_state_group_state_event_id(PersistentStore const& store, std::string_view state_group_id,
+                                                   std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string_view>
+{
+    auto visited = std::unordered_set<std::string_view>{};
+    auto current = state_group_id;
+    for (auto hops = std::size_t{0U};; ++hops)
+    {
+        if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
+        {
+            return std::nullopt;
+        }
+        auto const group = store.state_groups.find(current);
+        if (group == store.state_groups.end())
+        {
+            return std::nullopt;
+        }
+        for (auto const& entry : store.state_group_state.entries_of(current))
+        {
+            if (entry.event_type == event_type && entry.state_key == state_key)
+            {
+                return std::string_view{entry.event_id};
+            }
+        }
+        if (!group->parent_state_group_id.has_value())
+        {
+            return std::string_view{};
+        }
+        current = *group->parent_state_group_id;
+    }
+}
+
 [[nodiscard]] auto read_state_group_full_state(PersistentStore const& store, std::string_view state_group_id)
     -> std::optional<std::vector<PersistentStateGroupStateEntry>>
 {
@@ -3228,6 +3260,9 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
 auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id) -> void
 {
     store.event_state_groups.assign(event_id, state_group_id);
+    // A redaction is judged on the state before it (ADR-0586), which exists only from here: the observer's
+    // call when the event was stored came too early for every path that stores the event and then the mapping.
+    notify_redaction_observer(store, std::string{event_id});
 }
 
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
@@ -6810,6 +6845,20 @@ namespace
         }
     }
     return missing;
+}
+
+[[nodiscard]] auto find_event_in_other_room(PersistentStore const& store, std::string_view room_id,
+                                            std::vector<std::string> const& event_ids) -> std::optional<std::string>
+{
+    for (auto const& id : event_ids)
+    {
+        auto const found = store.events.find(id);
+        if (found != store.events.end() && found->room_id != room_id)
+        {
+            return id;
+        }
+    }
+    return std::nullopt;
 }
 
 auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void

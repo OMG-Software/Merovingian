@@ -35,6 +35,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
+#include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
@@ -940,6 +941,111 @@ SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid bind only a 
     }
 }
 
+// Spec: client-server-api.md, GET /account/3pid: the list "is not the same as the list of third-party
+// identifiers bound to the user's Matrix ID in identity servers"; POST /account/3pid/bind: "Homeservers
+// should not prevent this request from succeeding if another user has bound the 3PID". Audit run 4,
+// F-02: a bind needs only an access token, so it must not act as adding the address to the account.
+SCENARIO("A 3PID bound at an identity server stays off the account until POST /account/3pid/add",
+         "[homeserver][identity][integration][auth][3pid][security][f02]")
+{
+    GIVEN("alice and bob, and an identity server that validated the address for each of them")
+    {
+        auto started = merovingian::homeserver::start_client_server(integration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "alice");
+        auto const bob = register_and_login(runtime, "bob");
+
+        auto responses = identity_responses(validated_response(email_address));
+        responses.push_back({"3pid/unbind", ok_response("{}")});
+        auto identity_server = MockIdentityServer{std::move(responses)};
+        identity_server.install(runtime);
+
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto const bind_as = [&](std::string const& token, std::string const& secret) {
+            REQUIRE(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", token,
+                         request_token_body(false, secret, &identity_server))
+                        .response.status == 200U);
+            return post(runtime, "/_matrix/client/v3/account/3pid/bind", token,
+                        R"({"client_secret":")" + secret + R"(","sid":"is-sid-42","id_server":")" +
+                            identity_server.host_port() + R"(","id_access_token":"opaque"})");
+        };
+        auto const listed_addresses = [&](std::string const& token) {
+            return merovingian::homeserver::handle_client_server_request(
+                       runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}})
+                .response.body;
+        };
+
+        WHEN("alice binds the address")
+        {
+            REQUIRE(bind_as(alice, "secret-alice").response.status == 200U);
+            auto const binding =
+                merovingian::database::find_account_threepid(store, "@alice:example.org", "email", email_address);
+
+            THEN("the bind is remembered for a later unbind, but the address is not on her account")
+            {
+                REQUIRE(binding.has_value());
+                REQUIRE(binding->bound);
+                REQUIRE(binding->added_at_ms == 0U);
+                REQUIRE_FALSE(binding->is_account_threepid());
+                REQUIRE(listed_addresses(alice).find(email_address) == std::string::npos);
+            }
+
+            THEN("no email pusher may use it")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::owned_email_pusher_address(store, "@alice:example.org", email_address)
+                        .has_value());
+            }
+
+            AND_WHEN("bob binds the same address")
+            {
+                auto const second = bind_as(bob, "secret-bob");
+
+                THEN("it succeeds, as a bind does not claim the address on this server")
+                {
+                    REQUIRE(second.response.status == 200U);
+                }
+            }
+
+            AND_WHEN("she adds it to her account with her password")
+            {
+                REQUIRE(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", alice,
+                             request_token_body(false, "secret-add", &identity_server))
+                            .response.status == 200U);
+                auto const added =
+                    post(runtime, "/_matrix/client/v3/account/3pid/add", alice,
+                         R"({"client_secret":"secret-add","sid":"is-sid-42",)" + uia_password_auth() + "}");
+                auto const after_add =
+                    merovingian::database::find_account_threepid(store, "@alice:example.org", "email", email_address);
+
+                THEN("it is on her account and still bound")
+                {
+                    REQUIRE(added.response.status == 200U);
+                    REQUIRE(after_add.has_value());
+                    REQUIRE(after_add->is_account_threepid());
+                    REQUIRE(after_add->bound);
+                    REQUIRE(listed_addresses(alice).find(email_address) != std::string::npos);
+                }
+            }
+
+            AND_WHEN("she unbinds it again")
+            {
+                auto const unbound = post(runtime, "/_matrix/client/v3/account/3pid/unbind", alice,
+                                          R"({"medium":"email","address":")" + std::string{email_address} + R"("})");
+
+                THEN("no row is left, because the address was never on her account")
+                {
+                    REQUIRE(unbound.response.status == 200U);
+                    REQUIRE_FALSE(merovingian::database::find_account_threepid(store, "@alice:example.org", "email",
+                                                                               email_address)
+                                      .has_value());
+                }
+            }
+        }
+    }
+}
+
 // Spec: M_THREEPID_DENIED, "The server does not permit this third-party identifier. This may happen if the server only
 // permits, for example, email addresses from a particular domain" (client-server-api.md, Common error codes).
 SCENARIO("POST /account/3pid/bind and the legacy POST /account/3pid honour allowed_bind_domains",
@@ -1042,7 +1148,8 @@ SCENARIO("A validation check against the identity server holds no runtime lock a
             auto const elapsed = std::chrono::steady_clock::now() - start;
             {
                 // The runtime mutex is free: this takes it while the IS call is still pending.
-                auto const lock = std::lock_guard<merovingian::homeserver::RuntimeMutex const>{runtime.homeserver.mutex};
+                auto const lock =
+                    std::lock_guard<merovingian::homeserver::RuntimeMutex const>{runtime.homeserver.mutex};
                 runtime.registration_validation_sessions.clear();
             }
             identity_server.release_stall();

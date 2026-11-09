@@ -443,6 +443,13 @@ trusted `id_server` is supplied, not just persist locally:
   `/account/3pid/add` adds the 3PID to the account without an identity-server
   bind, but needs the same confirmation.
 
+- **A bind is not an account address (F-02, ADR-0584).** `/bind` takes only an
+  access token, so its row has `added_at_ms` zero and grants nothing: it is not
+  listed by `GET /account/3pid`, cannot reset the password or receive email
+  pushes, and does not count as in use, so another user may bind the same
+  address. Only `/account/3pid/add`, after the password step, puts an address on
+  the account. Unbinding a bound-only address deletes its row.
+
 - **3PID ownership is proven by the identity server (AUTH-5).**
   `confirm_validation_session` (`ClientServerRuntime.cpp`) is the single gate for
   `/account/3pid/add`, `/account/3pid/bind` and `/account/3pid`. It calls

@@ -319,6 +319,122 @@ SCENARIO("A server reads shared and world_readable history in full, including be
     }
 }
 
+// Spec: Matrix Client-Server API v1.19, Room History Visibility.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+//
+// "In all cases except world_readable, a user needs to join a room to view events in that room."
+// Applied to the requesting server (audit run 4, F-04): a room that is world_readable now lets a
+// server with no user in it past the room gate, but an event sent while the room was `shared` was
+// never world_readable, so that server reads it redacted.
+SCENARIO("A server with no user in a room reads only the events sent while it was world_readable",
+         "[federation][conformance][history-visibility][server-visibility][f04]")
+{
+    GIVEN("a room that was shared and is now world_readable, and a server with no user in it")
+    {
+        auto history = RoomHistory{};
+        history.set_visibility("$hv_shared", "shared");
+        history.add_message("$m_shared");
+        history.set_visibility("$hv_world", "world_readable");
+        history.add_message("$m_world");
+        auto const& store = history.finish();
+        constexpr auto stranger = std::string_view{"stranger.example"};
+
+        WHEN("the stranger backfills the room")
+        {
+            auto const served = serve_backfill(store, stranger, "$m_world");
+
+            THEN("the shared-era message is served redacted and keeps its place in the graph")
+            {
+                // Spec: only world_readable lets a viewer who never joined see an event.
+                REQUIRE_FALSE(shows_content(served.at("$m_shared")));
+            }
+
+            THEN("the event sent while the room was world_readable is served in full")
+            {
+                // Spec: world_readable events may be viewed by anyone.
+                REQUIRE(shows_content(served.at("$m_world")));
+            }
+        }
+
+        WHEN("the stranger fetches the shared-era event and the world_readable event with /event")
+        {
+            auto const shared_body = ok_body(fed::build_event_response(store, "$m_shared", local_server, stranger));
+            auto const world_body = ok_body(fed::build_event_response(store, "$m_world", local_server, stranger));
+
+            THEN("only the world_readable event carries its content")
+            {
+                auto const* shared_pdus = array_of(shared_body, "pdus");
+                auto const* world_pdus = array_of(world_body, "pdus");
+                REQUIRE(shared_pdus != nullptr);
+                REQUIRE(world_pdus != nullptr);
+                REQUIRE(shared_pdus->size() == 1U);
+                REQUIRE(world_pdus->size() == 1U);
+                auto const* shared_pdu = std::get_if<cj::Object>(&shared_pdus->front().storage());
+                auto const* world_pdu = std::get_if<cj::Object>(&world_pdus->front().storage());
+                REQUIRE(shared_pdu != nullptr);
+                REQUIRE(world_pdu != nullptr);
+                REQUIRE_FALSE(shows_content(ServedPdu{"$m_shared", *shared_pdu}));
+                REQUIRE(shows_content(ServedPdu{"$m_world", *world_pdu}));
+            }
+        }
+
+        WHEN("visibility is judged directly for the stranger and for this room's own server")
+        {
+            THEN("the stranger is refused the shared-era event and given the world_readable one")
+            {
+                REQUIRE_FALSE(fed::event_visible_to_server(store, "$m_shared", stranger));
+                REQUIRE(fed::event_visible_to_server(store, "$m_world", stranger));
+            }
+
+            THEN("the server of a joined user reads the shared-era event in full")
+            {
+                REQUIRE(fed::event_visible_to_server(store, "$m_shared", local_server));
+            }
+        }
+
+        WHEN("the stranger asks /timestamp_to_event forwards from the shared-era message's timestamp")
+        {
+            // origin_server_ts is 1000 + position: $hv_shared 1003, $m_shared 1004, $hv_world 1005.
+            auto const result =
+                fed::build_timestamp_to_event_response(store, room_id, 1004, db::TimeDirection::forwards, stranger);
+
+            THEN("the shared-era message is stepped over and the first world_readable event is named")
+            {
+                REQUIRE(result.status == fed::RoomReadStatus::ok);
+                REQUIRE(string_of(parse_object(result.body), "event_id") == "$hv_world");
+            }
+        }
+    }
+
+    GIVEN("a room that became world_readable after a server's user had joined and left")
+    {
+        auto history = RoomHistory{};
+        history.set_visibility("$hv_shared", "shared");
+        history.add_message("$m_before_join");
+        history.set_membership("$bob_join", bob, "join");
+        history.add_message("$m_while_joined");
+        history.set_membership("$bob_leave", bob, "leave");
+        history.add_message("$m_after_leave");
+        history.set_visibility("$hv_world", "world_readable");
+        auto const& store = history.finish();
+
+        WHEN("visibility is judged for that server, which has no joined user now")
+        {
+            THEN("the event sent while its user was joined stays readable")
+            {
+                // Spec: a member may read what was sent while it was joined.
+                REQUIRE(fed::event_visible_to_server(store, "$m_while_joined", remote_server));
+            }
+
+            THEN("the events from outside that span are not")
+            {
+                REQUIRE_FALSE(fed::event_visible_to_server(store, "$m_before_join", remote_server));
+                REQUIRE_FALSE(fed::event_visible_to_server(store, "$m_after_leave", remote_server));
+            }
+        }
+    }
+}
+
 // Spec: Matrix Client-Server API v1.19, Room History Visibility ("joined").
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
 //

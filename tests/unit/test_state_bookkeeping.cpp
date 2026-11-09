@@ -410,6 +410,79 @@ SCENARIO("A PDU whose prev_event has no recorded state group is not stored and d
     }
 }
 
+// Spec: server-server-api.md, "PDUs": prev_events are "the most recent events in the room". An
+// event of another room says nothing about this room's state, even when its state group is present.
+SCENARIO("compute_state_before refuses a prev_event or a state group of another room",
+         "[pdu_ingestion][state_groups][security][f01]")
+{
+    GIVEN("a room whose genesis is recorded and an event of another room with state of its own")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+
+        auto const other_room = std::string{"!other:example.org"};
+        auto foreign = PersistentEvent{};
+        foreign.event_id = "$foreign_tip";
+        foreign.room_id = other_room;
+        foreign.sender_user_id = "@mallory:example.org";
+        foreign.json = make_event_json("m.room.topic", "", "$foreign_tip", "@mallory:example.org", 40, {}, "{}");
+        store.events.push_back(foreign);
+        auto const foreign_group =
+            merovingian::database::create_or_reuse_state_group(store, other_room, "foreign-group", std::nullopt,
+                                                               {
+                                                                   {"", "m.room.topic", "", "$foreign_tip"}
+        });
+        REQUIRE(foreign_group.has_value());
+        REQUIRE(merovingian::database::set_event_state_group(store, "$foreign_tip", *foreign_group));
+
+        WHEN("it is the only prev_event")
+        {
+            auto const state_before = compute_state_before(store, room_id, *policy, {"$foreign_tip"});
+
+            THEN("nothing is computed, and the reason names the other room")
+            {
+                REQUIRE_FALSE(state_before.ok);
+                REQUIRE(state_before.state.empty());
+                REQUIRE(state_before.reason.find("another room") != std::string::npos);
+            }
+        }
+
+        WHEN("it is one of two prev_events and the other is of this room")
+        {
+            auto const state_before = compute_state_before(store, room_id, *policy, {"$alice_join", "$foreign_tip"});
+
+            THEN("the merge is refused as a whole")
+            {
+                REQUIRE_FALSE(state_before.ok);
+                REQUIRE(state_before.reason.find("another room") != std::string::npos);
+            }
+        }
+
+        WHEN("an event of this room is mapped to a state group of the other room")
+        {
+            auto local = PersistentEvent{};
+            local.event_id = "$mismapped";
+            local.room_id = room_id;
+            local.sender_user_id = "@alice:example.org";
+            local.json = make_event_json("m.room.topic", "", "$mismapped", "@alice:example.org", 50, {}, "{}");
+            store.events.push_back(local);
+            REQUIRE(merovingian::database::set_event_state_group(store, "$mismapped", *foreign_group));
+
+            auto const state_before = compute_state_before(store, room_id, *policy, {"$mismapped"});
+
+            THEN("the group is not read as this room's state")
+            {
+                REQUIRE_FALSE(state_before.ok);
+                REQUIRE(state_before.state.empty());
+                REQUIRE(state_before.reason.find("another room") != std::string::npos);
+            }
+        }
+    }
+}
+
 namespace
 {
 

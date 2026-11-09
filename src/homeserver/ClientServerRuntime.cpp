@@ -2507,27 +2507,31 @@ namespace
         return iterator == store.account_threepids.end() ? nullptr : &(*iterator);
     }
 
+    // Whether an account on this server holds the address. A row that only records a bind at an identity
+    // server holds nothing here (ADR-0584), and any number of users may have one.
     [[nodiscard]] auto threepid_in_use(ClientServerRuntime const& rt, std::string_view medium, std::string_view address,
                                        std::optional<std::string_view> except_user_id = std::nullopt) -> bool
     {
         auto const& store = rt.homeserver.database.persistent_store;
         return std::ranges::any_of(store.account_threepids, [&](database::PersistentThreePidBinding const& current) {
-            return current.medium == medium && current.address == address &&
+            return current.is_account_threepid() && current.medium == medium && current.address == address &&
                    (!except_user_id.has_value() || current.user_id != *except_user_id);
         });
     }
 
-    [[nodiscard]] auto ensure_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
-                                               std::string_view medium, std::string_view address,
-                                               std::optional<std::string_view> country, std::uint64_t validated_at_ms)
+    // The user's row for the address, created if needed. `added_at_ms` is what a row with none yet takes: the
+    // current time when the address goes on the account, zero when it was only bound at an identity server. A
+    // bind therefore never puts an address on the account, and never takes one off.
+    [[nodiscard]] auto ensure_threepid_row(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
+                                           std::string_view address, std::optional<std::string_view> country,
+                                           std::uint64_t validated_at_ms, std::uint64_t added_at_ms)
         -> database::PersistentThreePidBinding&
     {
-        auto const now_ms = wall_clock_milliseconds();
         auto* existing = find_account_threepid(rt, user_id, medium, address);
         if (existing != nullptr)
         {
             existing->validated_at_ms = validated_at_ms;
-            existing->added_at_ms = existing->added_at_ms == 0U ? now_ms : existing->added_at_ms;
+            existing->added_at_ms = existing->added_at_ms == 0U ? added_at_ms : existing->added_at_ms;
             if (country.has_value())
             {
                 existing->country = std::string{*country};
@@ -2544,7 +2548,7 @@ namespace
             std::string{address},
             country.has_value() ? std::optional<std::string>{std::string{*country}} : std::nullopt,
             std::nullopt,
-            now_ms,
+            added_at_ms,
             validated_at_ms,
             false,
         };
@@ -2560,6 +2564,35 @@ namespace
         }
         rt.homeserver.database.persistent_store.account_threepids.push_back(std::move(binding));
         return rt.homeserver.database.persistent_store.account_threepids.back();
+    }
+
+    // Puts the address on the user's account: POST /account/3pid/add, after user-interactive authentication.
+    [[nodiscard]] auto ensure_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
+                                               std::string_view medium, std::string_view address,
+                                               std::optional<std::string_view> country, std::uint64_t validated_at_ms)
+        -> database::PersistentThreePidBinding&
+    {
+        return ensure_threepid_row(rt, user_id, medium, address, country, validated_at_ms, wall_clock_milliseconds());
+    }
+
+    // Forgets a bind that has been undone. An address on the account stays on it; a row that existed only
+    // to record the bind has nothing left to say, so it is deleted (ADR-0584).
+    auto forget_threepid_bind(ClientServerRuntime& rt, database::PersistentThreePidBinding& record) -> void
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        if (!record.is_account_threepid())
+        {
+            auto const user_id = record.user_id;
+            auto const medium = record.medium;
+            auto const address = record.address;
+            std::ignore = database::delete_account_threepid(store, user_id, medium, address);
+            return;
+        }
+        record.bound = false;
+        record.id_server.reset();
+        record.client_secret.reset();
+        record.sid.reset();
+        std::ignore = database::store_account_threepid(store, record);
     }
 
     [[nodiscard]] auto threepid_unbind_result(database::PersistentThreePidBinding const* record,
@@ -2611,6 +2644,10 @@ namespace
     // recorded locally; any failure leaves the account untouched. A bind to an
     // identity server this server does not trust is refused rather than recorded:
     // no identity server was asked, so nothing was bound.
+    //
+    // A bind takes only an access token, so it records the bind and nothing else: the
+    // address does not go on the account (ADR-0584). Whether another user holds the
+    // address is not asked, as the spec says a bind should not be refused for that.
     constexpr auto threepid_domain_denied_message =
         std::string_view{"this server does not permit that third-party identifier to be sent to an identity server"};
 
@@ -2626,11 +2663,6 @@ namespace
                                 confirmation.refusal_message);
         }
         auto const& validated = *confirmation.session;
-        if (threepid_in_use(rt, validated.medium, validated.address, user_id))
-        {
-            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
-                                "third-party identifier is already associated with an account");
-        }
         auto const trusted_base =
             resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, id_server);
         if (!trusted_base.has_value())
@@ -2668,10 +2700,10 @@ namespace
         {
             return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
         }
-        auto& record = ensure_account_threepid(
+        auto& record = ensure_threepid_row(
             rt, user_id, validated.medium, validated.address,
             validated.country.has_value() ? std::optional<std::string_view>{*validated.country} : std::nullopt,
-            validated.validated_at_ms);
+            validated.validated_at_ms, 0U);
         record.id_server = std::string{id_server};
         record.bound = true;
         // Persist the IS validation pair so a later unbind can drive IS auth
@@ -2709,11 +2741,7 @@ namespace
             auto* refreshed = find_account_threepid(rt, user_id, medium, address);
             if (refreshed != nullptr)
             {
-                refreshed->bound = false;
-                refreshed->id_server.reset();
-                refreshed->client_secret.reset();
-                refreshed->sid.reset();
-                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *refreshed);
+                forget_threepid_bind(rt, *refreshed);
             }
         };
 
@@ -14540,8 +14568,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         auto const address = normalize_threepid_address("email", body->email);
         auto const& store = rt.homeserver.database.persistent_store;
+        // Spec: "associated with an account on this homeserver". An address only bound at an identity server
+        // is not (ADR-0584): a bind takes nothing but an access token.
         auto const holder = std::ranges::find_if(store.account_threepids, [&address](auto const& binding) {
-            return binding.medium == "email" && binding.address == address;
+            return binding.is_account_threepid() && binding.medium == "email" && binding.address == address;
         });
         auto const owner =
             holder != store.account_threepids.end() && asserted_user_is_active(rt.homeserver, holder->user_id)
@@ -14743,7 +14773,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // the answer is the one an unvalidated session gets.
         auto const& bindings = rt.homeserver.database.persistent_store.account_threepids;
         auto const still_bound = std::ranges::any_of(bindings, [&](database::PersistentThreePidBinding const& binding) {
-            return binding.user_id == user_id && binding.medium == "email" && binding.address == session->address;
+            return binding.is_account_threepid() && binding.user_id == user_id && binding.medium == "email" &&
+                   binding.address == session->address;
         });
         if (!still_bound)
         {
@@ -16774,7 +16805,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto threepids = canonicaljson::Array{};
         for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
         {
-            if (record.user_id != *user)
+            // Spec: "This is *not* the same as the list of third-party identifiers bound to the user's Matrix
+            // ID in identity servers." A row that only records a bind is therefore not listed.
+            if (record.user_id != *user || !record.is_account_threepid())
             {
                 continue;
             }
@@ -16912,11 +16945,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // Operator withdrew trust for the IS that holds the binding. We can no
                 // longer reach it to unbind, so report no-support but still clear locally
                 // — a trust change must not strand the 3PID at the homeserver.
-                record->bound = false;
-                record->id_server.reset();
-                record->client_secret.reset();
-                record->sid.reset();
-                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
+                forget_threepid_bind(rt, *record);
                 return dispatch_resp(
                     req, rt, 200U,
                     json_serialize(json_obj({json_member("id_server_unbind_result", json_str("no-support"))})));
@@ -16960,11 +16989,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto* refreshed = find_account_threepid(rt, *user, body->medium, normalized_address);
             if (refreshed != nullptr)
             {
-                refreshed->bound = false;
-                refreshed->id_server.reset();
-                refreshed->client_secret.reset();
-                refreshed->sid.reset();
-                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *refreshed);
+                forget_threepid_bind(rt, *refreshed);
             }
             return dispatch_resp(
                 req, rt, 200U,
@@ -16972,10 +16997,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (record != nullptr && local_result == "success")
         {
-            record->bound = false;
-            record->id_server.reset();
-            // Write-through: persist the cleared bound/id_server state.
-            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
+            forget_threepid_bind(rt, *record);
         }
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));

@@ -501,3 +501,7 @@
 * [0570 - sync_max_in_flight bounds parked waits, not sync-pool threads](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
 * [0574 - Media downloads are streamed from the database in chunks](0574-media-downloads-are-streamed-from-the-database-in-chunks.md)
 * [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)
+* [0583 - An event builds only on events of its own room](0583-an-event-builds-only-on-events-of-its-own-room.md)
+* [0584 - A bind at an identity server grants nothing on this server](0584-a-bind-at-an-identity-server-grants-nothing-on-this-server.md)
+* [0585 - Shared history is served only to a server with a joined user](0585-shared-history-is-served-only-to-a-server-with-a-joined-user.md)
+* [0586 - A redaction's authority comes from the state this server holds](0586-a-redactions-authority-comes-from-the-state-this-server-holds.md)

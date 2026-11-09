@@ -2974,6 +2974,19 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **A banned user reading past their leave in a lazy-loaded `state` (0.12.76, ADR-0450).** A left room's `state` never
   reads past the event that ended the user's join, on every read path including the current-event fallback.
 
+### Another room's state, a bind used as a recovery address, shared history and stale redaction power (0.12.83, audit run 4)
+
+- **A PDU borrowing another room's state (F-01, ADR-0583).** A `prev_event` of another room gave a PDU that room's state
+  to be judged by. Every path that takes a PDU refuses it, and `compute_state_before` refuses a foreign event or group.
+- **A stolen access token resetting the password (F-02, ADR-0584).** `/bind` needs no password, yet it wrote the row the
+  password reset trusted. A bind now grants nothing here.
+- **A stranger reading `shared` history (F-04, ADR-0585).** A room that became `world_readable` opened its earlier
+  history to any server. `shared` now needs a user of that server joined now or in the state at the event.
+- **A demoted moderator redacting (F-06, ADR-0586).** A redaction could cite the power levels from before the demotion.
+  It is now judged on recorded state.
+- **Residual risk:** servers can reach different verdicts on one redaction, depending on when each sees a demotion. A
+  redaction sent before a demotion and first judged after it stays withheld.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes

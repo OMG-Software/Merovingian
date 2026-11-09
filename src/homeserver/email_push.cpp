@@ -247,9 +247,11 @@ auto owned_email_pusher_address(database::PersistentStore const& store, std::str
     {
         return std::nullopt;
     }
+    // A row that only records a bind at an identity server is not ownership (ADR-0584).
     auto const owned =
         std::ranges::any_of(store.account_threepids, [&](database::PersistentThreePidBinding const& row) {
-            return row.user_id == user_id && row.medium == "email" && row.address == address;
+            return row.is_account_threepid() && row.user_id == user_id && row.medium == "email" &&
+                   row.address == address;
         });
     if (!owned)
     {

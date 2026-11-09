@@ -146,14 +146,16 @@ runs as `database.migration_role` when one is configured.
 was applied to which target) is derived from `events` and never persisted in a table of its own: `rebuild_redaction_state`
 re-derives it after hydration and the homeserver's startup reconciliation re-applies. What is durable is the redacted
 JSON of the target (`replace_event_json`), so no migration. The database module does not judge redactions (it cannot
-link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event.
+link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event and
+again when its state group is recorded (`apply_event_state_group`), since a redaction is judged on that state (ADR-0586).
+Hydration writes mappings without the observer.
 
 ## State-group tables (F-07, F-15, ADR-0325)
 
 `PersistentStore::state_groups`, `state_group_state` and `event_state_groups` are table classes, not vectors: they own their
 rows, show them read-only, and keep a hash index over them. Look up with `event_state_groups.state_group_of(event_id)`,
 `state_groups.find(id)` and `state_group_state.entries_of(id)` (or `find_event_state_group`, `find_state_group`,
-`read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
+`find_state_group_state_event_id` for one key, `read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
 `assign`, `erase_if` and `clear`, which keep the index right; a writer that bypasses them does not compile. Hydration and
 `reload_room` use `insert_all` / `erase_if`. The tables have no lock: a reader needs exclusion from writers (in main,
 `runtime.mutex`), and a view or `string_view` they return is valid only until the next write.

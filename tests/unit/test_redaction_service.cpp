@@ -56,6 +56,7 @@ auto add_event(PersistentStore& store, std::string_view event_id, std::string_vi
         store, "$pl", room,
         R"({"type":"m.room.power_levels","sender":"@alice:local.example","state_key":"","content":{"redact":50,"users":{"@alice:local.example":100}}})",
         2U);
+    store.state.push_back({std::string{room}, "m.room.power_levels", "", "$pl"});
     add_event(store, "$by_bob", room,
               R"({"type":"m.room.message","sender":"@bob:local.example","content":{"body":"b"}})", 3U);
     add_event(store, "$by_remote", room,
@@ -72,7 +73,206 @@ auto add_event(PersistentStore& store, std::string_view event_id, std::string_vi
            R"(","content":{"redacts":")" + std::string{target} + R"("},"auth_events":["$pl"]})";
 }
 
+// A redaction by `sender` of `target` that cites `cited_power_levels` in its auth_events.
+[[nodiscard]] auto redaction_citing(std::string_view sender, std::string_view target,
+                                    std::string_view cited_power_levels) -> std::string
+{
+    return R"({"type":"m.room.redaction","sender":")" + std::string{sender} + R"(","room_id":")" + std::string{room} +
+           R"(","content":{"redacts":")" + std::string{target} + R"("},"auth_events":[")" +
+           std::string{cited_power_levels} + R"("]})";
+}
+
+// Adds a power_levels event in which `user` holds `level` and the redact level is 50.
+auto add_power_levels(PersistentStore& store, std::string_view event_id, std::string_view user, int level,
+                      std::uint64_t ordering) -> void
+{
+    add_event(
+        store, event_id, room,
+        R"({"type":"m.room.power_levels","sender":"@alice:local.example","state_key":"","content":{"redact":50,"users":{"@alice:local.example":100,")" +
+            std::string{user} + R"(":)" + std::to_string(level) + "}}}",
+        ordering);
+}
+
+// Records `power_levels_id` as the power levels in force at `event_id`: the state group of a
+// non-state event is the state before it (and after it).
+auto record_power_levels_at(PersistentStore& store, std::string const& event_id, std::string const& power_levels_id)
+    -> void
+{
+    auto const group =
+        merovingian::database::create_or_reuse_state_group(store, room, "group-" + event_id, std::nullopt,
+                                                           {
+                                                               {"", "m.room.power_levels", "", power_levels_id}
+    });
+    REQUIRE(group.has_value());
+    REQUIRE(merovingian::database::set_event_state_group(store, event_id, *group));
+}
+
+// Makes `power_levels_id` the room's current power levels.
+auto set_current_power_levels(PersistentStore& store, std::string const& power_levels_id) -> void
+{
+    for (auto& row : store.state)
+    {
+        if (row.event_type == "m.room.power_levels")
+        {
+            row.event_id = power_levels_id;
+        }
+    }
+}
+
+constexpr auto mallory = std::string_view{"@mallory:local.example"};
+
+[[nodiscard]] auto remote_message_is_intact(PersistentStore const& store) -> bool
+{
+    return store.events.find("$by_remote")->json.find("\"body\"") != std::string::npos;
+}
+
 } // namespace
+
+// Spec: Matrix Server-Server API v1.19 (rooms/v11.md "Handling redactions"): the redaction is applied
+// when "the power level of the redaction event's sender is greater than or equal to the redact level",
+// which is the room's, not one the redaction chose. Audit run 4, F-06: the power levels came from the
+// redaction's own auth_events, so a demoted moderator could cite the event from before the demotion.
+SCENARIO("A redaction's authority comes from the room's state, not from the power levels it cites",
+         "[homeserver][redaction][unit][security][f06]")
+{
+    GIVEN("a member demoted from moderator, a current power_levels that says so, and a remote user's message")
+    {
+        auto store = room_store();
+        add_power_levels(store, "$pl_moderator", mallory, 50, 6U);
+        add_power_levels(store, "$pl_demoted", mallory, 0, 7U);
+        set_current_power_levels(store, "$pl_demoted");
+
+        WHEN("the member's redaction cites the old power_levels, and the state at it is the demoted one")
+        {
+            add_event(store, "$redaction", room, redaction_citing(mallory, "$by_remote", "$pl_moderator"), 10U);
+            merovingian::database::rebuild_redaction_state(store);
+            record_power_levels_at(store, "$redaction", "$pl_demoted");
+            merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+            THEN("the message is untouched and the redaction stays withheld")
+            {
+                REQUIRE(remote_message_is_intact(store));
+                REQUIRE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+
+        WHEN("the member forks from before the demotion, so even the state at the redaction grants the level")
+        {
+            add_event(store, "$redaction", room, redaction_citing(mallory, "$by_remote", "$pl_moderator"), 10U);
+            merovingian::database::rebuild_redaction_state(store);
+            record_power_levels_at(store, "$redaction", "$pl_moderator");
+            merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+            THEN("current state forbids it, so nothing is applied")
+            {
+                REQUIRE(remote_message_is_intact(store));
+                REQUIRE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+
+        WHEN("the same member redacts locally while citing the old power_levels")
+        {
+            auto const check = merovingian::homeserver::check_local_redaction(
+                store, room, redaction_citing(mallory, "$by_remote", "$pl_moderator"), false, local);
+
+            THEN("it is forbidden")
+            {
+                REQUIRE(check == LocalRedactionCheck::forbidden);
+            }
+        }
+    }
+
+    GIVEN("a member who held the redact level at the redaction and still does")
+    {
+        auto store = room_store();
+        add_power_levels(store, "$pl_moderator", mallory, 50, 6U);
+        set_current_power_levels(store, "$pl_moderator");
+        add_event(store, "$redaction", room, redaction_citing(mallory, "$by_remote", "$pl"), 10U);
+        merovingian::database::rebuild_redaction_state(store);
+        record_power_levels_at(store, "$redaction", "$pl_moderator");
+
+        WHEN("the redaction is reconciled")
+        {
+            merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+            THEN("it applies, whatever it cited")
+            {
+                REQUIRE_FALSE(remote_message_is_intact(store));
+                REQUIRE_FALSE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+    }
+
+    GIVEN("a member promoted only after the redaction was sent")
+    {
+        auto store = room_store();
+        add_power_levels(store, "$pl_moderator", mallory, 50, 6U);
+        set_current_power_levels(store, "$pl_moderator");
+        add_event(store, "$redaction", room, redaction_citing(mallory, "$by_remote", "$pl_moderator"), 10U);
+        merovingian::database::rebuild_redaction_state(store);
+        record_power_levels_at(store, "$redaction", "$pl");
+
+        WHEN("the redaction is reconciled")
+        {
+            merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+            THEN("the state at the redaction decides, and it is withheld")
+            {
+                REQUIRE(remote_message_is_intact(store));
+                REQUIRE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+    }
+
+    GIVEN("a store with the reconciler installed and a moderator's redaction whose state is not recorded yet")
+    {
+        auto store = room_store();
+        add_power_levels(store, "$pl_moderator", mallory, 50, 6U);
+        set_current_power_levels(store, "$pl_moderator");
+        merovingian::homeserver::install_redaction_reconciler(store);
+        add_event(store, "$redaction", room, redaction_citing(mallory, "$by_remote", "$pl_moderator"), 10U);
+        merovingian::database::rebuild_redaction_state(store);
+        merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+        WHEN("nothing more has happened")
+        {
+            THEN("an unknown state is not authority: the redaction is withheld")
+            {
+                REQUIRE(remote_message_is_intact(store));
+                REQUIRE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+
+        WHEN("the state at the redaction is recorded")
+        {
+            record_power_levels_at(store, "$redaction", "$pl_moderator");
+
+            THEN("the redaction is judged again and applied, with no other event arriving")
+            {
+                REQUIRE_FALSE(remote_message_is_intact(store));
+                REQUIRE_FALSE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+            }
+        }
+    }
+
+    GIVEN("a redaction by a user of the original sender's server, with no state recorded")
+    {
+        auto store = room_store();
+        add_event(store, "$redaction", room, redaction("@dave:local.example", "$by_bob"), 10U);
+        merovingian::database::rebuild_redaction_state(store);
+
+        WHEN("it is reconciled")
+        {
+            merovingian::homeserver::reconcile_redactions_for_event(store, "$redaction");
+
+            THEN("the domain rule needs no power levels, so it applies")
+            {
+                REQUIRE_FALSE(merovingian::database::redaction_is_withheld(store, "$redaction"));
+                REQUIRE(store.events.find("$by_bob")->json.find("\"body\"") == std::string::npos);
+            }
+        }
+    }
+}
 
 SCENARIO("A local redaction is permitted only when the sender may redact the target", "[homeserver][redaction][unit]")
 {

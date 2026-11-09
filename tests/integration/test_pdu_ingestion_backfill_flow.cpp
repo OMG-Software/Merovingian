@@ -3747,6 +3747,47 @@ private:
     net::TcpAcceptor acceptor_{};
 };
 
+// Spec: server-server-api.md, "PDUs": prev_events are "the most recent events in the room". Audit
+// run 4, F-01: a fetched event was given the state of whatever event its prev_events named, in any
+// room, so a server filling a gap could be fed another room's state.
+SCENARIO("Backfill does not store an event whose prev_event belongs to another room",
+         "[pdu_ingestion][backfill][security][f01]")
+{
+    GIVEN("a room with a gap, a second room on this server, and a peer offering an event that bridges them")
+    {
+        auto fixture = RecoveryFixture{"!f01-backfill:local.example.org"};
+        auto const other_room = std::string{"!f01-other:local.example.org"};
+        seed_room_with_genesis_state_group(fixture.runtime(), other_room);
+
+        auto const bridge =
+            make_remote_message_pdu(fixture.room_id, {other_room + ":member"}, fixture.auth_ids(), 4, 10);
+        auto const pdu = make_remote_message_pdu(fixture.room_id, {bridge.event_id}, fixture.auth_ids(), 5, 11);
+
+        auto script = PeerScript{};
+        script.missing_events = [&bridge](std::string const&) -> std::string {
+            return events_array_body({bridge.json});
+        };
+        auto const peer = fixture.serve(script);
+
+        WHEN("the PDU that needs it is ingested")
+        {
+            std::ignore = fixture.ingest(pdu);
+
+            THEN("the bridging event is not stored and has no state")
+            {
+                auto const& store = fixture.runtime().database.persistent_store;
+                REQUIRE(store.events.find(bridge.event_id) == store.events.end());
+                REQUIRE_FALSE(fixture.has_state_group(bridge.event_id));
+            }
+
+            THEN("the PDU itself is not placed")
+            {
+                REQUIRE_FALSE(fixture.has_state_group(pdu.event_id));
+            }
+        }
+    }
+}
+
 // Spec: server-server-api.md POST /get_missing_events — `latest_events` are
 // "the event IDs to retrieve the previous events for": the PDU whose ancestry is
 // incomplete, which the origin walks back from and does not return itself.

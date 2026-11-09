@@ -748,6 +748,14 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
 [[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
     -> std::optional<PersistentStateGroup>;
 
+// The event ID `state_group_id`'s full resulting state holds for (event_type, state_key), walking the
+// delta chain newest first, bounded and cycle-checked as read_state_group_full_state is. nullopt when
+// the chain is broken (a group missing, a cycle, too deep); an empty view when the chain is sound and
+// the state has no such key. The view points into the store, so it lives as long as the row does.
+[[nodiscard]] auto find_state_group_state_event_id(PersistentStore const& store, std::string_view state_group_id,
+                                                   std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string_view>;
+
 // Reads `state_group_id`'s full resulting state by walking parent links back
 // to the nearest snapshot and applying every delta on the chain, newest
 // first (a key already supplied by a newer group is never overwritten by an
@@ -1296,6 +1304,11 @@ auto sort_to_device_messages(PersistentStore& store) -> void;
                                                  std::vector<std::string> const& auth_event_ids,
                                                  std::vector<std::string> const& prev_event_ids)
     -> MissingEventReferences;
+// The first of `event_ids` this store holds in a room other than `room_id`, or nullopt if none is. An
+// event may only build on events of its own room (ADR-0583); one the store does not hold is not asked
+// about here. One hash lookup per ID.
+[[nodiscard]] auto find_event_in_other_room(PersistentStore const& store, std::string_view room_id,
+                                            std::vector<std::string> const& event_ids) -> std::optional<std::string>;
 // Rebuilds `store.deferred_pdu_awaits` from the retained rows, parsing each row's JSON once. Hydration
 // calls it after every table is loaded.
 auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void;

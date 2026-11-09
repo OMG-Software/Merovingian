@@ -4,11 +4,11 @@ Fixes the high and medium findings of security audit run 4 (F-01 to F-06).
 
 ### F-01: prev_events are bound to the PDU's room
 
-To be completed on this branch.
+A PDU naming a `prev_event` this server holds under another room is refused on every path that takes one: `/send` and the deferred-PDU retry answer `rejected_invalid`, `send_join`, `send_leave` and `send_knock` answer 400 `M_INVALID_PARAM`, and backfill drops the event. `compute_state_before` refuses a foreign `prev_event` or state group, so another room's state can no longer stand in for this one's (ADR-0583).
 
 ### F-02: an identity-server bind is not a recovery email
 
-To be completed on this branch.
+`POST /account/3pid/bind` and `POST /account/3pid` now record the bind and nothing else. The address does not go on the account: it is not listed by `GET /account/3pid`, cannot reset the password, cannot receive email pushes, and may also be bound by another user, as the spec asks. `POST /account/3pid/add` still promotes it, with the password step (ADR-0584).
 
 ### F-03: room aliases are capped and indexed
 
@@ -16,7 +16,7 @@ To be completed on this branch.
 
 ### F-04: shared history is not served to a server with no user in the room
 
-To be completed on this branch.
+Over federation, an event sent under `shared` visibility is sent in full only to a server with a user joined in the room now, or joined in the state at the event. A room that later became `world_readable` no longer gives a stranger its earlier history; such events are redacted, never dropped (ADR-0585).
 
 ### F-05: devices and their names are capped, and a device-list announcement is linear
 
@@ -24,7 +24,7 @@ To be completed on this branch.
 
 ### F-06: redaction authority comes from the room's state, not from the event's own citation
 
-To be completed on this branch.
+A redaction applies by power level only when its sender met the redact level both in the state before the redaction and in current state, as this server recorded them. The power levels the event cites no longer count, and state this server cannot read grants nothing. The domain rule is unchanged (ADR-0586).
 
 ## 0.12.82
 

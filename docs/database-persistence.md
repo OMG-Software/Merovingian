@@ -220,8 +220,10 @@ value. Test fixtures that do not exercise persistence select it through
   added to their account, replacing the prior in-memory
   `vector<AccountThreePid>` which was lost on restart. Columns are `user_id`,
   `medium`, `address`, `country`, `id_server`, `added_at_ms`,
-  `validated_at_ms`, and `bound`, with a unique key on `(medium, address)` so
-  the same email/msisdn cannot be bound twice.
+  `validated_at_ms`, and `bound`, with the primary key `(user_id, medium, address)`.
+  `added_at_ms` zero marks a row that only records a bind at an identity server
+  and grants nothing on this server (ADR-0584); that an address is on one account
+  only is enforced by `threepid_in_use`, not by a key.
 - `account_threepids.client_secret` / `account_threepids.sid` columns
   store the `client_secret` + `sid` pair the IS issued for a binding, so a later remote
   unbind can replay them in the request body (IS unbind auth mode 2). Both
@@ -586,7 +588,9 @@ value. Test fixtures that do not exercise persistence select it through
   declared in the schema. New module
   [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
   (`src/homeserver/state_bookkeeping.cpp`):
-  - `compute_state_before(store, room_id, policy, prev_event_ids)` — the
+  - `compute_state_before(store, room_id, policy, prev_event_ids)` — refuses a
+    `prev_event` held under another room or mapped to another room's state group
+    (`find_event_in_other_room`, ADR-0583), then gives the
     state immediately before an event: a single `prev_event`'s own
     after-state directly (`find_event_state_group` +
     `read_state_group_full_state`, no resolution needed); several

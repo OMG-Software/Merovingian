@@ -110,6 +110,9 @@ and no access token are answered before the authentication gate. Rules for chang
   unrelated background tasks. The permit releases the slot on every exit path.
 - **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
   the session and answers `M_SESSION_NOT_VALIDATED`.
+- **Only an address on the account counts (ADR-0584).** A row with `added_at_ms` zero records a bind at an identity
+  server, which takes nothing but an access token. The request and completion steps, `GET /account/3pid`,
+  `owned_email_pusher_address` and `threepid_in_use` all ask `is_account_threepid`; a new reader of the table does too.
 - **A session exists for an unknown address too**, with an empty `reset_token`. The submit step compares against a
   fixed dummy then, so it does the same work and gives the same `M_TOKEN_INCORRECT`.
 - **Constant-time comparison** (`crypto::constant_time_equal_variable_length`) is used for the code and for the
@@ -764,6 +767,10 @@ copy of the original content anywhere. A suspended user may redact only their ow
 suspension gate lets the route through). A target this server does not hold is not a 404 (the spec has none): the
 redaction is stored when the sender holds the room's `redact` level and is judged when the target arrives; below
 that level it is 403. A target held in another room is `target_unknown` (404).
+
+A redaction's authority comes from the state this server recorded, never from its own `auth_events` (ADR-0586):
+`reconcile_redaction` needs `applies` for the state before it and for current state, and `check_local_redaction` uses
+current state.
 
 ## Errcodes the status cannot name (CSAZ-9)
 

@@ -108,8 +108,8 @@ auto constexpr remote_key_seed = "m01-audit-remote-seed";
     return remote;
 }
 
-[[nodiscard]] auto signed_put(std::string const& target,
-                              std::string const& body) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put(std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto req = merovingian::federation::SignedFederationRequest{};
     req.method = "PUT";
@@ -442,6 +442,59 @@ SCENARIO("send_join is accepted for an uninvited remote user in a public room", 
             THEN("the membership row for the joining user becomes join")
             {
                 REQUIRE(has_membership(runtime.database.persistent_store, room_id, uninvited_user, "join"));
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md, "PDUs": prev_events are "the most recent events in the room". Audit
+// run 4, F-01: the send_join receipt read its state before from the prev_events it was given, with
+// no check that they were this room's.
+SCENARIO("send_join naming a prev_event of another room is refused and stores nothing",
+         "[security][federation][m01][f01]")
+{
+    GIVEN("two public rooms on one server and a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "f01user", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        auto options = merovingian::homeserver::CreateRoomOptions{};
+        options.preset = "public_chat";
+        auto const victim = merovingian::homeserver::create_room(runtime, login.value, options);
+        REQUIRE(victim.ok);
+        auto const other = merovingian::homeserver::create_room(runtime, login.value, options);
+        REQUIRE(other.ok);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const& store = runtime.database.persistent_store;
+        auto const joiner = std::string{"@erin:"} + remote_origin;
+        auto const auth_events = merovingian::tests::fixture_auth_event_ids(store, victim.value, joiner, true);
+        auto const foreign_prev = merovingian::tests::fixture_prev_event_ids(store, other.value);
+        auto const join_pdu =
+            make_signed_membership_body(victim.value, joiner, joiner, "join", auth_events, foreign_prev);
+
+        WHEN("the remote server delivers send_join")
+        {
+            auto const target = "/_matrix/federation/v2/send_join/" + victim.value + "/" + join_pdu.event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(target, join_pdu.json));
+
+            THEN("it is refused, and the event and the membership are not stored")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(store.events.find(join_pdu.event_id) == store.events.end());
+                REQUIRE_FALSE(has_any_membership(store, victim.value, joiner));
             }
         }
     }

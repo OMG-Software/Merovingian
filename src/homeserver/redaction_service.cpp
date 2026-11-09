@@ -18,7 +18,6 @@
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
-#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -76,10 +75,8 @@ namespace
     [[nodiscard]] auto create_event_of(database::PersistentStore const& store, std::string_view room_id)
         -> database::PersistentEvent const*
     {
-        auto const it = std::ranges::find_if(store.state, [room_id](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.create" && state.state_key.empty();
-        });
-        return it == store.state.end() ? nullptr : find_event(store, it->event_id);
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.create", "");
+        return event_id.has_value() ? find_event(store, *event_id) : nullptr;
     }
 
     // The room version's policy, from the room's m.room.create event. nullptr when the room or its
@@ -90,10 +87,8 @@ namespace
         return stored_room_version_policy(store, room_id);
     }
 
-    // What the redaction was authorized against: the power levels among its own auth_events (the
-    // room's state as the redaction's sender saw it), and the room's create event.
-    [[nodiscard]] auto context_of(database::PersistentStore const& store, canonicaljson::Value const& redaction,
-                                  std::string_view room_id) -> events::RedactionContext
+    [[nodiscard]] auto context_with_create_event(database::PersistentStore const& store, std::string_view room_id)
+        -> events::RedactionContext
     {
         auto context = events::RedactionContext{};
         if (auto const* create = create_event_of(store, room_id); create != nullptr)
@@ -103,26 +98,57 @@ namespace
                 context.create = std::move(*parsed);
             }
         }
-        auto const* auth_events = member_of(redaction, "auth_events");
-        auto const* ids = auth_events == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&auth_events->storage());
-        if (ids == nullptr)
+        return context;
+    }
+
+    // Reads the power levels event a state lookup named. State naming an event the store cannot give back
+    // is state this server does not have.
+    auto load_power_levels(database::PersistentStore const& store, std::string_view event_id,
+                           events::RedactionContext& context) -> void
+    {
+        auto const* stored = find_event(store, event_id);
+        auto parsed = stored == nullptr ? std::nullopt : parse_event(stored->json);
+        if (!parsed.has_value())
         {
+            context.power_levels_known = false;
+            return;
+        }
+        context.power_levels = std::move(*parsed);
+    }
+
+    // The room's power levels now.
+    [[nodiscard]] auto current_context(database::PersistentStore const& store, std::string_view room_id)
+        -> events::RedactionContext
+    {
+        auto context = context_with_create_event(store, room_id);
+        if (auto const id = database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
+            id.has_value())
+        {
+            load_power_levels(store, *id, context);
+        }
+        return context;
+    }
+
+    // The room's power levels when the redaction was sent, from the state this server recorded for it (a
+    // redaction changes no state, so its group is the state before it too). Until that group is recorded, or
+    // if its chain is broken, the levels are unknown.
+    [[nodiscard]] auto context_before_event(database::PersistentStore const& store, std::string_view event_id,
+                                            std::string_view room_id) -> events::RedactionContext
+    {
+        auto context = context_with_create_event(store, room_id);
+        auto const group_id = database::find_event_state_group(store, event_id);
+        auto const power_levels_id =
+            group_id.has_value()
+                ? database::find_state_group_state_event_id(store, *group_id, "m.room.power_levels", "")
+                : std::nullopt;
+        if (!power_levels_id.has_value())
+        {
+            context.power_levels_known = false;
             return context;
         }
-        for (auto const& id : *ids)
+        if (!power_levels_id->empty())
         {
-            auto const* text = std::get_if<std::string>(&id.storage());
-            auto const* stored = text == nullptr ? nullptr : find_event(store, *text);
-            if (stored == nullptr)
-            {
-                continue;
-            }
-            auto parsed = parse_event(stored->json);
-            if (parsed.has_value() && string_of(*parsed, "type") == std::optional<std::string>{"m.room.power_levels"})
-            {
-                context.power_levels = std::move(*parsed);
-                break;
-            }
+            load_power_levels(store, *power_levels_id, context);
         }
         return context;
     }
@@ -156,9 +182,18 @@ namespace
             return;
         }
         auto const target = parse_event(target_event->json);
-        if (!target.has_value() ||
-            events::judge_redaction(*redaction, *target, context_of(store, *redaction, redaction_event->room_id),
-                                    *policy) != events::RedactionVerdict::applies)
+        if (!target.has_value())
+        {
+            return;
+        }
+        // The sender's authority comes from this server's record of the room, never from the power levels the
+        // event cites: it must hold at the redaction and still hold now (ADR-0586). The domain condition needs
+        // neither, so a redaction of a user's own server is not held back by unknown state.
+        auto const applies_under = [&](events::RedactionContext const& context) {
+            return events::judge_redaction(*redaction, *target, context, *policy) == events::RedactionVerdict::applies;
+        };
+        if (!applies_under(context_before_event(store, redaction_id, redaction_event->room_id)) ||
+            !applies_under(current_context(store, redaction_event->room_id)))
         {
             return;
         }
@@ -253,7 +288,7 @@ auto check_local_redaction(database::PersistentStore const& store, std::string_v
         // event is let through; the target's own sender, its domain and the rest of the rules are
         // judged when it arrives (reconcile_redaction).
         return target_id.has_value() && !target_id->empty() &&
-                       events::sender_meets_redact_level(*redaction, context_of(store, *redaction, room_id), *policy)
+                       events::sender_meets_redact_level(*redaction, current_context(store, room_id), *policy)
                    ? LocalRedactionCheck::permitted
                    : LocalRedactionCheck::forbidden;
     }
@@ -264,7 +299,7 @@ auto check_local_redaction(database::PersistentStore const& store, std::string_v
         return LocalRedactionCheck::forbidden;
     }
 
-    auto const context = context_of(store, *redaction, room_id);
+    auto const context = current_context(store, room_id);
     auto const target_sender = string_of(*target, "sender");
     auto const own_event = target_sender == sender;
     auto const server_admin_over_local_user =

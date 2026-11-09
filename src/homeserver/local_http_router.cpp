@@ -2469,6 +2469,12 @@ namespace
                             {},
                             {}};
                 }
+                // ADR-0583: a membership event builds on its own room only.
+                if (database::find_event_in_other_room(store, room_id, envelope.prev_event_ids).has_value())
+                {
+                    return {
+                        false, 400U, matrix_error("M_INVALID_PARAM", "a prev_event belongs to another room"), {}, {}};
+                }
                 // Prefer the room version recorded in m.room.create over the one
                 // the envelope claims: the sender does not get to choose which
                 // rule set its own event is judged by.
@@ -4130,6 +4136,12 @@ namespace
             return false;
         }
         auto const& envelope = *envelope_opt;
+        // ADR-0583: whatever the mode, a fetched event builds on its own room only.
+        if (database::find_event_in_other_room(runtime.database.persistent_store, room_id, envelope.prev_event_ids)
+                .has_value())
+        {
+            return false;
+        }
 
         auto const third_party_invite_token = [&effective_pdu]() -> std::string {
             auto const* pdu_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
@@ -5338,6 +5350,24 @@ namespace
         return {federation::PduIngestionStatus::missing_prev_state, std::move(reason)};
     };
 
+    // ADR-0583: a prev_event held in another room is a verdict, not a gap, so nothing is fetched or retained
+    // for it. Checked before the fetch to save it, and again below with the locks back: the fetch releases
+    // both, and it may have stored the event the PDU names.
+    auto const refused_foreign_prev = [&]() -> std::optional<federation::PduIngestionResult> {
+        auto const foreign =
+            database::find_event_in_other_room(runtime.database.persistent_store, room_id, envelope.prev_event_ids);
+        if (!foreign.has_value())
+        {
+            return std::nullopt;
+        }
+        return federation::PduIngestionResult{federation::PduIngestionStatus::rejected_invalid,
+                                              "prev_event " + *foreign + " belongs to another room"};
+    };
+    if (auto refused = refused_foreign_prev(); refused.has_value())
+    {
+        return std::move(*refused);
+    }
+
     // ADR-0064 phase C: if this PDU names prev_events or auth_events we do not
     // have, release both locks and fetch the gap from the sending server. A
     // single backfill attempt is made; if references remain unresolvable the PDU
@@ -5378,6 +5408,10 @@ namespace
                 return {federation::PduIngestionStatus::main_overloaded, "backfill key-resolution admission deferred"};
             }
         }
+    }
+    if (auto refused = refused_foreign_prev(); refused.has_value())
+    {
+        return std::move(*refused);
     }
     {
         auto [missing_auth, missing_prev] = collect_missing_pdu_references(runtime.database.persistent_store, envelope);
