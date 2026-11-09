@@ -82,6 +82,8 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <functional>
@@ -806,15 +808,17 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_refresh_token",
-                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6)",
-                                                    {
-                                                        {token.token_hash,                  true },
-                                                        {token.user_id,                     false},
-                                                        {token.device_id,                   false},
-                                                        {token.revoked ? "true" : "false",  false},
-                                                        {expires_at_text(token.expires_at), false},
-                                                        {token.predecessor_hash,            true }
+    if (!record_and_persist(
+            store,
+            record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                             {
+                                 {token.token_hash, true},
+                                 {token.user_id, false},
+                                 {token.device_id, false},
+                                 {token.revoked ? "true" : "false", false},
+                                 {expires_at_text(token.expires_at), false},
+                                 {token.predecessor_hash, true},
+                                 {std::to_string(std::max<std::int64_t>(token.issued_at_ms, 0)), false}
     })))
     {
         return false;

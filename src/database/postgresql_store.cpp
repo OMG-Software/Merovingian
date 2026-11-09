@@ -588,7 +588,7 @@ namespace
         {
             auto refresh_tokens =
                 query_rows(connection, "postgresql_load_refresh_tokens",
-                           "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash "
+                           "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash, issued_at_ms "
                            "FROM refresh_tokens ORDER BY token_hash");
             if (!refresh_tokens.ok)
             {
@@ -598,10 +598,11 @@ namespace
             {
                 if (row.size() >= 4U)
                 {
-                    std::ignore =
-                        store.refresh_tokens.insert({row[0], row[1], row[2], text_is_true(row[3]),
-                                                     row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
-                                                     row.size() >= 6U ? row[5] : std::string{}});
+                    std::ignore = store.refresh_tokens.insert(
+                        {row[0], row[1], row[2], text_is_true(row[3]),
+                         row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
+                         row.size() >= 6U ? row[5] : std::string{},
+                         row.size() >= 7U ? static_cast<std::int64_t>(parse_u64(row[6])) : std::int64_t{0}});
                 }
             }
         }

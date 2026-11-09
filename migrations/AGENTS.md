@@ -6,10 +6,11 @@ after they have been applied to any environment**.
 ## The v1 schema (ADR-0224)
 
 In 0.12.47 every pre-1.0 migration was collapsed into one: `001_initial_schema.sql`,
-schema version `1`. It creates all 63 tables in their final shape and the six
+schema version `1`. It creates all 63 tables in their final shape and the nine
 secondary indexes (`event_edges_prev_event_id`, `idx_to_device_messages_recipient_age`,
 `idx_deferred_pdus_room_id`, `idx_media_pending_uploads_owner`, `idx_events_room_id`,
-`idx_state_groups_room_id`). There are no upgrades
+`idx_state_groups_room_id`, `idx_access_tokens_user_device`, `idx_refresh_tokens_user_device`,
+`idx_refresh_tokens_predecessor`). There are no upgrades
 from before it: a database whose `schema_migrations` ledger holds a row this build does
 not have, such as the rows 2 to 26 every build up to 0.12.46 wrote, is refused at open
 (`schema_ledger_is_known`) and must be recreated.

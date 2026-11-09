@@ -3,6 +3,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -20,6 +21,9 @@ struct PersistentRefreshToken final
     // token it replaces, which stays valid until this pair is first used
     // (ADR-0074). Empty for tokens minted at login.
     std::string predecessor_hash{};
+    // Wall-clock time the token was minted, in milliseconds since the epoch. 0 for a row stored before the column
+    // existed or by a caller that did not set it. Persisted so a later sweep can age retired rows (F-08).
+    std::int64_t issued_at_ms{0};
 };
 
 } // namespace merovingian::database

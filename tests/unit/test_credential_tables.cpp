@@ -14,6 +14,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -24,6 +25,7 @@
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentRefreshToken.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalSession.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
@@ -34,8 +36,10 @@
 #include <sodium.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -417,6 +421,79 @@ SCENARIO("A session table removes one device's sessions through its index", "[f0
                 REQUIRE(lookup(copy, 5U) != nullptr);
                 REQUIRE(lookup(copy, 3U) != nullptr);
                 REQUIRE(lookup(table, 1U) != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("A refresh token's issue time survives a save and reload through SQLite", "[f08][credential][sqlite]")
+{
+    GIVEN("a SQLite store holding a refresh token issued at a known time and one stored without a time")
+    {
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-f08-issued-" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        std::filesystem::remove(path);
+        auto opened = db::open_sqlite_persistent_store(path.string());
+        REQUIRE(opened.ok);
+        REQUIRE(db::store_refresh_token(opened.store, {"@a:example.org", "D1", fake_hash("issued", 1U), false,
+                                                       std::nullopt, fake_hash("issued", 0U), 1700000000123}));
+        REQUIRE(db::store_refresh_token(opened.store,
+                                        {"@a:example.org", "D2", fake_hash("issued", 2U), false, std::nullopt, {}}));
+
+        WHEN("the store is reopened and hydrated")
+        {
+            auto reopened = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("the time is read back, an unset time is 0 and the indexes cover the loaded rows")
+            {
+                auto const* timed = reopened.store.refresh_tokens.find(fake_hash("issued", 1U));
+                REQUIRE(timed != nullptr);
+                REQUIRE(timed->issued_at_ms == 1700000000123);
+                REQUIRE(timed->predecessor_hash == fake_hash("issued", 0U));
+                auto const* untimed = reopened.store.refresh_tokens.find(fake_hash("issued", 2U));
+                REQUIRE(untimed != nullptr);
+                REQUIRE(untimed->issued_at_ms == 0);
+                REQUIRE(reopened.store.refresh_tokens.has_unrevoked_for_device("@a:example.org", "D2"));
+                REQUIRE(reopened.store.refresh_tokens.has_unrevoked_with_predecessor(fake_hash("issued", 0U)));
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Every site that mints a refresh token stamps the wall clock", "[f08][credential]")
+{
+    GIVEN("a registered user with a device")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = hs::start_runtime(credential_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registered =
+            hs::register_local_user(runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        REQUIRE(registered.ok);
+        REQUIRE(hs::login_local_user(runtime, registered.value, "CorrectHorse7!", "DEVICE1").ok);
+        auto const before =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+
+        WHEN("a refresh token is issued and then rotated")
+        {
+            auto const issued = hs::issue_refresh_token_for_session(runtime, registered.value, "DEVICE1");
+            REQUIRE(issued.ok);
+            auto const rotated = hs::refresh_local_session(runtime, issued.value);
+            REQUIRE(rotated.ok);
+
+            THEN("both rows carry a time no earlier than the start of the test")
+            {
+                auto const& rows = runtime.database.persistent_store.refresh_tokens;
+                REQUIRE(rows.size() == 2U);
+                for (auto const& row : rows)
+                {
+                    REQUIRE(row.issued_at_ms >= before);
+                }
             }
         }
     }

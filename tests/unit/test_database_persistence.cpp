@@ -1430,6 +1430,7 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                     {"remote_media",       "local_media_id TEXT NOT NULL DEFAULT ''"             },
                     {"remote_media",       "fetched_at_ms TEXT NOT NULL DEFAULT '0'"             },
                     {"room_aliases",       "creator_user_id TEXT NOT NULL DEFAULT ''"            },
+                    {"refresh_tokens",     "issued_at_ms TEXT NOT NULL DEFAULT '0'"              },
                 };
                 for (auto const& [table, column] : folded)
                 {
@@ -1448,6 +1449,9 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                     "CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)",
                     "CREATE INDEX idx_events_room_id ON events (room_id)",
                     "CREATE INDEX idx_state_groups_room_id ON state_groups (room_id)",
+                    "CREATE INDEX idx_access_tokens_user_device ON access_tokens (user_id, device_id)",
+                    "CREATE INDEX idx_refresh_tokens_user_device ON refresh_tokens (user_id, device_id)",
+                    "CREATE INDEX idx_refresh_tokens_predecessor ON refresh_tokens (predecessor_hash)",
                 };
                 for (auto const& index : indexes)
                 {

@@ -414,6 +414,14 @@ namespace
         return same_version && left.size() == right.size() && crypto::constant_time_equal(left, right);
     }
 
+    // The wall clock in milliseconds since the epoch, for the `issued_at_ms` of a refresh token (F-08).
+    [[nodiscard]] auto wall_clock_ms() -> std::int64_t
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    }
+
     [[nodiscard]] auto issue_token() -> std::optional<std::string>
     {
         auto const random_hex = crypto::secure_random_hex(token_secret_bytes);
@@ -1488,8 +1496,13 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
         return make_operation_result(false, {}, "token key unavailable", 503U);
     }
     auto const refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
-    if (!database::store_refresh_token(runtime.database.persistent_store, {std::string{user_id}, std::string{device_id},
-                                                                           *refresh_hash, false, refresh_expires_at}))
+    if (!database::store_refresh_token(runtime.database.persistent_store, {std::string{user_id},
+                                                                           std::string{device_id},
+                                                                           *refresh_hash,
+                                                                           false,
+                                                                           refresh_expires_at,
+                                                                           {},
+                                                                           wall_clock_ms()}))
     {
         return make_operation_result(false, {}, "refresh token persistence failed", 500U);
     }
@@ -1659,8 +1672,9 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
     if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false,
                                                                           new_access_expires_at, presented_hash}) ||
-        !database::store_refresh_token(runtime.database.persistent_store, {user_id, device_id, *new_refresh_hash, false,
-                                                                           new_refresh_expires_at, presented_hash}))
+        !database::store_refresh_token(
+            runtime.database.persistent_store,
+            {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at, presented_hash, wall_clock_ms()}))
     {
         return {false, 500U, {}, {}, {}, {}, "refreshed token persistence failed"};
     }

@@ -32,10 +32,12 @@ value. Test fixtures that do not exercise persistence select it through
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
   so v1 creates all 63 tables in their final shape, every column that an
   earlier migration used to `ALTER` on now being part of the table's `CREATE`,
-  plus six indexes: `event_edges_prev_event_id`,
+  plus nine indexes: `event_edges_prev_event_id`,
   `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id`,
-  `idx_media_pending_uploads_owner`, `idx_events_room_id` and
-  `idx_state_groups_room_id` (the last two serve the per-room reload,
+  `idx_media_pending_uploads_owner`, `idx_events_room_id`,
+  `idx_state_groups_room_id`, `idx_access_tokens_user_device`,
+  `idx_refresh_tokens_user_device` and `idx_refresh_tokens_predecessor` (`idx_events_room_id`
+  and `idx_state_groups_room_id` serve the per-room reload,
   [ADR-0490](adr/0490-events-and-state-groups-are-indexed-by-room-and-stream-ordering-is-not.md);
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
@@ -724,7 +726,16 @@ value. Test fixtures that do not exercise persistence select it through
   `access_tokens.predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`) are
   part of the v1 schema. A token pair minted by `POST /refresh` records the hash
   of the refresh token it replaced, which stays valid until the pair is first
-  used (see `docs/auth-identity.md`). Both backends store and hydrate the
+  used (see `docs/auth-identity.md`). `refresh_tokens.issued_at_ms` (`TEXT NOT NULL
+  DEFAULT '0'`, the last column, like every other millisecond column of the
+  schema) is the wall-clock time the token was minted, `0` when unknown; it is
+  persisted by every insert and loaded by both backends (F-08).
+  The in-memory `access_tokens` and `refresh_tokens` are `CredentialTable`s
+  (hash, (user, device), user and predecessor indexes), and the three secondary
+  indexes above serve the same `WHERE` clauses in SQL: `user_id` and
+  `device_id` (the per-device and per-user revokes, and the `device_id <>`
+  form, whose `user_id` prefix the composite index serves) and
+  `predecessor_hash`; `token_hash` is the primary key. Both backends store and hydrate the
   columns; `database::revoke_refresh_tokens_with_predecessor` supersedes an
   unused pair when a refresh is retried. Hydration
   (`homeserver::hydrate_local_database`) also copies each access token's

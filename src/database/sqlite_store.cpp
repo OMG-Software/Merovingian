@@ -784,13 +784,13 @@ namespace
                                   column_text(row, 5)});
                          }) &&
                load_rows(connection,
-                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash "
+                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash, issued_at_ms "
                          "FROM refresh_tokens",
                          [&store](sqlite3_stmt& row) {
                              std::ignore = store.refresh_tokens.insert(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                   text_is_true(column_text(row, 3)), parse_expires_at(column_text(row, 4)),
-                                  column_text(row, 5)});
+                                  column_text(row, 5), static_cast<std::int64_t>(parse_u64(column_text(row, 6)))});
                          }) &&
                load_rows(connection,
                          "SELECT server_name, key_id, public_key, valid_until_ts, secret_key, expired_ts FROM "

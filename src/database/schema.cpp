@@ -32,7 +32,8 @@ namespace
             "expires_at TEXT NOT NULL DEFAULT '', predecessor_refresh_hash TEXT NOT NULL DEFAULT ''"                      },
         SchemaTableDefinition{
                               "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
-            "expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT ''"                             },
+            "expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT '', "
+            "issued_at_ms TEXT NOT NULL DEFAULT '0'"                                                                     },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', "
@@ -230,8 +231,9 @@ namespace
     // The secondary indexes v1 creates, after every table. Each serves a lookup
     // outside its table's primary key: an event's children (ADR-0064), a
     // device's to-device queue by age (ADR-0117), a room's deferred PDUs
-    // (ADR-0165), a user's pending uploads (ADR-0212), and the two tables a cold room is reloaded from by
-    // `room_id` alone (ADR-0490).
+    // (ADR-0165), a user's pending uploads (ADR-0212), the two tables a cold room is reloaded from by
+    // `room_id` alone (ADR-0490), and the credential tables' per-device and per-predecessor revocations (F-08):
+    // their WHERE clauses name `user_id`, `device_id` and `predecessor_hash`; `token_hash` is the primary key.
     constexpr auto core_indexes = std::array{
         SchemaIndexDefinition{"event_edges_prev_event_id",            "event_edges",           "prev_event_id"},
         SchemaIndexDefinition{"idx_to_device_messages_recipient_age", "to_device_messages",
@@ -240,6 +242,9 @@ namespace
         SchemaIndexDefinition{"idx_media_pending_uploads_owner",      "media_pending_uploads", "owner_user_id"},
         SchemaIndexDefinition{"idx_events_room_id",                   "events",                "room_id"      },
         SchemaIndexDefinition{"idx_state_groups_room_id",             "state_groups",          "room_id"      },
+        SchemaIndexDefinition{"idx_access_tokens_user_device",        "access_tokens",         "user_id, device_id"},
+        SchemaIndexDefinition{"idx_refresh_tokens_user_device",       "refresh_tokens",        "user_id, device_id"},
+        SchemaIndexDefinition{"idx_refresh_tokens_predecessor",       "refresh_tokens",        "predecessor_hash"},
     };
 
     [[nodiscard]] auto index_sql(SchemaIndexDefinition const& index, std::string_view prefix)

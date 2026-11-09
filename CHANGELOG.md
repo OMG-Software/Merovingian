@@ -90,6 +90,13 @@ grace window follow in part 2. `[f08]` in `tests/unit/test_credential_tables.cpp
 counters that storing a token, each per-device revoke, the per-predecessor revoke and one refresh examine the same rows with
 200 and 400 other-user rows, and that every index agrees with the rows after erases, a sweep and a copy.
 Three tests that aged rows by writing `expires_at` through a mutable iterator use `set_expires_at_where` now.
+The v1 schema (`core_tables`/`core_indexes` and `migrations/001_initial_schema.sql`, together, ADR-0224) gains the secondary
+indexes `idx_access_tokens_user_device` and `idx_refresh_tokens_user_device` on `(user_id, device_id)` and
+`idx_refresh_tokens_predecessor` on `predecessor_hash`, which serve the `WHERE` clauses of the revoke statements, and
+`refresh_tokens.issued_at_ms` as its last column (`TEXT NOT NULL DEFAULT '0'`, the type every other millisecond column uses;
+`PersistentRefreshToken::issued_at_ms` is an `std::int64_t`). Both refresh-token mint sites (`issue_refresh_token_for_session`
+and `refresh_local_session`) set it to the wall clock; nothing reads it yet. A database created before this change has
+no such column or index and must be recreated (ADR-0224: no upgrade shim before 1.0).
 
 ## 0.12.83
 
