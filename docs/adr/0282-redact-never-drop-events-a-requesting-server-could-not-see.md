@@ -1,6 +1,6 @@
 # Redact, never drop, room events a requesting server could not see
 
-* Status: accepted
+* Status: accepted, amended by [ADR-0585](0585-shared-history-is-served-only-to-a-server-with-a-joined-user.md)
 * Deciders: James Chapman
 * Date: 2026-10-29
 

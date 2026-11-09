@@ -128,6 +128,10 @@ value. Test fixtures that do not exercise persistence select it through
   `read_media_blob_chunk` reads one chunk on a short-lived read-only
   connection. PostgreSQL stays buffered, because each `substring()` of a
   compressed TOASTed `bytea` decompresses the whole value.
+- `room_aliases` is held in memory as `database::RoomAliasTable` (F-03, ADR-0581), not a vector: it owns the rows and
+  indexes them by alias, by room ID and by creator, so `find_room_alias`, a room alias listing and a creator alias
+  count are hash lookups and a delete or reassign does not scan the table. Hydration (SQLite and PostgreSQL) inserts
+  through the class. `server.client_api.max_room_aliases_per_user` and `max_room_aliases_per_room` bound the rows.
 - `room_aliases` carries `creator_user_id` (CSAZ-12, ADR-0127):
   `store_room_alias` writes the creating user, and `delete_room_alias` removes a mapping, in the database and
   in memory, for `DELETE /directory/room/{roomAlias}`.
@@ -220,8 +224,10 @@ value. Test fixtures that do not exercise persistence select it through
   added to their account, replacing the prior in-memory
   `vector<AccountThreePid>` which was lost on restart. Columns are `user_id`,
   `medium`, `address`, `country`, `id_server`, `added_at_ms`,
-  `validated_at_ms`, and `bound`, with a unique key on `(medium, address)` so
-  the same email/msisdn cannot be bound twice.
+  `validated_at_ms`, and `bound`, with the primary key `(user_id, medium, address)`.
+  `added_at_ms` zero marks a row that only records a bind at an identity server
+  and grants nothing on this server (ADR-0584); that an address is on one account
+  only is enforced by `threepid_in_use`, not by a key.
 - `account_threepids.client_secret` / `account_threepids.sid` columns
   store the `client_secret` + `sid` pair the IS issued for a binding, so a later remote
   unbind can replay them in the request body (IS unbind auth mode 2). Both
@@ -586,7 +592,9 @@ value. Test fixtures that do not exercise persistence select it through
   declared in the schema. New module
   [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
   (`src/homeserver/state_bookkeeping.cpp`):
-  - `compute_state_before(store, room_id, policy, prev_event_ids)` — the
+  - `compute_state_before(store, room_id, policy, prev_event_ids)` — refuses a
+    `prev_event` held under another room or mapped to another room's state group
+    (`find_event_in_other_room`, ADR-0583), then gives the
     state immediately before an event: a single `prev_event`'s own
     after-state directly (`find_event_state_group` +
     `read_state_group_full_state`, no resolution needed); several

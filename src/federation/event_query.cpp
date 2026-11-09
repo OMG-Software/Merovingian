@@ -486,9 +486,10 @@ namespace
     // The rule is the client-server "Room History Visibility" rule applied to the server `origin`
     // (owner decision 2026-10-29), against the state group recorded for the event (ADR-0064): the
     // room's state immediately after it, so the event's own state change counts.
-    //   world_readable, shared  visible;
-    //   invited                 visible when a user of `origin` is invited or joined in that state;
-    //   joined                  visible when a user of `origin` is joined in that state.
+    //   world_readable  visible;
+    //   shared          visible when a user of `origin` is joined in that state or joined now (ADR-0585);
+    //   invited         visible when a user of `origin` is invited or joined in that state;
+    //   joined          visible when a user of `origin` is joined in that state.
     // It fails closed: an event with no state group, a broken group chain, or a group naming an
     // event the store lacks is not visible.
     class ServerEventFilter final
@@ -511,7 +512,7 @@ namespace
             {
                 return false;
             }
-            auto const& view = view_of_group(*group_id);
+            auto const& view = view_of_group(*group_id, event.room_id);
             if (!view.valid)
             {
                 return false;
@@ -519,8 +520,9 @@ namespace
             switch (view.visibility)
             {
             case ServerVisibility::world_readable:
-            case ServerVisibility::shared:
                 return true;
+            case ServerVisibility::shared:
+                return view.origin_joined || origin_joined_now(event.room_id);
             case ServerVisibility::invited:
                 return view.origin_invited_or_joined;
             case ServerVisibility::joined:
@@ -590,22 +592,10 @@ namespace
         {
             bool valid{false};
             ServerVisibility visibility{ServerVisibility::shared};
-            // Computed only for `invited` and `joined`, the settings that ask.
+            // Computed when the setting asks: `invited` and `joined` always, and `shared` for an origin
+            // with no joined user now, which only an event sent while it had one is visible to.
             bool origin_joined{false};
             bool origin_invited_or_joined{false};
-        };
-
-        enum class Lookup : unsigned char
-        {
-            found,
-            absent,
-            broken,
-        };
-
-        struct LookupResult final
-        {
-            Lookup outcome{Lookup::broken};
-            std::string_view event_id{};
         };
 
         // The state group recorded for the event: one hash lookup in the store's index (ADR-0325).
@@ -614,38 +604,17 @@ namespace
             return store_.event_state_groups.state_group_of(event_id);
         }
 
-        // Finds the event ID `group_id`'s full state holds for (event_type, state_key), walking the
-        // delta chain newest first exactly as database::read_state_group_full_state does: bounded,
-        // cycle-checked, and broken (not "absent") when a group on the chain is missing.
-        [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
-                                           std::string_view state_key) -> LookupResult
+        // Whether `origin` has a joined user in the room now. A filter serves one request, so this reads the
+        // room's state rows at most once per room for it.
+        [[nodiscard]] auto origin_joined_now(std::string const& room_id) -> bool
         {
-            auto visited = std::unordered_set<std::string_view>{};
-            auto current = group_id;
-            for (auto hops = std::size_t{0U};; ++hops)
+            if (auto const cached = origin_joined_rooms_.find(room_id); cached != origin_joined_rooms_.end())
             {
-                if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
-                {
-                    return {Lookup::broken, {}};
-                }
-                auto const group = store_.state_groups.find(current);
-                if (group == store_.state_groups.end())
-                {
-                    return {Lookup::broken, {}};
-                }
-                for (auto const& entry : store_.state_group_state.entries_of(current))
-                {
-                    if (entry.event_type == event_type && entry.state_key == state_key)
-                    {
-                        return {Lookup::found, entry.event_id};
-                    }
-                }
-                if (!group->parent_state_group_id.has_value())
-                {
-                    return {Lookup::absent, {}};
-                }
-                current = *group->parent_state_group_id;
+                return cached->second;
             }
+            auto const joined = origin_has_joined_user(store_, room_id, origin_);
+            origin_joined_rooms_.emplace(room_id, joined);
+            return joined;
         }
 
         // Fills `origin_joined` and `origin_invited_or_joined` from every `m.room.member` entry of
@@ -700,7 +669,7 @@ namespace
             }
         }
 
-        [[nodiscard]] auto view_of_group(std::string_view group_id) -> GroupView const&
+        [[nodiscard]] auto view_of_group(std::string_view group_id, std::string const& room_id) -> GroupView const&
         {
             auto const key = std::string{group_id};
             if (auto const cached = group_views_.find(key); cached != group_views_.end())
@@ -708,13 +677,14 @@ namespace
                 return cached->second;
             }
             auto view = GroupView{};
-            auto const visibility_event = lookup_in_group(group_id, "m.room.history_visibility", "");
-            if (visibility_event.outcome != Lookup::broken)
+            auto const visibility_event =
+                database::find_state_group_state_event_id(store_, group_id, "m.room.history_visibility", "");
+            if (visibility_event.has_value())
             {
                 view.valid = true;
-                if (visibility_event.outcome == Lookup::found)
+                if (!visibility_event->empty())
                 {
-                    auto const* event = find_event(store_, visibility_event.event_id);
+                    auto const* event = find_event(store_, *visibility_event);
                     if (event == nullptr)
                     {
                         view.valid = false; // the group names an event this store does not hold
@@ -724,8 +694,10 @@ namespace
                         view.visibility = parse_server_visibility(*value);
                     }
                 }
+                // An origin with a joined user now sees every `shared` event, so its groups are not walked.
                 if (view.valid &&
-                    (view.visibility == ServerVisibility::invited || view.visibility == ServerVisibility::joined))
+                    (view.visibility == ServerVisibility::invited || view.visibility == ServerVisibility::joined ||
+                     (view.visibility == ServerVisibility::shared && !origin_joined_now(room_id))))
                 {
                     view.valid = scan_origin_membership(group_id, view);
                 }
@@ -748,6 +720,7 @@ namespace
         std::string_view origin_;
         std::unordered_map<std::string, GroupView> group_views_{};
         std::unordered_map<std::string, rooms::RoomVersionPolicy const*> policies_{};
+        std::unordered_map<std::string, bool> origin_joined_rooms_{};
     };
 
 } // namespace

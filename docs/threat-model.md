@@ -2530,12 +2530,28 @@ run, so each was a way for one party to slow the whole server (CWE-407).
   account-data read scans. **Mitigation:** a configurable per-user cap on global types,
   `400 M_TOO_LARGE` beyond it (ADR-0173). Residual risk: the scans are still linear in the
   total row count; they are bounded, not indexed.
+- **Unbounded devices and device names (run-4 F-05).** A user could hold any number of devices, each with a name of
+  any length, and one device-list announcement scanned the device tables once per device under `runtime.mutex`
+  (about 5 s at 2,000 devices, repeatable at 120 a minute). **Mitigation:** a new device past 200 per user is
+  `403 M_FORBIDDEN`, a name over 256 bytes is `400 M_TOO_LARGE`, and an announcement builds one display-name lookup
+  and one key index for all the devices (ADR-0582). Residual risk: an account can still hold 200 devices; the
+  announcement is now linear in them.
 - **Appservice namespace regexes.** Each match compiled the regex again, for every member of
   every room an event reached. **Mitigation:** `appservice::Namespace` compiles once when it is
   built.
 - **Federation media multipart.** The delimiter search was O(body × boundary) on a body and
   boundary a remote server chooses. **Mitigation:** boundaries over 70 characters are refused
   (RFC 2046) and the search is linear (ADR-0176).
+
+### Unbounded room aliases held the runtime lock (0.12.83, audit run 4 F-03, ADR-0581)
+
+One account could create an unlimited number of room aliases through `PUT /directory/room/{roomAlias}` or
+`POST /createRoom`, and every alias lookup, `GET /rooms/{roomId}/aliases` and the per-event appservice alias list scanned
+the whole unindexed table under `runtime.mutex`, so each such request could block every other request for hundreds of
+milliseconds (CWE-770, CWE-407). Aliases are now held in an indexed `RoomAliasTable`, and a new alias past
+`max_room_aliases_per_user` or `max_room_aliases_per_room` is refused with `400 M_TOO_LARGE` before it is written. An
+application service is exempt from the per-user cap (bridges own many aliases) but not the per-room cap, so a bridge cannot
+make a single room listing unbounded either; a room upgrade moves at most one room of aliases and is not capped.
 
 ### Run-1 low findings (0.12.34)
 
@@ -2973,6 +2989,19 @@ nothing, all from trusting the worker's view or the hook's transport.
   rather than an empty directory if main gives no listing.
 - **A banned user reading past their leave in a lazy-loaded `state` (0.12.76, ADR-0450).** A left room's `state` never
   reads past the event that ended the user's join, on every read path including the current-event fallback.
+
+### Another room's state, a bind used as a recovery address, shared history and stale redaction power (0.12.83, audit run 4)
+
+- **A PDU borrowing another room's state (F-01, ADR-0583).** A `prev_event` of another room gave a PDU that room's state
+  to be judged by. Every path that takes a PDU refuses it, and `compute_state_before` refuses a foreign event or group.
+- **A stolen access token resetting the password (F-02, ADR-0584).** `/bind` needs no password, yet it wrote the row the
+  password reset trusted. A bind now grants nothing here.
+- **A stranger reading `shared` history (F-04, ADR-0585).** A room that became `world_readable` opened its earlier
+  history to any server. `shared` now needs a user of that server joined now or in the state at the event.
+- **A demoted moderator redacting (F-06, ADR-0586).** A redaction could cite the power levels from before the demotion.
+  It is now judged on recorded state.
+- **Residual risk:** servers can reach different verdicts on one redaction, depending on when each sees a demotion. A
+  redaction sent before a demotion and first judged after it stays withheld.
 
 ### 0.12.71 audit follow-up
 

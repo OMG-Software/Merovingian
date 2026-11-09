@@ -22,6 +22,12 @@ local development, WSL, BSD, and CI jobs.
   write `std::ignore = expression;`. GCC, unlike clang, does not let a void cast
   silence `warn_unused_result`, so a cast that built on clang failed the GCC
   coverage job under `-Werror`.
+- GCC's `-Wnull-dereference` comes from its optimizer, so what it reports depends
+  on the compiler version and flags. The clang development build accepted a
+  `find()` result dereferenced without a check, where GCC 16 with the RPM's
+  `-O2 -flto` stopped the package build. Compare a lookup with `end()` even where
+  an invariant says it must succeed; a local clang build does not prove the
+  packages compile.
 - Compiler/linker hardening option enabled by default where supported.
 - Reusable Linux and BSD build wrappers.
 - Windows-to-WSL launchers (`build-wsl.cmd` and `scripts/build-wsl.ps1`) that

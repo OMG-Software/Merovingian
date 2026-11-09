@@ -1,3 +1,56 @@
+## 0.12.83
+
+Fixes the high and medium findings of security audit run 4 (F-01 to F-06).
+
+### F-01: prev_events are bound to the PDU's room
+
+A PDU naming a `prev_event` this server holds under another room is refused on every path that takes one: `/send` and the deferred-PDU retry answer `rejected_invalid`, `send_join`, `send_leave` and `send_knock` answer 400 `M_INVALID_PARAM`, and backfill drops the event. `compute_state_before` refuses a foreign `prev_event` or state group, so another room's state can no longer stand in for this one's (ADR-0583).
+
+### F-02: an identity-server bind is not a recovery email
+
+`POST /account/3pid/bind` and `POST /account/3pid` now record the bind and nothing else. The address does not go on the account: it is not listed by `GET /account/3pid`, cannot reset the password, cannot receive email pushes, and may also be bound by another user, as the spec asks. `POST /account/3pid/add` still promotes it, with the password step, and a bind of an address already on the account changes nothing about it but the bind's own fields (ADR-0584).
+
+### F-03: room aliases are capped and indexed
+
+`PersistentStore::room_aliases` was an unindexed, uncapped vector that `GET /rooms/{roomId}/aliases`, the per-event
+`appservice_room_aliases` and every alias lookup scanned under `runtime.mutex`, so one account could create hundreds of
+thousands of aliases and make each listing hold the global lock for hundreds of milliseconds. It is now
+`database::RoomAliasTable` (ADR-0581, modelled on the state-group tables): it owns its rows and indexes them by alias, by
+room and by creator, so a lookup, a listing of one room, a delete, a reassign and a per-creator count never scan the table
+(an erase moves the last row into the hole). Two new caps, `server.client_api.max_room_aliases_per_user` and
+`server.client_api.max_room_aliases_per_room` (default 100 each, 1..100000), refuse a new alias with `400 M_TOO_LARGE`
+before anything is written, in `PUT /directory/room/{roomAlias}` and in `POST /createRoom` with `room_alias_name`
+(refused before any room is made). An alias that already exists keeps its old answer at the cap. A request authenticated
+as an application service is exempt from the per-user cap only; room upgrade moves aliases without a cap. `erase` checks
+both index lookups for the row it moves, because GCC 16 in the RPM build stops on an unchecked `find()` result.
+ADR-0587 records why SonarCloud's path-injection report on the SQLite path is a false positive, and that operators must
+trust the existing parent directories of that path.
+
+### F-04: shared history is not served to a server with no user in the room
+
+Over federation, an event sent under `shared` visibility is sent in full only to a server with a user joined in the room now, or joined in the state at the event. A room that later became `world_readable` no longer gives a stranger its earlier history; such events are redacted, never dropped (ADR-0585). The older unit and integration tests that read a `shared`-era event as a stranger pinned this leak; they now read an event sent while the room was `world_readable`, and the backfill conformance fixture holds the join its requesting server relies on.
+
+### F-05: devices and their names are capped, and a device-list announcement is linear
+
+A user could hold any number of devices, each with a display name of any length (900 KiB was accepted and stored), and
+announcing the user's devices over federation scanned `store.devices` and `store.device_keys` once per device under
+`runtime.mutex`: about 5 seconds at 2,000 devices, repeatable at 120 requests a minute (ADR-0582).
+
+- **At most 200 devices per user.** `complete_login` and `login_local_user_by_id`, which every device-creating path
+  ends in, refuse a NEW device ID past `device_count_limit` with `403 M_FORBIDDEN` and write nothing. A device the user
+  already holds always logs in, at any count. The count comes from the pass that already looked for the device. Nothing
+  is evicted to make room.
+- **Display names are at most 256 bytes.** `POST /login` and `POST /register` (`initial_device_display_name`) and
+  `PUT /devices/{deviceId}` (`display_name`) answer `400 M_TOO_LARGE` over `ClientApiLimits::max_device_display_name_bytes`,
+  measured in bytes, and store nothing. A name is refused, never truncated.
+- **A device-list announcement is linear.** `broadcast_device_list_updates` and the join-time announcement build every
+  device's `m.device_list_update` through `federation::build_device_list_update_batch`: one `DeviceDisplayNames` and one
+  index of the user's device keys for the whole announcement. The EDU bytes are unchanged.
+
+### F-06: redaction authority comes from the room's state, not from the event's own citation
+
+A redaction applies by power level only when its sender met the redact level both in the state before the redaction and in current state, as this server recorded them. The power levels the event cites no longer count, and state this server cannot read grants nothing. The domain rule is unchanged (ADR-0586).
+
 ## 0.12.82
 
 Sonar and CodeQL take a CI runner as soon as a pull request is pushed (ADR-0580). No behaviour changes.

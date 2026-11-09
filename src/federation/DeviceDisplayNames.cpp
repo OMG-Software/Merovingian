@@ -18,6 +18,7 @@ DeviceDisplayNames::DeviceDisplayNames(database::PersistentStore const& store, s
         return;
     }
     auto const wanted = std::set<std::string_view>{users.begin(), users.end()};
+    store.device_table_rows_examined.add(store.devices.size());
     for (auto const& device : store.devices)
     {
         if (wanted.contains(device.user_id))

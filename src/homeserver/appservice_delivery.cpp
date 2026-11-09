@@ -453,15 +453,8 @@ namespace
 
 auto appservice_room_aliases(HomeserverRuntime const& runtime, std::string_view room_id) -> std::vector<std::string>
 {
-    auto aliases = std::vector<std::string>{};
-    for (auto const& alias : runtime.database.persistent_store.room_aliases)
-    {
-        if (alias.room_id == room_id)
-        {
-            aliases.push_back(alias.room_alias);
-        }
-    }
-    return aliases;
+    // The room's own aliases through the index, not a scan of every alias (F-03, ADR-0581).
+    return runtime.database.persistent_store.room_aliases.aliases_of_room(room_id);
 }
 
 auto enqueue_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& room, std::string_view event_id,

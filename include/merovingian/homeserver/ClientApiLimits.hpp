@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/homeserver/device_limits.hpp"
 #include "merovingian/sync/SlidingSyncLimits.hpp"
 
 #include <cstddef>
@@ -58,12 +59,20 @@ struct ClientApiLimits final
     std::uint32_t max_room_account_data_per_room{100U};
     // User-defined push rules per user across all five kinds; over -> M_TOO_LARGE.
     std::uint32_t max_push_rules_per_user{200U};
+    // Security audit run-4 F-03 (ADR-0581): room aliases per creating user (an application service is exempt) and
+    // per room; a new alias over either -> 400 M_TOO_LARGE.
+    std::uint32_t max_room_aliases_per_user{100U};
+    std::uint32_t max_room_aliases_per_room{100U};
     // Security audit run-2 (ADR-0316): entries of one POST /createRoom; over -> M_TOO_LARGE.
     std::uint32_t max_create_room_invites{100U};
     std::uint32_t max_create_room_initial_state{100U};
     // Security audit run-2 F-13 (ADR-0336): local deliveries (a "*" counts one per device) of one
     // PUT /sendToDevice; over -> 413 M_TOO_LARGE, nothing queued. Inbound EDUs have their own cap.
     std::uint32_t max_send_to_device_deliveries{1000U};
+    // Security audit run-4 F-05 (ADR-0582): the longest device display name, in bytes. POST /login, POST /register and
+    // PUT /devices/{deviceId} answer 400 M_TOO_LARGE over it. The per-user device count is
+    // `device_count_limit`, a constant, because device creation has no ClientApiLimits.
+    std::size_t max_device_display_name_bytes{device_display_name_byte_limit};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

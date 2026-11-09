@@ -85,8 +85,9 @@ Do not trim event fields manually — the algorithm determines what survives.
 `redaction_validity.hpp` decides whether a redaction applies: `redaction_target` reads `redacts` from the
 location the room version uses (top level before v11, `content` from v11), and `judge_redaction` applies the
 two conditions of "Handling redactions" (sender's power level at least the redact level, or the sender's
-domain equals the original sender's). Callers pass the power levels from the redaction's own `auth_events`, not
-the room's current state, so every server reaches the same verdict. It never applies a redaction of
+domain equals the original sender's). Callers pass power levels read from the state this server recorded, never
+from the redaction's own `auth_events`, which its sender chose: `reconcile_redaction` requires `applies` for the state
+before the redaction and for current state (ADR-0586), and `power_levels_known` false means no sender meets the level. It never applies a redaction of
 `m.room.create`: the server reads the room version from that event and, before v11, the algorithm strips it.
 Applying a redaction is `homeserver/redaction_service.cpp`, not this module.
 

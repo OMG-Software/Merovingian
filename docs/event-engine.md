@@ -870,7 +870,9 @@ re-verifies the signature itself before ingestion, ADR-0071):
   state-before map, and the current-state map from whichever flat state
   snapshot each step needs.
 - **Step 5 (auth against the state before the event)**, using phase B1's
-  `compute_state_before`. Failure rejects, same as step 4.
+  `compute_state_before`. Failure rejects, same as step 4. A `prev_event` held
+  under another room, or mapped to another room's state group, is refused
+  outright and never fetched or retained (ADR-0583).
 - **Step 6 (auth against current state).** Failure here does not reject —
   spec "Soft failure": the event is stored, given an after-state group, and
   takes part in state resolution as normal, but it is never a forward
@@ -1113,9 +1115,9 @@ client-server "Room History Visibility" settings to the requesting server (owner
 2026-10-29). For each returned event, `ServerEventFilter`
 (`src/federation/event_query.cpp`) reads the room's state at that event from the event's
 state group (ADR-0064), never the current state, and the event is sent in full when the
-`m.room.history_visibility` in that state is `world_readable` or `shared` (the default when
-absent), or `invited` and a user of the origin is invited or joined, or `joined` and a user of
-the origin is joined. Otherwise it is the room version's redaction of the stored event
+`m.room.history_visibility` in that state is `world_readable`, or `shared` (the default when
+absent) and a user of the origin is joined in that state or joined now (ADR-0585), or `invited`
+and a user of the origin is invited or joined, or `joined` and a user of the origin is joined. Otherwise it is the room version's redaction of the stored event
 (`events::redact_event`): content stripped, `signatures`, `hashes`, `prev_events`,
 `auth_events`, `depth`, `sender` and the event ID kept, so the receiver can verify the
 signature and place the event in its graph; nothing is dropped. The state is the state
@@ -1152,8 +1154,10 @@ strip `room_version`, which the server reads from that event.
 
 `homeserver::reconcile_redactions_for_event` (`src/homeserver/redaction_service.cpp`) runs for every
 event the main process stores, through `PersistentStore::redaction_observer`, and once at startup
-(`reconcile_all_redactions`). It judges the redactions involving that event, using the power levels among
-the redaction event's own `auth_events` so every server decides alike. When one applies, the target's stored
+(`reconcile_all_redactions`). It judges the redactions involving that event, and judges again once the event's
+state group is recorded. A redaction applies by power level only when the sender meets the redact level in
+both the state before the redaction and the current state; the power levels it cites in `auth_events` do not
+count, and state this server cannot read grants nothing (ADR-0586). When one applies, the target's stored
 JSON is overwritten with `redact_event`'s output (`database::replace_event_json`): the original content is
 deleted from the database, not kept aside, and every read path, `/_matrix/federation/v1/event` and backfill
 included, serves the redacted form. `hashes` and `signatures` are kept by the algorithm, so receiving servers

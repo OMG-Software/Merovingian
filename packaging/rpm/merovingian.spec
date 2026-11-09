@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.82
+Version:        0.12.83
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Nov 09 2026 James Chapman <claude@ping.me.uk> - 0.12.83-1
+- Fix the high and medium findings of security audit run 4.
+
 * Sat Nov 07 2026 James Chapman <claude@ping.me.uk> - 0.12.82-1
 - Long CI jobs wait for a gate so Sonar and CodeQL start first.
 

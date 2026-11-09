@@ -185,6 +185,26 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         return {false, {}, "more prev_events than the state-resolution budget allows"};
     }
 
+    // An event builds on its own room only (ADR-0583). Every path that resolves state before an event comes
+    // through here, so a foreign prev_event or group cannot lend its state to this room whatever a caller checked.
+    if (auto const foreign = database::find_event_in_other_room(store, room_id, prev_event_ids); foreign.has_value())
+    {
+        return {false, {}, "prev_event " + *foreign + " belongs to another room"};
+    }
+    for (auto const& prev_event_id : prev_event_ids)
+    {
+        auto const group_id = database::find_event_state_group(store, prev_event_id);
+        if (!group_id.has_value())
+        {
+            continue; // The reads below report it.
+        }
+        auto const group = database::find_state_group(store, *group_id);
+        if (group.has_value() && group->room_id != room_id)
+        {
+            return {false, {}, "state group " + *group_id + " belongs to another room"};
+        }
+    }
+
     auto total_state_events = std::size_t{0U};
     if (prev_event_ids.size() == 1U)
     {

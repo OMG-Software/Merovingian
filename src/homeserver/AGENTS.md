@@ -110,6 +110,9 @@ and no access token are answered before the authentication gate. Rules for chang
   unrelated background tasks. The permit releases the slot on every exit path.
 - **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
   the session and answers `M_SESSION_NOT_VALIDATED`.
+- **Only an address on the account counts (ADR-0584).** A row with `added_at_ms` zero records a bind at an identity
+  server, which takes nothing but an access token. The request and completion steps, `GET /account/3pid`,
+  `owned_email_pusher_address` and `threepid_in_use` all ask `is_account_threepid`; a new reader of the table does too.
 - **A session exists for an unknown address too**, with an empty `reset_token`. The submit step compares against a
   fixed dummy then, so it does the same work and gives the same `M_TOKEN_INCORRECT`.
 - **Constant-time comparison** (`crypto::constant_time_equal_variable_length`) is used for the code and for the
@@ -591,6 +594,12 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `parse_federation_media_multipart` runs under the lock on a body a remote server chooses. It
   refuses a boundary over 70 characters and finds delimiters with a linear scan; keep it linear
   (ADR-0176).
+- `PUT /directory/room/{roomAlias}` and `POST /createRoom` with `room_alias_name` refuse a new alias past
+  `max_room_aliases_per_user` (the creator aliases) or, for the PUT, `max_room_aliases_per_room` with `400 M_TOO_LARGE`,
+  after the validity, power, exclusivity and already-exists answers and before anything is written (createRoom before
+  any room is made). An application service (a masquerade token) is exempt from the per-user cap only; room upgrade
+  moves aliases uncapped. The alias listing and `appservice_room_aliases` use `room_aliases.aliases_of_room`, never a
+  loop over the table (ADR-0581).
 - `PUT /user/{userId}/account_data/{type}` refuses a new global type past
   `max_global_account_data_per_user` with `400 M_TOO_LARGE`, and always allows an update to a
   type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -643,6 +652,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
   went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
   position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.
+- A user holds at most `device_count_limit` (200) devices and a device display name is at most
+  `ClientApiLimits::max_device_display_name_bytes` (256) bytes (F-05, ADR-0582). `complete_login` and
+  `login_local_user_by_id` refuse a NEW device ID past the count with 403 `M_FORBIDDEN` before any write, counting in the
+  same pass that looks for the device (`scan_user_devices`); a held device always logs in. `POST /login`, `POST /register`
+  and `PUT /devices/{deviceId}` answer a longer name `400 M_TOO_LARGE` before any write, measured in bytes, never
+  truncated. A device-list announcement builds all of a user's EDUs with `federation::build_device_list_update_batch`
+  (one `DeviceDisplayNames`, one key index; `PersistentStore::device_table_rows_examined` counts the rows read). Never call
+  `build_device_list_update_content` per device in a loop: it scans both device tables each call.
 - A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
   path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
   storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that
@@ -764,6 +781,10 @@ copy of the original content anywhere. A suspended user may redact only their ow
 suspension gate lets the route through). A target this server does not hold is not a 404 (the spec has none): the
 redaction is stored when the sender holds the room's `redact` level and is judged when the target arrives; below
 that level it is 403. A target held in another room is `target_unknown` (404).
+
+A redaction's authority comes from the state this server recorded, never from its own `auth_events` (ADR-0586):
+`reconcile_redaction` needs `applies` for the state before it and for current state, and `check_local_redaction` uses
+current state.
 
 ## Errcodes the status cannot name (CSAZ-9)
 

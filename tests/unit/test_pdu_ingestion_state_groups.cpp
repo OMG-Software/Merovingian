@@ -360,6 +360,85 @@ SCENARIO("ingest_pdu_event does not store a PDU whose prev_event has no state gr
     }
 }
 
+// Spec: server-server-api.md, "PDUs": prev_events are "the most recent events in the room". Audit
+// run 4, F-01: a prev_event held under another room gave the PDU that room's state as its state
+// before, and the PDU then replaced this room's forward extremities and current state.
+SCENARIO("A PDU naming a prev_event of another room is refused and changes nothing",
+         "[pdu_ingestion][state_groups][federation][security][f01]")
+{
+    GIVEN("two rooms on one server, each with recorded state")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto const victim_room = std::string{"!victim-f01:local.example.org"};
+        auto const other_room = std::string{"!other-f01:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, victim_room);
+        seed_room_with_genesis_state_group(started.runtime, other_room);
+
+        auto const& store = started.runtime.database.persistent_store;
+        auto const extremities_before = merovingian::database::find_forward_extremities(store, victim_room);
+        auto const state_rows_before = store.state.size();
+
+        auto const expect_nothing_changed = [&](std::string const& event_id) -> void {
+            REQUIRE(store.events.find(event_id) == store.events.end());
+            REQUIRE_FALSE(merovingian::database::find_event_state_group(store, event_id).has_value());
+            REQUIRE(merovingian::database::find_forward_extremities(store, victim_room) == extremities_before);
+            REQUIRE(store.state.size() == state_rows_before);
+            REQUIRE(store.deferred_pdus.empty());
+        };
+
+        WHEN("the only prev_event belongs to the other room")
+        {
+            auto const envelope =
+                make_topic_pdu(victim_room, "$foreign-prev:local.example.org", other_room + ":member", 100);
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+
+            THEN("it is refused as invalid, and neither stored nor retained")
+            {
+                REQUIRE(result.status == PduIngestionStatus::rejected_invalid);
+                expect_nothing_changed(envelope.event_id);
+            }
+        }
+
+        WHEN("one of two prev_events belongs to the other room")
+        {
+            auto envelope =
+                make_topic_pdu(victim_room, "$foreign-merge:local.example.org", victim_room + ":member", 100);
+            envelope.prev_event_ids.push_back(other_room + ":member");
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+
+            THEN("the merge is refused as invalid")
+            {
+                REQUIRE(result.status == PduIngestionStatus::rejected_invalid);
+                expect_nothing_changed(envelope.event_id);
+            }
+        }
+
+        WHEN("the prev_event belongs to the other room and has no state group, and an origin is named")
+        {
+            // Without the room check this would count as a gap to backfill from the origin.
+            auto const stateless_id = std::string{"$stateless-foreign:local.example.org"};
+            started.runtime.database.persistent_store.events.push_back(
+                {stateless_id, other_room, "@admin:local.example.org", "{}", 3U, 0U, {}, {}, {}});
+            auto envelope = make_topic_pdu(victim_room, "$foreign-gap:local.example.org", stateless_id, 100);
+            envelope.origin = std::string{deferred_pdu_origin};
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+
+            THEN("it is refused rather than treated as a gap or retained")
+            {
+                REQUIRE(result.status == PduIngestionStatus::rejected_invalid);
+                expect_nothing_changed(envelope.event_id);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
 // Spec: server-server-api.md, "Transactions" -- the sender is told a PDU was
 // handled and does not send it again; "Gap filling" -- a server that lacks a
 // PDU's prev_events fetches them. A PDU this server cannot yet place must

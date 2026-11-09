@@ -1405,7 +1405,7 @@ namespace
             {
                 if (row.size() >= 3U)
                 {
-                    store.room_aliases.push_back({row[0], row[1], row[2]});
+                    store.room_aliases.insert({row[0], row[1], row[2]});
                 }
             }
         }

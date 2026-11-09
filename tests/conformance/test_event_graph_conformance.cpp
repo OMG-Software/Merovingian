@@ -226,8 +226,11 @@ SCENARIO("backfill PDU collection includes requested events and predecessors",
         auto const room = std::string{"!graph:example.org"};
         auto store = merovingian::database::PersistentStore{};
         store.events.push_back(make_event("$create", room, "m.room.create", {}));
-        store.events.push_back(make_event("$join", room, "m.room.member", {"$create"}, {"$create"}));
+        store.events.push_back(
+            make_state_event("$join", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
         store.events.push_back(make_event("$message", room, "m.room.message", {"$join"}, {"$join"}));
+        // The requesting server's user is joined, which is what lets it see this `shared` history.
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$join"});
         record_shared_state_group(store, room);
 
         WHEN("backfill starts at the message event")

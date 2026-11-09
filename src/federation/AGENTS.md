@@ -137,8 +137,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    History Visibility" settings to the requesting server (owner decision 2026-10-29). `/event`,
    `/backfill` and `/get_missing_events` send an event in full only when `ServerEventFilter` (in
    `event_query.cpp`; `event_visible_to_server()` for one event) finds it visible to `origin`, judged on the
-   room's state AT the event (its ADR-0064 state group, never current state): `world_readable` or
-   `shared` (also the default when the state has no `m.room.history_visibility`) is visible; `invited`
+   room's state AT the event (its ADR-0064 state group, never current state): `world_readable` is
+   visible; `shared` (also the default when the state has no `m.room.history_visibility`) needs a user of `origin`
+   joined in that state or joined now (ADR-0585); `invited`
    needs a user of `origin` invited or joined in that state; `joined` needs one joined. Any other event is
    sent REDACTED (`events::redact_event` with the room's version policy): its signatures, hashes,
    `prev_events`, `auth_events` and event ID are untouched, and it is never dropped, which would leave a hole
@@ -343,6 +344,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    the frame with the same parser. A worker with no listing from main answers 503, never an empty directory. The page is bounded
    by the operator's page size and by `max_public_rooms_page_bytes`, and only published rooms are listed.
 
+24. **An event builds only on events of its own room (F-01, ADR-0583).** Every path that takes a PDU asks
+   `database::find_event_in_other_room` over its `prev_events` and refuses a hit: `ingest_pdu_event` (`rejected_invalid`, before
+   the fetch and again after it), the membership acceptor (400 `M_INVALID_PARAM`) and backfill. `compute_state_before` refuses too.
+   A foreign `prev_event` is never a gap to recover. A new path does the same.
+
 ## Key files
 
 | File | Responsibility |
@@ -356,7 +362,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `third_party_invite.cpp` | Parsers for `exchange_third_party_invite` and `3pid/onbind` bodies and the outbound exchange body (ADR-0484) |
 | `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
-| `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_content`, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
+| `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_batch` for all of a user's devices in a fixed number of table passes, F-05, never a loop of `build_device_list_update_content` over them; `build_device_list_update_content` for one, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
 | `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |

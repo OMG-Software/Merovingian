@@ -26,7 +26,7 @@ constexpr auto room_id_under_test = std::string_view{"!room:remote.example.org"}
 // room under test. A federation read only sends an event in full when the state recorded for it shows
 // the requesting server may see it (ADR-0064 state groups); these fixtures write events straight into
 // the store, so they record that state here. Visibility tests below set the CURRENT state only, and
-// their events keep this group.
+// their events keep this group unless record_world_readable_state_group moves them.
 auto record_shared_state_group(merovingian::database::PersistentStore& store) -> void
 {
     constexpr auto group_name = std::string_view{"sg:fixture-shared"};
@@ -127,6 +127,27 @@ auto set_history_visibility(merovingian::database::PersistentStore& store, std::
                             {}});
     store.state.push_back(
         {std::string{room_id_under_test}, "m.room.history_visibility", "", "$history_visibility:remote.example.org"});
+}
+
+// Records that the room under test was already world_readable when its events were sent: every event moves to a
+// group holding the visibility event set_history_visibility stored. Setting the current state alone opens the room
+// to a server but not its earlier `shared` history (ADR-0585).
+auto record_world_readable_state_group(merovingian::database::PersistentStore& store) -> void
+{
+    constexpr auto group_name = std::string_view{"sg:fixture-world-readable"};
+    auto const group = merovingian::database::create_or_reuse_state_group(
+        store, room_id_under_test, group_name, std::nullopt,
+        std::vector<merovingian::database::PersistentStateGroupStateEntry>{
+            {std::string{group_name}, "m.room.history_visibility", "", "$history_visibility:remote.example.org"}
+    });
+    REQUIRE(group.has_value());
+    for (auto const& event : store.events)
+    {
+        if (event.room_id == room_id_under_test)
+        {
+            REQUIRE(merovingian::database::set_event_state_group(store, event.event_id, *group));
+        }
+    }
 }
 
 // A linear chain $c0 <- $c1 <- ... <- $c{count-1} in the room under test. $c0 has
@@ -251,9 +272,10 @@ SCENARIO("Federation event response refuses a server that is not in the event's 
             }
         }
 
-        AND_WHEN("the room becomes world readable")
+        AND_WHEN("the room was world readable when the event was sent")
         {
             set_history_visibility(store, "world_readable");
+            record_world_readable_state_group(store);
             auto const result = merovingian::federation::build_event_response(store, "$message:remote.example.org",
                                                                               "local.example.org", stranger_origin);
 
@@ -571,9 +593,10 @@ SCENARIO("Federation backfill refuses a server that is not in the room",
             }
         }
 
-        WHEN("the room is world readable and a server with no user in the room backfills")
+        WHEN("the room was world readable when its events were sent and a server with no user in the room backfills")
         {
             set_history_visibility(store, "world_readable");
+            record_world_readable_state_group(store);
             request.origin = std::string{stranger_origin};
             auto const result = merovingian::federation::build_backfill_response(store, request);
 
@@ -939,9 +962,10 @@ SCENARIO("Federation get_missing_events refuses a server that is not in the room
             }
         }
 
-        AND_WHEN("the room is world readable")
+        AND_WHEN("the room was world readable when its events were sent")
         {
             set_history_visibility(store, "world_readable");
+            record_world_readable_state_group(store);
             auto const result = merovingian::federation::build_get_missing_events_response(store, room_id_under_test,
                                                                                            body, stranger_origin);
 

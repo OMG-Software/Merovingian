@@ -41,6 +41,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -272,9 +273,122 @@ struct Fixture final
         auto const* content = object_object(stored, "content");
         return content == nullptr ? std::nullopt : object_string(*content, "body");
     }
+
+    // Stores a power_levels event from the local admin that sets the remote member's level, as accepted
+    // history following `prev_event_id`, and makes it the room's current power levels.
+    auto seed_remote_member_level(std::string const& event_id, std::string const& prev_event_id, std::int64_t level,
+                                  std::int64_t depth) -> void
+    {
+        namespace cj = merovingian::canonicaljson;
+        auto users = cj::Object{};
+        users.push_back(cj::make_member(std::string{local_admin}, cj::Value{std::int64_t{100}}));
+        users.push_back(cj::make_member(std::string{remote_member}, cj::Value{level}));
+        auto content = cj::Object{};
+        content.push_back(cj::make_member("state_default", cj::Value{std::int64_t{0}}));
+        content.push_back(cj::make_member("users", cj::Value{std::move(users)}));
+        auto hashes = cj::Object{};
+        hashes.push_back(cj::make_member("sha256", cj::Value{std::string{"hash"}}));
+        auto object = cj::Object{};
+        object.push_back(cj::make_member("auth_events", cj::Value{cj::Array{}}));
+        object.push_back(cj::make_member("content", cj::Value{std::move(content)}));
+        object.push_back(cj::make_member("depth", cj::Value{depth}));
+        object.push_back(cj::make_member("event_id", cj::Value{event_id}));
+        object.push_back(cj::make_member("hashes", cj::Value{std::move(hashes)}));
+        object.push_back(cj::make_member("origin_server_ts", cj::Value{depth}));
+        object.push_back(cj::make_member("prev_events", cj::Value{cj::Array{}}));
+        object.push_back(cj::make_member("room_id", cj::Value{room_id}));
+        object.push_back(cj::make_member("sender", cj::Value{std::string{local_admin}}));
+        object.push_back(cj::make_member("state_key", cj::Value{std::string{}}));
+        object.push_back(cj::make_member("type", cj::Value{std::string{"m.room.power_levels"}}));
+        auto const serialized = cj::serialize_canonical(cj::Value{std::move(object)});
+        REQUIRE(serialized.error == cj::CanonicalJsonError::none);
+
+        auto& store = runtime().database.persistent_store;
+        auto event = merovingian::database::PersistentEvent{};
+        event.event_id = event_id;
+        event.room_id = room_id;
+        event.sender_user_id = local_admin;
+        event.json = serialized.output;
+        event.depth = static_cast<std::uint64_t>(depth);
+        event.stream_ordering = static_cast<std::uint64_t>(depth);
+        event.prev_event_ids = {prev_event_id};
+        event.auth_event_ids = {create_id, pl_id, member_id};
+        // As ingesting it would, the event becomes the room's current power levels.
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, event, merovingian::database::PersistentStateEvent{room_id, "m.room.power_levels", "", event_id}));
+
+        auto const* policy = merovingian::rooms::find_room_version_policy(room_version);
+        REQUIRE(policy != nullptr);
+        auto const before = merovingian::homeserver::compute_state_before(store, room_id, *policy, {prev_event_id});
+        REQUIRE(before.ok);
+        auto const after = merovingian::homeserver::compute_state_after(before.state, event_id, "m.room.power_levels",
+                                                                        std::optional<std::string>{std::string{}});
+        REQUIRE(merovingian::homeserver::record_event_state(store, room_id, event_id, {prev_event_id}, after, true)
+                    .has_value());
+    }
 };
 
 } // namespace
+
+// Spec: Matrix Room Versions (rooms/v10.md, "Handling redactions"): a redaction applies when "the power
+// level of the redaction event's sender is greater than or equal to the redact level". Audit run 4,
+// F-06: the level is the room's, so a redaction citing an old power_levels event gains nothing from it.
+SCENARIO("A federated redaction citing power levels from before its sender was demoted is not applied",
+         "[redaction][conformance][federation][security][f06]")
+{
+    GIVEN("a message from the local admin, and a remote member promoted to moderator and then demoted")
+    {
+        auto fixture = Fixture{};
+        auto const admin_message = fixture.room_id + ":admin-message";
+        seed_admin_message(fixture.runtime(), fixture.room_id, admin_message);
+        auto const promoted = fixture.room_id + ":pl-promoted";
+        auto const demoted = fixture.room_id + ":pl-demoted";
+        fixture.seed_remote_member_level(promoted, admin_message, 50, 5);
+        fixture.seed_remote_member_level(demoted, promoted, 0, 6);
+
+        WHEN("the member's server sends a redaction of the message that cites the earlier power_levels")
+        {
+            auto const redaction = make_remote_redaction(fixture.room_id, remote_member, admin_message, {demoted},
+                                                         {fixture.create_id, promoted, fixture.member_bob_id}, 7, 11);
+            auto const result = merovingian::homeserver::ingest_pdu_event(fixture.runtime(), redaction);
+
+            THEN("the redaction is stored, judged and withheld, and the message is unchanged")
+            {
+                // Spec MUST: "redactions are always accepted by the authorisation rules", so a later check refuses it.
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+                // Spec MUST: applied only "if one of the following conditions is met"; here neither is.
+                REQUIRE(fixture.body_of(admin_message) == std::optional<std::string>{"admin secret"});
+                // Spec SHOULD: redactions "should not be sent to clients" until the server would apply them.
+                REQUIRE(merovingian::database::redaction_is_withheld(fixture.runtime().database.persistent_store,
+                                                                     redaction.event_id));
+            }
+        }
+    }
+
+    GIVEN("a message from the local admin, and a remote member who is a moderator")
+    {
+        auto fixture = Fixture{};
+        auto const admin_message = fixture.room_id + ":admin-message";
+        seed_admin_message(fixture.runtime(), fixture.room_id, admin_message);
+        auto const promoted = fixture.room_id + ":pl-promoted";
+        fixture.seed_remote_member_level(promoted, admin_message, 50, 5);
+
+        WHEN("the member's server sends a redaction of the message")
+        {
+            auto const redaction = make_remote_redaction(fixture.room_id, remote_member, admin_message, {promoted},
+                                                         {fixture.create_id, promoted, fixture.member_bob_id}, 6, 11);
+            auto const result = merovingian::homeserver::ingest_pdu_event(fixture.runtime(), redaction);
+
+            THEN("it is applied once the redaction's state is recorded")
+            {
+                // Spec MUST: "redactions are always accepted by the authorisation rules".
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+                // Spec MUST: condition 1 (the sender's power level meets the redact level) applies the redaction.
+                REQUIRE(!fixture.body_of(admin_message).has_value());
+            }
+        }
+    }
+}
 
 // "The domain of the redaction event's `sender` matches that of the original event's `sender`."
 SCENARIO("A federated redaction by the original sender's server is applied",

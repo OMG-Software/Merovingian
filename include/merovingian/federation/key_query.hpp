@@ -4,6 +4,7 @@
 
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/DeviceListUpdateBatch.hpp"
 #include "merovingian/federation/RemoteDeviceList.hpp"
 #include "merovingian/federation/RemoteDeviceListUpdate.hpp"
 #include "merovingian/federation/RemoteKeyClaimKeys.hpp"
@@ -71,6 +72,15 @@ namespace merovingian::federation
 [[nodiscard]] auto build_device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
                                                     std::string_view device_id, std::int64_t stream_id)
     -> std::optional<std::string>;
+
+// Builds the `m.device_list_update` contents for all of `user_id`'s devices (or only `only_device`) with ONE
+// display-name lookup and ONE index of the user's published device keys, so the cost is a fixed number of passes over
+// `store.devices` and `store.device_keys` however many devices the user holds (F-05, ADR-0582). Each entry is
+// byte-for-byte what `build_device_list_update_content` returns for the same device and stream_id. A device whose
+// content cannot be serialised is left out.
+[[nodiscard]] auto build_device_list_update_batch(database::PersistentStore const& store, std::string_view user_id,
+                                                  std::optional<std::string_view> only_device, std::int64_t stream_id)
+    -> DeviceListUpdateBatch;
 
 // Builds the content of an `m.device_list_update` EDU announcing that one of
 // `user_id`'s devices has been deleted: `deleted: true`, the device ID, the

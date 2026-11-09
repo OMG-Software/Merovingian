@@ -2940,7 +2940,7 @@ SCENARIO("handle_directory_query_ingest_request reads a room alias from main's o
 
         auto const alias = std::string{"#老虎Â£я🤨👉ඞ:"} + config.server().server_name;
         auto const room_id = std::string{"!aliased:"} + config.server().server_name;
-        runtime.database.persistent_store.room_aliases.push_back(
+        runtime.database.persistent_store.room_aliases.insert(
             {alias, room_id, std::string{"@creator:"} + config.server().server_name});
 
         WHEN("a directory_query_ingest request shaped like a real worker's is handled")
@@ -3245,11 +3245,22 @@ SCENARIO("The wired federation providers refuse a server outside the room and se
                  R"({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"world_readable"}})",
                  4U, 4U, std::vector<std::string>{"$msg"}}));
             REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.history_visibility", "", "$hv"}));
+            REQUIRE(merovingian::database::store_event(
+                store, {"$after", room_id, member_id, R"({"type":"m.room.message","content":{"body":"open-body"}})", 5U,
+                        5U, std::vector<std::string>{"$hv"}}));
+            merovingian::tests::record_ingested_state_for_room(store, room_id);
 
-            THEN("a server with no user in the room can read it")
+            THEN("a server with no user in the room can read what was sent since")
             {
-                REQUIRE(fed.event_query_provider("$msg", stranger).status == RoomReadStatus::ok);
+                auto const sent_since = fed.event_query_provider("$after", stranger);
+                REQUIRE(sent_since.status == RoomReadStatus::ok);
+                REQUIRE(sent_since.body.find("open-body") != std::string::npos);
                 REQUIRE(fed.state_ids_query_provider(room_id, "$msg", stranger).status == RoomReadStatus::ok);
+            }
+
+            THEN("that server is not given what was sent before, under shared visibility, in full")
+            {
+                REQUIRE(fed.event_query_provider("$msg", stranger).body.find("secret-body") == std::string::npos);
             }
         }
     }

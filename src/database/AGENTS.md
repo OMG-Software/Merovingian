@@ -19,6 +19,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `PersistentServerSigningKey.cpp` | A stored server signing-key row; wipes the secret on destruction and on overwrite |
 | `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
 | `library_versions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
+| `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `state_group_table_support.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
@@ -146,17 +147,27 @@ runs as `database.migration_role` when one is configured.
 was applied to which target) is derived from `events` and never persisted in a table of its own: `rebuild_redaction_state`
 re-derives it after hydration and the homeserver's startup reconciliation re-applies. What is durable is the redacted
 JSON of the target (`replace_event_json`), so no migration. The database module does not judge redactions (it cannot
-link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event.
+link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event and
+again when its state group is recorded (`apply_event_state_group`), since a redaction is judged on that state (ADR-0586).
+Hydration writes mappings without the observer.
 
 ## State-group tables (F-07, F-15, ADR-0325)
 
 `PersistentStore::state_groups`, `state_group_state` and `event_state_groups` are table classes, not vectors: they own their
 rows, show them read-only, and keep a hash index over them. Look up with `event_state_groups.state_group_of(event_id)`,
 `state_groups.find(id)` and `state_group_state.entries_of(id)` (or `find_event_state_group`, `find_state_group`,
-`read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
+`find_state_group_state_event_id` for one key, `read_state_group_full_state`); never loop over a whole table to find a key. Write only through `insert`, `insert_all`,
 `assign`, `erase_if` and `clear`, which keep the index right; a writer that bypasses them does not compile. Hydration and
 `reload_room` use `insert_all` / `erase_if`. The tables have no lock: a reader needs exclusion from writers (in main,
 `runtime.mutex`), and a view or `string_view` they return is valid only until the next write.
+
+## Room aliases (F-03, ADR-0581)
+
+`PersistentStore::room_aliases` is a `RoomAliasTable`, not a vector: it owns the rows, shows them read-only and keeps
+indexes by alias, by room and by creator. Look up with `find_room_alias` / `room_aliases.find`, list a room aliases with
+`aliases_of_room`, count with `count_for_room` and `count_for_creator`; never loop the table to find one key or one room.
+Write only through `insert`, `erase`, `reassign` and `clear` (hydration uses `insert`); an erase moves the last row into
+the hole, so row order means nothing. The table has no lock: a reader needs exclusion from writers (`runtime.mutex`).
 
 ## Retained PDUs (F-18, ADR-0326)
 

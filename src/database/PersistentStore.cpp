@@ -211,9 +211,7 @@ namespace
 
     [[nodiscard]] auto room_alias_exists(PersistentStore const& store, std::string_view room_alias) -> bool
     {
-        return std::ranges::any_of(store.room_aliases, [room_alias](PersistentRoomAlias const& existing) {
-            return existing.room_alias == room_alias;
-        });
+        return store.room_aliases.contains(room_alias);
     }
 
     [[nodiscard]] auto membership_exists(PersistentStore const& store, PersistentMembership const& membership) -> bool
@@ -3037,6 +3035,38 @@ namespace
     return group == nullptr ? std::nullopt : std::optional<PersistentStateGroup>{*group};
 }
 
+[[nodiscard]] auto find_state_group_state_event_id(PersistentStore const& store, std::string_view state_group_id,
+                                                   std::string_view event_type, std::string_view state_key)
+    -> std::optional<std::string_view>
+{
+    auto visited = std::unordered_set<std::string_view>{};
+    auto current = state_group_id;
+    for (auto hops = std::size_t{0U};; ++hops)
+    {
+        if (!visited.insert(current).second || hops > events::max_state_group_delta_depth)
+        {
+            return std::nullopt;
+        }
+        auto const group = store.state_groups.find(current);
+        if (group == store.state_groups.end())
+        {
+            return std::nullopt;
+        }
+        for (auto const& entry : store.state_group_state.entries_of(current))
+        {
+            if (entry.event_type == event_type && entry.state_key == state_key)
+            {
+                return std::string_view{entry.event_id};
+            }
+        }
+        if (!group->parent_state_group_id.has_value())
+        {
+            return std::string_view{};
+        }
+        current = *group->parent_state_group_id;
+    }
+}
+
 [[nodiscard]] auto read_state_group_full_state(PersistentStore const& store, std::string_view state_group_id)
     -> std::optional<std::vector<PersistentStateGroupStateEntry>>
 {
@@ -3228,6 +3258,9 @@ auto apply_state_group(PersistentStore& store, PreparedStateGroup const& prepare
 auto apply_event_state_group(PersistentStore& store, std::string_view event_id, std::string_view state_group_id) -> void
 {
     store.event_state_groups.assign(event_id, state_group_id);
+    // A redaction is judged on the state before it (ADR-0586), which exists only from here: the observer's
+    // call when the event was stored came too early for every path that stores the event and then the mapping.
+    notify_redaction_observer(store, std::string{event_id});
 }
 
 [[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
@@ -5661,25 +5694,19 @@ namespace
     {
         return false;
     }
-    store.room_aliases.push_back(std::move(alias));
-    return true;
+    return store.room_aliases.insert(std::move(alias));
 }
 
 [[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
     -> std::optional<PersistentRoomAlias>
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    return it == store.room_aliases.end() ? std::nullopt : std::optional<PersistentRoomAlias>{*it};
+    auto const* const found = store.room_aliases.find(room_alias);
+    return found == nullptr ? std::nullopt : std::optional<PersistentRoomAlias>{*found};
 }
 
 [[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    if (it == store.room_aliases.end())
+    if (!store.room_aliases.contains(room_alias))
     {
         return false;
     }
@@ -5689,17 +5716,13 @@ namespace
     {
         return false;
     }
-    store.room_aliases.erase(it);
-    return true;
+    return store.room_aliases.erase(room_alias);
 }
 
 [[nodiscard]] auto reassign_room_alias(PersistentStore& store, std::string_view room_alias,
                                        std::string_view new_room_id) -> bool
 {
-    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
-        return alias.room_alias == room_alias;
-    });
-    if (it == store.room_aliases.end() || !room_exists(store, std::string{new_room_id}))
+    if (!store.room_aliases.contains(room_alias) || !room_exists(store, std::string{new_room_id}))
     {
         return false;
     }
@@ -5709,8 +5732,7 @@ namespace
     {
         return false;
     }
-    it->room_id = std::string{new_room_id};
-    return true;
+    return store.room_aliases.reassign(room_alias, new_room_id);
 }
 
 [[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool
@@ -6810,6 +6832,20 @@ namespace
         }
     }
     return missing;
+}
+
+[[nodiscard]] auto find_event_in_other_room(PersistentStore const& store, std::string_view room_id,
+                                            std::vector<std::string> const& event_ids) -> std::optional<std::string>
+{
+    for (auto const& id : event_ids)
+    {
+        auto const found = store.events.find(id);
+        if (found != store.events.end() && found->room_id != room_id)
+        {
+            return id;
+        }
+    }
+    return std::nullopt;
 }
 
 auto rebuild_deferred_pdu_awaits(PersistentStore& store) -> void
