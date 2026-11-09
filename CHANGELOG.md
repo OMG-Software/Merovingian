@@ -95,7 +95,8 @@ indexes `idx_access_tokens_user_device` and `idx_refresh_tokens_user_device` on 
 `idx_refresh_tokens_predecessor` on `predecessor_hash`, which serve the `WHERE` clauses of the revoke statements, and
 `refresh_tokens.issued_at_ms` as its last column (`TEXT NOT NULL DEFAULT '0'`, the type every other millisecond column uses;
 `PersistentRefreshToken::issued_at_ms` is an `std::int64_t`). Both refresh-token mint sites (`issue_refresh_token_for_session`
-and `refresh_local_session`) set it to the wall clock; nothing reads it yet. A database created before this change has
+and `refresh_local_session`) set it to the wall clock, and part 2 deletes a device's retired refresh rows oldest first by it.
+A database created before this change has
 no such column or index and must be recreated (ADR-0224: no upgrade shim before 1.0).
 
 Part 2 bounds the rows (ADR-0590). `POST /login` on a `device_id` the user already holds now replaces that device's
