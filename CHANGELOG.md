@@ -12,6 +12,8 @@ reset with `logout_devices` true, `POST /account/deactivate` and the operator de
 (`POST /_merovingian/admin/accounts/{userId}`, erased by the client-server dispatcher because the operator code holds only the
 `HomeserverRuntime`). A password change with `logout_devices` false leaves the tokens alone. The store is guarded by
 `runtime.mutex`, which every one of these handlers holds.
+The email password reset had no test; `[f07]` in `tests/conformance/test_password_reset_conformance.cpp` now completes a reset and
+checks that a login token minted before it is refused with `logout_devices` true and still works with it false.
 
 ### F-17: another user's http pusher cannot remove an email pusher
 
