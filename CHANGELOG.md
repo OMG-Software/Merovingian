@@ -2,6 +2,17 @@
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).
 
+### F-07: login tokens go with the sessions they came from
+
+A login token minted by `POST /login/get_token` survived `POST /logout/all`, a password change or reset with
+`logout_devices`, and deactivation, so for the rest of its two-minute life it still opened a new session. `LoginTokenStore::erase_user`
+existed but had no caller. Every path that revokes all of a user's sessions now erases that user's unredeemed login tokens,
+after the revocation succeeded: `POST /logout/all`, `POST /account/password` with `logout_devices` true, the email password
+reset with `logout_devices` true, `POST /account/deactivate` and the operator deactivation
+(`POST /_merovingian/admin/accounts/{userId}`, erased by the client-server dispatcher because the operator code holds only the
+`HomeserverRuntime`). A password change with `logout_devices` false leaves the tokens alone. The store is guarded by
+`runtime.mutex`, which every one of these handlers holds.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

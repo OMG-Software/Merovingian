@@ -718,3 +718,103 @@ SCENARIO("GET /admin/whois/{userId} answers the user and the server admin", "[cs
         }
     }
 }
+
+// F-07 (security audit run 4): a login token is derived from a session and the password proof, so it goes with
+// the sessions when they are revoked. Spec: "POST /logout/all", "POST /account/password" (logout_devices),
+// "POST /account/deactivate" and "POST /login/get_token" in client-server-api.md.
+SCENARIO("Revoking an account's sessions erases its unredeemed login tokens", "[f07][login-token][client-server]")
+{
+    constexpr auto new_password = "BrandNewHorse8!";
+    auto const password_change_body = [&](bool logout_devices) {
+        return R"({"new_password":")" + std::string{new_password} + R"(","logout_devices":)" +
+               (logout_devices ? "true" : "false") + R"(,"auth":{"type":"m.login.password","password":")" +
+               std::string{password} + R"("}})";
+    };
+
+    GIVEN("alice has minted a login token on a server with the feature on")
+    {
+        auto started = start(true);
+        auto const alice = sign_in(started.runtime, "alice", "DEVICE1");
+        auto const minted = minted_login_token(started.runtime, alice);
+        REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 1U);
+
+        WHEN("she logs out of every device")
+        {
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout/all", alice, "{}").status == 200U);
+
+            THEN("the token is gone and cannot be redeemed")
+            {
+                // Spec MUST: logout/all invalidates the user's access tokens; a credential derived from them goes too.
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 0U);
+                REQUIRE(login_with_token(started.runtime, minted, "AFTER").status == 403U);
+            }
+        }
+
+        WHEN("she changes her password with logout_devices true")
+        {
+            REQUIRE(
+                send(started.runtime, "POST", "/_matrix/client/v3/account/password", alice, password_change_body(true))
+                    .status == 200U);
+
+            THEN("the token is gone and cannot be redeemed")
+            {
+                // Spec MUST: logout_devices true invalidates the user's other access tokens.
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 0U);
+                REQUIRE(login_with_token(started.runtime, minted, "AFTER").status == 403U);
+            }
+        }
+
+        WHEN("she changes her password with logout_devices false")
+        {
+            REQUIRE(
+                send(started.runtime, "POST", "/_matrix/client/v3/account/password", alice, password_change_body(false))
+                    .status == 200U);
+
+            THEN("the token still works")
+            {
+                // Spec: logout_devices false leaves the other sessions alone.
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 1U);
+                REQUIRE(login_with_token(started.runtime, minted, "AFTER").status == 200U);
+            }
+        }
+
+        WHEN("she deactivates her account")
+        {
+            auto const deactivated =
+                send(started.runtime, "POST", "/_matrix/client/v3/account/deactivate", alice,
+                     R"({"auth":{"type":"m.login.password","password":")" + std::string{password} + R"("}})");
+            REQUIRE(deactivated.status == 200U);
+
+            THEN("the token is gone")
+            {
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 0U);
+                REQUIRE(login_with_token(started.runtime, minted, "AFTER").status == 403U);
+            }
+        }
+
+        WHEN("an administrator deactivates her account")
+        {
+            auto const admin = sign_in_admin(started.runtime, "root");
+            auto const deactivated =
+                send(started.runtime, "POST", "/_merovingian/admin/accounts/%40alice%3Aexample.org", admin,
+                     R"({"action":"deactivate","confirm":true})");
+            REQUIRE(deactivated.status == 200U);
+
+            THEN("the token is gone")
+            {
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 0U);
+                REQUIRE(login_with_token(started.runtime, minted, "AFTER").status == 403U);
+            }
+        }
+
+        WHEN("a refused logout/all names a bad token")
+        {
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout/all", "bogus", "{}").status == 401U);
+
+            THEN("the token is untouched")
+            {
+                REQUIRE(started.runtime.login_tokens.count_for_user("@alice:example.org") == 1U);
+            }
+        }
+    }
+}

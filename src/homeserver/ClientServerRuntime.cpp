@@ -4396,6 +4396,33 @@ namespace
         return crypto::generic_hash(pieces);
     }
 
+    // F-07: the operator accounts route deactivates through `HomeserverRuntime` alone, which cannot reach the
+    // login tokens. After a successful POST to it, a target that is now deactivated holds none.
+    auto erase_login_tokens_of_deactivated_target(ClientServerRuntime& rt, std::string_view request_path) -> void
+    {
+        constexpr auto accounts_prefix = std::string_view{"/_merovingian/admin/accounts/"};
+        if (!request_path.starts_with(accounts_prefix))
+        {
+            return;
+        }
+        auto target = std::string{};
+        try
+        {
+            target = core::percent_decode_path_component(request_path.substr(accounts_prefix.size()));
+        }
+        catch (std::invalid_argument const&)
+        {
+            return;
+        }
+        auto const deactivated = std::ranges::any_of(rt.homeserver.database.users, [&target](LocalUser const& current) {
+            return current.user_id == target && current.deactivated;
+        });
+        if (deactivated)
+        {
+            rt.login_tokens.erase_user(target);
+        }
+    }
+
     // POST /_matrix/client/v1/login/get_token (spec "POST /login/get_token"; CS8, ADR-0548). Runs under
     // runtime.mutex; the Argon2id check inside verify_local_user_password releases it itself. UIA with the account
     // password is required on EVERY call: the spec says servers "MUST always re-prompt", and a UIA session id
@@ -14282,6 +14309,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return DispatchResult{DispatchResult::Status::complete, std::move(missing), {}};
         }
         auto local = call_local(req);
+        if (req.method == "POST" && local.status == 200U)
+        {
+            erase_login_tokens_of_deactivated_target(rt, request_path);
+        }
         apply_cors_headers(req, local, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};
     }
@@ -14791,8 +14822,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
         }
         auto const* const logout_devices_member = boolean_member(*object, "logout_devices");
-        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password,
-                                                      logout_devices_member == nullptr || *logout_devices_member);
+        auto const reset_logs_out = logout_devices_member == nullptr || *logout_devices_member;
+        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password, reset_logs_out);
         if (!result.ok)
         {
             if (result.status == 429U)
@@ -14806,6 +14837,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
         }
         consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+        if (reset_logs_out)
+        {
+            // F-07: every session of the account was revoked, and the login tokens with them.
+            rt.login_tokens.erase_user(user_id);
+        }
         log_diagnostic("password_reset.completed", {
                                                        {"user_id", user_id, false}
         });
@@ -16463,6 +16499,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
         if (r.ok)
         {
+            // F-07: a login token is derived from the sessions just revoked.
+            rt.login_tokens.erase_user(*user);
             // Spec (POST /logout/all): "All devices for the user are also deleted."
             std::erase_if(rt.devices, [&user](ClientDevice const& device) {
                 return device.user_id == *user;
@@ -16733,6 +16771,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
+        if (logout_devices)
+        {
+            // F-07: the other sessions are revoked, so the login tokens minted from them go too.
+            rt.login_tokens.erase_user(*user);
+        }
         return dispatch_resp(req, rt, 200U, "{}");
     }
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#account-deactivation
@@ -16790,6 +16833,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
+        // F-07: a deactivated account holds no login token.
+        rt.login_tokens.erase_user(*user);
         // Unbind every identity-server-bound 3PID the account holds. Spec: the
         // 200 response's id_server_unbind_result is "success" only when *all*
         // identifiers were unbound -- and when there were none to unbind --

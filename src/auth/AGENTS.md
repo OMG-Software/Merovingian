@@ -101,6 +101,8 @@ then mints a token held only as a hash in `ClientServerRuntime::login_tokens` (`
 with `type: m.login.token` redeems it (constant-time, single use, spent by any attempt) and then goes through
 `login_local_user_by_id`, so the deactivated/locked/suspended gate is shared with password login. Never persist these
 tokens or add a path that redeems one without consuming it.
+A path that revokes all of a user's sessions (`logout/all`, password change or reset with `logout_devices`, either
+deactivation) must also call `login_tokens.erase_user` after the revocation succeeded (F-07).
 
 ## Key spec sections
 
