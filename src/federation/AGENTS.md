@@ -320,6 +320,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 20. **A received event is held to its room version's format by `pdu_format_violation` (F-56, F-57, ADR-0397, ADR-0399).**
    Size, `prev_events` and `auth_events` caps, and no top-level `event_id` from room version 3 on. A new path taking events from
    another server calls it. `make_event_signing_payload` is the spec's pseudocode: do not strip anything else from it.
+   A resident's `make_join`/`make_leave`/`make_knock` template is such an event too: `room_service.cpp` runs it through
+   `membership_template_format_refusal` before signing it as the local user's own (F-13).
 20. **A number outside Canonical JSON is that PDU's error (F-83, ADR-0398).** `parse_preserving_numbers` is for rebuilding
    what a peer signed and reading a `/send` body, never for anything this server hashes, signs or stores.
 20. **A received PDU is stored without its `unsigned` (F-70, ADR-0402).** `unsigned` is outside the content hash, the

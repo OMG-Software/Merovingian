@@ -2721,6 +2721,13 @@ nothing, all from trusting the worker's view or the hook's transport.
 
 ### A resident server's timestamp on our joins; workers that could not verify new servers (0.12.59)
 
+- **Resident-chosen template format (audit run 4 F-13).** A `make_join`, `make_leave` or `make_knock` template was
+  checked for its identity fields only before this server signed it as the user's own event, so a hostile resident could
+  have an oversized event, more than 20 `prev_events`, a non-array `prev_events` or no `depth` signed and stored in the
+  user's name, bounded only by the 16 MiB response default. **Mitigation:** the completed event goes through
+  `pdu_format_violation` before it is hashed (502, nothing signed, sent or stored), and the three calls cap the response
+  at four times the event limit. **Residual risk:** the `hashes` and `signatures` added afterwards are not counted in the
+  64 KiB check. Test: `[f13]` in `tests/integration/test_invite_federation_flow.cpp`.
 - **Resident-chosen timestamps on our membership events.** When we joined or left a remote room we
   signed the `make_join`/`make_leave` template's `origin_server_ts` and `origin` as the resident server
   sent them. From room version 5 other servers judge our signing key's validity at the event's own

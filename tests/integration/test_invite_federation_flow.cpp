@@ -47,9 +47,13 @@
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
+#include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <netinet/in.h>
 #include <sodium.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -2136,6 +2140,132 @@ SCENARIO("An invite to another server is refused when the inviter loses the powe
                 REQUIRE(membership_row(runtime, room_id, bob).empty());
                 REQUIRE(queued_memberships_for(runtime, remote_server, bob).empty());
                 REQUIRE(queued_bodies(runtime, inviting_server, "/v2/invite/").empty());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A make_join, make_leave or make_knock answer whose event is wrong in the way `fault` names. "unsigned_padding" is a
+// well-formed event with a 300000-byte `unsigned`, which the 64 KiB limit does not count but the response cap does.
+[[nodiscard]] auto faulty_membership_template(std::string const& room_version, std::string const& membership,
+                                              std::string const& user_id, std::string const& room_id,
+                                              std::string const& fault) -> std::string
+{
+    auto depth = std::string{R"("depth":6,)"};
+    auto prev_events = std::string{R"("prev_events":[],)"};
+    auto content = R"({"membership":")" + membership + R"("})";
+    auto extra = std::string{};
+    if (fault == "oversized")
+    {
+        content = R"({"membership":")" + membership + R"(","padding":")" + std::string(70000U, 'a') + R"("})";
+    }
+    else if (fault == "prev_events_not_array")
+    {
+        prev_events = R"("prev_events":"$not-an-array",)";
+    }
+    else if (fault == "no_depth")
+    {
+        depth.clear();
+    }
+    else if (fault == "21_prev_events")
+    {
+        auto entries = std::string{};
+        for (auto index = 0; index < 21; ++index)
+        {
+            entries += (index == 0 ? "" : ",") + std::string{R"("$prev)"} + std::to_string(index) + R"(")";
+        }
+        prev_events = R"("prev_events":[)" + entries + "],";
+    }
+    else if (fault == "unsigned_padding")
+    {
+        extra = R"(,"unsigned":{"padding":")" + std::string(300000U, 'b') + R"("})";
+    }
+    return R"({"room_version":")" + room_version + R"(","event":{"type":"m.room.member","state_key":")" + user_id +
+           R"(","room_id":")" + room_id + R"(","sender":")" + user_id + R"(",)" + depth +
+           R"("origin_server_ts":1100,)" + prev_events + R"("auth_events":[],"content":)" + content + extra + "}}";
+}
+
+// Lets a mock server still waiting for a request this server never made finish at once.
+auto wake_acceptor(merovingian::net::TcpAcceptor const& acceptor) -> void
+{
+    auto const wake_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(wake_fd >= 0);
+    auto address = sockaddr_in{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(acceptor.bound_port());
+    REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1);
+    std::ignore = ::connect(wake_fd, reinterpret_cast<sockaddr const*>(&address), sizeof(address));
+    ::close(wake_fd);
+}
+
+} // namespace
+
+// Spec: Server-Server API v1.19, "PDUs" (an event is at most 65536 bytes, `prev_events` at most 20 and `auth_events`
+// at most 10 references, `depth` required) and "Joining Rooms" / "Leaving Rooms" / "Knocking upon a room": the joining,
+// leaving or knocking server completes the resident's template, signs it as its own event and sends it back. F-13.
+SCENARIO("A make_join, make_leave or make_knock template outside the event format is refused before it is signed",
+         "[integration][federation][membership-template-format][f13]")
+{
+    GIVEN("alice, who holds an invite to a room on another server, and a resident server that answers with a template")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const step = GENERATE(as<std::string>{}, "join", "leave", "knock");
+        auto const fault = GENERATE(as<std::string>{}, "oversized", "prev_events_not_array", "no_depth",
+                                    "21_prev_events", "unsigned_padding");
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = invited_user(runtime);
+        auto const remote_room_id = std::string{"!f13room:"} + std::string{inviting_server};
+        auto const is_leave = step == "leave";
+        auto const room_id = is_leave ? alice.room_id : remote_room_id;
+        auto resident = InvitingServer{runtime};
+        auto const target = is_leave ? "/_matrix/client/v3/rooms/" + std::string{bare_room_id_encoded} + "/leave"
+                                     : "/_matrix/client/v3/" + step + "/%21f13room%3A" + std::string{inviting_server} +
+                                           "?server_name=" + std::string{inviting_server};
+        auto const make_path = "/make_" + step + "/";
+        auto const send_path = "/send_" + step + "/";
+        auto const template_body =
+            faulty_membership_template(is_leave ? "12" : "10", step, alice.user_id, room_id, fault);
+
+        WHEN("alice joins, leaves or knocks and the resident's template carries the fault")
+        {
+            auto captured = std::vector<std::string>{};
+            auto server = std::thread{[&]() {
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(
+                    resident.acceptor, *resident.tls.context,
+                    {
+                        {make_path, merovingian::tests::tls_mock::json_http_response("200 OK", template_body)},
+                        {send_path, merovingian::tests::tls_mock::json_http_response("200 OK", "{}")         }
+                },
+                    &captured);
+            }};
+            auto const result = call(runtime, "POST", target, alice.token, "{}");
+            wake_acceptor(resident.acceptor);
+            server.join();
+
+            THEN("the request is refused with 502 and nothing is signed, sent or stored")
+            {
+                CAPTURE(step, fault, result.response.body);
+                // Spec MUST: an event is within the PDU format limits before it is signed and sent.
+                REQUIRE(result.response.status == 502U);
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(captured[0].find(make_path) != std::string::npos);
+                if (is_leave)
+                {
+                    REQUIRE(membership_of(runtime, alice) == "invite");
+                }
+                else
+                {
+                    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+                    REQUIRE_FALSE(std::ranges::any_of(
+                        runtime.homeserver.database.persistent_store.memberships, [&](auto const& row) {
+                            return row.user_id == alice.user_id && row.room_id == remote_room_id;
+                        }));
+                }
             }
         }
     }

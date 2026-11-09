@@ -452,6 +452,17 @@ hash: a mismatch is redacted) and `authorize_send_join_answer` (auth rules, depe
 never stored `rejected`. Do not consult the store in the check, and do not recurse over `auth_events`: the resident
 chooses the depth. A join through another resident (ADR-0287) never feeds the answer to these writers, so it skips this.
 
+## A resident's make_join, make_leave and make_knock template is held to the event format before it is signed (F-13)
+
+`perform_federated_join`, the remote branch of `leave_room` and `knock_room` complete the resident's template
+(`claim_membership_event_template`, then the join's profile or the knock's reason) and call
+`membership_template_format_refusal` on the completed event BEFORE the content hash and signature: it is
+`federation::pdu_format_violation` with the template's room version policy (64 KiB without `unsigned`, at most 20
+`prev_events` and 10 `auth_events`, arrays, an integer `depth`). A violation is 502 with nothing signed, sent or stored.
+The check sits after the last edit of the event, so a new field added to a template goes in before it. The three
+outbound calls pass `membership_template_max_response_bytes` (four times `events::max_event_size_bytes`), never the 16 MiB
+default. The size limit does not count the `hashes` and `signatures` added afterwards, as for a received PDU.
+
 ## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
 
 `send_join_answer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
