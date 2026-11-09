@@ -652,6 +652,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
   went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
   position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.
+- A user holds at most `device_count_limit` (200) devices and a device display name is at most
+  `ClientApiLimits::max_device_display_name_bytes` (256) bytes (F-05, ADR-0582). `complete_login` and
+  `login_local_user_by_id` refuse a NEW device ID past the count with 403 `M_FORBIDDEN` before any write, counting in the
+  same pass that looks for the device (`scan_user_devices`); a held device always logs in. `POST /login`, `POST /register`
+  and `PUT /devices/{deviceId}` answer a longer name `400 M_TOO_LARGE` before any write, measured in bytes, never
+  truncated. A device-list announcement builds all of a user's EDUs with `federation::build_device_list_update_batch`
+  (one `DeviceDisplayNames`, one key index; `DeviceListUpdateBatch::*_passes` count the passes). Never call
+  `build_device_list_update_content` per device in a loop: it scans both device tables each call.
 - A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
   path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
   storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that

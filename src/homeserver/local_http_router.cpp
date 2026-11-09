@@ -666,30 +666,18 @@ namespace
             return;
         }
         auto const& store = runtime.database.persistent_store;
-        for (auto const& device : store.devices)
+        // Shared with ClientServerRuntime.cpp's broadcast so both carry the
+        // device keys with the owner's cross-signing signatures, built with one lookup (F-05, ADR-0582).
+        auto const batch = federation::build_device_list_update_batch(store, user_id, std::nullopt,
+                                                                      static_cast<std::int64_t>(stream_id));
+        for (auto const& entry : batch.entries)
         {
-            if (device.user_id != user_id)
-            {
-                continue;
-            }
-            auto const has_keys =
-                std::ranges::any_of(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& keys) {
-                    return keys.user_id == user_id && keys.device_id == device.device_id;
-                });
-            if (!has_keys)
-            {
-                continue;
-            }
-            // Shared with ClientServerRuntime.cpp's broadcast so both carry the
-            // device keys with the owner's cross-signing signatures.
-            auto const content = federation::build_device_list_update_content(store, user_id, device.device_id,
-                                                                              static_cast<std::int64_t>(stream_id));
-            if (!content.has_value())
+            if (!entry.has_keys)
             {
                 continue;
             }
             auto const tx_body = federation::build_edu_transaction_body(runtime.config.server().server_name,
-                                                                        "m.device_list_update", *content);
+                                                                        "m.device_list_update", entry.content);
             if (!tx_body.has_value())
             {
                 continue;

@@ -506,3 +506,4 @@
 * [0585 - Shared history is served only to a server with a joined user](0585-shared-history-is-served-only-to-a-server-with-a-joined-user.md)
 * [0586 - A redaction's authority comes from the state this server holds](0586-a-redactions-authority-comes-from-the-state-this-server-holds.md)
 * [0581 - Room aliases are indexed in a table class and capped per user and per room](0581-room-aliases-are-indexed-in-a-table-class-and-capped-per-user-and-per-room.md)
+* [0582 - A user holds at most 200 devices, a device name at most 256 bytes, and a device-list announcement is linear](0582-a-user-holds-at-most-200-devices-a-device-name-at-most-256-bytes-and-a-device-list-announcement-is-linear.md)

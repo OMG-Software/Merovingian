@@ -318,6 +318,13 @@ production-gated.
     (`device_id_names_cross_signing_key()`), and `POST /keys/device_signing/upload` answers `403`,
     storing nothing, for a key whose ID is the ID of one of the uploader's devices. A generated device
     ID is 32 hex characters, a key ID 43 base64 characters, so a generated ID cannot collide.
+  - **Devices and their names are capped (F-05, ADR-0582).** A user holds at most `device_count_limit` (200)
+    devices: `complete_login` and `login_local_user_by_id` refuse a NEW device ID past it with `403 M_FORBIDDEN`
+    (the same shape as the cross-signing refusal) before any device or session row is written, counting the user's
+    devices in the pass that looks for the device. A login with a device ID the user already holds is always allowed.
+    Nothing is evicted. A device display name (`initial_device_display_name` on `POST /login` and `POST /register`,
+    `display_name` on `PUT /devices/{deviceId}`) is at most `device_display_name_byte_limit` (256) bytes, counted in
+    bytes not code points; over it the request is `400 M_TOO_LARGE`, nothing is stored and the name is not truncated.
   - **A cross-signing upload is validated whole and stored in one transaction.**
     `POST /keys/device_signing/upload` refuses, before any write, a key that is not an object, whose
     `user_id` is not the uploader (`403`), whose `usage` lacks its slot's usage, or whose `keys` is not

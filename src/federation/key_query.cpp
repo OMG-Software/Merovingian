@@ -21,6 +21,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -250,6 +251,44 @@ namespace
             return std::nullopt;
         }
         return *object;
+    }
+
+    // The content of one device's `m.device_list_update` EDU from a display-name lookup and the device's key row
+    // (nullptr when it published none), both built by the caller, so announcing a user's devices does not scan the
+    // device tables per device.
+    [[nodiscard]] auto device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
+                                                  std::string_view device_id, std::int64_t stream_id,
+                                                  DeviceDisplayNames const& display_names,
+                                                  database::PersistentDeviceKey const* device_key)
+        -> std::optional<std::string>
+    {
+        auto content = canonicaljson::Object{};
+        // Spec (SS API, m.device_list_update): `device_display_name` is "the public human-readable
+        // name of this device. Will be absent if the device has no name."
+        if (auto const name = display_names.find(user_id, device_id); name.has_value() && !name->empty())
+        {
+            content.push_back(
+                canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{*name}}));
+        }
+        content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
+        if (device_key != nullptr)
+        {
+            // A receiving server may apply these keys directly instead of
+            // refetching, so they must be exactly what /user/keys/query serves.
+            if (auto keys = published_device_keys(store, *device_key, std::nullopt, display_names); keys.has_value())
+            {
+                content.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
+            }
+        }
+        content.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
+        content.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
+        content.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+        auto serialized = serialize(std::move(content));
+        if (serialized.empty())
+        {
+            return std::nullopt;
+        }
+        return serialized;
     }
 
 } // namespace
@@ -534,38 +573,52 @@ auto build_signing_key_update_content(database::PersistentStore const& store, st
 auto build_device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
                                       std::string_view device_id, std::int64_t stream_id) -> std::optional<std::string>
 {
-    auto content = canonicaljson::Object{};
-    // Spec (SS API, m.device_list_update): `device_display_name` is "the public human-readable
-    // name of this device. Will be absent if the device has no name."
     auto const owner = std::array<std::string_view, 1U>{user_id};
     auto const display_names = DeviceDisplayNames{store, owner};
-    if (auto const name = display_names.find(user_id, device_id); name.has_value() && !name->empty())
-    {
-        content.push_back(canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{*name}}));
-    }
-    content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
     auto const device_key =
         std::ranges::find_if(store.device_keys, [user_id, device_id](database::PersistentDeviceKey const& key) {
             return key.user_id == user_id && key.device_id == device_id;
         });
-    if (device_key != store.device_keys.end())
+    return device_list_update_content(store, user_id, device_id, stream_id, display_names,
+                                      device_key == store.device_keys.end() ? nullptr : &*device_key);
+}
+
+auto build_device_list_update_batch(database::PersistentStore const& store, std::string_view user_id,
+                                    std::optional<std::string_view> only_device, std::int64_t stream_id)
+    -> DeviceListUpdateBatch
+{
+    auto batch = DeviceListUpdateBatch{};
+    // One lookup of the display names of this user's devices (a pass over `store.devices`) ...
+    auto const owner = std::array<std::string_view, 1U>{user_id};
+    auto const display_names = DeviceDisplayNames{store, owner};
+    ++batch.device_table_passes;
+    // ... and one index of this user's published keys. The first row for a device wins, as `find_if` did.
+    auto keys_by_device = std::map<std::string_view, database::PersistentDeviceKey const*>{};
+    for (auto const& key : store.device_keys)
     {
-        // A receiving server may apply these keys directly instead of
-        // refetching, so they must be exactly what /user/keys/query serves.
-        if (auto keys = published_device_keys(store, *device_key, std::nullopt, display_names); keys.has_value())
+        if (key.user_id == user_id)
         {
-            content.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
+            keys_by_device.emplace(std::string_view{key.device_id}, &key);
         }
     }
-    content.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
-    content.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
-    content.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
-    auto serialized = serialize(std::move(content));
-    if (serialized.empty())
+    ++batch.device_key_table_passes;
+    // The devices themselves, in table order (the order the per-device loop announced them in).
+    for (auto const& device : store.devices)
     {
-        return std::nullopt;
+        if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
+        {
+            continue;
+        }
+        auto const found = keys_by_device.find(std::string_view{device.device_id});
+        auto const* const key = found == keys_by_device.end() ? nullptr : found->second;
+        auto content = device_list_update_content(store, user_id, device.device_id, stream_id, display_names, key);
+        if (content.has_value())
+        {
+            batch.entries.push_back({device.device_id, std::move(*content), key != nullptr});
+        }
     }
-    return serialized;
+    ++batch.device_table_passes;
+    return batch;
 }
 
 auto build_device_deleted_update_content(std::string_view user_id, std::string_view device_id, std::int64_t stream_id,
