@@ -13,6 +13,14 @@ reset with `logout_devices` true, `POST /account/deactivate` and the operator de
 `HomeserverRuntime`). A password change with `logout_devices` false leaves the tokens alone. The store is guarded by
 `runtime.mutex`, which every one of these handlers holds.
 
+### F-17: another user's http pusher cannot remove an email pusher
+
+`POST /pushers/set` with `append` false removes the pushers of other users that share the new pusher's `app_id` and pushkey,
+as the spec requires. A pusher of kind `http` with `app_id` `m.email` and a victim's address as pushkey therefore removed the
+victim's email pusher and silently stopped their notification emails. `app_id` `m.email` is now reserved for kind `email`: any
+other kind with it is `400 M_INVALID_PARAM`. The cross-user removal also skips pushers of kind `email`, whose pushkey is an
+address the owner holds. Ordinary pushers are still removed across users.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

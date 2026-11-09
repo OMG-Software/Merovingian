@@ -17237,6 +17237,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "account");
             }
         }
+        // F-17: app_id m.email belongs to kind email (spec: "If the kind is "email", this is "m.email""). Any
+        // other kind with that app_id would be a way to reach the email pushers of other users, whose pushkey is
+        // an address the account owns.
+        if (body->kind.has_value() && *body->kind != "email" && body->app_id == "m.email")
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "app_id m.email is reserved for email pushers");
+        }
         auto& store = rt.homeserver.database.persistent_store;
         if (!body->kind.has_value())
         {
@@ -17332,7 +17339,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto other_users = std::vector<std::string>{};
             for (auto const& existing : store.pushers)
             {
-                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey)
+                // F-17: an email pusher's pushkey is the address its owner holds; it is never another user's to
+                // displace, whatever pusher is being set.
+                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey &&
+                    existing.kind != "email")
                 {
                     other_users.push_back(existing.user_id);
                 }

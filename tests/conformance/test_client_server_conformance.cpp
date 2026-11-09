@@ -18408,6 +18408,81 @@ SCENARIO("POST /pushers/set accepts an email pusher for the account's own addres
     }
 }
 
+// F-17 (security audit run 4). Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3pushersset
+// `app_id`: "If the kind is "email", this is "m.email"" and `append`: "Otherwise, the homeserver must remove any other
+// pushers with the same App ID and pushkey for different users." The removal is required for ordinary pushers; an
+// email pusher is the account's own address (ADR-0219), so another user's http pusher must not reach it.
+SCENARIO("POST /pushers/set reserves app_id m.email for email pushers and never removes one for another user",
+         "[conformance][client-server][push][email-pusher][f17]")
+{
+    GIVEN("alice holds an email pusher and bob is another user")
+    {
+        auto config = conformance_config();
+        config.server().email.smtp_url = "smtps://smtp.example.org";
+        config.server().email.from = "matrix@example.org";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = logged_in_token(runtime);
+        auto const bob_token = register_and_login(runtime, "bob");
+        auto binding = merovingian::database::PersistentThreePidBinding{};
+        binding.user_id = "@alice:example.org";
+        binding.medium = "email";
+        binding.address = "alice@example.net";
+        binding.added_at_ms = 1700000000000U;
+        binding.validated_at_ms = 1700000000000U;
+        REQUIRE(merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+
+        auto const set_pusher = [&](std::string const& token, std::string const& app_id, std::string const& kind,
+                                    std::string const& pushkey, std::string const& extra) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_display_name":"App","app_id":")" + app_id +
+                     R"(","data":{"url":"https://push.example.org/_matrix/push/v1/notify"},"device_display_name":"D",)"
+                     R"("kind":")" +
+                     kind + R"(","lang":"en","pushkey":")" + pushkey + "\"" + extra + "}"});
+        };
+        auto const pusher_listed = [&](std::string const& token, std::string const& pushkey) {
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+            REQUIRE(listed.response.status == 200U);
+            return listed.response.body.find(pushkey) != std::string::npos;
+        };
+        REQUIRE(set_pusher(alice_token, "m.email", "email", "alice@example.net", "").response.status == 200U);
+        REQUIRE(pusher_listed(alice_token, "alice@example.net"));
+
+        WHEN("bob sets an http pusher with app_id m.email and alice's address as pushkey")
+        {
+            auto const response = set_pusher(bob_token, "m.email", "http", "alice@example.net", "");
+
+            THEN("it is refused and alice's email pusher survives")
+            {
+                // Spec MUST: an app_id of m.email belongs to kind "email"; 400 for an invalid pusher value.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(pusher_listed(alice_token, "alice@example.net"));
+                REQUIRE_FALSE(pusher_listed(bob_token, "alice@example.net"));
+            }
+        }
+
+        WHEN("bob sets an http pusher for another app_id with a pushkey alice also holds, append false")
+        {
+            REQUIRE(set_pusher(alice_token, "org.example.app", "http", "shared-key", "").response.status == 200U);
+            auto const response = set_pusher(bob_token, "org.example.app", "http", "shared-key", "");
+
+            THEN("alice's http pusher is removed")
+            {
+                // Spec MUST: with append false, "remove any other pushers with the same App ID and pushkey for
+                // different users".
+                REQUIRE(response.response.status == 200U);
+                REQUIRE_FALSE(pusher_listed(alice_token, "shared-key"));
+                REQUIRE(pusher_listed(bob_token, "shared-key"));
+            }
+        }
+    }
+}
+
 // --- Media download security headers ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 //
