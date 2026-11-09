@@ -73,6 +73,24 @@ waiting downloads) ignores it, and it is still never minted again as a media ID.
 and `PersistentStore::pending_media_rows_examined` count the rows visited so tests prove cost without timing. See ADR-0589.
 The duplicate-ID check in `commit_pending_media_upload` still reads `local_media` and is not part of this change.
 
+### F-08 (part 1 of 2): the credential tables are indexed
+
+Every presented-token check, `store_*_token` duplicate check and `revoke_*` helper scanned all of `access_tokens` and
+`refresh_tokens` under `runtime.mutex` (about 56 ms per refresh at 100,000 rows). `PersistentStore::access_tokens` and
+`refresh_tokens` are now `database::CredentialTable`: they own their rows, show them read-only, and index them by token hash
+(a digest index in the sense of ADR-0488: it narrows, and every candidate is confirmed with `crypto::constant_time_equal`,
+with no scan after a miss), by (user ID, device ID), by user and, for refresh tokens, by predecessor hash. Lookup, duplicate
+checks, every revoke helper, `revoke_device_credentials`, `revoke_tokens_for_user_except_device`, the presented-token lookup
+in `refresh_local_session` and the "are they all revoked" checks after a revocation cost the rows they touch. The SQL each
+helper issues is unchanged, and the retention sweep (`collect_unusable_credentials`, `forget_credentials`) still iterates.
+`SessionTable` gained an index by (user ID, device ID) and `erase_device`, which removes one device's sessions in time
+proportional to them (the last session fills each hole, so after it `back()` is no longer the newest session; nothing in
+production reads the order). This part changes no login or refresh behaviour; the cap on a device's rows and the retired-row
+grace window follow in part 2. `[f08]` in `tests/unit/test_credential_tables.cpp` proves with the tables' `rows_examined()`
+counters that storing a token, each per-device revoke, the per-predecessor revoke and one refresh examine the same rows with
+200 and 400 other-user rows, and that every index agrees with the rows after erases, a sweep and a copy.
+Three tests that aged rows by writing `expires_at` through a mutable iterator use `set_expires_at_where` now.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

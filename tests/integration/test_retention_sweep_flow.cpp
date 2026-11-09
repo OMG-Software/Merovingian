@@ -151,13 +151,11 @@ SCENARIO("The retention sweep deletes the sessions and tokens that can no longer
                 session.expires_at = long_ago;
             }
         }
-        for (auto& token : persistent.access_tokens)
-        {
-            if (token.device_id == "OLD")
-            {
-                token.expires_at = long_ago;
-            }
-        }
+        std::ignore = persistent.access_tokens.set_expires_at_where(
+            [](merovingian::database::PersistentAccessToken const& token) {
+                return token.device_id == "OLD";
+            },
+            long_ago);
         // The durable row must agree with the mirror: expire it through the file.
         {
             sqlite3* raw = nullptr;
@@ -230,10 +228,11 @@ SCENARIO("An access token that expired recently is kept for the grace period", "
                                                                      "CorrectHorse7!Battery", "RECENT");
         REQUIRE(login.ok);
         auto const now = std::chrono::system_clock::now();
-        for (auto& token : runtime.database.persistent_store.access_tokens)
-        {
-            token.expires_at = now - std::chrono::hours{1};
-        }
+        std::ignore = runtime.database.persistent_store.access_tokens.set_expires_at_where(
+            [](merovingian::database::PersistentAccessToken const&) {
+                return true;
+            },
+            now - std::chrono::hours{1});
 
         WHEN("the retention sweep runs")
         {

@@ -3952,10 +3952,11 @@ SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client
         WHEN("the refresh token's expiry is forced into the past and /refresh is called")
         {
             // Force every stored refresh row for this device into the past.
-            for (auto& row : started.runtime.homeserver.database.persistent_store.refresh_tokens)
-            {
-                row.expires_at = std::chrono::system_clock::time_point{};
-            }
+            std::ignore = started.runtime.homeserver.database.persistent_store.refresh_tokens.set_expires_at_where(
+                [](merovingian::database::PersistentRefreshToken const&) {
+                    return true;
+                },
+                std::chrono::system_clock::time_point{});
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",

@@ -131,87 +131,52 @@ namespace
     [[nodiscard]] auto access_token_is_revoked(database::PersistentStore const& store, std::string_view token_hash)
         -> bool
     {
-        return !std::ranges::any_of(store.access_tokens, [&token_hash](database::PersistentAccessToken const& token) {
-            return crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked;
-        });
+        return !store.access_tokens.has_unrevoked_hash(token_hash);
     }
 
     [[nodiscard]] auto refresh_token_is_revoked(database::PersistentStore const& store, std::string_view token_hash)
         -> bool
     {
-        return !std::ranges::any_of(store.refresh_tokens, [&token_hash](database::PersistentRefreshToken const& token) {
-            return crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked;
-        });
+        return !store.refresh_tokens.has_unrevoked_hash(token_hash);
     }
 
     [[nodiscard]] auto device_access_tokens_are_revoked(database::PersistentStore const& store,
                                                         std::string_view user_id, std::string_view device_id) -> bool
     {
-        return !std::ranges::any_of(
-            store.access_tokens, [&user_id, &device_id](database::PersistentAccessToken const& token) {
-                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
-            });
+        return !store.access_tokens.has_unrevoked_for_device(user_id, device_id);
     }
 
     [[nodiscard]] auto device_tokens_are_revoked(database::PersistentStore const& store, std::string_view user_id,
                                                  std::string_view device_id) -> bool
     {
-        auto const access_remaining = std::ranges::any_of(
-            store.access_tokens, [&user_id, &device_id](database::PersistentAccessToken const& token) {
-                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
-            });
-        auto const refresh_remaining = std::ranges::any_of(
-            store.refresh_tokens, [&user_id, &device_id](database::PersistentRefreshToken const& token) {
-                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
-            });
-        return !access_remaining && !refresh_remaining;
+        return !store.access_tokens.has_unrevoked_for_device(user_id, device_id) &&
+               !store.refresh_tokens.has_unrevoked_for_device(user_id, device_id);
     }
 
     [[nodiscard]] auto device_refresh_tokens_are_revoked(database::PersistentStore const& store,
                                                          std::string_view user_id, std::string_view device_id) -> bool
     {
-        return !std::ranges::any_of(
-            store.refresh_tokens, [&user_id, &device_id](database::PersistentRefreshToken const& token) {
-                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
-            });
+        return !store.refresh_tokens.has_unrevoked_for_device(user_id, device_id);
     }
 
     [[nodiscard]] auto user_tokens_are_revoked(database::PersistentStore const& store, std::string_view user_id) -> bool
     {
-        auto const access_remaining =
-            std::ranges::any_of(store.access_tokens, [&user_id](database::PersistentAccessToken const& token) {
-                return token.user_id == user_id && !token.revoked;
-            });
-        auto const refresh_remaining =
-            std::ranges::any_of(store.refresh_tokens, [&user_id](database::PersistentRefreshToken const& token) {
-                return token.user_id == user_id && !token.revoked;
-            });
-        return !access_remaining && !refresh_remaining;
+        return !store.access_tokens.has_unrevoked_for_user(user_id) &&
+               !store.refresh_tokens.has_unrevoked_for_user(user_id);
     }
 
     [[nodiscard]] auto user_tokens_except_device_are_revoked(database::PersistentStore const& store,
                                                              std::string_view user_id, std::string_view keep_device_id)
         -> bool
     {
-        auto const access_remaining = std::ranges::any_of(
-            store.access_tokens, [&user_id, &keep_device_id](database::PersistentAccessToken const& token) {
-                return token.user_id == user_id && token.device_id != keep_device_id && !token.revoked;
-            });
-        auto const refresh_remaining = std::ranges::any_of(
-            store.refresh_tokens, [&user_id, &keep_device_id](database::PersistentRefreshToken const& token) {
-                return token.user_id == user_id && token.device_id != keep_device_id && !token.revoked;
-            });
-        return !access_remaining && !refresh_remaining;
+        return !store.access_tokens.has_unrevoked_for_user_except_device(user_id, keep_device_id) &&
+               !store.refresh_tokens.has_unrevoked_for_user_except_device(user_id, keep_device_id);
     }
 
     [[nodiscard]] auto refresh_tokens_with_predecessor_are_revoked(database::PersistentStore const& store,
                                                                    std::string_view predecessor_hash) -> bool
     {
-        return !std::ranges::any_of(
-            store.refresh_tokens, [&predecessor_hash](database::PersistentRefreshToken const& token) {
-                return !token.predecessor_hash.empty() &&
-                       crypto::constant_time_equal(token.predecessor_hash, predecessor_hash) && !token.revoked;
-            });
+        return !store.refresh_tokens.has_unrevoked_with_predecessor(predecessor_hash);
     }
 
     // Master key material loading is shared with the federation worker process
@@ -1546,11 +1511,14 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     }
 
     auto const now = std::chrono::system_clock::now();
-    auto const refresh = std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
-                                              [&refresh_hashes](database::PersistentRefreshToken const& row) {
-                                                  return matches_any_token_hash(row.token_hash, refresh_hashes);
-                                              });
-    if (refresh == runtime.database.persistent_store.refresh_tokens.end() || is_expired(refresh->expires_at, now))
+    // The table narrows by an index and confirms each candidate with constant_time_equal; the version check of
+    // token_hash_matches is applied to the row it returns.
+    auto const* refresh = runtime.database.persistent_store.refresh_tokens.find(refresh_hashes);
+    if (refresh != nullptr && !matches_any_token_hash(refresh->token_hash, refresh_hashes))
+    {
+        refresh = nullptr;
+    }
+    if (refresh == nullptr || is_expired(refresh->expires_at, now))
     {
         return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
     }

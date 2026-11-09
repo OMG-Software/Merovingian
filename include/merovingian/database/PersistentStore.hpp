@@ -4,6 +4,7 @@
 
 #include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/database/CappedAccountDataStore.hpp"
+#include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
@@ -284,8 +285,9 @@ struct PersistentStore final
     SchemaState schema{};
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
-    std::vector<PersistentAccessToken> access_tokens{};
-    std::vector<PersistentRefreshToken> refresh_tokens{};
+    // The credential tables own their rows and index them (F-08): look up and revoke through their methods.
+    CredentialTable<PersistentAccessToken> access_tokens{};
+    CredentialTable<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};

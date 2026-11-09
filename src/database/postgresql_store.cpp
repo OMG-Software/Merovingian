@@ -576,9 +576,10 @@ namespace
             {
                 if (row.size() >= 4U)
                 {
-                    store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
-                                                   row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
-                                                   row.size() >= 6U ? row[5] : std::string{}});
+                    std::ignore =
+                        store.access_tokens.insert({row[0], row[1], row[2], text_is_true(row[3]),
+                                                    row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
+                                                    row.size() >= 6U ? row[5] : std::string{}});
                 }
             }
         }
@@ -597,9 +598,10 @@ namespace
             {
                 if (row.size() >= 4U)
                 {
-                    store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
-                                                    row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
-                                                    row.size() >= 6U ? row[5] : std::string{}});
+                    std::ignore =
+                        store.refresh_tokens.insert({row[0], row[1], row[2], text_is_true(row[3]),
+                                                     row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
+                                                     row.size() >= 6U ? row[5] : std::string{}});
                 }
             }
         }

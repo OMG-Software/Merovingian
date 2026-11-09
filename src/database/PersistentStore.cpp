@@ -335,16 +335,12 @@ namespace
 
     [[nodiscard]] auto access_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
-        return std::ranges::any_of(store.access_tokens, [token_hash](PersistentAccessToken const& existing) {
-            return crypto::constant_time_equal(existing.token_hash, token_hash);
-        });
+        return store.access_tokens.contains(token_hash);
     }
 
     [[nodiscard]] auto refresh_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
-        return std::ranges::any_of(store.refresh_tokens, [token_hash](PersistentRefreshToken const& existing) {
-            return crypto::constant_time_equal(existing.token_hash, token_hash);
-        });
+        return store.refresh_tokens.contains(token_hash);
     }
 
     [[nodiscard]] auto federation_transaction_is_valid(PersistentFederationTransaction const& transaction) noexcept
@@ -688,21 +684,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    for (auto& token : store.access_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, access_token_hash) ||
-            (token.user_id == user_id && token.device_id == device_id))
-        {
-            token.revoked = true;
-        }
-    }
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id)
-        {
-            token.revoked = true;
-        }
-    }
+    std::ignore = store.access_tokens.revoke_hash(access_token_hash);
+    std::ignore = store.access_tokens.revoke_for_device(user_id, device_id);
+    std::ignore = store.refresh_tokens.revoke_for_device(user_id, device_id);
     return true;
 }
 
@@ -812,7 +796,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    store.access_tokens.push_back(std::move(token));
+    std::ignore = store.access_tokens.insert(std::move(token));
     return true;
 }
 
@@ -835,7 +819,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    store.refresh_tokens.push_back(std::move(token));
+    std::ignore = store.refresh_tokens.insert(std::move(token));
     return true;
 }
 
@@ -879,7 +863,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         store.devices.push_back(std::move(*device));
     }
-    store.access_tokens.push_back(std::move(token));
+    std::ignore = store.access_tokens.insert(std::move(token));
     return true;
 }
 
@@ -894,16 +878,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_hash(token_hash);
 }
 
 [[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t
@@ -917,16 +892,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_hash(token_hash);
 }
 
 [[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
@@ -940,16 +906,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (token.user_id == user_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_for_user(user_id);
 }
 
 [[nodiscard]] auto revoke_access_tokens_for_device(PersistentStore& store, std::string_view user_id,
@@ -968,16 +925,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_for_device(user_id, device_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
@@ -991,16 +939,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_for_user(user_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
@@ -1019,16 +958,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_for_device(user_id, device_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
@@ -1048,17 +978,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (!token.predecessor_hash.empty() && crypto::constant_time_equal(token.predecessor_hash, predecessor_hash) &&
-            !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_with_predecessor(predecessor_hash);
 }
 
 // M-05: revokes every access and refresh token belonging to `user_id` EXCEPT
@@ -1089,14 +1009,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                            {std::string{keep_device_id}, false}
     })))
     {
-        for (auto& token : store.access_tokens)
-        {
-            if (token.user_id == user_id && token.device_id != keep_device_id && !token.revoked)
-            {
-                token.revoked = true;
-                ++revoked;
-            }
-        }
+        revoked += store.access_tokens.revoke_for_user_except_device(user_id, keep_device_id);
     }
     if (record_and_persist(
             store, record_statement(
@@ -1109,14 +1022,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                            {std::string{keep_device_id}, false}
     })))
     {
-        for (auto& token : store.refresh_tokens)
-        {
-            if (token.user_id == user_id && token.device_id != keep_device_id && !token.revoked)
-            {
-                token.revoked = true;
-                ++revoked;
-            }
-        }
+        revoked += store.refresh_tokens.revoke_for_user_except_device(user_id, keep_device_id);
     }
     return revoked;
 }
@@ -4690,10 +4596,10 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
         std::unordered_set<std::string>{deleted.access_token_hashes.begin(), deleted.access_token_hashes.end()};
     auto const refresh =
         std::unordered_set<std::string>{deleted.refresh_token_hashes.begin(), deleted.refresh_token_hashes.end()};
-    std::erase_if(store.access_tokens, [&access](PersistentAccessToken const& token) {
+    std::ignore = store.access_tokens.erase_if([&access](PersistentAccessToken const& token) {
         return access.contains(token.token_hash);
     });
-    std::erase_if(store.refresh_tokens, [&refresh](PersistentRefreshToken const& token) {
+    std::ignore = store.refresh_tokens.erase_if([&refresh](PersistentRefreshToken const& token) {
         return refresh.contains(token.token_hash);
     });
 }

@@ -77,6 +77,11 @@ the index alone, never add a fall-back scan for a miss (an unknown token is the 
 hash only through `set_access_token_hash`. The `retention-sweep` job erases sessions that can never authenticate again and
 deletes their rows; it keeps a revoked refresh token until it expires so reuse is still detected (ADR-0488).
 
+`PersistentStore::access_tokens` and `refresh_tokens` are `database::CredentialTable`s with the same rule: a digest index
+that narrows, every candidate confirmed with `constant_time_equal`, no fall-back scan. `SessionTable::erase_device` drops one
+device's sessions through the (user ID, device ID) index; it moves the last session into each hole, so insertion order is
+not kept after it. Do not write a loop over either table to find a token, a device's rows or a predecessor.
+
 ## Token lifecycle
 
 ```
