@@ -4212,10 +4212,7 @@ SCENARIO("Auth rules reject a create event whose room_version is not a string",
     }
 }
 
-// Spec: appendices.md "Historical User IDs": clients and servers MUST accept user IDs whose localpart is any legal
-// non-surrogate code point except ':' and NUL, including other control characters and the empty string. Rule 9.3 (a
-// power_levels `users` key must be a valid user ID) and rule 1.4 (v12 additional_creators) both name "valid user IDs",
-// so a historical ID must satisfy them. The server-name half stays strict.
+// F-09 helpers: judge one user ID as a room version 11 power_levels `users` key, and as a v12 additional creator.
 namespace
 {
 
@@ -4249,6 +4246,15 @@ auto f09_create_allowed(std::string const& user_id_json) -> bool
 
 } // namespace
 
+// Spec: Matrix v1.19 Appendices, Historical User IDs; Room Versions 11 and 12, Authorization rules
+// Section: "Historical User IDs"; rule 9.3 (power_levels `users` keys); rule 1.4 (v12 `additional_creators`)
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#historical-user-ids
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// Clients and servers MUST accept user IDs whose localpart is any legal non-surrogate code point except ':' and NUL,
+// including other control characters and the empty string. Rule 9.3 (a power_levels `users` key must be a valid user
+// ID) and rule 1.4 (v12 additional_creators) both name "valid user IDs", so a historical ID must satisfy them. The
+// server-name half stays strict.
 SCENARIO("Rule 9.3 and additional_creators accept historical user IDs and refuse a bad server name",
          "[events][auth][power-levels][f09][conformance]")
 {
@@ -4275,11 +4281,13 @@ SCENARIO("Rule 9.3 and additional_creators accept historical user IDs and refuse
         {
             THEN("none is refused")
             {
-                REQUIRE(f09_create_allowed("@bob:example.org")); // control: the same event with an ordinary ID
+                // Spec MUST: a v12 create event whose additional_creators are valid user IDs is allowed (the
+                // control: the same event with an ordinary ID).
+                REQUIRE(f09_create_allowed("@bob:example.org"));
                 for (auto const& user_id : accepted)
                 {
                     CAPTURE(user_id);
-                    // Spec MUST: as above.
+                    // Spec MUST: an additional creator with a historical localpart is a valid user ID, so allowed.
                     REQUIRE(f09_create_allowed(user_id));
                 }
             }
@@ -4298,8 +4306,9 @@ SCENARIO("Rule 9.3 and additional_creators accept historical user IDs and refuse
                 for (auto const& user_id : refused)
                 {
                     CAPTURE(user_id);
-                    // Spec MUST: the key is a valid user ID, whose server name is a valid server name.
+                    // Spec MUST: rule 9.3 refuses a users key that is not a valid user ID (its server name is not).
                     REQUIRE_FALSE(f09_users_problem(user_id).empty());
+                    // Spec MUST: rule 1.4 refuses an additional creator that is not a valid user ID.
                     REQUIRE_FALSE(f09_create_allowed(user_id));
                 }
             }

@@ -843,6 +843,10 @@ namespace
     auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin,
                           std::string_view target, std::string_view reason) -> void
     {
+        // F-11: the reason can name the origin (federation_route_audit_event), and a valid server name is up to 255
+        // bytes before the reason's own prefix, so the stored reason is bounded too. The unsafe-marker count below is
+        // taken on the bounded value, the same string eviction later judges.
+        auto const bounded_reason = observability::bounded_utf8(reason, observability::max_audit_field_bytes);
         auto guard = federation_guard(runtime);
         // Bounded ring (#423): a remote sending sustained traffic (accepted or
         // rejected) must not grow the audit log without bound. Entries are
@@ -855,15 +859,16 @@ namespace
             }
             runtime.audit_events.pop_front();
         }
-        if (audit_reason_is_unsafe(reason))
+        if (audit_reason_is_unsafe(bounded_reason))
         {
             ++runtime.unsafe_audit_events;
         }
         // F-11: the origin of a request that has not been authenticated yet is chosen by the sender, so it is bounded
         // here as PersistentStore bounds the actor of a stored audit row.
-        runtime.audit_events.push_back(observability::make_audit_event(
-            observability::AuditCategory::policy, event_type,
-            observability::bounded_utf8(origin, observability::max_audit_field_bytes), target, reason, "federation"));
+        runtime.audit_events.push_back(
+            observability::make_audit_event(observability::AuditCategory::policy, event_type,
+                                            observability::bounded_utf8(origin, observability::max_audit_field_bytes),
+                                            target, bounded_reason, "federation"));
     }
 
     struct ParsedTransactionBody final

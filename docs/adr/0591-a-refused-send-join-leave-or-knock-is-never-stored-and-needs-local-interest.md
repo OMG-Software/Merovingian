@@ -51,10 +51,14 @@ Chosen option: refuse and never store.
    `m.room.member` state for the sender is that very event; otherwise `403`, with no state. A genuine lost-answer
    retry, where the join is still the joiner's membership, works as ADR-0372 describes. The same test covers a resent
    leave and knock, which used to be judged and stored a second time. A row stored `rejected` by an earlier version is
-   still refused `403`.
+   still refused `403`. Endpoint agreement (`membership_agreement_refusal`: an `m.room.member` about its own sender,
+   whose membership is the one the endpoint names, from a user of the origin) runs before this branch, so a stored
+   event sent to another endpoint, such as a leave relayed by a worker as `send_knock`, is `400 M_INVALID_PARAM`,
+   never a resend answer.
 4. **One gate, both paths.** The acceptor is the callback both the direct path (`handle_send_membership`) and main's
-   side of the worker relay (`membership_ingest`) call, so main does not trust the worker's decision: both checks
-   live in `membership_admission_refusal` and `membership_outcome_refusal` in `local_http_router.cpp`.
+   side of the worker relay (`membership_ingest`) call, so main does not trust the worker's decision: the checks
+   live in `membership_admission_refusal`, `membership_agreement_refusal` and `membership_outcome_refusal` in
+   `local_http_router.cpp`.
 
 ADR-0372 keeps its decision text. Its answer from current state still holds for a join that is the joiner's current
 membership; the part that answered a soft-failed join, with the ban in the state, is superseded by 2 and 3.

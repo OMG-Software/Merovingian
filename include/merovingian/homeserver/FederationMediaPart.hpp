@@ -25,7 +25,8 @@ struct FederationMediaPart final
     // R17: the filename in the media part's Content-Disposition, if any.
     std::string filename{};
     // F-15: how many multipart parts were parsed before the body was accepted or refused. Never more than the cap of
-    // two plus the one that exceeded it, whatever the body holds; a test reads it to prove the work is bounded.
+    // two, whatever the body holds: a third part is refused before it is parsed. A test reads it to prove the work is
+    // bounded.
     std::size_t parts_parsed{0U};
 };
 

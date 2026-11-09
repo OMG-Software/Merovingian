@@ -1318,6 +1318,38 @@ namespace
             false, 403U, std::string{"this server has no local member in that room"}, {}, {}};
     }
 
+    // FED-6, F-10: the event must be the membership the endpoint names, in the room and with the event ID the request
+    // names, about its own sender, and from a user of the origin. It runs after admission and BEFORE an already stored
+    // event is answered again: a worker relay is untrusted (ADR-0071) and is checked here, not by the request layer,
+    // so a stored leave relayed as send_knock would otherwise be answered with the room's stripped state. Origin
+    // authentication and event-ID computation belong to the callers; the relay has no URL event ID, so it passes empty.
+    [[nodiscard]] auto membership_agreement_refusal(federation::FederationEndpoint endpoint, std::string_view room_id,
+                                                    std::string_view event_id,
+                                                    federation::InboundPduEnvelope const& envelope)
+        -> std::optional<federation::MembershipAcceptResult>
+    {
+        auto const parsed = canonicaljson::parse_lossless(envelope.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return federation::MembershipAcceptResult{false, 400U, std::string{"invalid PDU JSON"}, {}, {}};
+        }
+        auto const expected_membership = membership_for_endpoint(endpoint);
+        if (expected_membership.empty() || envelope.event_type != "m.room.member" || envelope.room_id != room_id ||
+            (!event_id.empty() && envelope.event_id != event_id) || !envelope.state_key.has_value() ||
+            *envelope.state_key != envelope.sender ||
+            events::extract_content_membership(parsed.value) != expected_membership ||
+            (!envelope.origin.empty() && server_name_from_user_id(envelope.sender) != envelope.origin))
+        {
+            return federation::MembershipAcceptResult{
+                false,
+                400U,
+                matrix_error("M_INVALID_PARAM", "membership event does not match endpoint, path or origin"),
+                {},
+                {}};
+        }
+        return std::nullopt;
+    }
+
     // F-10, F-12 (ADR-0591): the outcome gate. A membership event that auth rejects or soft-fails is refused and never
     // stored, so the answer (state, auth chain, knock_room_state) is never built for it.
     [[nodiscard]] auto membership_outcome_refusal(std::string_view reason) -> federation::MembershipAcceptResult
@@ -2377,6 +2409,11 @@ namespace
             {
                 return *refusal;
             }
+            if (auto const refusal = membership_agreement_refusal(endpoint, room_id, event_id, envelope);
+                refusal.has_value())
+            {
+                return *refusal;
+            }
             // An event this server already stored is answered again, not judged again (F-23): the server
             // that sent it may not have received the first answer (a lost response, a retry). It is
             // answered only when it was accepted AND is still the sender's current membership (F-10,
@@ -2500,23 +2537,7 @@ namespace
                 {
                     return {false, 400U, "invalid PDU JSON", {}, {}};
                 }
-                // FED-6: repeat endpoint agreement at the mutation boundary,
-                // including membership PDUs relayed by a federation worker.
-                // Origin authentication and event-ID computation belong to the
-                // callers; the relay has no URL event_id, so it passes empty.
-                auto const expected_membership = membership_for_endpoint(endpoint);
-                if (expected_membership.empty() || envelope.event_type != "m.room.member" ||
-                    envelope.room_id != room_id || (!event_id.empty() && envelope.event_id != event_id) ||
-                    !envelope.state_key.has_value() || *envelope.state_key != envelope.sender ||
-                    events::extract_content_membership(pdu_parsed.value) != expected_membership ||
-                    (!envelope.origin.empty() && server_name_from_user_id(envelope.sender) != envelope.origin))
-                {
-                    return {false,
-                            400U,
-                            matrix_error("M_INVALID_PARAM", "membership event does not match endpoint, path or origin"),
-                            {},
-                            {}};
-                }
+                // FED-6 endpoint agreement ran before the resend branch (membership_agreement_refusal).
                 // ADR-0583: a membership event builds on its own room only.
                 if (database::find_event_in_other_room(store, room_id, envelope.prev_event_ids).has_value())
                 {

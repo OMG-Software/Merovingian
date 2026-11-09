@@ -38,6 +38,7 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
+#include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/bounded_text.hpp"
@@ -5838,6 +5839,49 @@ SCENARIO("An oversized X-Matrix origin is bounded in the audit ring and the reje
                 CHECK(text.find(std::string(300U, 'a')) == std::string::npos);
                 CHECK(text.find(std::string(300U, 'b')) == std::string::npos);
                 CHECK(text.size() < 8192U);
+            }
+        }
+    }
+}
+
+// F-11: an accepted request's audit reason names its origin ("federation.<endpoint> origin=<origin>"), and a valid
+// server name is up to 255 bytes, so the reason alone could exceed the audit field limit.
+SCENARIO("An accepted request from a 255-byte server name keeps its audit reason within the field limit",
+         "[federation][inbound][audit][security][f11]")
+{
+    GIVEN("a known remote whose server name is four 63-byte labels, 255 bytes in all")
+    {
+        auto const label = std::string(63U, 'a');
+        auto const origin = label + "." + label + "." + label + "." + label;
+        REQUIRE(origin.size() == 255U);
+        auto config = runtime_config();
+        config.max_transaction_bytes = 65536U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+
+        WHEN("its signed transaction is accepted")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("every audit entry's actor and reason hold at most max_audit_field_bytes")
+            {
+                REQUIRE(response.status == 200U);
+                auto const accepted = std::ranges::find(runtime.audit_events, std::string{"federation.accepted"},
+                                                        &merovingian::observability::AuditLogEvent::event_type);
+                REQUIRE(accepted != runtime.audit_events.end());
+                // The accepted entry's reason is the one that names the origin.
+                CHECK(accepted->reason_code.starts_with("federation."));
+                for (auto const& event : runtime.audit_events)
+                {
+                    CAPTURE(event.event_type);
+                    CHECK(event.actor.size() <= merovingian::observability::max_audit_field_bytes);
+                    CHECK(event.reason_code.size() <= merovingian::observability::max_audit_field_bytes);
+                }
+                REQUIRE(merovingian::federation::federation_audit_is_safe(runtime));
             }
         }
     }

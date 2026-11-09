@@ -328,6 +328,57 @@ SCENARIO("A send_knock that soft-fails is refused 403 with no room state and is 
 }
 
 // Spec: Matrix Server-Server API v1.19
+// Section: PUT /_matrix/federation/v1/send_knock/{roomId}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
+//
+// send_knock: "servers SHOULD return M_INVALID_PARAM if ... The membership field inside the event content is not
+// knock." The check runs before an already stored event is answered again, on main's side of a worker relay too: a
+// relay carries no URL event ID, and a worker frame is untrusted (ADR-0071).
+SCENARIO("A stored leave relayed as send_knock is refused before it is answered as a resend",
+         "[federation][conformance][membership][f10]")
+{
+    GIVEN("a public room, and a remote user whose accepted leave is their current membership")
+    {
+        auto fixture = Fixture{"!f10relay:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$f10relayjoin:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        REQUIRE(fixture.accept(FederationEndpoint::send_join, join).accepted);
+        auto const leave_id = std::string{"$f10relayleave:remote.example.org"};
+        auto leave =
+            fixture.member_event(leave_id, bob, "leave", {join_id}, {genesis.create_id, genesis.pl_id, join_id}, 5);
+        REQUIRE(fixture.accept(FederationEndpoint::send_leave, leave).accepted);
+        leave.origin = "remote.example.org";
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("a worker relays that leave to main as a send_knock")
+        {
+            auto const result = fixture.runtime().federation.membership_acceptor(FederationEndpoint::send_knock,
+                                                                                 fixture.room_id(), {}, leave);
+
+            THEN("it is refused 400 M_INVALID_PARAM with no knock_room_state")
+            {
+                // Spec SHOULD: M_INVALID_PARAM when "The membership field inside the event content is not knock".
+                REQUIRE_FALSE(result.accepted);
+                // Spec SHOULD: the refusal is a 400, not a resend answer.
+                REQUIRE(result.status == 400U);
+                // Spec SHOULD: the errcode is M_INVALID_PARAM.
+                REQUIRE(result.reason.find("M_INVALID_PARAM") != std::string::npos);
+                // Spec MUST NOT: answer a request that is not a knock with the room's stripped state.
+                REQUIRE(result.knock_room_state_json.empty());
+                // Spec MUST NOT: send the stored event back as if the knock had been accepted.
+                REQUIRE(result.signed_event_json.empty());
+            }
+            AND_THEN("nothing is stored")
+            {
+                // Spec: a refused request leaves nothing behind.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
 // Section: PUT send_join, send_leave, send_knock; "Rejection"; "Soft failure"
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
 //

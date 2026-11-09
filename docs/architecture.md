@@ -148,7 +148,7 @@ flowchart TB
     config --> email
     sync --> trust_safety
     services --> database
-    events --> crypto & canonicaljson & rooms
+    events --> crypto & canonicaljson & rooms & auth
     federation --> crypto & canonicaljson & events & rooms & config
     auth --> crypto & canonicaljson
     database --> canonicaljson

@@ -139,8 +139,9 @@ SCENARIO("parse_federation_media_multipart stops at a third part", "[federation]
                 // Spec MUST: exactly two parts; any other count is refused.
                 REQUIRE_FALSE(small.ok);
                 REQUIRE_FALSE(large.ok);
-                // Work must not grow with the delimiter count: parsing stopped at the third part.
-                REQUIRE(small.parts_parsed <= 3U);
+                // Work must not grow with the delimiter count: the third part is refused before it is parsed, so at
+                // most the cap of two parts is parsed.
+                REQUIRE(small.parts_parsed <= 2U);
                 REQUIRE(large.parts_parsed == small.parts_parsed);
             }
         }
