@@ -589,10 +589,10 @@ auto next_millisecond() -> void
     std::this_thread::sleep_for(std::chrono::milliseconds{2});
 }
 
-[[nodiscard]] auto make_runtime(merovingian::config::Config config) -> hs::RuntimeStartResult
+[[nodiscard]] auto make_runtime(merovingian::config::Config const& config) -> hs::RuntimeStartResult
 {
     REQUIRE(sodium_init() >= 0);
-    auto started = hs::start_runtime(std::move(config));
+    auto started = hs::start_runtime(config);
     REQUIRE(started.started);
     return started;
 }
