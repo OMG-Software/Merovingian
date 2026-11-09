@@ -1,3 +1,31 @@
+## 0.12.83
+
+Fixes the high and medium findings of security audit run 4 (F-01 to F-06).
+
+### F-01: prev_events are bound to the PDU's room
+
+To be completed on this branch.
+
+### F-02: an identity-server bind is not a recovery email
+
+To be completed on this branch.
+
+### F-03: room aliases are capped and indexed
+
+To be completed on this branch.
+
+### F-04: shared history is not served to a server with no user in the room
+
+To be completed on this branch.
+
+### F-05: devices and their names are capped, and a device-list announcement is linear
+
+To be completed on this branch.
+
+### F-06: redaction authority comes from the room's state, not from the event's own citation
+
+To be completed on this branch.
+
 ## 0.12.82
 
 Sonar and CodeQL take a CI runner as soon as a pull request is pushed (ADR-0580). No behaviour changes.
