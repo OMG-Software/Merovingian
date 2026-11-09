@@ -97,7 +97,12 @@ auto RoomAliasTable::count_creator(std::string_view creator_user_id, bool added)
         }
         return;
     }
-    if (found != by_creator_.end() && --found->second == 0U)
+    if (found == by_creator_.end())
+    {
+        return;
+    }
+    --found->second;
+    if (found->second == 0U)
     {
         by_creator_.erase(found);
     }
