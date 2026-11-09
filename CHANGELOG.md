@@ -21,7 +21,8 @@ room and by creator, so a lookup, a listing of one room, a delete, a reassign an
 `server.client_api.max_room_aliases_per_room` (default 100 each, 1..100000), refuse a new alias with `400 M_TOO_LARGE`
 before anything is written, in `PUT /directory/room/{roomAlias}` and in `POST /createRoom` with `room_alias_name`
 (refused before any room is made). An alias that already exists keeps its old answer at the cap. A request authenticated
-as an application service is exempt from the per-user cap only; room upgrade moves aliases without a cap.
+as an application service is exempt from the per-user cap only; room upgrade moves aliases without a cap. `erase` checks
+both index lookups for the row it moves, because GCC 16 in the RPM build stops on an unchecked `find()` result.
 
 ### F-04: shared history is not served to a server with no user in the room
 

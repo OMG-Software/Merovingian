@@ -134,9 +134,14 @@ auto RoomAliasTable::erase(std::string_view alias) -> bool
     {
         // Swap-and-pop: the last row fills the hole, and its two indexes follow it.
         rows_[position] = std::move(rows_[last]);
-        by_alias_.find(rows_[position].room_alias)->second = position;
-        auto& positions = by_room_.find(rows_[position].room_id)->second;
-        std::ranges::replace(positions, last, position);
+        if (auto const moved_alias = by_alias_.find(rows_[position].room_alias); moved_alias != by_alias_.end())
+        {
+            moved_alias->second = position;
+        }
+        if (auto const moved_room = by_room_.find(rows_[position].room_id); moved_room != by_room_.end())
+        {
+            std::ranges::replace(moved_room->second, last, position);
+        }
     }
     rows_.pop_back();
     return true;
