@@ -6,6 +6,10 @@ The federation and event-auth low findings of security audit run 4.
 
 The check behind rule 9.3 (every key of `m.room.power_levels` `users` is a valid user ID) and rule 1.4 of a version 12 create event (`additional_creators`) refused a localpart holding whitespace or a control byte, though the spec says servers MUST accept any localpart except `:` and NUL, the empty string included. This server therefore refused a power-levels change that other servers accepted and kept stale levels. The localpart is now judged by `auth::localpart_is_valid_federated`, the rule inbound federation already uses (`events_lib` now links `auth_lib` for it), and only the server-name half still refuses whitespace and control bytes. `[f09]` in `tests/conformance/test_event_auth_rules.cpp` covers both rules.
 
+### F-11: an oversized X-Matrix origin is bounded in the federation audit ring and its diagnostics
+
+`audit_federation` copied the `origin` of a request whose signature had not been checked into the in-memory audit ring whole, and the `request.rejected` and `key_resolution.throttled` diagnostics logged it whole, so an unauthenticated peer could make the server hold and log up to the header budget (32 KiB by default) per rejected request. The audit actor and the `origin` field of the diagnostics now pass through `observability::bounded_utf8` at `max_audit_field_bytes` (255), as the persistent audit sink already did. `[f11]` in `tests/unit/test_federation_inbound_request.cpp` rejects 30000-byte origins by policy and by key-resolution throttle and checks the audit actors and the captured log. The `request.rejected` diagnostic is written at debug level, which the unit test binary does not emit, so only its audit row is asserted; its field is bounded by the same call as `key_resolution.throttled`.
+
 ## 0.12.84
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).
