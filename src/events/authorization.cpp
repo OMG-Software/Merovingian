@@ -3,6 +3,7 @@
 
 #include "merovingian/events/authorization.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519Signature.hpp"
@@ -529,14 +530,16 @@ namespace
         std::string_view{"invite"},
     };
 
-    // Minimal user-ID well-formedness check, used by rule 9.3 (content.users keys)
-    // and by rule 1.4 (v12 content.additional_creators). Deliberately as permissive
-    // as auth::user_id_is_valid_federated — historical localparts must keep working
-    // — and restated here rather than imported because events_lib does not link
-    // auth_lib and adding that edge for one grammar check is not worth the coupling.
+    // User-ID well-formedness check, used by rule 9.3 (content.users keys) and by rule 1.4
+    // (v12 content.additional_creators). Both rules say "valid user IDs", and the spec's "Historical
+    // User IDs" says servers MUST accept any localpart of legal code points except ':' and NUL,
+    // including control characters, whitespace and the empty string. So the localpart is judged by
+    // auth::localpart_is_valid_federated, the one rule inbound federation uses; only the server name
+    // is held to a stricter check, because a server name is never historical.
+    // Spec: ../../docs/matrix-v1.19-spec/appendices.md, "Historical User IDs".
     [[nodiscard]] auto user_id_is_well_formed(std::string_view user_id) noexcept -> bool
     {
-        if (user_id.size() < 3U || user_id.size() > 255U || user_id.front() != '@')
+        if (user_id.size() < 2U || user_id.size() > 255U || user_id.front() != '@')
         {
             return false;
         }
@@ -550,19 +553,17 @@ namespace
         auto const localpart = user_id.substr(1U, separator - 1U);
         auto const server_name = user_id.substr(separator + 1U);
 
-        // Deliberately permissive on the localpart's character set -- historical
-        // user IDs carry bytes the current grammar would reject, and this runs on
-        // events other servers have already accepted. What it will not accept is
-        // anything that cannot be a user ID at all: an embedded NUL, a control
-        // character, or whitespace. A prefix-only check passed all of those, so
-        // values like "@alice:not a server" satisfied a rule that exists
-        // specifically to require valid user IDs.
+        if (!auth::localpart_is_valid_federated(localpart))
+        {
+            return false;
+        }
+        // A server name cannot hold whitespace, a control byte or NUL: a prefix-only check let
+        // values like "@alice:not a server" satisfy a rule that exists to require valid user IDs.
         auto const is_structurally_invalid = [](char c) {
             auto const byte = static_cast<unsigned char>(c);
             return byte <= 0x20U || byte == 0x7FU;
         };
-        if (std::ranges::any_of(localpart, is_structurally_invalid) ||
-            std::ranges::any_of(server_name, is_structurally_invalid))
+        if (std::ranges::any_of(server_name, is_structurally_invalid))
         {
             return false;
         }

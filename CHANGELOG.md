@@ -2,6 +2,10 @@
 
 The federation and event-auth low findings of security audit run 4.
 
+### F-09: power-levels `users` keys and `additional_creators` accept historical user IDs
+
+The check behind rule 9.3 (every key of `m.room.power_levels` `users` is a valid user ID) and rule 1.4 of a version 12 create event (`additional_creators`) refused a localpart holding whitespace or a control byte, though the spec says servers MUST accept any localpart except `:` and NUL, the empty string included. This server therefore refused a power-levels change that other servers accepted and kept stale levels. The localpart is now judged by `auth::localpart_is_valid_federated`, the rule inbound federation already uses (`events_lib` now links `auth_lib` for it), and only the server-name half still refuses whitespace and control bytes. `[f09]` in `tests/conformance/test_event_auth_rules.cpp` covers both rules.
+
 ## 0.12.84
 
 Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).
