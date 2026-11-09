@@ -2060,6 +2060,10 @@ until the refresh).
   mismatch there, and on `/invite`, is redacted and processed further rather
   than refused; see "What a remote server can get accepted or signed:
   conformance audit wave 2 (0.12.36)" below and `src/federation/AGENTS.md`.
+  Since 0.12.85 (F-10, F-12, ADR-0591) the acceptor refuses a room with no local
+  member before storing anything, and an event that auth rejects or soft-fails is
+  refused `403` and not stored, so a banned or departed user's server is given no
+  room state and a stranger's requests leave no rows.
 
 ### Gaps in room history leaving inbound PDUs unapplied (v0.12.13, ADR-0064 phase C)
 

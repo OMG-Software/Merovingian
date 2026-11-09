@@ -112,7 +112,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
    phase B2) for the `/send` transaction path, and in the membership acceptor for
    `send_join`/`send_leave`/`send_knock` (the same auth_events / state-before / current-state
-   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2".
+   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2". The membership acceptor differs
+   from the `/send` path in one respect (F-10, F-12, ADR-0591): it refuses a rejected or soft-failed event `403` and does not
+   store it, and it first refuses a room with no local member (`room_has_current_local_interest`; `send_knock` 404, the others
+   403), so nothing is stored, recomputed, published or notified for either. A resent event is answered only while it is
+   still the sender's accepted, current `m.room.member`.
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For

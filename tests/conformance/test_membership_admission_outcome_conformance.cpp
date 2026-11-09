@@ -1,0 +1,406 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Security audit run 4, F-10 and F-12 (ADR-0591): what the resident answers to send_join, send_leave and send_knock.
+//
+//   * A server with no current local member in a room is not a resident of it: it stores nothing and answers
+//     nothing for send_join, send_leave and send_knock (F-12).
+//   * An event that auth rejects, or that soft-fails against the room's current state, is refused 403 and never
+//     stored, so no row accumulates per origin and no state is given to a server whose user is not admitted (F-10,
+//     F-12).
+//   * An event already stored is answered again only while it is still the sender's current membership (F-10).
+//
+// Tags: [f10], [f12].
+
+#include "../support/MembershipGenesis.hpp"
+#include "../support/membership_acceptor_fixture.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/MembershipAcceptResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace
+{
+
+using merovingian::federation::FederationEndpoint;
+using merovingian::federation::InboundPduEnvelope;
+using merovingian::federation::MembershipAcceptResult;
+using merovingian::homeserver::HomeserverRuntime;
+using merovingian::tests::membership_acceptor_fixture::build_event_json;
+using merovingian::tests::membership_acceptor_fixture::config_with_sqlite;
+using merovingian::tests::membership_acceptor_fixture::Genesis;
+using merovingian::tests::membership_acceptor_fixture::make_envelope;
+using merovingian::tests::membership_acceptor_fixture::seed_accepted_event;
+using merovingian::tests::membership_acceptor_fixture::seed_room_genesis;
+using merovingian::tests::membership_acceptor_fixture::unique_sqlite_path;
+
+auto const bob = std::string{"@bob:remote.example.org"};
+auto const local_admin = std::string{"@admin:local.example.org"};
+
+// A runtime built in place and never moved: the federation callbacks capture its address.
+class Fixture final
+{
+public:
+    explicit Fixture(std::string const& room_id, std::string const& admin = local_admin)
+        : path_{unique_sqlite_path()}
+        , started_{start()}
+        , room_id_{room_id}
+    {
+        REQUIRE(started_.started);
+        merovingian::homeserver::wire_federation_callbacks(started_.runtime);
+        genesis_ = seed_room_genesis(started_.runtime, room_id_, admin);
+    }
+
+    Fixture(Fixture const&) = delete;
+    auto operator=(Fixture const&) -> Fixture& = delete;
+    Fixture(Fixture&&) = delete;
+    auto operator=(Fixture&&) -> Fixture& = delete;
+
+    ~Fixture()
+    {
+        std::filesystem::remove(path_);
+    }
+
+    [[nodiscard]] auto runtime() -> HomeserverRuntime&
+    {
+        return started_.runtime;
+    }
+    [[nodiscard]] auto room_id() const -> std::string const&
+    {
+        return room_id_;
+    }
+    [[nodiscard]] auto genesis() const -> Genesis const&
+    {
+        return genesis_;
+    }
+
+    // The membership event of `sender`, built on `prev` and naming `auth` as its auth_events.
+    [[nodiscard]] auto member_event(std::string const& event_id, std::string const& sender,
+                                    std::string const& membership, std::vector<std::string> const& prev,
+                                    std::vector<std::string> const& auth, std::int64_t depth) const
+        -> InboundPduEnvelope
+    {
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(
+            merovingian::canonicaljson::make_member("membership", merovingian::canonicaljson::Value{membership}));
+        auto const json = build_event_json(room_id_, "m.room.member", sender, sender, std::move(content), prev, auth,
+                                           depth, depth + 1);
+        return make_envelope(room_id_, event_id, "m.room.member", sender, sender, prev, auth, depth, json);
+    }
+
+    [[nodiscard]] auto accept(FederationEndpoint endpoint, InboundPduEnvelope const& envelope) -> MembershipAcceptResult
+    {
+        return started_.runtime.federation.membership_acceptor(endpoint, room_id_, envelope.event_id, envelope);
+    }
+
+    [[nodiscard]] auto event_stored(std::string const& event_id) -> bool
+    {
+        return std::ranges::any_of(started_.runtime.database.persistent_store.events,
+                                   [&](merovingian::database::PersistentEvent const& event) {
+                                       return event.event_id == event_id;
+                                   });
+    }
+
+private:
+    [[nodiscard]] auto start() -> merovingian::homeserver::RuntimeStartResult
+    {
+        std::filesystem::remove(path_);
+        return merovingian::homeserver::start_runtime(config_with_sqlite(path_));
+    }
+
+    std::filesystem::path path_;
+    merovingian::homeserver::RuntimeStartResult started_;
+    std::string room_id_;
+    Genesis genesis_{};
+};
+
+// Everything a membership request could change in the store.
+struct StoreShape final
+{
+    std::size_t events{};
+    std::size_t state{};
+    std::size_t memberships{};
+    std::size_t state_groups{};
+    std::uint64_t next_stream_ordering{};
+    std::uint64_t next_sync_stream_id{};
+
+    [[nodiscard]] auto operator==(StoreShape const&) const -> bool = default;
+};
+
+[[nodiscard]] auto store_shape(HomeserverRuntime const& runtime) -> StoreShape
+{
+    auto const& store = runtime.database.persistent_store;
+    return {store.events.size(),
+            store.state.size(),
+            store.memberships.size(),
+            store.state_groups.size(),
+            runtime.database.next_stream_ordering,
+            store.next_sync_stream_id};
+}
+
+[[nodiscard]] auto join_auth(Genesis const& genesis) -> std::vector<std::string>
+{
+    return {genesis.create_id, genesis.pl_id, genesis.join_rules_id};
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.19
+// Section: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}; "Joining Rooms"; "Rejection"; "Soft failure"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+//
+// send_join: "403: The room that the joining server is attempting to join does not permit the user to join." A
+// join the room's current state does not permit, or one the user no longer has as their membership, is refused and
+// carries no room state. This server refuses the request, so it never takes the event into its DAG.
+SCENARIO("A send_join is answered with state only while it is the joiner's current, accepted membership",
+         "[federation][conformance][membership][f10]")
+{
+    GIVEN("a public room, and a remote user whose join was accepted and who then left")
+    {
+        auto fixture = Fixture{"!f10leave:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$f10join:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        auto const first = fixture.accept(FederationEndpoint::send_join, join);
+        REQUIRE(first.accepted);
+        auto const leave_id = std::string{"$f10leave:remote.example.org"};
+        auto const leave =
+            fixture.member_event(leave_id, bob, "leave", {join_id}, {genesis.create_id, genesis.pl_id, join_id}, 5);
+        REQUIRE(fixture.accept(FederationEndpoint::send_leave, leave).accepted);
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("their server sends the old join again")
+        {
+            auto const second = fixture.accept(FederationEndpoint::send_join, join);
+
+            THEN("it is refused with 403 and the body holds no room state")
+            {
+                // Spec MUST: 403 when the room "does not permit the user to join".
+                REQUIRE_FALSE(second.accepted);
+                REQUIRE(second.status == 403U);
+                // Spec MUST NOT: give the room's state to a server whose user is not joined.
+                REQUIRE(second.state_json.empty());
+                REQUIRE(second.auth_chain_json.empty());
+                REQUIRE(second.signed_event_json.empty());
+            }
+            AND_THEN("nothing is stored")
+            {
+                // Spec: a refused request leaves no event of its own behind.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+
+    GIVEN("a public room in which a remote user is banned, and a join that cites the history from before the ban")
+    {
+        auto fixture = Fixture{"!f10ban:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const ban_id = fixture.room_id() + ":ban-bob";
+        // The ban is sent by the room's admin.
+        auto ban_content = merovingian::canonicaljson::Object{};
+        ban_content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"ban"}}));
+        auto const ban_json = build_event_json(fixture.room_id(), "m.room.member", bob, local_admin,
+                                               std::move(ban_content), {genesis.join_rules_id},
+                                               {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 4, 5);
+        seed_accepted_event(fixture.runtime(), fixture.room_id(), ban_id, "m.room.member", bob, local_admin, ban_json,
+                            {genesis.join_rules_id}, 4U);
+        auto const soft_id = std::string{"$f10soft:remote.example.org"};
+        auto const soft = fixture.member_event(soft_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("the banned user's server sends that join")
+        {
+            auto const result = fixture.accept(FederationEndpoint::send_join, soft);
+
+            THEN("it is refused with 403 and the body holds no room state")
+            {
+                // Spec MUST: 403 when the room "does not permit the user to join".
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 403U);
+                // Spec MUST NOT: reveal the room's state to a server whose user is banned.
+                REQUIRE(result.state_json.empty());
+                REQUIRE(result.auth_chain_json.empty());
+            }
+            AND_THEN("the join is not stored")
+            {
+                // Spec: the soft-failed join is not taken into the DAG; the 403 tells the sender so.
+                REQUIRE_FALSE(fixture.event_stored(soft_id));
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+
+    GIVEN("a public room and a remote user whose accepted join is still their current membership")
+    {
+        auto fixture = Fixture{"!f10retry:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$f10retry:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        auto const first = fixture.accept(FederationEndpoint::send_join, join);
+        REQUIRE(first.accepted);
+
+        WHEN("their server sends the join again, having lost the first answer")
+        {
+            auto const second = fixture.accept(FederationEndpoint::send_join, join);
+
+            THEN("it is answered 200 with the same state and the stored event")
+            {
+                // Spec MUST: 200 when "The join event has been accepted into the room."
+                REQUIRE(second.accepted);
+                REQUIRE(second.status == 200U);
+                REQUIRE_FALSE(second.state_json.empty());
+                REQUIRE(second.state_json.size() == first.state_json.size());
+                REQUIRE(second.signed_event_json == first.signed_event_json);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: PUT /_matrix/federation/v1/send_knock/{roomId}/{eventId}; "Knocking upon a room"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
+//
+// send_knock: "403: The knocking server or user is not permitted to knock on the room, such as when the
+// server/user is banned". A knock that soft-fails against current state is refused and carries no stripped state.
+SCENARIO("A send_knock that soft-fails is refused 403 with no room state and is not stored",
+         "[federation][conformance][membership][f10]")
+{
+    GIVEN("a knock room in which a remote user is banned, and a knock citing the history from before the ban")
+    {
+        auto fixture = Fixture{"!f10knock:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const rules_id = fixture.room_id() + ":knock-rules";
+        auto rules_content = merovingian::canonicaljson::Object{};
+        rules_content.push_back(merovingian::canonicaljson::make_member(
+            "join_rule", merovingian::canonicaljson::Value{std::string{"knock"}}));
+        auto const rules_json = build_event_json(fixture.room_id(), "m.room.join_rules", std::string{}, local_admin,
+                                                 std::move(rules_content), {genesis.join_rules_id},
+                                                 {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 4, 5);
+        seed_accepted_event(fixture.runtime(), fixture.room_id(), rules_id, "m.room.join_rules", std::string{},
+                            local_admin, rules_json, {genesis.join_rules_id}, 4U);
+        auto const ban_id = fixture.room_id() + ":ban-bob";
+        auto ban_content = merovingian::canonicaljson::Object{};
+        ban_content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"ban"}}));
+        auto const ban_json =
+            build_event_json(fixture.room_id(), "m.room.member", bob, local_admin, std::move(ban_content), {rules_id},
+                             {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 5, 6);
+        seed_accepted_event(fixture.runtime(), fixture.room_id(), ban_id, "m.room.member", bob, local_admin, ban_json,
+                            {rules_id}, 5U);
+        auto const knock_id = std::string{"$f10knock:remote.example.org"};
+        auto const knock =
+            fixture.member_event(knock_id, bob, "knock", {rules_id}, {genesis.create_id, genesis.pl_id, rules_id}, 5);
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("the banned user's server sends the knock")
+        {
+            auto const result = fixture.accept(FederationEndpoint::send_knock, knock);
+
+            THEN("it is refused with 403 and there is no knock_room_state")
+            {
+                // Spec MUST: 403 when "the server/user is banned".
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 403U);
+                // Spec MUST NOT: give stripped room state to a user who may not knock.
+                REQUIRE(result.knock_room_state_json.empty());
+            }
+            AND_THEN("the knock is not stored")
+            {
+                // Spec: the soft-failed knock is not taken into the DAG; the 403 tells the sender so.
+                REQUIRE_FALSE(fixture.event_stored(knock_id));
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: PUT send_join, send_leave, send_knock; "Rejection"; "Soft failure"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
+//
+// A server with no local member in a room is not a resident of it: it cannot answer a join with the room's state,
+// or accept a leave or knock into a DAG it is not part of. send_knock lists 404 for "the room ... is unknown to the
+// receiving server"; send_join and send_leave list no code for this case, so 403 M_FORBIDDEN.
+SCENARIO("send_join, send_leave and send_knock for a room with no local member store and answer nothing",
+         "[federation][conformance][membership][f12]")
+{
+    GIVEN("a room this server holds, in which only a remote user is joined")
+    {
+        auto fixture = Fixture{"!f12none:local.example.org", "@admin:remote.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("a stranger's server sends a send_join, a send_leave and a send_knock")
+        {
+            auto const join = fixture.member_event("$f12join:other.example.net", "@eve:other.example.net", "join",
+                                                   {genesis.join_rules_id}, join_auth(genesis), 4);
+            auto const leave = fixture.member_event("$f12leave:other.example.net", "@eve:other.example.net", "leave",
+                                                    {genesis.join_rules_id}, {genesis.create_id, genesis.pl_id}, 4);
+            auto const knock = fixture.member_event("$f12knock:other.example.net", "@eve:other.example.net", "knock",
+                                                    {genesis.join_rules_id}, join_auth(genesis), 4);
+            auto const join_result = fixture.accept(FederationEndpoint::send_join, join);
+            auto const leave_result = fixture.accept(FederationEndpoint::send_leave, leave);
+            auto const knock_result = fixture.accept(FederationEndpoint::send_knock, knock);
+
+            THEN("each is refused, with the code the spec lists for the case or 403")
+            {
+                // Spec MUST: send_join and send_leave list no code for a room the server is not in: 403 M_FORBIDDEN.
+                REQUIRE_FALSE(join_result.accepted);
+                REQUIRE(join_result.status == 403U);
+                REQUIRE_FALSE(leave_result.accepted);
+                REQUIRE(leave_result.status == 403U);
+                // Spec MUST: 404 when the room is "unknown to the receiving server".
+                REQUIRE_FALSE(knock_result.accepted);
+                REQUIRE(knock_result.status == 404U);
+                // Spec MUST NOT: send state to a server this server is not the resident for.
+                REQUIRE(join_result.state_json.empty());
+                REQUIRE(knock_result.knock_room_state_json.empty());
+            }
+            AND_THEN("the store is unchanged: no event, no current state, no stream ordering")
+            {
+                // Spec: a refused request is not taken into the DAG.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+
+    GIVEN("a room with a local member, and many stranger leaves that the auth rules deny")
+    {
+        auto fixture = Fixture{"!f12leaves:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("each leave is sent")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            for (auto index = 0; index < 5; ++index)
+            {
+                auto const user = "@eve" + std::to_string(index) + ":other.example.net";
+                auto const event_id = "$f12denied" + std::to_string(index) + ":other.example.net";
+                auto const leave = fixture.member_event(event_id, user, "leave", {genesis.join_rules_id},
+                                                        {genesis.create_id, genesis.pl_id}, 4);
+                statuses.push_back(fixture.accept(FederationEndpoint::send_leave, leave).status);
+            }
+
+            THEN("each is refused 403 and leaves no stored row")
+            {
+                // Spec: a rejected event is not taken into the DAG when the request is refused.
+                REQUIRE(statuses == std::vector<std::uint16_t>(5U, std::uint16_t{403U}));
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}

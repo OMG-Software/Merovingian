@@ -1595,6 +1595,10 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
             seed_state("$seed-create:example.com", "m.room.create", "",
                        R"({"room_version":"10","creator":"@resident:example.com"})", 1U);
             seed_state("$seed-creator-member:example.com", "m.room.member", creator, R"({"membership":"join"})", 2U);
+            // The acceptor answers only for a room with a local member (F-12, ADR-0591). The room is the
+            // resident server's here, so one of this server's users is joined to it.
+            runtime.database.persistent_store.memberships.push_back(
+                {room_id, "@local-member:" + std::string{runtime.config.server().server_name}, "join", 0U});
             seed_state("$seed-power-levels:example.com", "m.room.power_levels", "",
                        R"({"users":{"@resident:example.com":100},"users_default":0,"ban":50,"kick":50,"invite":0})",
                        3U);

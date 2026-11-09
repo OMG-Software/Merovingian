@@ -463,14 +463,17 @@ the answer after the join is stored, and never let a path add events to it witho
 reaches the acceptor as `InboundPduEnvelope::omit_members` (set from the request target by `handle_send_membership`, carried
 from a worker in the `membership_ingest` frame; main takes only that flag from the frame). A join already stored is
 answered again from current state (`resent_send_join_state`, ADR-0372), never from the state at its `prev_events`, which
-date from `make_join` and may predate a ban; it is never stored or sent on a second time, and a stored `rejected` join is
-refused 403 again. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
+date from `make_join` and may predate a ban, but only while it is stored `accepted` and is the sender's current
+`m.room.member` state, otherwise 403 with no state (F-10, ADR-0591); it is never stored or sent on a second time. The same
+test covers a resent leave and knock. Before any of this the acceptor refuses a room with no local member
+(`membership_admission_refusal`: `send_knock` 404, the others 403), and an event that auth rejects or soft-fails is refused
+(`membership_outcome_refusal`, 403) and never stored (F-12). Both run in the acceptor, which the direct path and the worker relay share. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
 deduplication only with the parameter. `send_leave` and `send_knock` carry no state or chain (a knock's stripped state is a
 fixed small list), so they have no size to plan.
 
 ## The resident sends accepted membership events on
 
-As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
+As the resident, the `membership_acceptor` stores an accepted `send_join`, `send_leave` or `send_knock` and then
 calls `federate_accepted_membership_event` (`room_service.cpp`) with the stored copy, so every other server
 with a joined member learns of it (spec, "Joining Rooms" and "Leaving Rooms"). The requesting server is
 excluded, and so is this one. It runs only for an accepted event, never a rejected or soft-failed one, with

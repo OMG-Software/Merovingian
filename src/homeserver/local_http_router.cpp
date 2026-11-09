@@ -1295,6 +1295,36 @@ namespace
                                    });
     }
 
+    // F-12 (ADR-0591): the admission gate of send_join, send_leave and send_knock, before anything is stored or any
+    // state is read for an answer. A room this server has no current local interest in is not one it can act as the
+    // resident of, so a request for it is refused with nothing written, as the /send path refuses an unsolicited
+    // room. Spec "Knocking upon a room" lists 404 for "the room ... is unknown to the receiving server"; send_join and
+    // send_leave list no code for this case, so those are 403 M_FORBIDDEN. The membership acceptor is the one place
+    // this runs, and it is the callback both the direct path and main's side of the worker relay call.
+    [[nodiscard]] auto membership_admission_refusal(HomeserverRuntime const& runtime,
+                                                    federation::FederationEndpoint endpoint, std::string_view room_id)
+        -> std::optional<federation::MembershipAcceptResult>
+    {
+        if (room_has_current_local_interest(runtime, room_id))
+        {
+            return std::nullopt;
+        }
+        if (endpoint == federation::FederationEndpoint::send_knock)
+        {
+            return federation::MembershipAcceptResult{
+                false, 404U, std::string{"this server has no local member in that room"}, {}, {}};
+        }
+        return federation::MembershipAcceptResult{
+            false, 403U, std::string{"this server has no local member in that room"}, {}, {}};
+    }
+
+    // F-10, F-12 (ADR-0591): the outcome gate. A membership event that auth rejects or soft-fails is refused and never
+    // stored, so the answer (state, auth chain, knock_room_state) is never built for it.
+    [[nodiscard]] auto membership_outcome_refusal(std::string_view reason) -> federation::MembershipAcceptResult
+    {
+        return {false, 403U, std::string{"event auth denied: "} + std::string{reason}, {}, {}};
+    }
+
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
     // per-device entry that was well-formed enough to attempt a store;
     // `stored` counts how many of those actually persisted. The two can
@@ -2341,22 +2371,51 @@ namespace
             {
                 return {false, 404U, "room not found", {}, {}};
             }
-            // A join this server already stored is answered again, not refused (F-23): the server
-            // that sent it may not have received the first answer (a lost response, a retry). The
-            // event is not judged, stored or sent on a second time. The answer is the room's current
-            // state, as the first answer was, never the state at the join's prev_events, which date
-            // from make_join and may predate a ban (ADR-0372). A join rejected on receipt is refused again.
-            if (endpoint == federation::FederationEndpoint::send_join)
+            // F-12 (ADR-0591): admission first, before anything is stored or any state is read for an
+            // answer. The one gate the direct path and main's side of the worker relay share.
+            if (auto const refusal = membership_admission_refusal(*rt, endpoint, room_id); refusal.has_value())
             {
-                auto const stored_join = store.events.find_in_room(room_id, envelope.event_id);
-                if (stored_join != store.events.end())
+                return *refusal;
+            }
+            // An event this server already stored is answered again, not judged again (F-23): the server
+            // that sent it may not have received the first answer (a lost response, a retry). It is
+            // answered only when it was accepted AND is still the sender's current membership (F-10,
+            // ADR-0591): a join the user has since left, or that a ban has since replaced, gets no state.
+            // The answer is the room's current state, as the first answer was, never the state at the
+            // join's prev_events, which date from make_join and may predate a ban (ADR-0372). The event is
+            // not stored or sent on a second time.
+            if (auto const stored_event = store.events.find_in_room(room_id, envelope.event_id);
+                stored_event != store.events.end())
+            {
+                if (stored_event->status == "rejected")
                 {
-                    if (stored_join->status == "rejected")
-                    {
-                        return {
-                            false, 403U, "event auth denied: the join was rejected when it was first received", {}, {}};
-                    }
-                    auto const resent_version = room_version_from_store(store, room_id);
+                    return {
+                        false, 403U, "event auth denied: the event was rejected when it was first received", {}, {}};
+                }
+                auto const current_membership_id =
+                    database::find_current_state_event_id(store, room_id, "m.room.member", envelope.sender);
+                if (stored_event->status != "accepted" || !current_membership_id.has_value() ||
+                    *current_membership_id != envelope.event_id)
+                {
+                    return {false, 403U, "event auth denied: the event is not the sender's current membership", {}, {}};
+                }
+                auto const resent_version = room_version_from_store(store, room_id);
+                if (endpoint == federation::FederationEndpoint::send_leave)
+                {
+                    return {true, 200U, {}, {}, {}, resent_version, stored_event->json, {}};
+                }
+                if (endpoint == federation::FederationEndpoint::send_knock)
+                {
+                    return {true,
+                            200U,
+                            {},
+                            {},
+                            {},
+                            resent_version,
+                            stored_event->json,
+                            stripped_state_pdus(store, room_id)};
+                }
+                {
                     auto const* const resent_policy = rooms::find_room_version_policy(resent_version);
                     if (resent_policy == nullptr)
                     {
@@ -2364,7 +2423,7 @@ namespace
                     }
                     // A read: the sender decides how often it runs (ADR-0365).
                     auto const state_before_join =
-                        compute_state_before(store, room_id, *resent_policy, stored_join->prev_event_ids,
+                        compute_state_before(store, room_id, *resent_policy, stored_event->prev_event_ids,
                                              federation::state_read_resolution_limits());
                     if (!state_before_join.ok)
                     {
@@ -2374,7 +2433,7 @@ namespace
                         plan_send_join_answer(*rt, room_id, envelope.sender,
                                               resent_send_join_state(store, room_id, envelope.sender, envelope.event_id,
                                                                      state_before_join.state),
-                                              stored_join->auth_event_ids, envelope.omit_members);
+                                              stored_event->auth_event_ids, envelope.omit_members);
                     if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
                     {
                         return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
@@ -2386,7 +2445,7 @@ namespace
                             std::move(answer.auth_chain_json),
                             std::move(answer.state_json),
                             resent_version,
-                            stored_join->json,
+                            stored_event->json,
                             {},
                             resent_plan.members_omitted,
                             std::move(resent_plan.servers_in_room)};
@@ -2415,11 +2474,12 @@ namespace
             rooms::RoomVersionPolicy const* room_policy = nullptr;
             // ADR-0064 phase B2: the receipt outcome for this membership PDU,
             // decided in the spec's order exactly as ingest_pdu_event does.
-            // A rejection is not an early return: spec "Rejection" requires a
-            // rejected event still be stored (so later events referencing it
-            // can be authorised), just never applied to state and never a
-            // forward extremity. The send_join/leave/knock RESPONSE is still
-            // an error for a rejected event — the peer asked us to accept it.
+            // Unlike a PDU of a /send transaction, a rejected or soft-failed
+            // event of send_join, send_leave or send_knock is refused and never
+            // stored (F-10, F-12, ADR-0591): the spec's Rejection and Soft
+            // failure rules describe events a server takes into its DAG, and
+            // answering the request with the 403 the spec lists for send_join
+            // and send_knock means this server never takes the event.
             enum class MembershipReceiptOutcome : std::uint8_t
             {
                 accepted,
@@ -2655,6 +2715,17 @@ namespace
                 }
             }
 
+            // The outcome gate (F-10, F-12, ADR-0591): nothing below runs for an event that was not
+            // accepted. Nothing is stored, no stream ordering is taken, current state is not recomputed,
+            // nothing is published to sync, the worker is not told, and no answer plan, state, auth chain
+            // or knock_room_state is built.
+            if (outcome != MembershipReceiptOutcome::accepted)
+            {
+                LOG_WARNING("Membership PDU refused on receipt and not stored; event_id=" + envelope.event_id +
+                            " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
+                return membership_outcome_refusal(outcome_reason);
+            }
+
             // What the answer to a send_join will hold, and whether it can be delivered, are
             // settled BEFORE the join is stored (F-23): a join stored and sent on to the room's
             // servers whose answer is then too big for the worker channel is committed but lost
@@ -2663,7 +2734,7 @@ namespace
             // current state, which does not yet hold the join. A rejected join is answered 403 and
             // needs no answer.
             auto answer_plan = SendJoinAnswerPlan{};
-            if (endpoint == federation::FederationEndpoint::send_join && outcome != MembershipReceiptOutcome::rejected)
+            if (endpoint == federation::FederationEndpoint::send_join)
             {
                 answer_plan =
                     plan_send_join_answer(*rt, room_id, envelope.sender, current_room_state_entries(store, room_id),
@@ -2688,12 +2759,10 @@ namespace
             event.stream_ordering = allocate_stream_ordering(rt->database);
             event.prev_event_ids = envelope.prev_event_ids;
             event.auth_event_ids = envelope.auth_event_ids;
-            event.status = outcome == MembershipReceiptOutcome::rejected      ? "rejected"
-                           : outcome == MembershipReceiptOutcome::soft_failed ? "soft_failed"
-                                                                              : "accepted";
+            event.status = "accepted";
             auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
-            if (envelope.state_key.has_value() && outcome == MembershipReceiptOutcome::accepted)
+            if (envelope.state_key.has_value())
             {
                 // Use envelope.event_id (the computed reference hash) rather
                 // than the URL path event_id parameter. Both should be equal for
@@ -2704,14 +2773,13 @@ namespace
             }
             auto const accepted_event_id = event.event_id;
             auto const accepted_prev_event_ids = event.prev_event_ids;
-            // A rejected or soft-failed membership never flips the live
+            // A rejected or soft-failed membership never reaches here, so it never flips the live
             // membership view: that is precisely what stops a join that
             // references pre-ban history from re-admitting a banned user.
-            // DB-4: an accepted one's row and invite change commit with the
+            // DB-4: the row and invite change commit with the
             // event and its current_state row.
             auto membership = std::string{};
-            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
-                outcome == MembershipReceiptOutcome::accepted)
+            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
             {
                 membership = std::string{events::extract_content_membership(membership_effective_pdu)};
             }
@@ -2737,8 +2805,8 @@ namespace
                     state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
                 auto const state_after =
                     compute_state_after(state_before.state, accepted_event_id, event_type, state_key);
-                auto const state_group = record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids,
-                                                            state_after, outcome == MembershipReceiptOutcome::accepted);
+                auto const state_group =
+                    record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids, state_after, true);
                 if (!state_group.has_value())
                 {
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
@@ -2790,50 +2858,35 @@ namespace
             // template omitted a just-joined user's membership from auth_events, and the
             // worker then refused that user's leave against them.
             notify_room_changed(*rt, room_id);
-            // The event is now durably stored with its receipt status, so a
-            // rejection can be reported to the peer without losing it: spec
-            // "Rejection" keeps rejected events available for later events
-            // that reference them, while the peer's request still fails.
-            if (outcome == MembershipReceiptOutcome::rejected)
-            {
-                LOG_WARNING("Membership PDU rejected on receipt; event_id=" + accepted_event_id +
-                            " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
-                return {false, 403U, std::string{"event auth denied: "} + outcome_reason, {}, {}};
-            }
             // Spec, "Joining Rooms": "The resident server must also send the event to other
             // servers participating in the room"; "Leaving Rooms (Rejecting Invites)": "The
             // resident server will then send the event to other servers in the room". Only the
             // stored copy goes (it may carry our co-signature), and not back to the server that
-            // asked, which already has it. A soft-failed event never applied to the room's
-            // state, so no server is told of it. Runs with rt->mutex held, like the rest of this
+            // asked, which already has it. Runs with rt->mutex held, like the rest of this
             // callback, on both of its call paths; it enqueues only, with no network I/O.
-            if (outcome == MembershipReceiptOutcome::accepted)
+            federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
+                                               server_name_from_user_id(envelope.sender));
+            // Spec, Application Service API "Pushing events": every event in a room an application
+            // service is interested in is sent to it. No transaction brings this event again (the
+            // requesting server is excluded from the fan-out and a re-sent copy is answered
+            // already_stored), so this is the one place it can be queued (F-51). It writes outbox
+            // rows only, with no network I/O, so it is safe under rt->mutex. A rejected or
+            // soft-failed event never reaches here.
+            auto const member_event_target = envelope.event_type == "m.room.member" && envelope.state_key.has_value()
+                                                 ? std::string_view{*envelope.state_key}
+                                                 : std::string_view{};
+            auto const appservice_room = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& candidate) {
+                return candidate.room_id == room_id;
+            });
+            if (appservice_room != rt->database.rooms.end())
             {
-                federate_accepted_membership_event(*rt, room_id, accepted_event_id, stored_json,
-                                                   server_name_from_user_id(envelope.sender));
-                // Spec, Application Service API "Pushing events": every event in a room an application
-                // service is interested in is sent to it. No transaction brings this event again (the
-                // requesting server is excluded from the fan-out and a re-sent copy is answered
-                // already_stored), so this is the one place it can be queued (F-51). It writes outbox
-                // rows only, with no network I/O, so it is safe under rt->mutex. A rejected or
-                // soft-failed event never reaches here.
-                auto const member_event_target =
-                    envelope.event_type == "m.room.member" && envelope.state_key.has_value()
-                        ? std::string_view{*envelope.state_key}
-                        : std::string_view{};
-                auto const appservice_room = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& candidate) {
-                    return candidate.room_id == room_id;
-                });
-                if (appservice_room != rt->database.rooms.end())
-                {
-                    enqueue_appservice_delivery(*rt, *appservice_room, accepted_event_id, event_stream_ordering,
-                                                envelope.sender, member_event_target);
-                }
-                else
-                {
-                    enqueue_appservice_delivery(*rt, room_id, {}, accepted_event_id, event_stream_ordering,
-                                                envelope.sender, member_event_target);
-                }
+                enqueue_appservice_delivery(*rt, *appservice_room, accepted_event_id, event_stream_ordering,
+                                            envelope.sender, member_event_target);
+            }
+            else
+            {
+                enqueue_appservice_delivery(*rt, room_id, {}, accepted_event_id, event_stream_ordering, envelope.sender,
+                                            member_event_target);
             }
 
             // The answer's events are copied out once, now that the join is accepted. Per Matrix

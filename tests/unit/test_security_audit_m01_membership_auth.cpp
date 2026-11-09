@@ -317,22 +317,15 @@ SCENARIO("send_join is rejected for an uninvited remote user in an invite-only r
                 REQUIRE_FALSE(has_any_membership(store, room_id, uninvited_user));
             }
 
-            // ADR-0064 phase B2 / spec "Rejection": a rejected event IS
-            // stored — "Subsequent events from other servers that reference
-            // rejected events should be allowed if they still pass the auth
-            // rules" — it simply never updates state, never becomes a forward
-            // extremity, and is never shown to clients. The security property
-            // this scenario guards is the membership NOT being applied
-            // (asserted above), not the row being absent.
-            THEN("the rejected join is stored as rejected, but never applied to state")
+            // F-12 (ADR-0591): a send_join that auth rejects is refused 403 and
+            // never stored, so this server never takes the event into its DAG.
+            // (A PDU of a /send transaction is still stored as rejected.)
+            THEN("the rejected join is not stored")
             {
-                REQUIRE(store.events.size() == events_before + 1U);
-                auto const stored =
-                    std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
-                        return e.event_id == join_pdu.event_id;
-                    });
-                REQUIRE(stored != store.events.end());
-                REQUIRE(stored->status == "rejected");
+                REQUIRE(store.events.size() == events_before);
+                REQUIRE(std::ranges::none_of(store.events, [&](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == join_pdu.event_id;
+                }));
             }
         }
     }

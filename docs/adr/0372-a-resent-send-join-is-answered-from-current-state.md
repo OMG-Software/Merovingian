@@ -1,6 +1,6 @@
 # A resent send_join is answered from current state
 
-* Status: accepted
+* Status: accepted (the part that answers a soft-failed join, with the ban in the answer, is superseded by [ADR-0591](0591-a-refused-send-join-leave-or-knock-is-never-stored-and-needs-local-interest.md): a resent join is answered only while it is the joiner's current membership)
 * Deciders: James Chapman
 * Date: 2026-11-03
 

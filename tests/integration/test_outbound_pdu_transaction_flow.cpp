@@ -645,7 +645,7 @@ SCENARIO("A membership event accepted as the resident is queued for an intereste
             }
         }
 
-        WHEN("a soft-failed send_join for a banned user is accepted at the protocol level")
+        WHEN("a soft-failed send_join for a banned user is refused (F-10, ADR-0591)")
         {
             // The join is built on the room's history before the ban, so it passes the auth rules
             // against the state before it and fails them against the current state (soft failure).
@@ -655,14 +655,15 @@ SCENARIO("A membership event accepted as the resident is queued for an intereste
                         .response.status == 200U);
             auto const result = accept_membership(runtime, FederationEndpoint::send_join, envelope);
 
-            THEN("the event is stored soft-failed and the application service is queued nothing for it")
+            THEN("the event is not stored and the application service is queued nothing for it")
             {
-                REQUIRE(result.accepted);
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 403U);
                 {
                     auto const lock = std::lock_guard{runtime.homeserver.mutex};
-                    REQUIRE(merovingian::database::find_event_status(runtime.homeserver.database.persistent_store,
-                                                                     join_id) ==
-                            std::optional<std::string>{"soft_failed"});
+                    REQUIRE_FALSE(
+                        merovingian::database::find_event_status(runtime.homeserver.database.persistent_store, join_id)
+                            .has_value());
                 }
                 REQUIRE(outbox_rows_for(runtime, join_id) == 0);
             }
