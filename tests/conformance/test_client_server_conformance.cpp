@@ -18577,6 +18577,64 @@ SCENARIO("POST /createRoom refuses a room_alias_name that does not make a valid 
     }
 }
 
+// F-20 (security audit run 4). Spec:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite `user_id`: "The fully
+// qualified user ID of the invitee"; the identifier grammar (appendices.md, "User Identifiers") is
+// `@localpart:server_name`. An invitee may be on another server. The request is invalid (400) otherwise, and no event
+// is composed for it.
+SCENARIO("POST /rooms/{roomId}/invite refuses an invitee that is not a user ID",
+         "[conformance][client-server][invite][f20]")
+{
+    GIVEN("alice in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, alice);
+        auto const invite = [&](std::string const& invitee) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                          R"({"user_id":")" + invitee + R"("})"});
+        };
+
+        WHEN("the invitee has no @ sigil")
+        {
+            auto const response = invite("bob:example.org");
+
+            THEN("it is refused with M_INVALID_PARAM")
+            {
+                // Spec MUST: the invitee is a fully qualified user ID.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the invitee has no server part")
+        {
+            auto const response = invite("@bob");
+
+            THEN("it is refused with M_INVALID_PARAM")
+            {
+                // Spec MUST: the invitee is a fully qualified user ID.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the invitee is a valid user ID of another server")
+        {
+            auto const response = invite("@carol:remote.invalid");
+
+            THEN("it is not refused as an invalid user ID")
+            {
+                // Spec: an invitee may be on any server.
+                REQUIRE(response.response.body.find("not a valid Matrix user ID") == std::string::npos);
+            }
+        }
+    }
+}
+
 // --- Media download security headers ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 //

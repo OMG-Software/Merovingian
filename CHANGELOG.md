@@ -28,6 +28,13 @@ or a total over 255 bytes was stored as an alias that `GET /directory/room/{alia
 handler now checks the composed alias with `auth::room_alias_is_valid` and answers `400 M_INVALID_PARAM` (the spec names no
 errcode for it) before anything is stored, and `create_room` repeats the check as defence in depth. A valid name still works.
 
+### F-20: the invite target is validated
+
+`POST /rooms/{roomId}/invite` accepted any string as `user_id` and composed an `m.room.member` event with it as `state_key`
+(an ID with no `@`, or no server part, was treated as a local user). `invite_user` now requires
+`auth::user_id_is_valid_federated` (the invitee may be on another server) and answers `400 M_INVALID_PARAM` before any event
+is composed. A valid remote ID is still accepted.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

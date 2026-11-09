@@ -7441,6 +7441,14 @@ namespace
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    // F-20. The invitee may be on another server, so the federated user ID grammar applies. Refused before any
+    // event is composed: an invalid state_key must never reach the room.
+    if (!auth::user_id_is_valid_federated(target_user_id))
+    {
+        auto result = make_operation_result(false, {}, "user_id is not a valid Matrix user ID", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
