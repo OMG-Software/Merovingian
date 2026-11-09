@@ -76,6 +76,14 @@ production-gated.
   token that has been invalidated — by a completed rotation, logout, or a
   password change — revokes the device's whole session (spec SHOULD) and
   writes an `auth.refresh.reuse_detected` audit row.
+- **A login on a device the user already holds replaces its credentials (F-08, ADR-0590).** The device's earlier access and
+  refresh rows are deleted, with its sessions, in the transaction that inserts the new access row, so the earlier access
+  token is `401 M_UNKNOWN_TOKEN` (spec, `POST /login` `device_id`). Deleted rather than revoked: a presented revoked
+  refresh row is reuse (ADR-0074) and would end the replacing login. A refresh deletes the device's earlier access rows and
+  sessions in its own transaction and keeps at most 32 retired refresh rows per device (oldest `issued_at_ms` first, never
+  an unrevoked row); a retired token older than that is a plain 401, the session survives and no
+  `auth.refresh.reuse_detected` row is written. A user's credential rows are bounded by `device_count_limit` times these
+  per-device bounds.
 - Refresh-token hashes are persisted, rotated, and revoked on single-device
   logout, global logout, device deletion, or password change with
   `logout_devices: true` (spec default) without storing plaintext token
@@ -224,8 +232,8 @@ production-gated.
   index of token-hash digests, so an authenticated request does not scan every session; each candidate is still
   confirmed with the constant-time hash comparison. Revoked sessions, and access tokens expired for seven days,
   are erased by the hourly `retention-sweep` job along with their `access_tokens` rows; expired refresh tokens
-  are deleted too, but a revoked refresh token that has not expired is kept so reuse is still detected
-  (ADR-0488).
+  are deleted too, and so is a revoked refresh token whose device no longer exists. A revoked refresh token of a
+  live device is kept so reuse is still detected, up to 32 per device (ADR-0488, ADR-0590).
 - Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and

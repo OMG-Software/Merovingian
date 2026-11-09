@@ -75,12 +75,19 @@ path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
 the caller's predicate, which must compare the full hashes with `constant_time_equal` (rule 3). Never answer a lookup from
 the index alone, never add a fall-back scan for a miss (an unknown token is the common attack), and change a session's
 hash only through `set_access_token_hash`. The `retention-sweep` job erases sessions that can never authenticate again and
-deletes their rows; it keeps a revoked refresh token until it expires so reuse is still detected (ADR-0488).
+deletes their rows; it keeps a revoked refresh token of a live device until it expires so reuse is still detected, at most 32 per
+device, and drops one whose device is gone (ADR-0488, ADR-0590).
 
 `PersistentStore::access_tokens` and `refresh_tokens` are `database::CredentialTable`s with the same rule: a digest index
 that narrows, every candidate confirmed with `constant_time_equal`, no fall-back scan. `SessionTable::erase_device` drops one
 device's sessions through the (user ID, device ID) index; it moves the last session into each hole, so insertion order is
 not kept after it. Do not write a loop over either table to find a token, a device's rows or a predecessor.
+
+A login on a device the user already holds DELETES the device's earlier access and refresh rows (never revokes them: a
+presented revoked refresh row is reuse and would end the replacing login) in the transaction that inserts the new row, then
+calls `erase_device`; a refresh does the same for its access rows and evicts retired refresh rows past
+`max_retired_refresh_tokens_per_device`, never an unrevoked one (ADR-0590). Any new path that mints a login token goes through
+`store_device_and_access_token(..., true)`.
 
 ## Token lifecycle
 

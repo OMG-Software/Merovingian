@@ -140,12 +140,6 @@ namespace
         return !store.refresh_tokens.has_unrevoked_hash(token_hash);
     }
 
-    [[nodiscard]] auto device_access_tokens_are_revoked(database::PersistentStore const& store,
-                                                        std::string_view user_id, std::string_view device_id) -> bool
-    {
-        return !store.access_tokens.has_unrevoked_for_device(user_id, device_id);
-    }
-
     [[nodiscard]] auto device_tokens_are_revoked(database::PersistentStore const& store, std::string_view user_id,
                                                  std::string_view device_id) -> bool
     {
@@ -413,6 +407,11 @@ namespace
                                   (token_hash_is_v4(left) && token_hash_is_v4(right));
         return same_version && left.size() == right.size() && crypto::constant_time_equal(left, right);
     }
+
+    // How many retired (revoked) refresh rows a device keeps for reuse detection (F-08, ADR-0590). A count, not a
+    // grace window: it keeps detection across the last 32 rotations however slowly a client refreshes, and bounds the
+    // rows even when `refresh_token_lifetime_ms` is 0.
+    inline constexpr std::size_t max_retired_refresh_tokens_per_device = 32U;
 
     // The wall clock in milliseconds since the epoch, for the `issued_at_ms` of a refresh token (F-08).
     [[nodiscard]] auto wall_clock_ms() -> std::int64_t
@@ -960,9 +959,14 @@ namespace
         // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
         auto const access_expires_at =
             token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
+        // A login on a device the user already holds replaces that device's credentials (spec, POST /login
+        // `device_id`: "invalidate any access token previously associated with that device"; F-08, ADR-0590). The
+        // earlier access and refresh rows are DELETED in the same transaction as the new row, never revoked: a revoked
+        // refresh row that a stale client presents is treated as reuse (ADR-0074) and would end the device's session,
+        // which is the login that just replaced it. An absent row is a plain 401 and harms nothing.
         if (!database::store_device_and_access_token(
                 runtime.database.persistent_store, std::move(device),
-                {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
+                {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at}, true))
         {
             log_diagnostic_audit(runtime.database, "auth", "login.rejected",
                                  {
@@ -977,6 +981,7 @@ namespace
             return make_operation_result(false, {}, "login persistence failed", 500U);
         }
         ++runtime.database.next_session_id;
+        std::ignore = runtime.database.sessions.erase_device(user.user_id, device_id);
         runtime.database.sessions.push_back(
             {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at});
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user.user_id,
@@ -1415,9 +1420,10 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
     // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
     auto const access_expires_at =
         token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
+    // Replaces the device's earlier credentials in the same transaction (F-08, ADR-0590); see complete_login.
     if (!database::store_device_and_access_token(
             runtime.database.persistent_store, std::move(device),
-            {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
+            {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}, true))
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
                              {
@@ -1431,6 +1437,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
         return make_operation_result(false, {}, "login persistence failed", 500U);
     }
     ++runtime.database.next_session_id;
+    std::ignore = runtime.database.sessions.erase_device(user->user_id, device_id);
     runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false, access_expires_at});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
                        std::string{device_id}, "accepted");
@@ -1653,33 +1660,30 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     {
         return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
     }
-    // The device's earlier access tokens may be revoked at once (the spec
-    // leaves this to the server); that includes a lost earlier pair's token.
-    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
-    if (!device_access_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
-    {
-        return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
-    }
-    for (auto& session : runtime.database.sessions)
-    {
-        if (session.user_id == user_id && session.device_id == device_id)
-        {
-            session.revoked = true;
-        }
-    }
+    // The device's earlier access tokens and sessions go with the rotation (the spec leaves this to the server);
+    // that includes a lost earlier pair's token. They are deleted in the transaction below, not left revoked for
+    // the sweep (F-08, ADR-0590). A revoked access token is answered like an absent one, and no reader looks at a
+    // revoked access row, so deleting changes no answer.
+    //
+    // History kept for reuse detection is bounded: a device holds at most `max_retired_refresh_tokens_per_device`
+    // retired refresh rows, and the oldest are deleted past that. An unrevoked row is never named. This runs after the
+    // revocations above, so the rows they just retired are counted.
+    auto const evicted_refresh_hashes = runtime.database.persistent_store.refresh_tokens.oldest_retired_beyond(
+        user_id, device_id, max_retired_refresh_tokens_per_device);
 
     auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
-    if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false,
-                                                                          new_access_expires_at, presented_hash}) ||
-        !database::store_refresh_token(
+    if (!database::rotate_device_credentials(
             runtime.database.persistent_store,
-            {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at, presented_hash, wall_clock_ms()}))
+            {user_id, device_id, *access_hash, false, new_access_expires_at, presented_hash},
+            {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at, presented_hash, wall_clock_ms()},
+            evicted_refresh_hashes))
     {
         return {false, 500U, {}, {}, {}, {}, "refreshed token persistence failed"};
     }
 
     ++runtime.database.next_session_id;
+    std::ignore = runtime.database.sessions.erase_device(user_id, device_id);
     runtime.database.sessions.push_back(
         {user_id, device_id, *access_hash, false, new_access_expires_at, presented_hash});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh", user_id, device_id,

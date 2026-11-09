@@ -1,6 +1,6 @@
 # Sessions are found through a digest index, and credentials that cannot authenticate are deleted
 
-* Status: accepted
+* Status: accepted (the rule that a revoked, unexpired refresh token is always kept is superseded by [ADR-0590](0590-a-login-replaces-its-devices-credentials-and-a-rotation-keeps-a-counted-history.md))
 * Date: 2026-11-04
 
 Technical Story: November analysis P7 and G7.

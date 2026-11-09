@@ -567,8 +567,19 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
+// One transaction: the device row when `device` is set, the access token, and, with `replace_device_credentials`, the
+// DELETE of every earlier access and refresh row of the token's (user, device) first (F-08, ADR-0590: a login on a
+// device the user holds replaces its credentials; deleted, not revoked, because a presented revoked refresh row counts
+// as reuse). Memory changes only after the commit; a failed commit changes nothing.
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
-                                                 PersistentAccessToken token) -> bool;
+                                                 PersistentAccessToken token, bool replace_device_credentials = false)
+    -> bool;
+// A refresh rotation's writes in one transaction (F-08, ADR-0590): every earlier access row of the device is deleted,
+// the new access and refresh rows are inserted, and `evicted_refresh_hashes` (rows the caller found retired, from
+// `CredentialTable::oldest_retired_beyond`) are deleted. False, with nothing changed, if a named row is not retired.
+[[nodiscard]] auto rotate_device_credentials(PersistentStore& store, PersistentAccessToken access,
+                                             PersistentRefreshToken refresh,
+                                             std::span<std::string const> evicted_refresh_hashes) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;

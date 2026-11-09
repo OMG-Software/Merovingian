@@ -181,7 +181,10 @@ from the index alone, never scan after a miss. Look up with `find`/`contains`/`h
 (hydration too) and remove with `erase` (the last row fills the hole, so order means nothing) or `erase_if` (the retention
 sweep; it rebuilds the indexes). A row's hash, user, device and predecessor never change after `insert`; `revoked` flips only
 through the revoke methods, and only one way. `rows_examined()` is an `ExaminedRows` counter of every row a method visited, for
-tests that prove cost. The tables have no lock: `runtime.mutex` serialises them.
+tests that prove cost. `erase_for_device` removes a device's rows through the device index and
+`oldest_retired_beyond` names the retired refresh rows past a count, oldest `issued_at_ms` first, never an unrevoked one
+(ADR-0590); `store_device_and_access_token(..., true)` and `rotate_device_credentials` delete and insert in one transaction and
+change memory only after the commit. The tables have no lock: `runtime.mutex` serialises them.
 
 ## Retained PDUs (F-18, ADR-0326)
 

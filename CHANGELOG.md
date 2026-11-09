@@ -73,7 +73,7 @@ waiting downloads) ignores it, and it is still never minted again as a media ID.
 and `PersistentStore::pending_media_rows_examined` count the rows visited so tests prove cost without timing. See ADR-0589.
 The duplicate-ID check in `commit_pending_media_upload` still reads `local_media` and is not part of this change.
 
-### F-08 (part 1 of 2): the credential tables are indexed
+### F-08: the credential rows of a device are bounded, and the credential tables are indexed
 
 Every presented-token check, `store_*_token` duplicate check and `revoke_*` helper scanned all of `access_tokens` and
 `refresh_tokens` under `runtime.mutex` (about 56 ms per refresh at 100,000 rows). `PersistentStore::access_tokens` and
@@ -97,6 +97,27 @@ indexes `idx_access_tokens_user_device` and `idx_refresh_tokens_user_device` on 
 `PersistentRefreshToken::issued_at_ms` is an `std::int64_t`). Both refresh-token mint sites (`issue_refresh_token_for_session`
 and `refresh_local_session`) set it to the wall clock; nothing reads it yet. A database created before this change has
 no such column or index and must be recreated (ADR-0224: no upgrade shim before 1.0).
+
+Part 2 bounds the rows (ADR-0590). `POST /login` on a `device_id` the user already holds now replaces that device's
+credentials, as the spec says ("invalidate any access token previously associated with that device"): `complete_login`
+and `login_local_user_by_id` (password, `m.login.token`, SSO, application service) delete the device's earlier access
+and refresh rows and its sessions (`SessionTable::erase_device`) and insert the new access row in one transaction
+(`store_device_and_access_token` with `replace_device_credentials`), and memory changes only after the commit, so a
+failed commit is a 500 with no token and the earlier token still works. The rows are deleted, not revoked, because a
+presented revoked refresh row is read as reuse (ADR-0074) and would end the login that replaced it; an absent row is a
+plain 401. `POST /refresh` keeps ADR-0074 (the presented token stays valid until its successor is used, a retry works,
+a retained retired token ends the session) but now deletes the device's earlier access rows and sessions in the same
+transaction as the new rows (`rotate_device_credentials`) instead of leaving them revoked, and keeps at most
+`max_retired_refresh_tokens_per_device` (32) retired refresh rows per device, deleting the oldest by `issued_at_ms`
+(`CredentialTable::oldest_retired_beyond`; an unrevoked row is never named). The audit's suggested grace window was
+rejected: a count keeps detection across the last 32 rotations however slowly a client refreshes and bounds the rows even
+when `refresh_token_lifetime_ms` is 0. `collect_unusable_credentials` also drops a retired refresh row whose device no
+longer exists, from one set of device keys built per sweep (a login and a logout on a fresh device ID used to leave
+one until it expired). There is no per-user cap: `device_count_limit` (200) times the per-device bound is the bound.
+`[f08-rows]` in `tests/unit/test_credential_tables.cpp` and `tests/conformance/test_token_expiry_conformance.cpp` prove
+the row counts (also after a SQLite reload), that a stale refresh token is a plain 401 and a retained one is audited as
+reuse, the sweep rule and, with `rows_examined()` on both tables and the sessions, that one login and one rotation cost
+the same with 200 and 400 other-user rows.
 
 ## 0.12.83
 

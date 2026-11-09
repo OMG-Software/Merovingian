@@ -24,20 +24,24 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/http/RateLimitPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -90,9 +94,13 @@ public:
         {
             security.access_token_lifetime_ms = *lifetime;
         }
+        // The F-08 scenarios refresh dozens of times from one address; the default auth tier (20 a minute per
+        // address) would answer 429 to the 21st. The tier is raised for them only.
+        auto limits = merovingian::config::ClientRateLimitsConfig{};
+        limits.tier["auth_sensitive"] = merovingian::http::RateLimitPolicy{10000U, 60U};
         return {
-            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{}, database, security,
-            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
+            merovingian::config::ServerConfig{},    merovingian::config::ListenersConfig{}, database, security, limits,
+            merovingian::config::LogModulesConfig{}};
     }
 
 private:
@@ -320,6 +328,232 @@ SCENARIO("Login and refresh omit expiry for non-expiring access tokens while fin
                 CHECK((merovingian::tests::object_member(non_expiring.login, "expires_in_ms") == nullptr));
                 // Spec MUST: no expiry is advertised when the refreshed access token does not expire.
                 CHECK((merovingian::tests::object_member(non_expiring.refresh, "expires_in_ms") == nullptr));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// F-08 (security audit run 4, ADR-0590): a login on a device the user already holds replaces that device's
+// credentials, and a refresh keeps a bounded history of retired refresh tokens.
+
+struct HttpAnswer final
+{
+    unsigned status{0U};
+    std::string errcode{};
+};
+
+[[nodiscard]] auto errcode_of(std::string const& body) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    if (parsed.error != merovingian::canonicaljson::ParseError::none ||
+        !std::holds_alternative<Object>(parsed.value.storage()))
+    {
+        return {};
+    }
+    for (auto const& member : std::get<Object>(parsed.value.storage()))
+    {
+        if (member.key == "errcode" && member.value != nullptr &&
+            std::holds_alternative<std::string>(member.value->storage()))
+        {
+            return std::get<std::string>(member.value->storage());
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] auto whoami_answer(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& access_token)
+    -> HttpAnswer
+{
+    auto const result = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}});
+    return {static_cast<unsigned>(result.response.status), errcode_of(result.response.body)};
+}
+
+[[nodiscard]] auto refresh_answer(merovingian::homeserver::ClientServerRuntime& runtime,
+                                  std::string const& refresh_token) -> HttpAnswer
+{
+    auto const body = request_json({make_member("refresh_token", Value{refresh_token})});
+    auto const result = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/refresh", {}, body});
+    return {static_cast<unsigned>(result.response.status), errcode_of(result.response.body)};
+}
+
+[[nodiscard]] auto reuse_audit_rows(merovingian::database::PersistentStore const& store) -> std::ptrdiff_t
+{
+    return std::count_if(store.audit_log.begin(), store.audit_log.end(), [](auto const& row) {
+        return row.event_type == "auth.refresh.reuse_detected";
+    });
+}
+
+// Refresh times are stamped in milliseconds and the oldest retired row is evicted first, so each rotation in a test
+// that checks which row went starts in a new millisecond.
+auto next_millisecond() -> void
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds{2});
+}
+
+struct Account final
+{
+    std::string user_id;
+    std::string password;
+};
+
+[[nodiscard]] auto make_account(merovingian::homeserver::ClientServerRuntime& runtime) -> Account
+{
+    auto const password = std::string{'A', 'a', '9', '!'} + random_suffix();
+    auto const account =
+        merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, "rows_" + random_suffix(), password);
+    // Spec MUST: login is exercised with an existing account and valid authentication data.
+    REQUIRE(account.ok);
+    return {account.value, password};
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/login (`device_id`), POST /_matrix/client/v3/refresh
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3login
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
+// `device_id`: a login with the ID of a known device makes the server invalidate any access token previously
+// associated with that device. Another device is untouched.
+SCENARIO("A login on a device the user already holds invalidates that device's earlier access token",
+         "[conformance][client-server][auth][login][f08-rows]")
+{
+    GIVEN("a user logged in on two devices")
+    {
+        auto const fixture = SqliteFixture{};
+        auto started = merovingian::homeserver::start_client_server(fixture.config(std::nullopt));
+        // Spec MUST: the dispatcher starts against a real store.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const account = make_account(runtime);
+        auto const first = password_login(runtime, account.user_id, account.password, "DEVICE_A", false);
+        auto const other = password_login(runtime, account.user_id, account.password, "DEVICE_B", false);
+        auto const first_token = response_string(first, "access_token");
+        auto const other_token = response_string(other, "access_token");
+        // Spec MUST: an issued access token authorises requests.
+        REQUIRE(whoami_answer(runtime, first_token).status == 200U);
+
+        WHEN("the user logs in again with the first device's ID")
+        {
+            auto const second = password_login(runtime, account.user_id, account.password, "DEVICE_A", false);
+            auto const second_token = response_string(second, "access_token");
+
+            THEN("the earlier token is M_UNKNOWN_TOKEN, the new one works and the other device is untouched")
+            {
+                auto const stale = whoami_answer(runtime, first_token);
+                // Spec MUST: the server invalidates any access token previously associated with that device.
+                REQUIRE(stale.status == 401U);
+                // Spec MUST: an invalidated token is answered M_UNKNOWN_TOKEN.
+                REQUIRE(stale.errcode == "M_UNKNOWN_TOKEN");
+                // Spec MUST: the access token the login returned authorises requests.
+                REQUIRE(whoami_answer(runtime, second_token).status == 200U);
+                // Spec MUST: a login on one device does not invalidate another device's token.
+                REQUIRE(whoami_answer(runtime, other_token).status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("A login on a held device deletes its refresh tokens and a stale client's refresh is a plain 401",
+         "[conformance][client-server][auth][login][refresh][f08-rows]")
+{
+    GIVEN("a device logged in with a refresh token")
+    {
+        auto const fixture = SqliteFixture{};
+        auto started = merovingian::homeserver::start_client_server(fixture.config(std::nullopt));
+        // Spec MUST: the dispatcher starts against a real store.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const account = make_account(runtime);
+        auto const first = password_login(runtime, account.user_id, account.password, "DEVICE_A", true);
+        auto const first_refresh = response_string(first, "refresh_token");
+
+        WHEN("the user logs in again on that device with a refresh token and the stale refresh token is presented")
+        {
+            auto const second = password_login(runtime, account.user_id, account.password, "DEVICE_A", true);
+            auto const second_access = response_string(second, "access_token");
+            auto const second_refresh = response_string(second, "refresh_token");
+            auto const stale = refresh_answer(runtime, first_refresh);
+
+            THEN("the stale token is 401, the new login is untouched and nothing is audited as reuse")
+            {
+                // Spec MUST: a refresh token the server no longer holds is refused.
+                REQUIRE(stale.status == 401U);
+                // Spec MUST: the refused token is answered M_UNKNOWN_TOKEN.
+                REQUIRE(stale.errcode == "M_UNKNOWN_TOKEN");
+                // Spec MUST: the access token of the login that replaced it keeps working.
+                REQUIRE(whoami_answer(runtime, second_access).status == 200U);
+                // Spec MUST: the new login's refresh token still refreshes.
+                REQUIRE(refresh_answer(runtime, second_refresh).status == 200U);
+                // Spec SHOULD: only an old, invalidated refresh token that the server holds counts as compromise.
+                REQUIRE(reuse_audit_rows(runtime.homeserver.database.persistent_store) == 0);
+            }
+        }
+    }
+}
+
+// The server keeps the last 32 retired refresh tokens of a device (ADR-0590). Spec SHOULD: the session is
+// considered compromised if an old, invalidated refresh token is used, and revoked.
+SCENARIO("Reuse of a retired refresh token ends the session while it is kept and is a plain 401 once evicted",
+         "[conformance][client-server][auth][refresh][f08-rows]")
+{
+    GIVEN("a device that has refreshed 45 times, remembering every refresh token it held")
+    {
+        auto const fixture = SqliteFixture{};
+        auto started = merovingian::homeserver::start_client_server(fixture.config(std::nullopt));
+        // Spec MUST: the dispatcher starts against a real store.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const account = make_account(runtime);
+        auto const login = password_login(runtime, account.user_id, account.password, "DEVICE_A", true);
+        auto tokens = std::vector<std::string>{response_string(login, "refresh_token")};
+        auto latest_access = response_string(login, "access_token");
+        for (auto round = 0; round < 45; ++round)
+        {
+            next_millisecond();
+            auto const rotated = refresh(runtime, tokens.back());
+            tokens.push_back(response_string(rotated, "refresh_token"));
+            latest_access = response_string(rotated, "access_token");
+        }
+        auto& store = runtime.homeserver.database.persistent_store;
+
+        WHEN("a token evicted from the history is presented")
+        {
+            auto const evicted = refresh_answer(runtime, tokens.front());
+
+            THEN("it is a plain 401, the session survives and nothing is audited as reuse")
+            {
+                // Spec MUST: a refresh token the server no longer holds is refused.
+                REQUIRE(evicted.status == 401U);
+                // Spec MUST: the refused token is answered M_UNKNOWN_TOKEN.
+                REQUIRE(evicted.errcode == "M_UNKNOWN_TOKEN");
+                // Spec MUST: the device's current access token keeps working.
+                REQUIRE(whoami_answer(runtime, latest_access).status == 200U);
+                // Spec SHOULD: no compromise is claimed for a token the server cannot recognise.
+                REQUIRE(reuse_audit_rows(store) == 0);
+                // Spec MUST: the current refresh token still refreshes.
+                REQUIRE(refresh_answer(runtime, tokens.back()).status == 200U);
+            }
+        }
+
+        WHEN("a retired token still in the history is presented")
+        {
+            auto const reused = refresh_answer(runtime, tokens[tokens.size() - 10U]);
+
+            THEN("it is refused, the audit records reuse and the device's session is ended")
+            {
+                // Spec SHOULD: an old, invalidated refresh token is refused.
+                REQUIRE(reused.status == 401U);
+                // Spec SHOULD: the reuse is recorded.
+                REQUIRE(reuse_audit_rows(store) == 1);
+                // Spec SHOULD: the session is revoked, so the current access token stops working.
+                REQUIRE(whoami_answer(runtime, latest_access).status == 401U);
+                // Spec SHOULD: and so does the current refresh token.
+                REQUIRE(refresh_answer(runtime, tokens.back()).status == 401U);
             }
         }
     }

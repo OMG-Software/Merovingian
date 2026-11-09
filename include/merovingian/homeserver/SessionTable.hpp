@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/homeserver/LocalSession.hpp"
 
 #include <cstddef>
@@ -92,6 +93,12 @@ public:
     // the last session fills each hole, so insertion order is not kept (see the class comment).
     auto erase_device(std::string_view user_id, std::string_view device_id) -> std::size_t;
 
+    // How many sessions `erase_device` visited, in total, for tests that prove its cost (F-08).
+    [[nodiscard]] auto rows_examined() const noexcept -> database::ExaminedRows const&
+    {
+        return examined_;
+    }
+
     // Removes every session `should_remove` accepts and returns how many went. One pass over the vector and one
     // rebuild of the index: for the retention sweep, never for a request.
     template <typename Predicate>
@@ -148,6 +155,7 @@ private:
     // device_key(user_id, device_id) -> positions in sessions_. Keyed on identifiers, not secrets. A session's user
     // and device are never changed after push_back.
     std::unordered_map<std::string, std::vector<std::size_t>> device_index_{};
+    database::ExaminedRows examined_{};
 };
 
 } // namespace merovingian::homeserver

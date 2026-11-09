@@ -828,7 +828,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
 }
 
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
-                                                 PersistentAccessToken token) -> bool
+                                                 PersistentAccessToken token, bool replace_device_credentials) -> bool
 {
     if (!token_is_hash(token.token_hash) || access_token_exists(store, token.token_hash))
     {
@@ -849,6 +849,23 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                                  {device->display_name, false}
         }));
     }
+    if (replace_device_credentials)
+    {
+        // DELETE, not revoke (ADR-0590): a revoked refresh row that is presented counts as reuse and ends the
+        // device's session, so a stale client holding the old refresh token would end the login that replaced it.
+        statements.push_back(record_statement("delete_device_access_tokens",
+                                              "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {token.user_id,   false},
+                                                  {token.device_id, false}
+        }));
+        statements.push_back(record_statement("delete_device_refresh_tokens",
+                                              "DELETE FROM refresh_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {token.user_id,   false},
+                                                  {token.device_id, false}
+        }));
+    }
     statements.push_back(record_statement("insert_access_token",
                                           "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
                                           {
@@ -863,11 +880,89 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
+    // Memory changes only after the commit.
+    if (replace_device_credentials)
+    {
+        std::ignore = store.access_tokens.erase_for_device(token.user_id, token.device_id);
+        std::ignore = store.refresh_tokens.erase_for_device(token.user_id, token.device_id);
+    }
     if (device.has_value())
     {
         store.devices.push_back(std::move(*device));
     }
     std::ignore = store.access_tokens.insert(std::move(token));
+    return true;
+}
+
+[[nodiscard]] auto rotate_device_credentials(PersistentStore& store, PersistentAccessToken access,
+                                             PersistentRefreshToken refresh,
+                                             std::span<std::string const> evicted_refresh_hashes) -> bool
+{
+    if (!token_is_hash(access.token_hash) || !token_is_hash(refresh.token_hash) || access.user_id != refresh.user_id ||
+        access.device_id != refresh.device_id || store.access_tokens.contains(access.token_hash) ||
+        store.refresh_tokens.contains(refresh.token_hash))
+    {
+        return false;
+    }
+    // Only a retired row may be evicted (ADR-0590): an unrevoked row is a live credential.
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        auto const* row = store.refresh_tokens.find(hash);
+        if (row == nullptr || !row->revoked)
+        {
+            return false;
+        }
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(evicted_refresh_hashes.size() + 3U);
+    statements.push_back(record_statement("delete_device_access_tokens",
+                                          "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
+                                          {
+                                              {access.user_id,   false},
+                                              {access.device_id, false}
+    }));
+    statements.push_back(record_statement("insert_access_token",
+                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
+                                          {
+                                              {access.user_id,                     false},
+                                              {access.device_id,                   false},
+                                              {access.token_hash,                  true },
+                                              {access.revoked ? "true" : "false",  false},
+                                              {expires_at_text(access.expires_at), false},
+                                              {access.predecessor_refresh_hash,    true }
+    }));
+    statements.push_back(
+        record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                         {
+                             {refresh.token_hash, true},
+                             {refresh.user_id, false},
+                             {refresh.device_id, false},
+                             {refresh.revoked ? "true" : "false", false},
+                             {expires_at_text(refresh.expires_at), false},
+                             {refresh.predecessor_hash, true},
+                             {std::to_string(std::max<std::int64_t>(refresh.issued_at_ms, 0)), false}
+    }));
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        // The `revoked` condition is a second guard: the statement can never delete a live row.
+        statements.push_back(record_statement("delete_evicted_refresh_token",
+                                              "DELETE FROM refresh_tokens WHERE token_hash = $1 AND revoked = $2",
+                                              {
+                                                  {hash,   true },
+                                                  {"true", false}
+        }));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    std::ignore = store.access_tokens.erase_for_device(access.user_id, access.device_id);
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        std::ignore = store.refresh_tokens.erase(hash);
+    }
+    std::ignore = store.access_tokens.insert(std::move(access));
+    std::ignore = store.refresh_tokens.insert(std::move(refresh));
     return true;
 }
 
@@ -4558,9 +4653,28 @@ auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff
             unusable.access_token_hashes.push_back(token.token_hash);
         }
     }
+    // One transient set of (user, device) keys per call, built when the first retired row asks (ADR-0590): a retired
+    // refresh row of a device that no longer exists can never be presented usefully, and a login plus a logout on a
+    // fresh device ID leaves one until it expires (for ever when the lifetime is 0). An unrevoked row is never
+    // collected by this rule.
+    auto live_devices = std::optional<std::unordered_set<std::string>>{};
+    auto const device_key = [](std::string_view user_id, std::string_view device_id) {
+        return std::to_string(user_id.size()) + ':' + std::string{user_id} + std::string{device_id};
+    };
+    auto const device_is_live = [&store, &live_devices, &device_key](PersistentRefreshToken const& token) {
+        if (!live_devices.has_value())
+        {
+            live_devices.emplace();
+            for (auto const& device : store.devices)
+            {
+                live_devices->insert(device_key(device.user_id, device.device_id));
+            }
+        }
+        return live_devices->contains(device_key(token.user_id, token.device_id));
+    };
     for (auto const& token : store.refresh_tokens)
     {
-        if (token.expires_at.has_value() && *token.expires_at <= now)
+        if ((token.expires_at.has_value() && *token.expires_at <= now) || (token.revoked && !device_is_live(token)))
         {
             unusable.refresh_token_hashes.push_back(token.token_hash);
         }

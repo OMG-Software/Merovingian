@@ -43,6 +43,7 @@ class CredentialTable final
 {
     static constexpr auto npos = std::numeric_limits<std::size_t>::max();
     static constexpr bool kHasPredecessor = requires(Row const& row) { row.predecessor_hash; };
+    static constexpr bool kHasIssuedAt = requires(Row const& row) { row.issued_at_ms; };
 
 public:
     using value_type = Row;
@@ -191,17 +192,69 @@ public:
         {
             return false;
         }
-        unindex_row(position);
-        auto const last = rows_.size() - 1U;
-        if (position != last)
-        {
-            // Swap-and-pop: the last row fills the hole and is indexed again under its new position.
-            unindex_row(last);
-            rows_[position] = std::move(rows_[last]);
-            index_row(position);
-        }
-        rows_.pop_back();
+        erase_at(position);
         return true;
+    }
+
+    // Removes every row of the device and returns how many went. Costs the device's rows, not the table (F-08,
+    // ADR-0590): a login on a device the user already holds replaces that device's credentials.
+    auto erase_for_device(std::string_view user_id, std::string_view device_id) -> size_type
+    {
+        auto const* held = positions_of_device(user_id, device_id);
+        if (held == nullptr)
+        {
+            return size_type{0U};
+        }
+        // Copied: erasing edits the index list. Highest position first, so the row that fills a hole is never one
+        // still waiting to go.
+        auto positions = *held;
+        examined_.add(positions.size());
+        std::ranges::sort(positions, std::greater<>{});
+        for (auto const position : positions)
+        {
+            erase_at(position);
+        }
+        return positions.size();
+    }
+
+    // The hashes of the oldest RETIRED (revoked) rows of the device that exceed `keep`, smallest `issued_at_ms`
+    // first; empty when the device holds `keep` retired rows or fewer. A row that is not revoked is never named.
+    // Costs the device's rows (ADR-0590). The caller deletes the rows it names.
+    [[nodiscard]] auto oldest_retired_beyond(std::string_view user_id, std::string_view device_id, size_type keep) const
+        -> std::vector<std::string>
+        requires(kHasIssuedAt)
+    {
+        auto result = std::vector<std::string>{};
+        auto const* held = positions_of_device(user_id, device_id);
+        if (held == nullptr)
+        {
+            return result;
+        }
+        examined_.add(held->size());
+        auto retired = std::vector<std::size_t>{};
+        for (auto const position : *held)
+        {
+            if (rows_[position].revoked)
+            {
+                retired.push_back(position);
+            }
+        }
+        if (retired.size() <= keep)
+        {
+            return result;
+        }
+        std::ranges::sort(retired, [this](std::size_t left, std::size_t right) {
+            return rows_[left].issued_at_ms != rows_[right].issued_at_ms
+                       ? rows_[left].issued_at_ms < rows_[right].issued_at_ms
+                       : left < right;
+        });
+        auto const excess = retired.size() - keep;
+        result.reserve(excess);
+        for (auto index = size_type{0U}; index < excess; ++index)
+        {
+            result.push_back(rows_[retired[index]].token_hash);
+        }
+        return result;
     }
 
     // Removes every row `should_remove` accepts, in one pass over the table and one rebuild of the indexes: for the
@@ -417,6 +470,21 @@ private:
         {
             index.erase(found);
         }
+    }
+
+    // Removes the row at `position`. Swap-and-pop: the last row fills the hole and is indexed again under its new
+    // position.
+    auto erase_at(std::size_t position) -> void
+    {
+        unindex_row(position);
+        auto const last = rows_.size() - 1U;
+        if (position != last)
+        {
+            unindex_row(last);
+            rows_[position] = std::move(rows_[last]);
+            index_row(position);
+        }
+        rows_.pop_back();
     }
 
     auto index_row(std::size_t position) -> void

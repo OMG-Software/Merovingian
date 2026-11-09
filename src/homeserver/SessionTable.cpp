@@ -75,6 +75,7 @@ auto SessionTable::erase_device(std::string_view user_id, std::string_view devic
     }
     // Highest position first, so the session that fills a hole is never one still waiting to go.
     auto positions = found->second;
+    examined_.add(positions.size());
     std::ranges::sort(positions, std::greater<>{});
     for (auto const position : positions)
     {

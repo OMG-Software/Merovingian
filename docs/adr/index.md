@@ -432,7 +432,7 @@
 * [0483 - Follow `.well-known/matrix/server` redirects ourselves, four at most, checked on every hop](0483-follow-well-known-redirects-ourselves-with-a-small-fixed-limit.md)
 * [0484 - Answer the third-party invite endpoints in main, and bound the unauthenticated one](0484-answer-the-third-party-invite-endpoints-in-main-and-bound-the-unauthenticated-one.md)
 * [0485 - An exchanged third-party invite is issued by the sender's server, for the caller's own user, and never moves a member](0485-an-exchanged-third-party-invite-is-issued-by-the-sender-s-server-for-the-caller-s-own-user.md)
-* [0488 - Sessions are found through a digest index, and credentials that cannot authenticate are deleted](0488-sessions-are-found-through-a-digest-index-and-unusable-credentials-are-deleted.md)
+* [0488 - Sessions are found through a digest index, and credentials that cannot authenticate are deleted](0488-sessions-are-found-through-a-digest-index-and-unusable-credentials-are-deleted.md) — Partly superseded by ADR-0590: a retired refresh token is kept only up to a count per device
 * [0489 - Audit log retention is a configured period, a year by default, and a purge is itself audited](0489-audit-log-retention-is-a-configured-period-with-a-year-default.md)
 * [0490 - `events` and `state_groups` are indexed by `room_id`; `stream_ordering` is not indexed](0490-events-and-state-groups-are-indexed-by-room-and-stream-ordering-is-not.md)
 * [0491 - Request-path writes are grouped only where one operation owns all of them, and the audit row stays its own commit](0491-request-path-writes-are-grouped-only-where-one-operation-owns-them.md)
@@ -510,3 +510,4 @@
 * [0587 - The SQLite path comes only from operator configuration](0587-the-sqlite-path-comes-only-from-operator-configuration.md)
 * [0588 - State content checks run in one place for every local writer](0588-state-content-checks-run-in-one-place-for-every-local-writer.md)
 * [0589 - An expired media reservation that is not yet swept is dead to every reader](0589-an-expired-media-reservation-that-is-not-yet-swept-is-dead-to-every-reader.md)
+* [0590 - A login replaces its device's credentials, and a rotation keeps a counted history of retired refresh tokens](0590-a-login-replaces-its-devices-credentials-and-a-rotation-keeps-a-counted-history.md)

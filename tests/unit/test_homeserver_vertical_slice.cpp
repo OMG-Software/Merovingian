@@ -576,7 +576,7 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
             auto const first_login = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
             auto const second_login = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+                runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE2"});
 
             THEN("the persisted password is Argon2id-shaped and tokens are random with versioned "
                  "hashes")
