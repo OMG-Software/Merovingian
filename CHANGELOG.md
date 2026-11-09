@@ -21,6 +21,13 @@ victim's email pusher and silently stopped their notification emails. `app_id` `
 other kind with it is `400 M_INVALID_PARAM`. The cross-user removal also skips pushers of kind `email`, whose pushkey is an
 address the owner holds. Ordinary pushers are still removed across users.
 
+### F-18: createRoom validates room_alias_name
+
+`POST /createRoom` composed `#<room_alias_name>:<server>` without checking it, so a name with a colon, a NUL, invalid UTF-8
+or a total over 255 bytes was stored as an alias that `GET /directory/room/{alias}` and `DELETE` could not reach. The
+handler now checks the composed alias with `auth::room_alias_is_valid` and answers `400 M_INVALID_PARAM` (the spec names no
+errcode for it) before anything is stored, and `create_room` repeats the check as defence in depth. A valid name still works.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

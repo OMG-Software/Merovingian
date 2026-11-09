@@ -3879,6 +3879,14 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto const alias = options.room_alias_name.empty()
                            ? std::string{}
                            : full_room_alias(runtime.config.server(), options.room_alias_name);
+    // F-18, defence in depth: the createRoom handler refuses this too, but no caller of the service may store
+    // an alias that cannot be resolved or deleted. Nothing has been stored yet.
+    if (!alias.empty() && !auth::room_alias_is_valid(alias))
+    {
+        auto result = make_operation_result(false, {}, "room_alias_name does not make a valid room alias", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
     if (!alias.empty() && database::find_room_alias(runtime.database.persistent_store, alias).has_value())
     {
         log_diagnostic("room.create.rejected", {

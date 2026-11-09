@@ -18483,6 +18483,100 @@ SCENARIO("POST /pushers/set reserves app_id m.email for email pushers and never 
     }
 }
 
+// F-18 (security audit run 4). Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
+// `room_alias_name`: "The desired room alias **local part**" of a room alias, whose grammar (appendices.md, "Room
+// Aliases") allows no ':' in the localpart and at most 255 bytes in all. The spec names no errcode for an invalid
+// alias in createRoom, so it is 400 M_INVALID_PARAM.
+SCENARIO("POST /createRoom refuses a room_alias_name that does not make a valid alias",
+         "[conformance][client-server][createroom][f18]")
+{
+    GIVEN("a started homeserver with an authenticated user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = logged_in_token(runtime);
+        auto const create_with_alias = [&](std::string const& json_alias_literal) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_alias_name":)" + json_alias_literal + "}"});
+        };
+        auto const joined_room_count = [&]() {
+            auto const joined = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
+            REQUIRE(joined.response.status == 200U);
+            auto const body = parse_object(joined.response.body);
+            auto const* rooms = object_member_as_array(body, "joined_rooms");
+            REQUIRE(rooms != nullptr);
+            return rooms->size();
+        };
+        auto const before = joined_room_count();
+
+        WHEN("the name holds a colon")
+        {
+            auto const response = create_with_alias(R"("a:b")");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias localpart holds no ':'.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name holds a NUL")
+        {
+            auto const response = create_with_alias(R"("a\u0000b")");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias is a valid string without NUL.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name is not valid UTF-8")
+        {
+            auto const response =
+                create_with_alias(std::string{"\"a"} + std::string(1U, static_cast<char>(0xFF)) + "b\"");
+
+            THEN("it is refused with 400 and no room is made")
+            {
+                // Spec MUST: Matrix strings are UTF-8.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name makes an alias over 255 bytes")
+        {
+            auto const response = create_with_alias("\"" + std::string(300U, 'a') + "\"");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias is at most 255 bytes.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name is valid")
+        {
+            auto const response = create_with_alias(R"("pleasant")");
+
+            THEN("the room is made")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(joined_room_count() == before + 1U);
+            }
+        }
+    }
+}
+
 // --- Media download security headers ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 //

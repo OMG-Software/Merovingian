@@ -18679,6 +18679,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (room_alias_name != nullptr && !room_alias_name->empty())
         {
             auto const alias = "#" + *room_alias_name + ":" + rt.homeserver.config.server().server_name;
+            // F-18. Spec (createRoom): `room_alias_name` is the local part of a room alias, so the composed alias
+            // must satisfy the alias grammar (no ':' or NUL in the local part, UTF-8, at most 255 bytes in all).
+            // The spec names no errcode for this, so M_INVALID_PARAM. Refused before anything is stored.
+            if (!auth::room_alias_is_valid(alias))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "room_alias_name does not make a valid room alias");
+            }
             if (database::find_room_alias(rt.homeserver.database.persistent_store, alias).has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_ROOM_IN_USE", "room alias already in use");
