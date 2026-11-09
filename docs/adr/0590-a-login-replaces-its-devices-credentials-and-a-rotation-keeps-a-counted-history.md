@@ -12,7 +12,7 @@ Nothing bounded the credential rows of a device. `POST /login` with a `device_id
 row (and a refresh row) beside the earlier ones, so a client that logged in again and again left every earlier access
 token valid, which the spec forbids (`POST /login` `device_id`: the server invalidates any access token previously
 associated with that device). `POST /refresh` revoked the earlier access rows but left them, and kept every retired
-refresh row until it expired (ADR-0488: "a revoked, unexpired refresh token is always kept"), which is for ever when
+refresh row until it expired (ADR-0488: "A refresh token that is revoked but not yet expired is KEPT"), which is for ever when
 `refresh_token_lifetime_ms` is 0. A login followed by a logout on a fresh device ID left a retired refresh row for a
 device that no longer exists. All of it is held in memory and scanned by the retention sweep.
 

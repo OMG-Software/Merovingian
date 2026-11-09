@@ -3113,7 +3113,7 @@ SCENARIO("Invite and knock recipients receive only stripped room summaries",
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/createRoom", alice_token,
-             R"({"preset":"public_chat","name":"Invitation snapshot","topic":"Room summary","initial_state":[{"type":"m.room.avatar","state_key":"","content":{"url":"mxc://example.org/avatar"}},{"type":"m.room.canonical_alias","state_key":"","content":{"alias":"#summary:example.org"}},{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}},{"type":"m.room.server_acl","state_key":"","content":{"allow":["*"]}},{"type":"com.example.private","state_key":"","content":{"internal":"private-room-data"}}]})"});
+             R"({"preset":"public_chat","room_alias_name":"summary","name":"Invitation snapshot","topic":"Room summary","initial_state":[{"type":"m.room.avatar","state_key":"","content":{"url":"mxc://example.org/avatar"}},{"type":"m.room.canonical_alias","state_key":"","content":{"alias":"#summary:example.org"}},{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}},{"type":"m.room.server_acl","state_key":"","content":{"allow":["*"]}},{"type":"com.example.private","state_key":"","content":{"internal":"private-room-data"}}]})"});
         REQUIRE(create.response.status == 200U);
         auto const rid = room_id(create.response.body);
         for (auto const& token : {bob_token, carol_token})

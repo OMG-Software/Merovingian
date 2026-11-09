@@ -160,7 +160,7 @@ struct Reply final
 SCENARIO("The device that sent an event is given its transaction ID, no other client is",
          "[conformance][client-server][event-format][unsigned]")
 {
-    GIVEN("alice's two sessions on one device, a third device, and bob, all in one room")
+    GIVEN("alice on a device that logs in again after sending, a second device, and bob, all in one room")
     {
         auto started = merovingian::homeserver::start_client_server(unsigned_config());
         REQUIRE(started.started);
@@ -168,7 +168,6 @@ SCENARIO("The device that sent an event is given its transaction ID, no other cl
         std::ignore = register_user(rt, "alice");
         std::ignore = register_user(rt, "bob");
         auto const sender = login_device(rt, "alice", "DEVA");
-        auto const same_device = login_device(rt, "alice", "DEVA");
         auto const other_device = login_device(rt, "alice", "DEVB");
         auto const bob = login_device(rt, "bob", "BOBDEV");
         auto const created = call(rt, "POST", "/_matrix/client/v3/createRoom", sender, R"({"preset":"public_chat"})");
@@ -183,6 +182,9 @@ SCENARIO("The device that sent an event is given its transaction ID, no other cl
         WHEN("each client reads the event from /sync")
         {
             auto const own = synced_event(rt, sender, room_id, event_id);
+            // POST /login `device_id`: a login on a known device invalidates its earlier access tokens, so the sender
+            // reads first and the new token reads after it.
+            auto const same_device = login_device(rt, "alice", "DEVA");
             auto const same = synced_event(rt, same_device, room_id, event_id);
             auto const other = synced_event(rt, other_device, room_id, event_id);
             auto const peer = synced_event(rt, bob, room_id, event_id);
@@ -207,6 +209,8 @@ SCENARIO("The device that sent an event is given its transaction ID, no other cl
         WHEN("each client fetches the event with GET /rooms/{roomId}/event/{eventId}")
         {
             auto const own = fetched_event(rt, sender, room_id, event_id);
+            // As above: the earlier token stops working at the second login.
+            auto const same_device = login_device(rt, "alice", "DEVA");
             auto const same = fetched_event(rt, same_device, room_id, event_id);
             auto const other = fetched_event(rt, other_device, room_id, event_id);
             auto const peer = fetched_event(rt, bob, room_id, event_id);
