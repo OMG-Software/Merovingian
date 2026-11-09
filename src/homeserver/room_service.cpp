@@ -91,6 +91,7 @@
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 #include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
+#include "merovingian/homeserver/StateContentRefusal.hpp"
 #include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
 #include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
@@ -105,8 +106,10 @@
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
+#include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/send_join_answer_authorization.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/state_content_check.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/OutboundClient.hpp"
@@ -361,6 +364,14 @@ namespace
         result.errcode = std::string{invite_blocked_errcode};
         return result;
     }
+    // 400 with the refusal's errcode (F-19).
+    [[nodiscard]] auto state_content_refusal_result(StateContentRefusal const& refusal) -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, refusal.message, 400U);
+        result.errcode = std::string{refusal.errcode};
+        return result;
+    }
+
     [[nodiscard]] auto invalid_state_key_result() -> OperationResult
     {
         auto result = make_operation_result(false, {}, "state_key must not contain NUL", 400U);
@@ -3623,6 +3634,44 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         }))
     {
         return invalid_state_key_result();
+    }
+    // F-19: the canonical alias check PUT /state makes applies to `initial_state` too. The room does not
+    // exist yet, so a local alias must be the one this request creates (room_alias_name), and nothing is stored when
+    // an entry is refused.
+    {
+        auto const pending_alias = options.room_alias_name.empty()
+                                       ? std::string{}
+                                       : full_room_alias(runtime.config.server(), options.room_alias_name);
+        for (auto const& entry : options.initial_state)
+        {
+            auto const* object = std::get_if<canonicaljson::Object>(&entry.storage());
+            auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+            auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+            // m.room.encryption is not judged here: ADR-0445 decides it. An entry that is not m.megolm.v1.aes-sha2 is
+            // the documented way to ask for an unencrypted room, refused by default (M_INVALID_ROOM_STATE) and
+            // allowed where the operator's encryption settings say so.
+            if (type == nullptr || content == nullptr || *type != "m.room.canonical_alias")
+            {
+                continue;
+            }
+            auto const* named_state_key = string_member(*object, "state_key");
+            auto const refusal = state_content_refusal(
+                runtime.database.persistent_store, {}, runtime.config.server().server_name, *type,
+                named_state_key == nullptr ? std::string_view{} : std::string_view{*named_state_key}, *content,
+                pending_alias);
+            if (refusal.has_value())
+            {
+                log_diagnostic("room.create.rejected", {
+                                                           {"actor",      *user_id,         false},
+                                                           {"status",     "400",            false},
+                                                           {"event_type", *type,            false},
+                                                           {"reason",     refusal->message, false}
+                });
+                // Spec (createRoom, 400): "The initial state implied by the parameters to the request is invalid"
+                // is M_INVALID_ROOM_STATE, the code ADR-0445 already gives an invalid m.room.encryption entry.
+                return invalid_room_state_result(refusal->message);
+            }
+        }
     }
     if (create_room_options_exceed_size_limits(options))
     {
@@ -9145,6 +9194,46 @@ namespace
         return membership != nullptr && *membership == "invite";
     }
 
+    // F-19: the content checks of a state event a local client sends with POST /send (and, through it, PUT /state).
+    // Only a state event, one with a `state_key` of "", is judged, and only for a sender who may send it: anyone else
+    // gets the 403 the compose step gives. An event that is not a JSON object with a string type is left to compose.
+    [[nodiscard]] auto sent_state_content_refusal(HomeserverRuntime& runtime, std::string_view user_id,
+                                                  std::string_view room_id, std::string_view event_json)
+        -> std::optional<OperationResult>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* event = parsed.error == canonicaljson::ParseError::none
+                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                : nullptr;
+        auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+        auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+        if (type == nullptr || state_key == nullptr || content == nullptr || !state_key->empty() ||
+            (*type != "m.room.canonical_alias" && *type != "m.room.encryption"))
+        {
+            return std::nullopt;
+        }
+        auto const& store = runtime.database.persistent_store;
+        if (!may_send_state_event(store, room_id, user_id, *type))
+        {
+            return std::nullopt;
+        }
+        auto const refusal =
+            state_content_refusal(store, room_id, runtime.config.server().server_name, *type, *state_key, *content);
+        if (!refusal.has_value())
+        {
+            return std::nullopt;
+        }
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",      std::string{user_id}, false},
+                                                  {"room_id",    std::string{room_id}, false},
+                                                  {"event_type", *type,                false},
+                                                  {"status",     "400",                false},
+                                                  {"reason",     refusal->message,     false}
+        });
+        return state_content_refusal_result(*refusal);
+    }
+
     // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
@@ -9189,6 +9278,11 @@ namespace
                                                       {"reason",  "redaction names no event", false}
             });
             return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
+        }
+
+        if (auto refusal = sent_state_content_refusal(runtime, user_id, room_id, event_json); refusal.has_value())
+        {
+            return std::move(*refusal);
         }
 
         auto const composition = compose_signed_event(runtime, room_id, user_id, event_json, origin_server_ts);

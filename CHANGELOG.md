@@ -45,6 +45,20 @@ could not be banned. The route check (`membership_target_refusal`) and the servi
 now use `auth::user_id_is_valid_federated`. Registration and local-user creation keep the strict rule; a malformed ID is
 still refused.
 
+### F-19: canonical alias and encryption content checks apply to every local writer
+
+The checks the spec asks for on `m.room.canonical_alias` (new aliases valid and pointing at the room) and `m.room.encryption`
+(`algorithm` must be `m.megolm.v1.aes-sha2`) ran only in the `PUT /state` branch of the dispatcher, so `POST /rooms/{roomId}/send`
+with a `state_key` and `createRoom` `initial_state` could store an alias that points at another room, or an encryption event with
+no usable algorithm. They are now one function, `state_content_refusal` (`src/homeserver/state_content_check.cpp`), called by
+`send_event_as_user` (after the power check, for a state event with the empty state key only) and by `create_room` for the
+`m.room.canonical_alias` entries of `initial_state`, before anything is stored. `PUT /state` keeps its status codes and errcodes.
+A canonical alias in `initial_state` naming the alias the same request creates with `room_alias_name` is accepted, because that
+alias points at the room as soon as it exists; any other refusal there is `400 M_INVALID_ROOM_STATE`, the spec's code for an
+invalid initial state. `m.room.encryption` in `initial_state` is left to the encryption policy (ADR-0445): an entry that is not
+megolm is how a client asks for an unencrypted room, refused by default and allowed where the operator allows it. See ADR-0588.
+`POST /rooms/{roomId}/send` is not a v1.19 route and stays.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

@@ -650,6 +650,7 @@ shell = find_program('sh')
       'conformance/test_room_admin_gates_conformance.cpp',
       'conformance/test_room_api_run10_conformance.cpp',
       'conformance/test_encryption_put_conformance.cpp',
+      'conformance/test_state_content_writers_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
       'conformance/test_profile_fields_conformance.cpp',
