@@ -25,7 +25,7 @@ as an application service is exempt from the per-user cap only; room upgrade mov
 
 ### F-04: shared history is not served to a server with no user in the room
 
-Over federation, an event sent under `shared` visibility is sent in full only to a server with a user joined in the room now, or joined in the state at the event. A room that later became `world_readable` no longer gives a stranger its earlier history; such events are redacted, never dropped (ADR-0585).
+Over federation, an event sent under `shared` visibility is sent in full only to a server with a user joined in the room now, or joined in the state at the event. A room that later became `world_readable` no longer gives a stranger its earlier history; such events are redacted, never dropped (ADR-0585). The older unit and integration tests that read a `shared`-era event as a stranger pinned this leak; they now read an event sent while the room was `world_readable`, and the backfill conformance fixture holds the join its requesting server relies on.
 
 ### F-05: devices and their names are capped, and a device-list announcement is linear
 

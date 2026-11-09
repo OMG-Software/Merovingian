@@ -3769,6 +3769,23 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                                           R"(","id_access_token":"opaque"})";
             auto const bind_msisdn = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_msisdn_body});
+            // A bind alone puts nothing on the account (ADR-0584), so the bound number is also added. The bind
+            // spent its validation session, so the number is validated again first.
+            auto const second_msisdn_response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+                 {},
+                 identity_server.with_identity_server(
+                     R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":2})")});
+            REQUIRE(second_msisdn_response.response.status == 200U);
+            auto const second_msisdn_body = parse_object(second_msisdn_response.response.body);
+            auto const* second_msisdn_sid = string_member(second_msisdn_body, "sid");
+            REQUIRE(second_msisdn_sid != nullptr);
+            auto const add_msisdn_body = std::string{R"({"client_secret":"secret123","sid":")"} + *second_msisdn_sid +
+                                         R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
+            auto const add_msisdn = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_msisdn_body});
             auto const list_after_add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
             auto const unbind_msisdn = merovingian::homeserver::handle_client_server_request(
@@ -3788,6 +3805,8 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
 
                 REQUIRE(add_email.response.status == 200U);
                 REQUIRE(add_email.response.body == "{}");
+                REQUIRE(add_msisdn.response.status == 200U);
+                REQUIRE(add_msisdn.response.body == "{}");
                 REQUIRE(bind_msisdn.response.status == 200U);
                 REQUIRE(bind_msisdn.response.body == "{}");
 

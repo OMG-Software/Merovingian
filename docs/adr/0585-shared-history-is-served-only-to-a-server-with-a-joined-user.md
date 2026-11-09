@@ -37,6 +37,8 @@ scanned for membership.
 
 * A server whose only user joined after an event and has since left no longer receives that event in full, although
   a client in the same position would. It keeps what was sent while it was joined.
+* Setting a room's current visibility is no longer enough for a test that reads an event as a server outside the
+  room: the event's own recorded state has to be `world_readable`, or the server has to hold a join.
 
 ## Pros and Cons of the Options
 
