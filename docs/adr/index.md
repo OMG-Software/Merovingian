@@ -509,3 +509,4 @@
 * [0586 - A redaction's authority comes from the state this server holds](0586-a-redactions-authority-comes-from-the-state-this-server-holds.md)
 * [0587 - The SQLite path comes only from operator configuration](0587-the-sqlite-path-comes-only-from-operator-configuration.md)
 * [0588 - State content checks run in one place for every local writer](0588-state-content-checks-run-in-one-place-for-every-local-writer.md)
+* [0589 - An expired media reservation that is not yet swept is dead to every reader](0589-an-expired-media-reservation-that-is-not-yet-swept-is-dead-to-every-reader.md)

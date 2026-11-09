@@ -4043,6 +4043,27 @@ namespace
         });
     }
 
+    // One DELETE for a run of reservations (F-16): `media_id IN ($1, ..., $n)`. The text carries only parameter
+    // numbers; the IDs are bound. A prepared statement takes at most 128 parameters, so a batch of 256 is two of
+    // these, in the one transaction, never one statement per row.
+    constexpr auto delete_ids_per_statement = std::size_t{128U};
+
+    [[nodiscard]] auto delete_pending_media_uploads_statement(std::span<std::string const> media_ids)
+        -> PreparedStatement
+    {
+        auto sql = std::string{"DELETE FROM media_pending_uploads WHERE media_id IN ("};
+        auto parameters = std::vector<BoundValue>{};
+        parameters.reserve(media_ids.size());
+        for (auto const& media_id : media_ids)
+        {
+            sql += parameters.empty() ? "$" : ", $";
+            sql += std::to_string(parameters.size() + 1U);
+            parameters.push_back({media_id, false});
+        }
+        sql += ")";
+        return record_statement("delete_pending_media_uploads", std::move(sql), std::move(parameters));
+    }
+
     [[nodiscard]] auto insert_pending_media_upload_statement(PersistentPendingMediaUpload const& row)
         -> PreparedStatement
     {
@@ -4204,7 +4225,12 @@ namespace
                                                std::vector<std::string> const& expired_media_ids) -> bool
 {
     if (row.media_id.empty() || row.owner_user_id.empty() || row.expires_at_ms <= row.created_at_ms ||
-        std::ranges::any_of(store.pending_media_uploads,
+        expired_media_ids.size() > max_pending_media_deleted_per_commit)
+    {
+        return false;
+    }
+    store.pending_media_rows_examined.add(store.pending_media_uploads.size());
+    if (std::ranges::any_of(store.pending_media_uploads,
                             [&row](PersistentPendingMediaUpload const& existing) {
                                 return existing.media_id == row.media_id;
                             }) ||
@@ -4215,18 +4241,23 @@ namespace
         return false;
     }
     auto statements = std::vector<PreparedStatement>{};
-    statements.reserve(expired_media_ids.size() + 1U);
-    for (auto const& expired : expired_media_ids)
+    statements.reserve((expired_media_ids.size() / delete_ids_per_statement) + 2U);
+    for (auto first = std::size_t{0U}; first < expired_media_ids.size(); first += delete_ids_per_statement)
     {
-        statements.push_back(delete_pending_media_upload_statement(expired));
+        auto const count = std::min(delete_ids_per_statement, expired_media_ids.size() - first);
+        statements.push_back(delete_pending_media_uploads_statement(
+            std::span<std::string const>{expired_media_ids}.subspan(first, count)));
     }
     statements.push_back(insert_pending_media_upload_statement(row));
     if (!commit_persistent_transaction(store, std::move(statements)))
     {
         return false;
     }
-    std::erase_if(store.pending_media_uploads, [&expired_media_ids](PersistentPendingMediaUpload const& existing) {
-        return std::ranges::find(expired_media_ids, existing.media_id) != expired_media_ids.end();
+    // Hash-set membership: one probe per row held, not one scan of the expired list per row (F-16).
+    auto const expired = std::unordered_set<std::string_view>{expired_media_ids.begin(), expired_media_ids.end()};
+    store.pending_media_rows_examined.add(store.pending_media_uploads.size());
+    std::erase_if(store.pending_media_uploads, [&expired](PersistentPendingMediaUpload const& existing) {
+        return expired.contains(existing.media_id);
     });
     store.pending_media_uploads.push_back(std::move(row));
     return true;

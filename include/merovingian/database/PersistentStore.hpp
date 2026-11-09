@@ -352,6 +352,8 @@ struct PersistentStore final
     std::vector<PersistentMediaBlob> media_blobs{};
     // Migration 026: reservations made by POST /_matrix/media/v1/create.
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
+    // F-16: rows of `pending_media_uploads` visited by commit_pending_media_upload.
+    ExaminedRows pending_media_rows_examined{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
     // list is a bounded mirror for the admin views, so an unauthenticated flood
@@ -977,9 +979,12 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
                                              PersistentMediaBlob const& blob, bool new_blob,
                                              std::string_view completes_pending_media_id = {}) -> bool;
+// F-16: the most expired reservations one commit_pending_media_upload deletes. A longer list is refused.
+inline constexpr std::size_t max_pending_media_deleted_per_commit{256U};
 // ADR-0212: inserts one pending upload reservation and deletes the expired
-// reservations in `expired_media_ids`, in one transaction. The in-memory mirror
-// changes only after the commit succeeds.
+// reservations in `expired_media_ids` (at most max_pending_media_deleted_per_commit)
+// with DELETE statements of up to 128 IDs, in one transaction. The in-memory mirror changes only after the
+// commit succeeds, in one pass over the reservations with hash-set membership.
 [[nodiscard]] auto commit_pending_media_upload(PersistentStore& store, PersistentPendingMediaUpload row,
                                                std::vector<std::string> const& expired_media_ids) -> bool;
 

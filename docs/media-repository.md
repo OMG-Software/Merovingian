@@ -437,7 +437,9 @@ it on the cached copy and serves it.
 `LocalMediaRepository::pending_uploads`. One user may hold `max_pending_uploads_per_user` (10) live
 reservations and the server `max_pending_uploads` (10000); past either, `create` answers
 `429 M_LIMIT_EXCEEDED`. `create` is also rate limited per user (30 a minute). Expired reservations
-are deleted by the next `create`.
+are deleted by later `create`s, at most 256 per `create`, in `DELETE` statements of up to 128 IDs (F-16, ADR-0589); until one is
+deleted it counts toward no limit, admits no upload and satisfies no wait (all of these read the expiry, never mere
+presence in the map). A `create` visits each reservation held once, with hash-set membership for the deletion.
 
 `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}` stores the content for a reservation through
 the same pipeline as `POST /upload` (MIME sniffing, the scanner check, MIME policy, quarantine,

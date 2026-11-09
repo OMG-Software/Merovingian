@@ -59,6 +59,20 @@ invalid initial state. `m.room.encryption` in `initial_state` is left to the enc
 megolm is how a client asks for an unencrypted room, refused by default and allowed where the operator allows it. See ADR-0588.
 `POST /rooms/{roomId}/send` is not a v1.19 route and stays.
 
+### F-16: the expired media-reservation sweep is bounded and linear
+
+`POST /_matrix/media/v1/create` removed every expired reservation with `std::erase_if` over the stored rows and, for each row,
+a `std::find` over the list of expired IDs, under `runtime.mutex`: quadratic in the backlog (about 0.85 s at the default caps).
+The plan now lists at most 256 expired reservations (`max_expired_reservations_swept_per_create`, which must equal
+`database::max_pending_media_deleted_per_commit`); `commit_pending_media_upload` deletes them with `DELETE ... WHERE
+media_id IN (...)` statements of up to 128 IDs (the prepared-statement parameter limit, so two for a full batch) in the one
+transaction instead of one statement per row, refuses a longer list, and removes them from memory in one pass with
+hash-set membership. Later creates sweep the rest. Because a sweep is bounded, an expired reservation not yet swept is
+dead to every reader: it counts toward neither the per-user nor the server limit, `find_pending_media_upload` (uploads,
+waiting downloads) ignores it, and it is still never minted again as a media ID. `LocalMediaRepository::pending_rows_examined`
+and `PersistentStore::pending_media_rows_examined` count the rows visited so tests prove cost without timing. See ADR-0589.
+The duplicate-ID check in `commit_pending_media_upload` still reads `local_media` and is not part of this change.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

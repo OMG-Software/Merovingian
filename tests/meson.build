@@ -301,6 +301,7 @@ shell = find_program('sh')
       'unit/test_database_security_boundaries.cpp',
       'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
+      'unit/test_media_reservation_sweep.cpp',
       'unit/test_bundled_aggregations.cpp',
       'unit/test_sliding_sync_aggregations.cpp',
       'unit/test_event_table.cpp',
