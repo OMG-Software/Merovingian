@@ -23,7 +23,8 @@ before anything is written, in `PUT /directory/room/{roomAlias}` and in `POST /c
 (refused before any room is made). An alias that already exists keeps its old answer at the cap. A request authenticated
 as an application service is exempt from the per-user cap only; room upgrade moves aliases without a cap. `erase` checks
 both index lookups for the row it moves, because GCC 16 in the RPM build stops on an unchecked `find()` result.
-ADR-0587 records why SonarCloud's path-injection report on the SQLite path is a false positive.
+ADR-0587 records why SonarCloud's path-injection report on the SQLite path is a false positive, and that operators must
+trust the existing parent directories of that path.
 
 ### F-04: shared history is not served to a server with no user in the room
 

@@ -354,11 +354,11 @@ SCENARIO("A federated redaction citing power levels from before its sender was d
 
             THEN("the redaction is stored, judged and withheld, and the message is unchanged")
             {
-                // The event enters the graph, so what refuses it is the redaction check and not a receipt check.
+                // Spec MUST: "redactions are always accepted by the authorisation rules", so a later check refuses it.
                 REQUIRE(result.status == PduIngestionStatus::accepted);
-                // Spec: the sender's power level is below the redact level and the domains differ.
+                // Spec MUST: applied only "if one of the following conditions is met"; here neither is.
                 REQUIRE(fixture.body_of(admin_message) == std::optional<std::string>{"admin secret"});
-                // Spec: a server "should not" send clients a redaction it has not applied.
+                // Spec SHOULD: redactions "should not be sent to clients" until the server would apply them.
                 REQUIRE(merovingian::database::redaction_is_withheld(fixture.runtime().database.persistent_store,
                                                                      redaction.event_id));
             }
@@ -381,8 +381,9 @@ SCENARIO("A federated redaction citing power levels from before its sender was d
 
             THEN("it is applied once the redaction's state is recorded")
             {
+                // Spec MUST: "redactions are always accepted by the authorisation rules".
                 REQUIRE(result.status == PduIngestionStatus::accepted);
-                // Spec: rule 1 (the sender's power level meets the redact level) applies the redaction.
+                // Spec MUST: condition 1 (the sender's power level meets the redact level) applies the redaction.
                 REQUIRE(!fixture.body_of(admin_message).has_value());
             }
         }

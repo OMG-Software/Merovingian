@@ -33,9 +33,9 @@ chooses where the data lives and no client can influence that choice.
 derived from a request, a federation message, an admin API body or a database row. A change that would do so has to
 add its own confinement first.
 
-`prepare_sqlite_file` still defends against the filesystem itself: a symlink in place of the database file, a directory
-created by someone else, a file owned by another user. Those checks address local races and do not depend on this
-decision.
+`prepare_sqlite_file` rejects a symlink in place of the database file, a directory that appears during the creation of
+a missing one, and a database file owned by another user. It does not check who owns an existing parent directory:
+operators must trust those directories and their symlink targets. These checks do not depend on this decision.
 
 ### Negative Consequences
 
