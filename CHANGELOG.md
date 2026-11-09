@@ -35,6 +35,14 @@ errcode for it) before anything is stored, and `create_room` repeats the check a
 `auth::user_id_is_valid_federated` (the invitee may be on another server) and answers `400 M_INVALID_PARAM` before any event
 is composed. A valid remote ID is still accepted.
 
+### F-21: ban, kick and unban accept federated user IDs
+
+`POST /rooms/{roomId}/ban`, `/kick` and `/unban` judged their target with the strict rule for registering a local account,
+so a valid user ID of another server with an uppercase letter in its localpart was refused with `400 M_INVALID_PARAM` and
+could not be banned. The route check (`membership_target_refusal`) and the service check (`refuse_invalid_membership_target`)
+now use `auth::user_id_is_valid_federated`. Registration and local-user creation keep the strict rule; a malformed ID is
+still refused.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

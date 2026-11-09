@@ -18635,6 +18635,66 @@ SCENARIO("POST /rooms/{roomId}/invite refuses an invitee that is not a user ID",
     }
 }
 
+// F-21 (security audit run 4). Spec:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidban (and `/kick`, `/unban`):
+// `user_id` is "The fully qualified user ID" of the target. A federated user ID may use characters the grammar only
+// discourages in new local accounts (uppercase letters in the localpart), so a remote user is judged by the federated
+// rule, not the rule for registering an account here.
+SCENARIO("ban, kick and unban accept a valid federated user ID", "[conformance][client-server][moderation][f21]")
+{
+    GIVEN("alice in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, alice);
+        auto const act = [&](std::string const& action, std::string const& target) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/" + action, alice,
+                          R"({"user_id":")" + target + R"("})"});
+        };
+        constexpr auto remote_upper = "@Remote.User:other.example";
+
+        WHEN("an uppercase remote ID is banned and then unbanned")
+        {
+            auto const banned = act("ban", remote_upper);
+            auto const unbanned = act("unban", remote_upper);
+
+            THEN("both succeed")
+            {
+                // Spec MUST: a ban of a fully qualified user ID is applied; so is its lifting.
+                REQUIRE(banned.response.status == 200U);
+                REQUIRE(unbanned.response.status == 200U);
+            }
+        }
+
+        WHEN("an uppercase remote ID who is not in the room is kicked")
+        {
+            auto const kicked = act("kick", remote_upper);
+
+            THEN("the ID is not what is refused")
+            {
+                // Spec: the target is a valid user ID; the answer is about membership, not the ID's shape.
+                REQUIRE(kicked.response.body.find("not a valid Matrix user ID") == std::string::npos);
+            }
+        }
+
+        WHEN("a malformed ID is the target")
+        {
+            THEN("ban, kick and unban each refuse it with M_INVALID_PARAM")
+            {
+                for (auto const* action : {"ban", "kick", "unban"})
+                {
+                    auto const response = act(action, "not-a-user-id");
+                    REQUIRE(response.response.status == 400U);
+                    REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                }
+            }
+        }
+    }
+}
+
 // --- Media download security headers ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 //

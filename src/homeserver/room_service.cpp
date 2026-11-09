@@ -373,7 +373,8 @@ namespace
     [[nodiscard]] auto refuse_invalid_membership_target(std::string_view target_user_id)
         -> std::optional<OperationResult>
     {
-        if (auth::user_id_is_valid(target_user_id))
+        // F-21: a target may be on another server; the strict rule for new local accounts does not apply.
+        if (auth::user_id_is_valid_federated(target_user_id))
         {
             return std::nullopt;
         }

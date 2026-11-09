@@ -1822,7 +1822,9 @@ namespace
         {
             return MembershipTargetRefusal{"M_BAD_JSON", std::string{action} + " body must contain user_id"};
         }
-        if (!auth::user_id_is_valid(body->user_id))
+        // F-21: the target may be a user of another server, whose localpart need not meet the rule for a new
+        // local account (uppercase letters, for one), so the federated grammar decides.
+        if (!auth::user_id_is_valid_federated(body->user_id))
         {
             return MembershipTargetRefusal{"M_INVALID_PARAM", "user_id is not a valid Matrix user ID"};
         }
