@@ -19,6 +19,7 @@ sync_sources = files(
   'SyncFilter.cpp',
   'SyncNotifier.cpp',
   'ThreadNotificationCounts.cpp',
+  'ToDevicePosition.cpp',
   'type_pattern.cpp',
   'ViewerEventUnsigned.cpp',
 )

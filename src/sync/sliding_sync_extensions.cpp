@@ -13,6 +13,7 @@
 #include "merovingian/sync/DeviceListDelta.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
+#include "merovingian/sync/ToDevicePosition.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
@@ -94,17 +95,17 @@ namespace
                                        std::string_view device_id, ExtToDeviceRequest const& req,
                                        std::uint64_t current_sync_stream_id) -> ExtToDeviceResponse
     {
-        // The `since` token is a decimal string representation of a stream_id.
+        // The `since` token is a ToDevicePosition. It acknowledges every message at or below its stream id,
+        // so it counts only when it decodes exactly and is from this database's stream token epoch (ADR-0592):
+        // one from before a restore, or one that does not decode, acknowledges nothing, and the queue is sent
+        // from its start. Clients keep this token across an M_UNKNOWN_POS, so the pos check does not cover it.
         auto since_stream_id = std::uint64_t{0U};
-        if (req.since.has_value() && !req.since->empty())
+        if (req.since.has_value())
         {
-            for (auto const ch : *req.since)
+            auto const since = decode_to_device_position(*req.since);
+            if (since.has_value() && since->epoch == store.stream_token_epoch)
             {
-                if (ch < '0' || ch > '9')
-                {
-                    break;
-                }
-                since_stream_id = since_stream_id * 10U + static_cast<std::uint64_t>(ch - '0');
+                since_stream_id = since->stream_id;
             }
         }
 
@@ -137,9 +138,10 @@ namespace
         // actually included in this response. If nothing was returned, the
         // client should keep the previous position so undelivered rows are not
         // acknowledged implicitly by a later global watermark.
-        resp.next_batch = last_included_stream_id.has_value()
-                              ? std::to_string(*last_included_stream_id)
-                              : (req.since.has_value() ? std::string{*req.since} : std::string{"0"});
+        // The position is re-encoded rather than echoed, so a `since` this server would not honour (another
+        // epoch, or one that does not decode) is replaced by one it does.
+        resp.next_batch =
+            encode_to_device_position({last_included_stream_id.value_or(since_stream_id), store.stream_token_epoch});
         return resp;
     }
 

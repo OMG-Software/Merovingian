@@ -489,6 +489,12 @@ struct PersistentStore final
     // regresses it across restarts — which invalidates every pos/since token
     // clients persisted from the previous lifetime.
     std::uint64_t event_stream_watermark{0U};
+    // ADR-0592: the stream token epoch, persisted to the stream_token_epoch singleton. Every sync token this
+    // server issues carries it, and a token carrying another epoch was issued against other contents of the
+    // database (before a restore, or by a database since replaced), so its positions mean nothing here. Zero
+    // until the main process sets one at startup (homeserver::ensure_stream_token_epoch); the federation worker
+    // never loads it.
+    std::uint64_t stream_token_epoch{0U};
     // CSAZ-10: per-recipient to-device queue limits, copied from
     // server.client_api at runtime startup so the database layer can enforce
     // them without depending on the config module. A cap of zero disables the
@@ -1388,6 +1394,9 @@ inline constexpr auto sync_stream_write_reserve = std::uint64_t{1U} << 20U;
 // record its value here so a restart cannot roll the timeline counter
 // backward behind a pos/since token a client already holds.
 [[nodiscard]] auto persist_event_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool;
+// ADR-0592: writes `epoch` to the `stream_token_epoch` singleton and, only once that write succeeded, to
+// `store.stream_token_epoch`. Refuses zero, which is the "no epoch" value of a token, without writing.
+[[nodiscard]] auto persist_stream_token_epoch(PersistentStore& store, std::uint64_t epoch) -> bool;
 // AUTH-11: turns on retention of committed statements, bounded to `capacity`
 // (clamped to `max_statement_capture_capacity`). A capacity of zero disables
 // capture and drops anything held. Intended for tests that assert on the SQL and

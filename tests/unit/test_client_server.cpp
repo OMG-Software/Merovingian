@@ -46,6 +46,7 @@
 #include "merovingian/http/Header.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10515,8 +10516,11 @@ SCENARIO("Sliding sync rejects a position ahead of the server's stream with M_UN
 
         WHEN("the client requests Sliding Sync from the future position")
         {
+            // The server's own epoch (ADR-0592), so the position alone is what makes the pos unknown.
+            auto const future_pos = merovingian::sync::encode_stream_token(
+                {0x2710U, 0x2710U, 0x2710U, runtime.homeserver.database.persistent_store.stream_token_epoch});
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=2710_2710_2710&timeout=0",
+                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + future_pos + "&timeout=0",
                           token, request_body});
 
             THEN("the request is rejected with 400 M_UNKNOWN_POS")

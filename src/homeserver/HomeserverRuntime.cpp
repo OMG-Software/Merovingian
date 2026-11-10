@@ -36,6 +36,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/stream_token_epoch.hpp"
 #include "merovingian/media/LocalMediaBlob.hpp"
 #include "merovingian/media/LocalMediaRecord.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
@@ -903,6 +904,13 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     {
         install_redaction_reconciler(database.persistent_store);
         std::ignore = reconcile_all_redactions(database.persistent_store);
+        // ADR-0592: every sync token the main process issues carries the database's epoch, so it must have one
+        // before the first request. Without one the store is not used: tokens issued with a value that was never
+        // stored could not be told apart from another database's after a restart.
+        if (!ensure_stream_token_epoch(database.persistent_store))
+        {
+            database.opened = false;
+        }
     }
     return database;
 }

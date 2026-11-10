@@ -1131,6 +1131,14 @@ media-fetch-pool task.
   Why: any user could raise the counter to 2^64-1 with one request. It wrapped, and other users' to-device
   messages were deleted undelivered (CWE-190; security audit run-2).
   Source: `src/sync/AGENTS.md`.
+- **A token that lets the server delete or skip rows carries the stream token epoch, and one from another epoch
+  acknowledges nothing.** `/sync` tokens, sliding sync `pos` and the `to_device` extension's `since` carry the
+  database's epoch; a token whose epoch is not the store's, or that has none, is served as an initial sync,
+  answered `M_UNKNOWN_POS`, or ignored (ADR-0592). `merovingian-server --after-restore` replaces the epoch.
+  Why: after a database restore, a client offline until the counter passed its token presented a position the
+  server issued again, and the to-device rows (room keys) numbered at or below it were deleted undelivered
+  (issue 550).
+  Source: `src/sync/AGENTS.md`.
 - **Rows a user can add, and that requests scan under the runtime lock, are capped per user.**
   A new global account-data type past `server.client_api.max_global_account_data_per_user` is
   refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Room

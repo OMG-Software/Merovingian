@@ -35,6 +35,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/retention_sweep.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/stream_token_epoch.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/RuntimeMediaConfig.hpp"
@@ -393,6 +394,7 @@ struct BootstrapConfigResult final
 struct ParsedArgs final
 {
     bool dry_run{false};
+    bool after_restore{false};
     bool debug_logging{false};
     std::optional<std::string> log_file{};
     std::optional<std::string> bootstrap_admin_localpart{};
@@ -411,6 +413,11 @@ struct ParsedArgs final
         if (argument == "--dry-run")
         {
             parsed.dry_run = true;
+            continue;
+        }
+        if (argument == "--after-restore")
+        {
+            parsed.after_restore = true;
             continue;
         }
         if (argument == "--debug")
@@ -469,6 +476,12 @@ struct ParsedArgs final
     {
         parsed.error = "--bootstrap-admin and --bootstrap-admin-password-file must be used together";
     }
+    // ADR-0592: --after-restore only starts a fresh stream token epoch and exits, so nothing else it could be
+    // combined with would run.
+    if (parsed.after_restore && (parsed.dry_run || parsed.bootstrap_admin_localpart.has_value()))
+    {
+        parsed.error = "--after-restore cannot be combined with --dry-run or --bootstrap-admin";
+    }
     return parsed;
 }
 
@@ -500,7 +513,7 @@ struct ParsedArgs final
     }
 
     return usage_error("usage: merovingian-server [--dry-run] [--debug] [--log-file <path>] [--config <path>] "
-                       "[--bootstrap-admin <localpart> --bootstrap-admin-password-file <path>] "
+                       "[--after-restore] [--bootstrap-admin <localpart> --bootstrap-admin-password-file <path>] "
                        "[--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]");
 }
 
@@ -533,6 +546,7 @@ auto print_help() -> void
               << "  merovingian-server [--dry-run] --config <path>\n"
               << "  merovingian-server [--config <path>] --bootstrap-admin <localpart> "
                  "--bootstrap-admin-password-file <path>\n"
+              << "  merovingian-server [--config <path>] --after-restore\n"
               << "  merovingian-server --check-config <path>\n"
               << "  merovingian-server --plan-config-reload <current> <next>\n"
               << "  merovingian-server --help\n"
@@ -541,7 +555,9 @@ auto print_help() -> void
               << "Configuration is validated before startup continues.\n"
               << "--dry-run validates and prints the startup summary without binding listeners.\n"
               << "--debug enables debug-level console diagnostics for request and room-flow triage.\n"
-              << "--log-file <path> writes trace/debug diagnostics to the selected file.\n";
+              << "--log-file <path> writes trace/debug diagnostics to the selected file.\n"
+              << "--after-restore starts a fresh sync token epoch and exits. Run it once after restoring a database\n"
+              << "  backup, with the server stopped, before starting the server again.\n";
 }
 
 auto configure_logging(ParsedArgs const& args) -> void
@@ -1370,6 +1386,20 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     log_startup_summary(result);
+
+    if (args.after_restore)
+    {
+        // ADR-0592: a restored database cannot tell which sync tokens were issued after its backup was taken.
+        // A fresh epoch makes every older token an initial sync, so no to-device row is purged as acknowledged.
+        if (!merovingian::homeserver::begin_stream_token_epoch_after_restore(result.parsed.config))
+        {
+            LOG_ERROR("No fresh sync token epoch was started: do not start the server on the restored database "
+                      "until --after-restore succeeds");
+            return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+        }
+        LOG_INFO("Started a fresh sync token epoch: every sync token issued before the restore is now foreign");
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
+    }
 
     if (args.dry_run)
     {

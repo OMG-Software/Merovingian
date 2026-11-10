@@ -6341,20 +6341,25 @@ namespace
         // earlier call". A component ahead of this server's streams was not issued here (a forged
         // token, or a database restored from a backup), and the token is unauthenticated client
         // input, so it never moves server-wide state. It is served like a token that does not decode.
+        // ADR-0592: so is a token from another epoch, whatever its positions: it was issued before a restore
+        // (or by a database since replaced), and positions numbered after the restore at or below it would
+        // count as seen, its to-device rows purged as acknowledged.
         if (since_token.has_value())
         {
             auto const event_watermark = visible_stream_position(rt.homeserver.database);
             auto const sync_watermark = store.next_sync_stream_id;
-            if (since_token->event_ordering > event_watermark || since_token->membership_ordering > event_watermark ||
-                since_token->sync_stream_id > sync_watermark)
+            if (since_token->epoch != store.stream_token_epoch || since_token->event_ordering > event_watermark ||
+                since_token->membership_ordering > event_watermark || since_token->sync_stream_id > sync_watermark)
             {
-                log_diagnostic("sync.foreign_since",
-                               {
-                                   {"actor",           std::string{user},                       false},
-                                   {"device_id",       std::string{device_id},                  false},
-                                   {"requested_since", sync::encode_stream_token(*since_token), false},
-                                   {"event_watermark", std::to_string(event_watermark),         false},
-                                   {"sync_watermark",  std::to_string(sync_watermark),          false}
+                log_diagnostic(
+                    "sync.foreign_since",
+                    {
+                        {"actor",           std::string{user},                                                 false},
+                        {"device_id",       std::string{device_id},                                            false},
+                        {"requested_since", sync::encode_stream_token(*since_token),                           false},
+                        {"event_watermark", std::to_string(event_watermark),                                   false},
+                        {"sync_watermark",  std::to_string(sync_watermark),                                    false},
+                        {"epoch_matches",   since_token->epoch == store.stream_token_epoch ? "true" : "false", false}
                 });
                 since_token.reset();
             }
@@ -6805,7 +6810,8 @@ namespace
         });
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, sync_stream_upper_bound);
-        auto const next_token = sync::StreamToken{sync_position, sync_position, advanced_sync_stream_id};
+        auto const next_token =
+            sync::StreamToken{sync_position, sync_position, advanced_sync_stream_id, store.stream_token_epoch};
 
         auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
@@ -7226,12 +7232,14 @@ namespace
         // treated every event in the gap as already-seen: the client's since
         // floor sat above the live stream and incoming events were never
         // delivered, while the server kept echoing the inflated token back.
+        // ADR-0592: a pos from another stream token epoch (issued before a database restore) is unknown
+        // whatever its components, since positions after the restore reuse its numbers.
         if (pos.has_value())
         {
             auto const event_watermark = visible_stream_position(rt.homeserver.database);
             auto const sync_watermark = store.next_sync_stream_id;
-            if (pos->event_ordering > event_watermark || pos->membership_ordering > event_watermark ||
-                pos->sync_stream_id > sync_watermark)
+            if (pos->epoch != store.stream_token_epoch || pos->event_ordering > event_watermark ||
+                pos->membership_ordering > event_watermark || pos->sync_stream_id > sync_watermark)
             {
                 // Drop the connection state: the client restarts with no pos
                 // and must receive a full initial snapshot.
@@ -7686,7 +7694,8 @@ namespace
         // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS
         // at the top of this function, so the token can only move forward
         // between responses on the same server lifetime.
-        auto const new_pos = sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync});
+        auto const new_pos =
+            sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync, store.stream_token_epoch});
 
         auto lists_obj = canonicaljson::Object{};
         for (auto& [lname, result] : list_results)
@@ -9674,10 +9683,15 @@ namespace
         {
             return err(400U, "M_INVALID_PARAM", "invalid to sync token");
         }
-        auto const from_id = from_decoded->sync_stream_id;
-        auto const to_id = to_decoded->sync_stream_id;
-
         auto const& store = rt.homeserver.database.persistent_store;
+        // ADR-0592: a token from another stream token epoch was issued before a database restore, and its
+        // position names nothing in this numbering. `from` is then the start of the log, so the answer lists
+        // every user it could have missed rather than none; `to` is then where the stream is now.
+        auto const from_id =
+            from_decoded->epoch == store.stream_token_epoch ? from_decoded->sync_stream_id : std::uint64_t{0U};
+        auto const to_id =
+            to_decoded->epoch == store.stream_token_epoch ? to_decoded->sync_stream_id : store.next_sync_stream_id;
+
         // Spec §11.11.2: `changed` and `left` name the users whose device keys
         // changed in the range — a user appears once, however many change rows
         // the range covers for it.

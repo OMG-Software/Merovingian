@@ -30,7 +30,7 @@ value. Test fixtures that do not exercise persistence select it through
   `001_initial_schema.sql`. Every pre-1.0 migration (versions 2 to 26 as of
   0.12.46) was collapsed into it in 0.12.47
   ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)),
-  so v1 creates all 63 tables in their final shape, every column that an
+  so v1 creates all 64 tables in their final shape, every column that an
   earlier migration used to `ALTER` on now being part of the table's `CREATE`,
   plus nine indexes: `event_edges_prev_event_id`,
   `idx_to_device_messages_recipient_age`, `idx_deferred_pdus_room_id`,
@@ -212,6 +212,16 @@ value. Test fixtures that do not exercise persistence select it through
   every restart. Hydration takes the maximum of the persisted watermark and the
   highest event `stream_ordering`, then persists the merged floor so the row
   exists even on a first start.
+- `stream_token_epoch` table holds one row (`singleton` = 1): the database's
+  sync token epoch, a random nonzero 64-bit value stored as text (ADR-0592).
+  The main process writes one at its first start on a database
+  (`homeserver::ensure_stream_token_epoch()`, through
+  `database::persist_stream_token_epoch()`), keeps it across restarts, and
+  refuses to start when it can be neither read nor written.
+  `merovingian-server --after-restore` replaces it with a different random
+  value, so every sync token issued before a restore is foreign. Sync tokens,
+  sliding sync `pos` and the `to_device` extension's `since` carry it; a token
+  from another epoch acknowledges nothing. The federation worker never reads it.
 - `state_transitions` table records the previous `event_id` for every state-event tuple replacement.
   It is populated by `database::store_state()` and the split
   `prepare_store_event_with_state()` / `apply_store_event_with_state()` helpers.
@@ -1218,10 +1228,10 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (49 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (50 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
-  `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
+  `event_stream_watermark`, `stream_token_epoch`, `device_keys`, `one_time_keys`, `fallback_keys`,
   `cross_signing_keys`, `key_signatures`, `key_backup_versions`,
   `key_backup_version_counters`, `key_backup_sessions`, `media`, `media_blobs`, `remote_media`,
   `audit_log`, `admin_actions`, `policy_rules`, `account_data`,

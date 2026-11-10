@@ -3,6 +3,7 @@
 #include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstdint>
 #include <limits>
@@ -223,6 +224,65 @@ SCENARIO("Over-long stream token components are rejected instead of wrapping", "
             {
                 REQUIRE(decoded_max.has_value());
                 REQUIRE(decoded_max->event_ordering == std::numeric_limits<std::uint64_t>::max());
+            }
+        }
+    }
+}
+
+// ADR-0592: the stream token epoch rides in a fourth component, so a token from before a database restore is told
+// apart from a current one whatever its positions. Zero is "no epoch" and has one spelling: no component.
+SCENARIO("A stream token carries its epoch in a fourth component", "[sync][stream-token][restore]")
+{
+    GIVEN("a token with an epoch")
+    {
+        auto const token = merovingian::sync::StreamToken{0x2aU, 0x2aU, 0x7U, 0xfeedfacecafebeefULL};
+
+        WHEN("it is encoded and decoded")
+        {
+            auto const encoded = merovingian::sync::encode_stream_token(token);
+            auto const decoded = merovingian::sync::decode_stream_token(encoded);
+
+            THEN("the epoch is the fourth component and survives the round trip")
+            {
+                REQUIRE(encoded == "2a_2a_7_feedfacecafebeef");
+                REQUIRE(decoded.has_value());
+                REQUIRE(decoded->event_ordering == 0x2aU);
+                REQUIRE(decoded->sync_stream_id == 0x7U);
+                REQUIRE(decoded->epoch == 0xfeedfacecafebeefULL);
+            }
+        }
+    }
+
+    GIVEN("a token with no epoch")
+    {
+        auto const token = merovingian::sync::StreamToken{1U, 2U, 3U, 0U};
+
+        WHEN("it is encoded and decoded")
+        {
+            auto const encoded = merovingian::sync::encode_stream_token(token);
+            auto const decoded = merovingian::sync::decode_stream_token(encoded);
+
+            THEN("it has three components and decodes with epoch zero")
+            {
+                REQUIRE(encoded == "1_2_3");
+                REQUIRE(decoded.has_value());
+                REQUIRE(decoded->epoch == 0U);
+            }
+        }
+    }
+
+    GIVEN("tokens whose epoch component is not one encode_stream_token writes")
+    {
+        auto const malformed = GENERATE(as<std::string>{}, "1_2_3_0", "1_2_3_", "1_2_3_00", "1_2__5", "1_2_3_5_6",
+                                        "1_2_3_xyz", "1_2_3_10000000000000000");
+
+        WHEN("decoded: " + malformed)
+        {
+            auto const decoded = merovingian::sync::decode_stream_token(malformed);
+
+            THEN("it does not decode")
+            {
+                REQUIRE_FALSE(decoded.has_value());
             }
         }
     }

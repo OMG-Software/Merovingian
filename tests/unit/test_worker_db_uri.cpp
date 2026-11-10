@@ -237,6 +237,7 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         "state_transitions",
         "sync_stream_watermark",
         "event_stream_watermark",
+        "stream_token_epoch",
         "device_keys",
         "one_time_keys",
         "fallback_keys",
