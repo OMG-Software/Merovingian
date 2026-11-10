@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace merovingian::homeserver
@@ -23,6 +24,10 @@ struct FederationMediaPart final
     std::string location{};
     // R17: the filename in the media part's Content-Disposition, if any.
     std::string filename{};
+    // F-15: how many multipart parts were parsed before the body was accepted or refused. Never more than the cap of
+    // two, whatever the body holds: a third part is refused before it is parsed. A test reads it to prove the work is
+    // bounded.
+    std::size_t parts_parsed{0U};
 };
 
 } // namespace merovingian::homeserver

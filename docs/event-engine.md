@@ -287,7 +287,9 @@ Implemented now:
   path that takes events from another server: `parse_inbound_pdu_envelope`,
   `returned_pdu_is_well_formed` and `filter_verified_send_join_events` (ADR-0399). The same check refuses a PDU whose
   `depth` is missing, negative, not an integer or above 2^53 - 1 (`pdu_depth_violation`): the spec makes `depth`
-  required, so it is never read as 0; an invite's event goes through `pdu_depth_violation` too.
+  required, so it is never read as 0; an invite's event goes through `pdu_depth_violation` too. A resident's
+  `make_join`/`make_leave`/`make_knock` template goes through `pdu_format_violation` once this server has completed it
+  and before it hashes and signs it (F-13); the three calls cap the response at four times the event limit.
   `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
   `matrix_id_is_valid` and `parse_event_envelope`. See
   `include/merovingian/events/limits.hpp` and

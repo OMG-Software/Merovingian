@@ -40,6 +40,12 @@ public:
     ConsoleLogCapture(ConsoleLogCapture&&) = delete;
     auto operator=(ConsoleLogCapture&&) -> ConsoleLogCapture& = delete;
 
+    // Everything written to the console log since the scope began.
+    [[nodiscard]] auto text() const -> std::string
+    {
+        return output_.str();
+    }
+
     // True when a line at `level` (the logger's name for it, such as "ERROR" or "CRITICAL") names `event`.
     [[nodiscard]] auto has_line(std::string_view level, std::string_view event) const -> bool
     {

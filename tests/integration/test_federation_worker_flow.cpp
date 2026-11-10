@@ -1595,6 +1595,10 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
             seed_state("$seed-create:example.com", "m.room.create", "",
                        R"({"room_version":"10","creator":"@resident:example.com"})", 1U);
             seed_state("$seed-creator-member:example.com", "m.room.member", creator, R"({"membership":"join"})", 2U);
+            // The acceptor answers only for a room with a local member (F-12, ADR-0591). The room is the
+            // resident server's here, so one of this server's users is joined to it.
+            runtime.database.persistent_store.memberships.push_back(
+                {room_id, "@local-member:" + std::string{runtime.config.server().server_name}, "join", 0U});
             seed_state("$seed-power-levels:example.com", "m.room.power_levels", "",
                        R"({"users":{"@resident:example.com":100},"users_default":0,"ban":50,"kick":50,"invite":0})",
                        3U);
@@ -2468,7 +2472,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
 
             auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} + escape(room_id) +
                                       R"(,"event_id":)" + escape(event_id_of(event_json)) + R"(,"room_version":"10",)" +
-                                      R"("invite_event_json":)" + escape(event_json) +
+                                      R"("origin":"matrix.example.org","invite_event_json":)" + escape(event_json) +
                                       R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
@@ -2534,10 +2538,11 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
             auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
                                                                {"$remote-create"}, 5, 1234);
 
-            auto const request_json =
-                std::string{R"({"type":"invite_ingest","room_id":)"} + ipc_escape_json_string(room_id) +
-                R"(,"event_id":)" + ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
-                R"("invite_event_json":)" + ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
+            auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} +
+                                      ipc_escape_json_string(room_id) + R"(,"event_id":)" +
+                                      ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
+                                      R"("origin":"matrix.example.org","invite_event_json":)" +
+                                      ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
 

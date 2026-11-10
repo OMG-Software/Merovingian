@@ -11,7 +11,9 @@
 // against the event's own auth_events -> reject; step 6: auth against
 // current state -> soft-fail, not reject), "Joining rooms".
 
+#include "../support/MembershipGenesis.hpp"
 #include "../support/master_key.hpp"
+#include "../support/membership_acceptor_fixture.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
@@ -63,211 +65,13 @@ namespace
 using merovingian::federation::InboundPduEnvelope;
 using merovingian::homeserver::HomeserverRuntime;
 
-[[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
-{
-    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() /
-           ("merovingian-membership-acceptor-" + std::to_string(now) + ".sqlite3");
-}
-
-[[nodiscard]] auto config_with_sqlite(std::filesystem::path const& path) -> merovingian::config::Config
-{
-    auto server = merovingian::config::ServerConfig{};
-    server.server_name = "local.example.org";
-
-    auto database = merovingian::config::DatabaseConfig{};
-    database.backend = merovingian::config::DatabaseBackend::sqlite;
-    database.sqlite_path = path.string();
-
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    security.federation.enabled = true;
-
-    return {server,   merovingian::config::ListenersConfig{},        database,
-            security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
-}
-
-[[nodiscard]] auto build_event_json(std::string const& room_id, std::string const& type,
-                                    std::optional<std::string> const& state_key, std::string const& sender,
-                                    merovingian::canonicaljson::Object content,
-                                    std::vector<std::string> const& prev_event_ids,
-                                    std::vector<std::string> const& auth_event_ids, std::int64_t depth, std::int64_t ts,
-                                    std::optional<std::string> const& hash_override = std::nullopt) -> std::string
-{
-    using namespace merovingian;
-
-    auto obj = canonicaljson::Object{};
-    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{type}));
-    if (state_key.has_value())
-    {
-        obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
-    }
-    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
-    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{sender}));
-    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
-    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
-    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
-    auto prev_arr = canonicaljson::Array{};
-    for (auto const& id : prev_event_ids)
-    {
-        prev_arr.push_back(canonicaljson::Value{id});
-    }
-    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
-    auto auth_arr = canonicaljson::Array{};
-    for (auto const& id : auth_event_ids)
-    {
-        auth_arr.push_back(canonicaljson::Value{id});
-    }
-    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
-
-    auto hash_str = std::string{};
-    if (hash_override.has_value())
-    {
-        hash_str = *hash_override;
-    }
-    else
-    {
-        auto const hash = events::make_content_hash(canonicaljson::Value{obj});
-        REQUIRE(hash.error.empty());
-        hash_str = hash.sha256;
-    }
-    auto hashes = canonicaljson::Object{};
-    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash_str}));
-    obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
-
-    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
-    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
-    return serialized.output;
-}
-
-[[nodiscard]] auto make_envelope(std::string const& room_id, std::string const& event_id, std::string const& type,
-                                 std::optional<std::string> const& state_key, std::string const& sender,
-                                 std::vector<std::string> const& prev_event_ids,
-                                 std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                 std::string const& json) -> InboundPduEnvelope
-{
-    auto env = InboundPduEnvelope{};
-    env.event_id = event_id;
-    env.room_id = room_id;
-    env.room_version = "10";
-    env.sender = sender;
-    env.event_type = type;
-    env.state_key = state_key;
-    env.origin_server_ts = 0;
-    env.depth = static_cast<std::uint64_t>(depth);
-    env.prev_event_ids = prev_event_ids;
-    env.auth_event_ids = auth_event_ids;
-    env.json = json;
-    return env;
-}
-
-auto seed_accepted_event(HomeserverRuntime& runtime, std::string const& room_id, std::string const& event_id,
-                         std::string const& type, std::optional<std::string> const& state_key,
-                         std::string const& sender, std::string const& json,
-                         std::vector<std::string> const& prev_event_ids, std::uint64_t depth) -> void
-{
-    using namespace merovingian;
-
-    auto* policy = rooms::find_room_version_policy("10");
-    REQUIRE(policy != nullptr);
-    auto& store = runtime.database.persistent_store;
-
-    store.events.push_back({event_id, room_id, sender, json, depth, 0U, prev_event_ids, {}, {}});
-    if (state_key.has_value())
-    {
-        store.state.push_back({room_id, type, *state_key, event_id});
-    }
-
-    auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_event_ids);
-    REQUIRE(state_before.ok);
-    auto const state_after = homeserver::compute_state_after(state_before.state, event_id, type, state_key);
-    auto const group = homeserver::record_event_state(store, room_id, event_id, prev_event_ids, state_after, true);
-    REQUIRE(group.has_value());
-    REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
-
-    // Keep the in-memory membership cache in sync with seeded m.room.member
-    // state, mirroring what membership_acceptor does for real receipts.
-    if (type == "m.room.member" && state_key.has_value())
-    {
-        auto const parsed = canonicaljson::parse_lossless(json);
-        if (parsed.error == canonicaljson::ParseError::none)
-        {
-            auto const membership = events::extract_content_membership(parsed.value);
-            if (!membership.empty())
-            {
-                auto const existing =
-                    std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& m) {
-                        return m.room_id == room_id && m.user_id == *state_key;
-                    });
-                if (existing != store.memberships.end())
-                {
-                    existing->membership = std::string{membership};
-                }
-                else
-                {
-                    store.memberships.push_back({room_id, *state_key, std::string{membership}, 0U});
-                }
-            }
-        }
-    }
-}
-
-struct Genesis final
-{
-    std::string create_id{};
-    std::string pl_id{};
-    std::string admin_member_id{};
-    std::string join_rules_id{};
-};
-
-[[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin)
-    -> Genesis
-{
-    using namespace merovingian;
-
-    auto& store = runtime.database.persistent_store;
-    store.rooms.push_back({room_id, admin});
-    runtime.database.rooms.push_back({room_id, admin, {}, false});
-
-    auto const create_id = room_id + ":create";
-    auto create_content = canonicaljson::Object{};
-    create_content.push_back(canonicaljson::make_member("creator", canonicaljson::Value{admin}));
-    create_content.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{"10"}}));
-    auto const create_json =
-        build_event_json(room_id, "m.room.create", std::string{}, admin, std::move(create_content), {}, {}, 0, 1);
-    seed_accepted_event(runtime, room_id, create_id, "m.room.create", std::string{}, admin, create_json, {}, 0U);
-
-    auto const pl_id = room_id + ":pl";
-    auto pl_content = canonicaljson::Object{};
-    pl_content.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{0}}));
-    pl_content.push_back(canonicaljson::make_member("join_rule", canonicaljson::Value{std::string{"public"}}));
-    auto users = canonicaljson::Object{};
-    users.push_back(canonicaljson::make_member(admin, canonicaljson::Value{std::int64_t{100}}));
-    pl_content.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(users)}));
-    auto const pl_json = build_event_json(room_id, "m.room.power_levels", std::string{}, admin, std::move(pl_content),
-                                          {create_id}, {create_id}, 1, 2);
-    seed_accepted_event(runtime, room_id, pl_id, "m.room.power_levels", std::string{}, admin, pl_json, {create_id}, 1U);
-
-    auto const member_id = room_id + ":admin-member";
-    auto member_content = canonicaljson::Object{};
-    member_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
-    auto const member_json = build_event_json(room_id, "m.room.member", admin, admin, std::move(member_content),
-                                              {pl_id}, {create_id, pl_id}, 2, 3);
-    seed_accepted_event(runtime, room_id, member_id, "m.room.member", admin, admin, member_json, {pl_id}, 2U);
-    store.memberships.push_back({room_id, admin, "join", 0U});
-
-    auto join_rules_content = merovingian::canonicaljson::Object{};
-    join_rules_content.push_back(
-        merovingian::canonicaljson::make_member("join_rule", merovingian::canonicaljson::Value{std::string{"public"}}));
-    auto const join_rules_id = room_id + ":join-rules";
-    auto const join_rules_json =
-        build_event_json(room_id, "m.room.join_rules", std::string{}, admin, std::move(join_rules_content), {member_id},
-                         {create_id, pl_id, member_id}, 3, 4);
-    seed_accepted_event(runtime, room_id, join_rules_id, "m.room.join_rules", std::string{}, admin, join_rules_json,
-                        {member_id}, 3U);
-
-    return {create_id, pl_id, member_id, join_rules_id};
-}
+using merovingian::tests::membership_acceptor_fixture::build_event_json;
+using merovingian::tests::membership_acceptor_fixture::config_with_sqlite;
+using merovingian::tests::membership_acceptor_fixture::Genesis;
+using merovingian::tests::membership_acceptor_fixture::make_envelope;
+using merovingian::tests::membership_acceptor_fixture::seed_accepted_event;
+using merovingian::tests::membership_acceptor_fixture::seed_room_genesis;
+using merovingian::tests::membership_acceptor_fixture::unique_sqlite_path;
 
 } // namespace
 
@@ -451,14 +255,13 @@ SCENARIO("send_join: a joining event that fails its own auth_events is rejected"
                 REQUIRE(result.status == 403U);
             }
 
-            THEN("it is still stored, marked rejected, so a later event can reference it")
+            THEN("it is not stored at all: the request is refused, so this server never takes the event (F-12, "
+                 "ADR-0591)")
             {
                 auto const& events = started.runtime.database.persistent_store.events;
-                auto const stored = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+                REQUIRE(std::ranges::none_of(events, [&](merovingian::database::PersistentEvent const& e) {
                     return e.event_id == "$sjbadauth:remote.example.org";
-                });
-                REQUIRE(stored != events.end());
-                REQUIRE(stored->status == "rejected");
+                }));
             }
 
             THEN("it never reaches current state")
@@ -524,20 +327,20 @@ SCENARIO("A membership event passing its auth_events and state-before but failin
             auto const result = started.runtime.federation.membership_acceptor(
                 merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
 
-            THEN("it is accepted at the protocol level (200), neither a hard rejection nor silently dropped")
+            THEN("it is refused 403 and carries no room state (F-10, ADR-0591)")
             {
-                REQUIRE(result.accepted);
-                REQUIRE(result.status == 200U);
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 403U);
+                REQUIRE(result.state_json.empty());
+                REQUIRE(result.auth_chain_json.empty());
             }
 
-            THEN("it is stored, marked soft_failed, not accepted")
+            THEN("it is not stored: a soft-failed membership of send_join is never taken into the DAG (ADR-0591)")
             {
                 auto const& events = started.runtime.database.persistent_store.events;
-                auto const stored = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+                REQUIRE(std::ranges::none_of(events, [&](merovingian::database::PersistentEvent const& e) {
                     return e.event_id == "$sjsoftfail:remote.example.org";
-                });
-                REQUIRE(stored != events.end());
-                REQUIRE(stored->status == "soft_failed");
+                }));
             }
 
             THEN("it is not a forward extremity — the ban stays the room's sole tip")

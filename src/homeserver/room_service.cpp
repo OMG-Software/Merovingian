@@ -58,6 +58,7 @@
 #include "merovingian/federation/ThirdPartyBindNotification.hpp"
 #include "merovingian/federation/ThirdPartyInviteExchange.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
@@ -2753,6 +2754,20 @@ namespace
                                                                         : std::string{};
     }
 
+    // A make_join, make_leave or make_knock answer is one event plus `room_version`, so four times the 64 KiB event
+    // limit is ample headroom; the 16 MiB outbound default is not (F-13).
+    inline constexpr auto membership_template_max_response_bytes = std::uint64_t{4U * events::max_event_size_bytes};
+
+    // Why a resident's template, completed as this server will hash, sign and store it, is outside the room version's
+    // event format (size, `prev_events`, `auth_events`, `depth`); empty when it is within it.
+    // `claim_membership_event_template` has already dropped `event_id` and `unsigned`, and `hashes` and `signatures`
+    // are not yet there (F-13).
+    [[nodiscard]] auto membership_template_format_refusal(canonicaljson::Object const& completed_event,
+                                                          rooms::RoomVersionPolicy const& policy) -> std::string
+    {
+        return federation::pdu_format_violation(canonicaljson::Value{completed_event}, policy);
+    }
+
 } // namespace
 
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
@@ -5345,9 +5360,10 @@ namespace
                     auto tx =
                         federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
                                                                   our_server_copy, room_id_copy, user_id_copy, sv_copy);
-                    auto call = perform_outbound_call(
-                        runtime, OutboundAnswerTrust::unverified, room_id_copy, tx, key_id_copy, std::move(secret_key),
-                        "room.join.remote.make_join_failed", per_call_timeout, 0U, std::nullopt);
+                    auto call =
+                        perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id_copy, tx, key_id_copy,
+                                              std::move(secret_key), "room.join.remote.make_join_failed",
+                                              per_call_timeout, membership_template_max_response_bytes, std::nullopt);
                     auto lk = std::unique_lock{race_state->mtx};
                     if (call.ok && !race_state->winner.has_value())
                     {
@@ -5459,6 +5475,17 @@ namespace
             return federated_join_failure(validated.reason, 502U);
         }
         auto const room_version = validated.room_version;
+        auto const* policy = rooms::find_room_version_policy(room_version);
+        if (policy == nullptr)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   user_id,                       false},
+                                                     {"room_id", std::string{room_id},          false},
+                                                     {"status",  "500",                         false},
+                                                     {"reason",  "room version policy missing", false}
+            });
+            return federated_join_failure("room version policy missing", 500U);
+        }
         auto event_object = validated.event;
         claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
         // The resident server's template carries the membership; the joining user's display name
@@ -5474,6 +5501,18 @@ namespace
             });
             add_member_profile(content, profile);
             replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
+        }
+        // The event as this server would sign and store it is held to the room version's event format before it is
+        // hashed (F-13): the resident chose the template, and the signature would make it the user's own event.
+        if (auto const violation = membership_template_format_refusal(event_object, *policy); !violation.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   user_id,              false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  violation,            false}
+            });
+            return federated_join_failure("make_join template refused: " + violation, 502U);
         }
         // Compute and attach the content hash (hashes.sha256) before signing.
         // The Matrix spec requires every PDU to carry this field (room versions >= 2).
@@ -5510,17 +5549,6 @@ namespace
             return federated_join_failure("server signing provider not available", 500U);
         }
         auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
-        auto const* policy = rooms::find_room_version_policy(room_version);
-        if (policy == nullptr)
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   user_id,                       false},
-                                                     {"room_id", std::string{room_id},          false},
-                                                     {"status",  "500",                         false},
-                                                     {"reason",  "room version policy missing", false}
-            });
-            return federated_join_failure("room version policy missing", 500U);
-        }
         auto signed_event =
             events::sign_event_for_server(event_to_sign, *policy, key_store, *runtime.crypto_provider, our_server);
         if (!signed_event.error.empty())
@@ -6877,10 +6905,10 @@ namespace
             // Two outbound calls need the same key; make the second copy before
             // moving the first into the make_leave call.
             auto secret_key_for_send = core::SecretBuffer{secret_key.bytes()};
-            auto const make_leave_call =
-                perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, make_leave_tx, key_id,
-                                      std::move(secret_key), "room.leave.remote.make_leave_failed",
-                                      runtime.federation.config.remote_timeout_seconds, 0U, std::nullopt);
+            auto const make_leave_call = perform_outbound_call(
+                runtime, OutboundAnswerTrust::unverified, room_id, make_leave_tx, key_id, std::move(secret_key),
+                "room.leave.remote.make_leave_failed", runtime.federation.config.remote_timeout_seconds,
+                membership_template_max_response_bytes, std::nullopt);
             auto const make_ok = make_leave_call.ok;
             auto const& make_body = make_leave_call.body;
             if (!make_ok && rejecting_invite &&
@@ -6937,8 +6965,31 @@ namespace
                     return make_operation_result(false, {}, validated.reason, 502U);
                 }
                 auto const room_version = validated.room_version;
+                auto const* policy = rooms::find_room_version_policy(room_version);
+                if (policy == nullptr)
+                {
+                    log_diagnostic("room.leave.rejected", {
+                                                              {"actor",   *user_id,                      false},
+                                                              {"room_id", std::string{room_id},          false},
+                                                              {"status",  "500",                         false},
+                                                              {"reason",  "room version policy missing", false}
+                    });
+                    return make_operation_result(false, {}, "room version policy missing", 500U);
+                }
                 auto event_object = validated.event;
                 claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
+                // Held to the room version's event format before it is hashed and signed as the user's own (F-13).
+                if (auto const violation = membership_template_format_refusal(event_object, *policy);
+                    !violation.empty())
+                {
+                    log_diagnostic("room.leave.rejected", {
+                                                              {"actor",   *user_id,             false},
+                                                              {"room_id", std::string{room_id}, false},
+                                                              {"status",  "502",                false},
+                                                              {"reason",  violation,            false}
+                    });
+                    return make_operation_result(false, {}, "make_leave template refused: " + violation, 502U);
+                }
 
                 // Step 3: add content hash and sign the leave event.
                 auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
@@ -6957,17 +7008,6 @@ namespace
                 replace_or_add_member(event_object, "hashes", canonicaljson::Value{std::move(hashes_obj)});
 
                 auto event_to_sign = canonicaljson::Value{event_object};
-                auto const* policy = rooms::find_room_version_policy(room_version);
-                if (policy == nullptr)
-                {
-                    log_diagnostic("room.leave.rejected", {
-                                                              {"actor",   *user_id,                      false},
-                                                              {"room_id", std::string{room_id},          false},
-                                                              {"status",  "500",                         false},
-                                                              {"reason",  "room version policy missing", false}
-                    });
-                    return make_operation_result(false, {}, "room version policy missing", 500U);
-                }
                 if (runtime.crypto_provider == nullptr)
                 {
                     log_diagnostic("room.leave.rejected",
@@ -8283,9 +8323,10 @@ namespace
             auto const tx =
                 federation::make_outbound_make_membership(federation::FederationEndpoint::make_knock, candidate,
                                                           our_server, room_id, user_id, supported_versions);
-            auto call = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx, signing_key.key_id,
-                                              core::SecretBuffer{secret_key.bytes()},
-                                              "room.knock.remote.make_knock_failed", call_timeout(), 0U, bounds);
+            auto call =
+                perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, tx, signing_key.key_id,
+                                      core::SecretBuffer{secret_key.bytes()}, "room.knock.remote.make_knock_failed",
+                                      call_timeout(), membership_template_max_response_bytes, bounds);
             if (call.ok)
             {
                 remote_server = candidate;
@@ -8325,6 +8366,11 @@ namespace
             auto content = *object_member_as_object(event_object, "content");
             replace_or_add_member(content, "reason", canonicaljson::Value{std::string{reason}});
             replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
+        }
+        // Held to the room version's event format before it is hashed and signed as the user's own (F-13).
+        if (auto const violation = membership_template_format_refusal(event_object, *policy); !violation.empty())
+        {
+            return federated_knock_failure("make_knock template refused: " + violation, 502U);
         }
         auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
         if (!content_hash.error.empty())

@@ -452,6 +452,17 @@ hash: a mismatch is redacted) and `authorize_send_join_answer` (auth rules, depe
 never stored `rejected`. Do not consult the store in the check, and do not recurse over `auth_events`: the resident
 chooses the depth. A join through another resident (ADR-0287) never feeds the answer to these writers, so it skips this.
 
+## A resident's make_join, make_leave and make_knock template is held to the event format before it is signed (F-13)
+
+`perform_federated_join`, the remote branch of `leave_room` and `knock_room` complete the resident's template
+(`claim_membership_event_template`, then the join's profile or the knock's reason) and call
+`membership_template_format_refusal` on the completed event BEFORE the content hash and signature: it is
+`federation::pdu_format_violation` with the template's room version policy (64 KiB without `unsigned`, at most 20
+`prev_events` and 10 `auth_events`, arrays, an integer `depth`). A violation is 502 with nothing signed, sent or stored.
+The check sits after the last edit of the event, so a new field added to a template goes in before it. The three
+outbound calls pass `membership_template_max_response_bytes` (four times `events::max_event_size_bytes`), never the 16 MiB
+default. The size limit does not count the `hashes` and `signatures` added afterwards, as for a received PDU.
+
 ## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
 
 `send_join_answer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
@@ -463,14 +474,19 @@ the answer after the join is stored, and never let a path add events to it witho
 reaches the acceptor as `InboundPduEnvelope::omit_members` (set from the request target by `handle_send_membership`, carried
 from a worker in the `membership_ingest` frame; main takes only that flag from the frame). A join already stored is
 answered again from current state (`resent_send_join_state`, ADR-0372), never from the state at its `prev_events`, which
-date from `make_join` and may predate a ban; it is never stored or sent on a second time, and a stored `rejected` join is
-refused 403 again. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
+date from `make_join` and may predate a ban, but only while it is stored `accepted` and is the sender's current
+`m.room.member` state, otherwise 403 with no state (F-10, ADR-0591); it is never stored or sent on a second time. The same
+test covers a resent leave and knock. Before any of this the acceptor refuses a room with no local member
+(`membership_admission_refusal`: `send_knock` 404, the others 403), then an event that is not the endpoint's membership
+about its own sender from a user of the origin (`membership_agreement_refusal`, 400 `M_INVALID_PARAM`; it runs before the
+resend answer, so a stored leave relayed as `send_knock` is never answered), and an event that auth rejects or soft-fails is refused
+(`membership_outcome_refusal`, 403) and never stored (F-12). Both run in the acceptor, which the direct path and the worker relay share. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the
 deduplication only with the parameter. `send_leave` and `send_knock` carry no state or chain (a knock's stripped state is a
 fixed small list), so they have no size to plan.
 
 ## The resident sends accepted membership events on
 
-As the resident, the `membership_acceptor` stores a `send_join`, `send_leave` or `send_knock` and then
+As the resident, the `membership_acceptor` stores an accepted `send_join`, `send_leave` or `send_knock` and then
 calls `federate_accepted_membership_event` (`room_service.cpp`) with the stored copy, so every other server
 with a joined member learns of it (spec, "Joining Rooms" and "Leaving Rooms"). The requesting server is
 excluded, and so is this one. It runs only for an accepted event, never a rejected or soft-failed one, with
@@ -490,7 +506,8 @@ anything is persisted (ADR-0071). It also verifies a restricted join's
 authorising-server signature (`federation::verify_join_authorising_server_signature`,
 ADR-0171), as backfill ingestion does. Do it before taking `runtime.mutex`: resolving
 a key may go to the network. A new relay that carries a PDU follows the same
-pattern.
+pattern. `invite_ingest` also refuses a frame with a blank `origin` (so the invite handler's sender-equals-origin guard
+always runs) and judges the verified inviter's server against the room's ACL, as `pdu_ingest` and `membership_ingest` do (F-14).
 
 An EDU relay (`edu_ingest`, `handle_edu_ingest_request`) carries no signature, so it is bound to the body main
 authenticated instead (F-74, ADR-0395): `WorkerPool::handle` gives the pending request one digest per EDU of a verified
@@ -594,7 +611,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
 
 - `parse_federation_media_multipart` runs under the lock on a body a remote server chooses. It
   refuses a boundary over 70 characters and finds delimiters with a linear scan; keep it linear
-  (ADR-0176).
+  (ADR-0176). It also stops splitting at a third part (`split_multipart_body` takes `max_parts` 2 and returns before it
+  parses or stores the part), so memory and parsing work do not grow with the delimiter count (F-15);
+  `FederationMediaPart::parts_parsed` is the counter a test reads.
 - `PUT /directory/room/{roomAlias}` and `POST /createRoom` with `room_alias_name` refuse a new alias past
   `max_room_aliases_per_user` (the creator aliases) or, for the PUT, `max_room_aliases_per_room` with `400 M_TOO_LARGE`,
   after the validity, power, exclusivity and already-exists answers and before anything is written (createRoom before

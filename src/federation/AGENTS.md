@@ -112,7 +112,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
    phase B2) for the `/send` transaction path, and in the membership acceptor for
    `send_join`/`send_leave`/`send_knock` (the same auth_events / state-before / current-state
-   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2".
+   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2". The membership acceptor differs
+   from the `/send` path in one respect (F-10, F-12, ADR-0591): it refuses a rejected or soft-failed event `403` and does not
+   store it, and it first refuses a room with no local member (`room_has_current_local_interest`; `send_knock` 404, the others
+   403), so nothing is stored, recomputed, published or notified for either. A resent event is answered only while it is
+   still the sender's accepted, current `m.room.member`.
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
@@ -316,6 +320,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 20. **A received event is held to its room version's format by `pdu_format_violation` (F-56, F-57, ADR-0397, ADR-0399).**
    Size, `prev_events` and `auth_events` caps, and no top-level `event_id` from room version 3 on. A new path taking events from
    another server calls it. `make_event_signing_payload` is the spec's pseudocode: do not strip anything else from it.
+   A resident's `make_join`/`make_leave`/`make_knock` template is such an event too: `room_service.cpp` runs it through
+   `membership_template_format_refusal` before signing it as the local user's own (F-13).
 20. **A number outside Canonical JSON is that PDU's error (F-83, ADR-0398).** `parse_preserving_numbers` is for rebuilding
    what a peer signed and reading a `/send` body, never for anything this server hashes, signs or stores.
 20. **A received PDU is stored without its `unsigned` (F-70, ADR-0402).** `unsigned` is outside the content hash, the

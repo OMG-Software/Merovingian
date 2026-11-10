@@ -11,6 +11,7 @@
 
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -919,7 +920,8 @@ SCENARIO("Auth rules let the creator send the first m.room.power_levels event an
     };
     auto const room_without_power_levels = [](std::string_view member) {
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_v1_create_event("@alice:example.org")).value;
+        auth_events.create =
+            merovingian::canonicaljson::parse_lossless(make_v1_create_event("@alice:example.org")).value;
         auth_events.sender_member =
             merovingian::canonicaljson::parse_lossless(make_member_event(member, member, "join")).value;
         return auth_events;
@@ -4204,6 +4206,117 @@ SCENARIO("Auth rules reject a create event whose room_version is not a string",
                     REQUIRE_FALSE(
                         merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events)
                             .allowed);
+                }
+            }
+        }
+    }
+}
+
+// F-09 helpers: judge one user ID as a room version 11 power_levels `users` key, and as a v12 additional creator.
+namespace
+{
+
+auto f09_users_problem(std::string const& user_id_json_key) -> std::string
+{
+    auto const content_json = std::string{R"({"users":{")"} + user_id_json_key + R"(":50}})";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(content_json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(object != nullptr);
+    auto const* policy = merovingian::rooms::find_room_version_policy("11");
+    REQUIRE(policy != nullptr);
+    return merovingian::events::power_levels_content_problem(*object, *policy);
+}
+
+auto f09_create_allowed(std::string const& user_id_json) -> bool
+{
+    auto const create_json = std::string{R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org",)"
+                                         R"("content":{"room_version":"12","additional_creators":[")"} +
+                             user_id_json +
+                             R"("]},"origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"hash"}})";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    return merovingian::events::authorize_event_against_auth_events(parsed.value, *policy,
+                                                                    merovingian::events::AuthEventMap{})
+        .allowed;
+}
+
+} // namespace
+
+// Spec: Matrix v1.19 Appendices, Historical User IDs; Room Versions 11 and 12, Authorization rules
+// Section: "Historical User IDs"; rule 9.3 (power_levels `users` keys); rule 1.4 (v12 `additional_creators`)
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#historical-user-ids
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// Clients and servers MUST accept user IDs whose localpart is any legal non-surrogate code point except ':' and NUL,
+// including other control characters and the empty string. Rule 9.3 (a power_levels `users` key must be a valid user
+// ID) and rule 1.4 (v12 additional_creators) both name "valid user IDs", so a historical ID must satisfy them. The
+// server-name half stays strict.
+SCENARIO("Rule 9.3 and additional_creators accept historical user IDs and refuse a bad server name",
+         "[events][auth][power-levels][f09][conformance]")
+{
+    GIVEN("user IDs whose localpart holds a space, a control byte, or nothing")
+    {
+        auto const accepted =
+            std::vector<std::string>{"@a b:remote.example", R"(@a\u0001b:remote.example)",
+                                     R"(@a\u007fb:remote.example)", "@:remote.example", "@Alice:remote.example"};
+
+        WHEN("each is a power_levels users key (room version 11)")
+        {
+            THEN("none is refused")
+            {
+                for (auto const& user_id : accepted)
+                {
+                    CAPTURE(user_id);
+                    // Spec MUST: servers accept any localpart code points except ':' and NUL, and the empty string.
+                    REQUIRE(f09_users_problem(user_id).empty());
+                }
+            }
+        }
+
+        WHEN("each is listed in a v12 create event's additional_creators")
+        {
+            THEN("none is refused")
+            {
+                // Spec MUST: a v12 create event whose additional_creators are valid user IDs is allowed (the
+                // control: the same event with an ordinary ID).
+                REQUIRE(f09_create_allowed("@bob:example.org"));
+                for (auto const& user_id : accepted)
+                {
+                    CAPTURE(user_id);
+                    // Spec MUST: an additional creator with a historical localpart is a valid user ID, so allowed.
+                    REQUIRE(f09_create_allowed(user_id));
+                }
+            }
+        }
+    }
+
+    GIVEN("user IDs whose server name holds a space or a control byte")
+    {
+        // Also refused: NUL in the localpart (the one code point besides ':' a historical localpart may not hold), no
+        // leading '@', and more than 255 bytes in all.
+        auto const refused = std::vector<std::string>{"@alice:not a server",
+                                                      R"(@alice:remote\u0001.example)",
+                                                      "@alice:",
+                                                      "@alice",
+                                                      R"(@a\u0000b:remote.example)",
+                                                      "alice:remote.example",
+                                                      "@" + std::string(250U, 'a') + ":remote.example"};
+
+        WHEN("each is used as a users key or an additional creator")
+        {
+            THEN("each is still refused")
+            {
+                for (auto const& user_id : refused)
+                {
+                    CAPTURE(user_id);
+                    // Spec MUST: rule 9.3 refuses a users key that is not a valid user ID (its server name is not).
+                    REQUIRE_FALSE(f09_users_problem(user_id).empty());
+                    // Spec MUST: rule 1.4 refuses an additional creator that is not a valid user ID.
+                    REQUIRE_FALSE(f09_create_allowed(user_id));
                 }
             }
         }

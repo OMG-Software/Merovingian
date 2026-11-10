@@ -543,3 +543,109 @@ SCENARIO("a PDU main refuses for the room ACL is reported to the worker as a ref
         std::filesystem::remove(main_runtime.path);
     }
 }
+
+// F-14 (security audit run 4): the invite relay judged only the origin the worker named. A blank origin skipped the
+// origin ACL and the invite handler's sender-equals-origin guard, and no ACL was applied to the verified inviter's
+// server.
+SCENARIO("main applies the room ACL to the verified inviter of a relayed invite, and refuses a blank origin",
+         "[integration][federation-worker][worker_policy_authority][f14]")
+{
+    GIVEN("a room whose current m.room.server_acl, in main's store, denies the remote server")
+    {
+        WHEN("the worker relays that server's signed invite with a blank origin")
+        {
+            THEN("main refuses it and stores nothing, as it does for the same frame sent as a PDU")
+            {
+                auto relay_case = RelayCase{RelayPath::invite, "invite-blank", 100};
+                auto& runtime = relay_case.runtime();
+                install_server_acl(runtime, relay_case.event().room_id, remote_server);
+                auto const before = store_shape(runtime);
+
+                CHECK_FALSE(relay_once(runtime, RelayPath::invite, relay_case.event(), ""));
+                CHECK(store_shape(runtime) == before);
+                CHECK_FALSE(event_stored(runtime, relay_case.event().envelope.event_id));
+            }
+        }
+
+        WHEN("the worker relays it through an allowed peer, as another transport origin")
+        {
+            THEN("main refuses it for the ACL on the inviter's server")
+            {
+                auto relay_case = RelayCase{RelayPath::invite, "invite-peer", 101};
+                auto& runtime = relay_case.runtime();
+                install_server_acl(runtime, relay_case.event().room_id, remote_server);
+                auto const before = store_shape(runtime);
+
+                auto const frame = relay_frame(RelayPath::invite, relay_case.event().envelope, relaying_server);
+                auto const response = homeserver::handle_invite_ingest_request(runtime, frame);
+                CHECK(response.find("server is denied by room ACL") != std::string::npos);
+                CHECK(store_shape(runtime) == before);
+            }
+        }
+    }
+
+    GIVEN("a room with no ACL against the remote server")
+    {
+        WHEN("the worker relays the invite with a blank origin")
+        {
+            THEN("main refuses it all the same, because the sender-equals-origin guard needs an origin")
+            {
+                auto relay_case = RelayCase{RelayPath::invite, "invite-blank-open", 102};
+                auto& runtime = relay_case.runtime();
+                auto const before = store_shape(runtime);
+
+                CHECK_FALSE(relay_once(runtime, RelayPath::invite, relay_case.event(), ""));
+                CHECK(store_shape(runtime) == before);
+            }
+        }
+
+        WHEN("the worker relays it with the inviter's own server as origin")
+        {
+            THEN("main takes it in, so the refusals above are the new checks' and nothing else's")
+            {
+                auto relay_case = RelayCase{RelayPath::invite, "invite-control", 103};
+                CHECK(relay_once(relay_case.runtime(), RelayPath::invite, relay_case.event(), remote_server));
+            }
+        }
+    }
+}
+
+// F-12 (ADR-0591): main applies the acceptor's admission to a relayed send_join, send_leave or send_knock itself,
+// whatever the worker decided: a room in which no user of this server is joined, invited or knocking is not one it
+// answers for, so nothing is stored.
+SCENARIO("main refuses a relayed membership event for a room with no local member and stores nothing",
+         "[integration][federation-worker][worker_policy_authority][f12]")
+{
+    GIVEN("a room whose only local member has left, in main's store")
+    {
+        WHEN("the worker relays a valid, signed membership event of the remote user")
+        {
+            THEN("main does not take it in and the store is unchanged")
+            {
+                auto relay_case = RelayCase{RelayPath::membership, "no-interest", 110};
+                auto& runtime = relay_case.runtime();
+                for (auto& membership : runtime.database.persistent_store.memberships)
+                {
+                    if (membership.user_id == local_admin)
+                    {
+                        membership.membership = "leave";
+                    }
+                }
+                auto const before = store_shape(runtime);
+
+                CHECK_FALSE(relay_once(runtime, RelayPath::membership, relay_case.event(), remote_server));
+                CHECK(store_shape(runtime) == before);
+                CHECK_FALSE(event_stored(runtime, relay_case.event().envelope.event_id));
+            }
+        }
+
+        WHEN("the local member is still joined")
+        {
+            THEN("the same relay is taken in, so the refusal is the admission's and nothing else's")
+            {
+                auto relay_case = RelayCase{RelayPath::membership, "interest-control", 111};
+                CHECK(relay_once(relay_case.runtime(), RelayPath::membership, relay_case.event(), remote_server));
+            }
+        }
+    }
+}

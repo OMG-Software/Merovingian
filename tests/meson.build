@@ -647,6 +647,7 @@ shell = find_program('sh')
       'conformance/test_redaction_application_conformance.cpp',
       'conformance/test_redaction_federation_conformance.cpp',
       'conformance/test_restricted_join_conformance.cpp',
+      'conformance/test_membership_admission_outcome_conformance.cpp',
       'conformance/test_send_join_answer_checks_conformance.cpp',
       'conformance/test_send_join_omit_members_conformance.cpp',
       'conformance/test_room_admin_gates_conformance.cpp',

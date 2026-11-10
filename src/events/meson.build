@@ -14,5 +14,5 @@ events_lib = static_library(
   events_sources,
   include_directories: inc,
   dependencies: [libsodium_dep],
-  link_with: [canonicaljson_lib, crypto_lib, rooms_lib],
+  link_with: [auth_lib, canonicaljson_lib, crypto_lib, rooms_lib],
 )

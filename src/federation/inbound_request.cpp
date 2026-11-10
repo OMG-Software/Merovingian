@@ -63,6 +63,7 @@
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/EventIdFormat.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
@@ -842,6 +843,10 @@ namespace
     auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin,
                           std::string_view target, std::string_view reason) -> void
     {
+        // F-11: the reason can name the origin (federation_route_audit_event), and a valid server name is up to 255
+        // bytes before the reason's own prefix, so the stored reason is bounded too. The unsafe-marker count below is
+        // taken on the bounded value, the same string eviction later judges.
+        auto const bounded_reason = observability::bounded_utf8(reason, observability::max_audit_field_bytes);
         auto guard = federation_guard(runtime);
         // Bounded ring (#423): a remote sending sustained traffic (accepted or
         // rejected) must not grow the audit log without bound. Entries are
@@ -854,12 +859,16 @@ namespace
             }
             runtime.audit_events.pop_front();
         }
-        if (audit_reason_is_unsafe(reason))
+        if (audit_reason_is_unsafe(bounded_reason))
         {
             ++runtime.unsafe_audit_events;
         }
-        runtime.audit_events.push_back(observability::make_audit_event(observability::AuditCategory::policy, event_type,
-                                                                       origin, target, reason, "federation"));
+        // F-11: the origin of a request that has not been authenticated yet is chosen by the sender, so it is bounded
+        // here as PersistentStore bounds the actor of a stored audit row.
+        runtime.audit_events.push_back(
+            observability::make_audit_event(observability::AuditCategory::policy, event_type,
+                                            observability::bounded_utf8(origin, observability::max_audit_field_bytes),
+                                            target, bounded_reason, "federation"));
     }
 
     struct ParsedTransactionBody final
@@ -3321,13 +3330,15 @@ namespace
         auto const route_match = match_federation_route(request.method, request.target);
         if (!route_match.matched)
         {
-            log_diagnostic("request.route_not_found",
-                           {
-                               {"method", request.method,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"origin", request.origin,                                       false},
-                               {"status", "404",                                                false},
-                               {"reason", route_match.reason,                                   false}
+            log_diagnostic(
+                "request.route_not_found",
+                {
+                    {"method", request.method, false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"status", "404", false},
+                    {"reason", route_match.reason, false}
             });
             // Spec (M_UNRECOGNIZED): an endpoint this server does not implement is 404
             // M_UNRECOGNIZED, as the client API answers; standard_error_body's status default
@@ -3376,12 +3387,14 @@ namespace
         auto const server_policy = federation_server_policy(runtime.config, request.origin);
         if (!server_policy.allowed)
         {
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", "403",                                                false},
-                               {"reason", server_policy.reason,                                 false}
+            log_diagnostic(
+                "request.rejected",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", "403", false},
+                    {"reason", server_policy.reason, false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, server_policy.reason);
             return {
@@ -3406,12 +3419,14 @@ namespace
                              : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
             if (!admission.allowed)
             {
-                log_diagnostic("key_resolution.throttled",
-                               {
-                                   {"origin", request.origin,   false},
-                                   {"reason", admission.reason, false}
+                log_diagnostic(
+                    "key_resolution.throttled",
+                    {
+                        {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                         false},
+                        {"reason", admission.reason, false}
                 },
-                               observability::LogEventSeverity::warning);
+                    observability::LogEventSeverity::warning);
                 audit_federation(runtime, "federation.rejected", request.origin, request.target, admission.reason);
                 return {
                     .accepted = false, .error = {429U, admission.reason}
@@ -3441,12 +3456,14 @@ namespace
         }
         if (!remote.has_value())
         {
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", "403",                                                false},
-                               {"reason", "remote is unknown",                                  false}
+            log_diagnostic(
+                "request.rejected",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", "403", false},
+                    {"reason", "remote is unknown", false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
             return {
@@ -3489,12 +3506,14 @@ namespace
                         : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
                 if (!refresh_admission.allowed)
                 {
-                    log_diagnostic("key_resolution.throttled",
-                                   {
-                                       {"origin", request.origin,           false},
-                                       {"reason", refresh_admission.reason, false}
+                    log_diagnostic(
+                        "key_resolution.throttled",
+                        {
+                            {"origin",
+                             observability::bounded_utf8(request.origin, observability::max_audit_field_bytes), false},
+                            {"reason", refresh_admission.reason, false}
                     },
-                                   observability::LogEventSeverity::warning);
+                        observability::LogEventSeverity::warning);
                     return {
                         .accepted = false, .error = {429U, refresh_admission.reason}
                     };
@@ -3512,12 +3531,14 @@ namespace
         auto const discovery = federation_discovery_policy(remote->discovery, runtime.config.allow_private_ip_ranges);
         if (!discovery.accepted)
         {
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", "403",                                                false},
-                               {"reason", discovery.reason,                                     false}
+            log_diagnostic(
+                "request.rejected",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", "403", false},
+                    {"reason", discovery.reason, false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, discovery.reason);
             return {
@@ -3527,12 +3548,14 @@ namespace
         auto const trust = remote_trust_policy(remote->trust);
         if (!trust.accepted)
         {
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", std::to_string(trust.apply_backoff ? 429U : 403U),    false},
-                               {"reason", trust.reason,                                         false}
+            log_diagnostic(
+                "request.rejected",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", std::to_string(trust.apply_backoff ? 429U : 403U), false},
+                    {"reason", trust.reason, false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, trust.reason);
             auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
@@ -3563,14 +3586,16 @@ namespace
         if (bad_signature_budget_exhausted(runtime, request.remote_addr))
         {
             auto constexpr reason = "too many failed signature checks from this address";
-            log_diagnostic("request.rate_limited",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", "429",                                                false},
-                               {"reason", reason,                                               false}
+            log_diagnostic(
+                "request.rate_limited",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", "429", false},
+                    {"reason", reason, false}
             },
-                           observability::LogEventSeverity::warning);
+                observability::LogEventSeverity::warning);
             audit_federation(runtime, "federation.rate_limited", request.origin, request.target, reason);
             return FederationResponse{429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", reason)};
         }
@@ -3582,12 +3607,14 @@ namespace
             {
                 charge_bad_signature(runtime, request.remote_addr);
             }
-            log_diagnostic("request.rejected",
-                           {
-                               {"origin", request.origin,                                       false},
-                               {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", std::to_string(request_signature.status),             false},
-                               {"reason", request_signature.reason,                             false}
+            log_diagnostic(
+                "request.rejected",
+                {
+                    {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                     false},
+                    {"target", observability::sanitized_http_target(request.target), false},
+                    {"status", std::to_string(request_signature.status), false},
+                    {"reason", request_signature.reason, false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
             return FederationResponse{request_signature.status, request_signature.reason};
@@ -3809,23 +3836,27 @@ namespace
                 // F-59 / ADR-0347: no trust write here. Only a /send transaction is evidence about
                 // the peer's PDUs, and `remote` may be a worker's synthetic record (ADR-0110) that
                 // would overwrite the real one, clearing a backoff the peer earned.
-                log_diagnostic("request.accepted",
-                               {
-                                   {"origin", request.origin,                                       false},
-                                   {"target", observability::sanitized_http_target(request.target), false},
-                                   {"status", std::to_string(non_transaction_response.status),      false}
+                log_diagnostic(
+                    "request.accepted",
+                    {
+                        {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                         false},
+                        {"target", observability::sanitized_http_target(request.target), false},
+                        {"status", std::to_string(non_transaction_response.status), false}
                 });
                 audit_federation(runtime, "federation.accepted", request.origin, request.target,
                                  federation_route_audit_event(route_match.route, request.origin));
             }
             else
             {
-                log_diagnostic("request.rejected",
-                               {
-                                   {"origin", request.origin,                                       false},
-                                   {"target", observability::sanitized_http_target(request.target), false},
-                                   {"status", std::to_string(non_transaction_response.status),      false},
-                                   {"reason", non_transaction_response.body,                        false}
+                log_diagnostic(
+                    "request.rejected",
+                    {
+                        {"origin", observability::bounded_utf8(request.origin, observability::max_audit_field_bytes),
+                         false},
+                        {"target", observability::sanitized_http_target(request.target), false},
+                        {"status", std::to_string(non_transaction_response.status), false},
+                        {"reason", non_transaction_response.body, false}
                 });
                 audit_federation(runtime, "federation.rejected", request.origin, request.target,
                                  non_transaction_response.body);

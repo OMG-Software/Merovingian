@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.84
+Version:        0.12.85
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Nov 09 2026 James Chapman <claude@ping.me.uk> - 0.12.85-1
+- Fix the federation and event-auth low findings of security audit run 4.
+
 * Mon Nov 09 2026 James Chapman <claude@ping.me.uk> - 0.12.84-1
 - Fix the client, account and media low findings of security audit run 4.
 
