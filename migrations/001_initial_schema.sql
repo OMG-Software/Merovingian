@@ -95,6 +95,8 @@ CREATE TABLE "presence_state" (user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL
 CREATE TABLE "sync_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0')
 -- statement create_event_stream_watermark
 CREATE TABLE "event_stream_watermark" (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0')
+-- statement create_stream_token_epoch
+CREATE TABLE "stream_token_epoch" (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), epoch TEXT NOT NULL)
 -- statement create_profiles
 CREATE TABLE "profiles" (user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '{}')
 -- statement create_client_txn_ids

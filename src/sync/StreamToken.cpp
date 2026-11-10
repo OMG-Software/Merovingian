@@ -69,8 +69,13 @@ namespace
 
 auto encode_stream_token(StreamToken token) -> std::string
 {
-    return encode_component(token.event_ordering) + "_" + encode_component(token.membership_ordering) + "_" +
-           encode_component(token.sync_stream_id);
+    auto encoded = encode_component(token.event_ordering) + "_" + encode_component(token.membership_ordering) + "_" +
+                   encode_component(token.sync_stream_id);
+    if (token.epoch != 0U)
+    {
+        encoded += "_" + encode_component(token.epoch);
+    }
+    return encoded;
 }
 
 auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
@@ -84,8 +89,12 @@ auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
     auto const remainder = encoded.substr(first_separator + 1U);
     auto const second_separator = remainder.find('_');
     auto const membership_part = remainder.substr(0U, second_separator);
-    auto const sync_part =
+    auto const tail =
         second_separator == std::string_view::npos ? std::string_view{} : remainder.substr(second_separator + 1U);
+    auto const third_separator = tail.find('_');
+    auto const sync_part = tail.substr(0U, third_separator);
+    auto const epoch_part = third_separator == std::string_view::npos ? std::optional<std::string_view>{}
+                                                                      : tail.substr(third_separator + 1U);
     if (event_part.empty() || membership_part.empty())
     {
         return std::nullopt;
@@ -106,7 +115,19 @@ auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
         }
         sync_stream_id = *decoded;
     }
-    return StreamToken{*event_ordering, *membership_ordering, sync_stream_id};
+    // ADR-0592: an epoch component follows a sync component, holds one hex number and is never zero, which is
+    // written by leaving the component out; so every token has one spelling and nothing follows the epoch.
+    auto epoch = std::uint64_t{0U};
+    if (epoch_part.has_value())
+    {
+        auto const decoded = sync_part.empty() ? std::nullopt : decode_component(*epoch_part);
+        if (!decoded.has_value() || *decoded == 0U)
+        {
+            return std::nullopt;
+        }
+        epoch = *decoded;
+    }
+    return StreamToken{*event_ordering, *membership_ordering, sync_stream_id, epoch};
 }
 
 auto is_valid_stream_token(std::string_view encoded) noexcept -> bool

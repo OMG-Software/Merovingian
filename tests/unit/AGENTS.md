@@ -2,6 +2,7 @@
 
 Unit tests isolate a single module. They do not touch the network or any module outside the one under test.
 SQLite may be used only when testing database-specific module behavior.
+Request-level tests that drive the client-server stack through `handle_client_server_request` belong in `tests/integration/`.
 
 ## File naming
 

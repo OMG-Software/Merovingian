@@ -1809,7 +1809,8 @@ SCENARIO("sync admission bounds one account across devices without holding the r
         REQUIRE(bob_login.ok);
         auto const since =
             merovingian::sync::encode_stream_token({runtime.homeserver.database.next_stream_ordering - 1U, 0U,
-                                                    runtime.homeserver.database.persistent_store.next_sync_stream_id});
+                                                    runtime.homeserver.database.persistent_store.next_sync_stream_id,
+                                                    runtime.homeserver.database.persistent_store.stream_token_epoch});
         auto pool = merovingian::net::ThreadPool{32U};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto clients = std::vector<merovingian::core::FileDescriptor>{};
@@ -1917,7 +1918,8 @@ SCENARIO("A waiting sync is counted against the rate limit once, however often i
         REQUIRE(login.ok);
         auto const since =
             merovingian::sync::encode_stream_token({runtime.homeserver.database.next_stream_ordering - 1U, 0U,
-                                                    runtime.homeserver.database.persistent_store.next_sync_stream_id});
+                                                    runtime.homeserver.database.persistent_store.next_sync_stream_id,
+                                                    runtime.homeserver.database.persistent_store.stream_token_epoch});
         auto const sync_target = [&since](std::string_view timeout_ms) {
             // set_presence=offline: these tests are about how a long-poll is parked and woken, and a
             // sync that marks its user online changes the stream (once, on the first sync).

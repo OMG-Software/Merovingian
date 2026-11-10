@@ -2405,9 +2405,9 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             {
                 // Every table belongs to the v1 schema: the pre-1.0 migration chain
                 // collapsed into it, so the initial and current inventories match.
-                REQUIRE(tables.size() == 63U);
+                REQUIRE(tables.size() == 64U);
                 REQUIRE(merovingian::database::current_schema_version() == 1U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 63U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 64U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

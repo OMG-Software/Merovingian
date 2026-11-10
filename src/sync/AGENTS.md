@@ -12,6 +12,7 @@ Spec authority:
 | File | Responsibility |
 |---|---|
 | `StreamToken.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
+| `ToDevicePosition.cpp` | Encode/decode the sliding sync `to_device` extension's position with its stream token epoch; exact decimal parse (ADR-0592) |
 | `SyncFilter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
 | `type_pattern.cpp` | `type_pattern_matches`: the `*` wildcard (anywhere, any number of times) of `types` / `not_types`, iterative with no backtracking (ADR-0541); the one matcher both filter paths use |
 | `SyncNotifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
@@ -33,8 +34,16 @@ Spec authority:
 
 ## Stream token format
 
-`next_batch` and `since` for `/sync` are opaque encoded triplets:
-`<rooms_ordering>|<to_device_ordering>|<account_data_ordering>`
+`next_batch` and `since` for `/sync` (and sliding sync `pos`) are `StreamToken`s: lowercase hex components
+`<event_ordering>_<membership_ordering>_<sync_stream_id>` and, when the database has one (always, in production),
+`_<epoch>`. The epoch is the database's stream token epoch (ADR-0592): a random value drawn at first start and
+replaced by `merovingian-server --after-restore`. A token whose epoch is not the store's (`stream_token_epoch`),
+including one with no epoch, is foreign whatever its positions: `/sync` serves it as an initial sync, sliding sync
+answers `400 M_UNKNOWN_POS`, `/keys/changes` reads it as the start (`from`) or the current position (`to`). The
+sliding sync `to_device` extension's `since`/`next_batch` is a `ToDevicePosition` (`<decimal stream id>_<decimal
+epoch>`, `ToDevicePosition.hpp`), and one from another epoch acknowledges nothing. Any token that lets the
+server delete or skip something carries the epoch and is compared with the store's before it is trusted; a
+pagination token (`/messages`, `/relations`, `prev_batch`), which only names where to read from, does not.
 
 For `/messages` and timeline `prev_batch`, the token is a plain stream-ordering integer.
 Use `StreamToken.hpp` — never parse or construct tokens manually.
@@ -321,7 +330,7 @@ reports the full set rather than nothing, so a freshly logged-in device is
 prompted to `/keys/query` its own user's devices straight away. The spec permits
 either ("the server need only populate this property for an incremental
 `/sync`"); this project chose to populate, and
-`tests/unit/test_sync_handler.cpp` pins that behaviour. Deduplication is what
+`tests/integration/test_sync_handler_flow.cpp` pins that behaviour. Deduplication is what
 keeps the initial response bounded.
 
 All three surfaces that report device-list changes — `/sync`, the MSC4186 e2ee

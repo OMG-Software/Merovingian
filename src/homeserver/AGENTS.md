@@ -81,12 +81,13 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 1. Add the route match in `ClientServerRuntime.cpp` (find the block matching the path prefix)
 2. Build the response using `dispatch_resp()` or `dispatch_err()`
 3. Add a conformance test in `tests/conformance/test_client_server_conformance.cpp`
-4. Add a unit test in `tests/unit/test_client_server.cpp`
+4. Add a request-level test in `tests/integration/test_client_server_endpoints_flow.cpp`
+   (tests that drive `handle_client_server_request` belong in `tests/integration/`, not `tests/unit/`)
 5. Update `docs/matrix-v1.19-client-server-api.md` with the new endpoint
 6. Make `normalized_target()` in `ClientServerRuntime.cpp` recognise the path. A path with
    a variable component (an ID, type or key) needs a template and a row in the HTTP-3
    scenario "gives every implemented dynamic client route its own coalesced bucket"
-   in `tests/unit/test_security_audit_http_3.cpp` (ADR-0092); a fixed path needs an
+   in `tests/integration/test_security_audit_http_3_flow.cpp` (ADR-0092); a fixed path needs an
    entry in `static_routes` (an operator route under `/_merovingian/admin/` goes in the table
    `observability::admin_routes()` instead, see "Adding an operator route" below) and a row in `client_static_route_allow` listing EVERY
    method it serves (a method missing there is answered `405 M_UNRECOGNIZED`

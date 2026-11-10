@@ -1724,6 +1724,24 @@ namespace
                 }
             }
         }
+
+        // ADR-0592: the epoch every sync token is issued in. Not on the federation worker's allowlist.
+        if (table_load_profile_includes("stream_token_epoch", profile))
+        {
+            auto const epoch =
+                query_rows(connection, "postgresql_load_stream_token_epoch", "SELECT epoch FROM stream_token_epoch");
+            if (!epoch.ok)
+            {
+                return false;
+            }
+            for (auto const& row : epoch.rows)
+            {
+                if (!row.empty())
+                {
+                    store.stream_token_epoch = parse_u64(row[0]);
+                }
+            }
+        }
         return true;
     }
 

@@ -512,3 +512,4 @@
 * [0589 - An expired media reservation that is not yet swept is dead to every reader](0589-an-expired-media-reservation-that-is-not-yet-swept-is-dead-to-every-reader.md)
 * [0590 - A login replaces its device's credentials, and a rotation keeps a counted history of retired refresh tokens](0590-a-login-replaces-its-devices-credentials-and-a-rotation-keeps-a-counted-history.md)
 * [0591 - A refused send_join, send_leave or send_knock is never stored, and is asked for only in a room with a local member](0591-a-refused-send-join-leave-or-knock-is-never-stored-and-needs-local-interest.md)
+* [0592 - Sync tokens carry a stream token epoch that the restore step replaces](0592-sync-tokens-carry-a-stream-token-epoch-that-a-restore-replaces.md)

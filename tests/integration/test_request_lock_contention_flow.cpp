@@ -155,7 +155,7 @@ auto release_gate(PolicyServerGate& gate) -> void
 // a gate this test never releases. `allow_without_result` opts into the
 // permissive default so the assertions below are about mutex availability,
 // not about trust_safety's fail-closed-on-no-decision policy (exercised
-// elsewhere, e.g. test_client_server.cpp).
+// elsewhere, e.g. test_client_server_endpoints_flow.cpp).
 [[nodiscard]] auto gated_policy_hook(merovingian::trust_safety::PolicySurface target_surface, PolicyServerGate& gate)
 {
     return [target_surface, &gate](merovingian::trust_safety::PolicySurface surface,

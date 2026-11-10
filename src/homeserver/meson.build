@@ -43,6 +43,7 @@ homeserver_sources = files(
   'SearchRoomIndex.cpp',
   'user_directory_search.cpp',
   'stored_room_version.cpp',
+  'stream_token_epoch.cpp',
   'RemoteMediaFetchScope.cpp',
   'RequestLockScope.cpp',
   'RuntimeLockRelease.cpp',

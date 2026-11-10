@@ -20,6 +20,11 @@ struct StreamToken final
     // appended to the token; tokens without this component decode with
     // `sync_stream_id == 0`.
     std::uint64_t sync_stream_id{0U};
+    // The stream token epoch of the database that issued the token (ADR-0592): a random value drawn when a
+    // database is created and again by `merovingian-server --after-restore`. The positions above mean something
+    // only in that epoch. Encoded as a fourth hex component, and only when it is not zero; a token without it
+    // decodes with `epoch == 0`, so an explicit zero component does not decode.
+    std::uint64_t epoch{0U};
 };
 
 [[nodiscard]] auto encode_stream_token(StreamToken token) -> std::string;

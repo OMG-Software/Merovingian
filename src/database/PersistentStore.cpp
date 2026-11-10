@@ -5801,6 +5801,25 @@ namespace
     }));
 }
 
+auto persist_stream_token_epoch(PersistentStore& store, std::uint64_t epoch) -> bool
+{
+    if (epoch == 0U)
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("upsert_stream_token_epoch",
+                                                    "INSERT INTO stream_token_epoch (singleton, epoch) VALUES (1, $1) "
+                                                    "ON CONFLICT (singleton) DO UPDATE SET epoch = excluded.epoch",
+                                                    {
+                                                        {std::to_string(epoch), false}
+    })))
+    {
+        return false;
+    }
+    store.stream_token_epoch = epoch;
+    return true;
+}
+
 auto restore_sync_stream_id(PersistentStore& store) -> void
 {
     auto observed = store.next_sync_stream_id;

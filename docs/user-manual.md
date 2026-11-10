@@ -393,7 +393,7 @@ merovingian-server --plan-config-reload current.conf next.conf
 | `66` | Config file open/read failure |
 | `78` | Config parse failure |
 | `79` | Config validation failure |
-| `80` | Runtime start error: hardening self-check refused start, runtime/federation-worker start failure, or `--bootstrap-admin` failure |
+| `80` | Runtime start error: hardening self-check refused start, runtime/federation-worker start failure, `--bootstrap-admin` failure, or `--after-restore` failure |
 | `81` | Listener error: listener bind failure or signal-handler setup failure |
 
 ### Fail-closed startup
@@ -1925,6 +1925,7 @@ merovingian-server [--dry-run]
 merovingian-server [--dry-run] --config <path>
 merovingian-server [--config <path>] --bootstrap-admin <localpart> \
   --bootstrap-admin-password-file <path>
+merovingian-server [--config <path>] --after-restore
 merovingian-server --check-config <path>
 merovingian-server --plan-config-reload <current> <next>
 merovingian-server --help
@@ -1936,6 +1937,7 @@ merovingian-server --version
 | `--config <path>` | Path to `merovingian.conf`. |
 | `--dry-run` | Validate config and print the startup summary without binding listeners. |
 | `--check-config <path>` | Validate the config file and exit. |
+| `--after-restore` | Give the database a fresh sync token epoch and exit, without serving. Run it once after restoring a backup, before the server first starts on the restored database (see [Restore and recovery validation](#restore-and-recovery-validation), ADR-0592). Refuses the `memory` backend; cannot be combined with `--dry-run` or `--bootstrap-admin`. |
 | `--bootstrap-admin <localpart>` | Create an admin account during startup, then continue serving. Requires `--bootstrap-admin-password-file`. |
 | `--bootstrap-admin-password-file <path>` | Nonempty, service-owned mode-0400 regular password file, at most 4096 bytes; symlinks are rejected and the first line is read into locked memory. |
 | `--plan-config-reload <current> <next>` | Compare two configs and report reloadability. |
@@ -3067,14 +3069,19 @@ and signing identity. Keep client/federation exposure and outbound federation
 blocked during validation, while allowing any database connection required.
 
 A restore sets the server's sync streams back, so clients hold tokens from a
-later point. A client that syncs soon after the restore is given a full initial
-sync and carries on. A client that stays offline while the server issues as many
-stream positions as the backup lost presents a token that looks current, and
-skips what was numbered below it, to-device messages included. E2EE room keys
-sent to that device in that window are gone from the server. Signing in again
-resets the client's sync state but does not bring them back. Recover the keys
-from the user's key backup, or have them shared again, where that is available;
-messages whose keys cannot be recovered stay unreadable (ADR-0315).
+later point than the restored database. Unless the server can tell those tokens
+apart, a client that stays offline until the server has issued as many stream
+positions as the backup lost presents a token that looks current, and the
+to-device messages numbered below it, E2EE room keys among them, are deleted as
+already delivered. Step 3 below prevents this: `--after-restore` gives the
+restored database a fresh sync token epoch, so every token issued before the
+restore is served as a full initial sync and acknowledges nothing (ADR-0592).
+Every client resyncs from scratch once; none loses a message. Run it once after
+every restore, before the server first starts on the restored database; running
+it a second time costs clients one more initial sync and nothing else. A restore
+that skipped it can still be fixed by stopping the server and running it, but
+messages already lost in between stay lost.
+
 The commands below assume a root shell, `backup` pointing at the recovered
 set, and no existing destination database/file; they deliberately do not drop
 or overwrite a live database. Start a fresh root shell with fail-fast handling;
@@ -3123,17 +3130,29 @@ until that failure is resolved.
    test "$(sqlite3 -readonly /var/lib/merovingian/merovingian.sqlite3 'PRAGMA integrity_check;')" = ok
    ```
 
-3. Validate configuration as the service account:
+3. Start a fresh sync token epoch on the restored database, as the service
+   account, before anything else starts the server on it:
+
+   ```bash
+   sudo -u merovingian merovingian-server --config /etc/merovingian/merovingian.conf --after-restore
+   ```
+
+   It opens the database, replaces its epoch, logs `stream_token_epoch.restarted`
+   with the previous and the replacement epoch, and exits `0`. It refuses the
+   `memory` backend, and cannot be combined with `--dry-run` or
+   `--bootstrap-admin`. On any failure it exits non-zero: do not start the
+   server on the restored database until it has succeeded.
+4. Validate configuration as the service account:
    `sudo -u merovingian merovingian-server --check-config /etc/merovingian/merovingian.conf`.
    This checks config and secret-file admission; it does **not** prove a
    database connection, migration, worker launch or successful startup.
-4. Start the isolated service and inspect its startup/hardening results,
+5. Start the isolated service and inspect its startup/hardening results,
    database/schema admission and worker readiness. Compare the published server
    signing key and server name with the recovery record. Through the loopback
    client listener, check `/_matrix/client/versions`, authenticate a known test
    account, read existing room history and download an existing media item.
    Confirm both main and worker database access work without widening grants.
-5. Stop the isolated instance before transferring it to the live deployment,
+6. Stop the isolated instance before transferring it to the live deployment,
    then restore the intended listener/proxy exposure and network access. Keep
    the original stopped. Retain the pre-restore and pre-upgrade recovery sets;
    rollback requires a compatible binary, database and matching key/config set,

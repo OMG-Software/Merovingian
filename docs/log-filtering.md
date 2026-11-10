@@ -130,6 +130,7 @@ used as the first argument to `observability::log_diagnostic` and `log_diagnosti
 | `key_query` | Key query and one-time-key claim, local and remote, accepted or rejected |
 | `server_discovery` | Federation server discovery: well-known, SRV and direct, and rejections |
 | `sync_notifier` | Sync stream publish, change wake-up and long-poll timeout |
+| `stream_token_epoch` | The database's sync token epoch: created at first start, replaced by `--after-restore`, or refused |
 | `tls` | TLS context set-up and handshake accept or reject |
 
 Unrecognised module names are accepted and the level is recorded —

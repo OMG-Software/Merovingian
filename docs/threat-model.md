@@ -2802,6 +2802,12 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
   and other users' to-device messages were deleted undelivered. **Mitigation:** no client input moves the counter, a
   token ahead of the streams is an initial sync, and the allocator refuses to wrap (ADR-0315).
+- **A database restore made old sync tokens look current (issue 550).** A client offline from a restore until the
+  counter passed its token presented a position the server issued again, and the to-device rows numbered at or below
+  it (room keys) were deleted as acknowledged. **Mitigation:** sync tokens, sliding sync `pos` and the `to_device`
+  extension's position carry the database's random stream token epoch; `merovingian-server --after-restore` replaces
+  it, and a token from another epoch acknowledges nothing (ADR-0592). **Residual risk:** a restore that skips
+  `--after-restore` keeps the gap until the step is run. Tests: `[restore]`.
 - **Reads that scaled with a room or space a user controls held the runtime lock (audit run-2 F-10, F-32, F-33, F-39).**
   `/members` probed a vector once per member, `/hierarchy` scanned all state three times per child and walked the whole
   tree for every page, `/threads` parsed every event on the server and looked roots up linearly, and one long message

@@ -69,11 +69,14 @@ because their callers can be a worker waiting on an IPC reply.
 ### Negative Consequences
 
 * A client whose token is ahead after a database restore gets a full initial sync.
-* A client that stays offline from a restore until the counter has passed its token cannot be told apart from a
-  current one. Rows numbered after the restore at or below that token count as seen, and device-targeted to-device
-  rows among them are purged undelivered. Any sync before then replaces the token, so only a client offline
-  throughout is affected. `ensure_sync_stream_id_ahead_of` did not cover this client either, as it acted only on a
-  presented token. Telling such a token apart needs something the restore does not bring back, so it is left open;
-  the user manual warns operators.
+* A client that stayed offline from a restore until the counter had passed its token could not be told apart from a
+  current one, and device-targeted to-device rows numbered after the restore at or below its token were purged
+  undelivered. This gap is closed by [ADR-0592](0592-sync-tokens-carry-a-stream-token-epoch-that-a-restore-replaces.md):
+  sync tokens carry a stream token epoch that `merovingian-server --after-restore` replaces, so every token from
+  before a restore is served as an initial sync.
 * A database already holding a poisoned watermark refuses every sync-stream write until an operator repairs it.
   It is not repaired automatically: lowering the counter would reuse ids that clients may have seen.
+
+## Links
+
+* Refined by [ADR-0592](0592-sync-tokens-carry-a-stream-token-epoch-that-a-restore-replaces.md)

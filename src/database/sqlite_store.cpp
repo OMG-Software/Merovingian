@@ -1105,6 +1105,11 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.event_stream_watermark = parse_u64(column_text(row, 0));
                          }) &&
+               // ADR-0592: the epoch every sync token is issued in.
+               load_rows(connection, "SELECT epoch FROM stream_token_epoch",
+                         [&store](sqlite3_stmt& row) {
+                             store.stream_token_epoch = parse_u64(column_text(row, 0));
+                         }) &&
                load_rows(connection,
                          "SELECT user_id, medium, address, country, id_server, added_at_ms, validated_at_ms, bound, "
                          "client_secret, sid FROM account_threepids ORDER BY user_id, medium, address",
