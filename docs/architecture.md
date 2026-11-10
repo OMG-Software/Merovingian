@@ -580,7 +580,8 @@ a forwarded request. The main handler hashes the frame's argument before taking 
 only through `IpcChannel::consume_pending_relay`, which applies the parent's liveness, deadline and verified-origin
 checks and marks the first equal unused permit used. A refused relay is logged at warning level and answered with the
 provider's empty answer. The worker's handlers read the argument through the functions main uses
-(`federation/worker_relay_binding.hpp`), so the two cannot disagree. The directory, public rooms, event and `make_join`
+(`federation/worker_relay_binding.hpp` and `core::query_parameter`), so the two cannot disagree, and the worker builds
+and sends its four frames only through `federation_worker::worker_relay_frame` / `relay_to_main`. The directory, public rooms, event and `make_join`
 relays stay unbound: they read only what the worker's role may already read.
 
 ### IPC reader/dispatch split

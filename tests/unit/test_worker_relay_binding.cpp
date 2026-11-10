@@ -18,7 +18,6 @@
 namespace
 {
 
-using merovingian::federation::request_query_parameter;
 using merovingian::federation::user_devices_path_user_id;
 using merovingian::federation::verified_request_relay_digests;
 using merovingian::federation::worker_relay_digest;
@@ -109,19 +108,14 @@ SCENARIO("a relay digest depends on the relay's kind and its whole argument", "[
     }
 }
 
-SCENARIO("the relay argument extractors read what the federation handlers read", "[unit][ghsa-3p5v][relay-binding]")
+SCENARIO("the device-list relay argument is read as the federation handler reads it",
+         "[unit][ghsa-3p5v][relay-binding]")
 {
-    GIVEN("request targets with and without the parameter or path segment")
+    GIVEN("request targets with and without the path segment")
     {
-        WHEN("the query parameter and the device-list user are extracted")
+        WHEN("the device-list user is extracted")
         {
-            THEN("the first matching parameter is decoded, and an absent one is empty")
-            {
-                CHECK(request_query_parameter("/q?a=1&user_id=%40b%3Ac&user_id=%40d%3Ae", "user_id") == "@b:c");
-                CHECK(request_query_parameter("/q?user_idx=1", "user_id").empty());
-                CHECK(request_query_parameter("/q", "user_id").empty());
-            }
-            AND_THEN("the device-list path's user is decoded, and a path naming nothing or another route has none")
+            THEN("the device-list path's user is decoded, and a path naming nothing or another route has none")
             {
                 CHECK(user_devices_path_user_id("/_matrix/federation/v1/user/devices/%40b%3Ac?x=1") ==
                       std::optional<std::string>{"@b:c"});

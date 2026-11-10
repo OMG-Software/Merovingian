@@ -49,6 +49,32 @@ namespace
 
 } // namespace
 
+auto query_parameter(std::string_view target, std::string_view name) -> std::string
+{
+    auto const query_start = target.find('?');
+    if (query_start == std::string_view::npos)
+    {
+        return {};
+    }
+    auto remaining = target.substr(query_start + 1U);
+    while (!remaining.empty())
+    {
+        auto const amp = remaining.find('&');
+        auto const pair = remaining.substr(0U, amp);
+        auto const eq = pair.find('=');
+        if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
+        {
+            return percent_decode(pair.substr(eq + 1U));
+        }
+        if (amp == std::string_view::npos)
+        {
+            break;
+        }
+        remaining = remaining.substr(amp + 1U);
+    }
+    return {};
+}
+
 auto percent_decode(std::string_view encoded) -> std::string
 {
     auto result = std::string{};

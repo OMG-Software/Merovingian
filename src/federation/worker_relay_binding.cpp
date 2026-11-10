@@ -56,32 +56,6 @@ namespace
 
 } // namespace
 
-auto request_query_parameter(std::string_view target, std::string_view name) -> std::string
-{
-    auto const query_start = target.find('?');
-    if (query_start == std::string_view::npos)
-    {
-        return {};
-    }
-    auto remaining = target.substr(query_start + 1U);
-    while (!remaining.empty())
-    {
-        auto const amp = remaining.find('&');
-        auto const pair = remaining.substr(0U, amp);
-        auto const eq = pair.find('=');
-        if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
-        {
-            return core::percent_decode(pair.substr(eq + 1U));
-        }
-        if (amp == std::string_view::npos)
-        {
-            break;
-        }
-        remaining = remaining.substr(amp + 1U);
-    }
-    return {};
-}
-
 auto user_devices_path_user_id(std::string_view target) -> std::optional<std::string>
 {
     auto const path = target.substr(0U, target.find('?'));
@@ -124,7 +98,7 @@ auto verified_request_relay_digests(std::string_view method, std::string_view ta
         }
         break;
     case FederationEndpoint::query_profile:
-        if (auto const user_id = request_query_parameter(target, "user_id"); !user_id.empty())
+        if (auto const user_id = core::query_parameter(target, "user_id"); !user_id.empty())
         {
             std::ignore = append_digest(digests, WorkerRelayKind::profile_query, user_id);
         }

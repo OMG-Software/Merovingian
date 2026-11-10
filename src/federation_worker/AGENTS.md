@@ -19,6 +19,7 @@ because it is the process most exposed to hostile input, holds as little trust a
 | `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
+| `worker_relay_frame.cpp` | `worker_relay_frame` / `relay_to_main`: the claim and key/profile query relay frames and their send, bound to the request being served (rule 12) |
 | `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `WorkerEventLoop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
@@ -129,9 +130,11 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 12. **A claim or key/profile query relay names the request it serves (GHSA-3p5v-vrg8-f545, ADR-0595).** The
    `one_time_keys_claim_provider`, `device_keys_query_provider`, `user_devices_provider` and `profile_query_provider`
-   overrides put `current_fed_parent_request_id` in the frame and relay nothing when it is 0. They relay the argument the
-   federation handler passed unchanged (the request body, or the user ID read by `worker_relay_binding.hpp`): main admits
-   only a digest of that exact argument, once, for the verified request it forwarded.
+   overrides send through `relay_to_main` (`worker_relay_frame.cpp`), which puts `current_fed_parent_request_id` in the
+   frame and sends nothing when it is 0. They relay the argument the federation handler passed unchanged (the request
+   body, or the user ID read by `worker_relay_binding.hpp` and `core::query_parameter`): main admits only a digest of
+   that exact argument, once, for the verified request it forwarded. Never build one of these frames by hand: main's
+   relay tests run against `worker_relay_frame`, so a hand-built frame is one no test has seen.
 
 ## Hardening
 
@@ -171,6 +174,7 @@ worker under the filter and is the regression test for it.
   `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
   (tag `[worker_db_uri]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
+- `tests/unit/test_worker_relay_frame.cpp` — `worker_relay_frame` and `relay_to_main` (tag `[relay-frame]`)
 - `tests/unit/test_worker_hardening_threads.cpp` — forked real-kernel proof (tag `[worker_hardening]`) that a
   thread created before hardening is confined by TSYNC and that a logger that logged before hardening has
   created no thread, so its later writers inherit Landlock and seccomp; SKIPs with a message on kernels

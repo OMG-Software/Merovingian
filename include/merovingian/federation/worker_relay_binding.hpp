@@ -7,8 +7,8 @@
 // A worker serving a forwarded request may relay four calls to main that reach data its own database role is
 // denied: a one-time-key claim (which deletes keys), a device-keys query, a device list and a profile. Main admits
 // such a relay only against a digest it computed itself from the request it forwarded, once. The argument each
-// digest covers is extracted by the functions below, which the federation handlers also use, so the worker and
-// main can never disagree about it.
+// digest covers is extracted by the functions below and core::query_parameter, which the federation handlers also use,
+// so the worker and main can never disagree about it.
 
 #include "merovingian/federation/WorkerRelayKind.hpp"
 
@@ -19,9 +19,6 @@
 
 namespace merovingian::federation
 {
-
-// The percent-decoded value of the first `name` parameter in the query string of `target`, or "" when absent.
-[[nodiscard]] auto request_query_parameter(std::string_view target, std::string_view name) -> std::string;
 
 // The user ID `GET /_matrix/federation/v1/user/devices/{userId}` names: the percent-decoded path segment after the
 // prefix, the query string ignored. nullopt when the path is not that route's or names nothing.

@@ -48,8 +48,10 @@ provider's empty answer.
 
 The digest hashes `"relay:"`, the relay kind's name and the argument's length ahead of the argument, so a device-list
 permit cannot be spent as a profile query, and no relay digest equals an EDU digest. The worker's federation handlers
-read the argument with the same functions main uses (`request_query_parameter`, `user_devices_path_user_id`), so the
-two cannot drift apart.
+read the argument with the same functions main uses (`core::query_parameter`, `user_devices_path_user_id`), so the
+two cannot drift apart. The worker builds and sends the four frames only through `federation_worker::worker_relay_frame`
+and `relay_to_main`, and main's relay scenarios run against frames built by the same function, so the frame tested is
+the frame the worker sends.
 
 Relays left unbound, and why:
 
