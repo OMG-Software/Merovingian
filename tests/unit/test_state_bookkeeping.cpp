@@ -11,7 +11,7 @@
 // directly — the same functions src/homeserver/local_http_router.cpp's
 // ingest_pdu_event wires into the inbound PDU path. See
 // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md and
-// tests/unit/test_pdu_ingestion_state_groups.cpp for the end-to-end proof
+// tests/integration/test_pdu_ingestion_state_groups_flow.cpp for the end-to-end proof
 // through ingest_pdu_event itself.
 //
 // Spec: docs/matrix-v1.19-spec/server-server-api.md — "Checks performed on

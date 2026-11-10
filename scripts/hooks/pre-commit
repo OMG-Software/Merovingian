@@ -9,4 +9,5 @@ cd "$repo_root"
 bash scripts/reject-unsafe.sh
 sh scripts/check-catch2-bdd-tests.sh "$repo_root"
 sh scripts/check-unit-test-registration.sh "$repo_root"
+sh scripts/check-unit-test-isolation.sh "$repo_root"
 sh scripts/check-staged-changelog-docs.sh "$repo_root"

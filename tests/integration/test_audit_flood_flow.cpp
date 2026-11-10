@@ -434,3 +434,38 @@ SCENARIO("A login with a huge identifier containing line feeds logs bounded "
         }
     }
 }
+
+SCENARIO("Audit events that are not per-request rejections are neither sampled nor lost",
+         "[homeserver][audit][flood][auth-1]")
+{
+    GIVEN("a started runtime")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(flood_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& database = runtime.homeserver.database;
+        auto const rows_before = durable_audit_rows(database.persistent_store);
+
+        WHEN("more login-success audit events than the in-memory cap are appended")
+        {
+            auto const total = merovingian::database::max_in_memory_audit_events + 300U;
+            for (auto i = std::size_t{0U}; i < total; ++i)
+            {
+                merovingian::homeserver::append_local_audit(database, merovingian::observability::AuditCategory::auth,
+                                                            "auth.login", "@alice:example.org", std::to_string(i),
+                                                            "ok");
+            }
+
+            THEN("every event reached the durable store while both in-memory windows stayed at the cap")
+            {
+                REQUIRE(durable_audit_rows(database.persistent_store) - rows_before == total);
+                REQUIRE(database.audit_events.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(database.persistent_store.audit_log.size() ==
+                        merovingian::database::max_in_memory_audit_events);
+                REQUIRE(database.audit_events.back().target == std::to_string(total - 1U));
+                REQUIRE(database.persistent_store.audit_log.back().target == std::to_string(total - 1U));
+            }
+        }
+    }
+}

@@ -13,6 +13,10 @@ No mocks. Use a real in-process SQLite store or a PostgreSQL test database.
 - Tests that require a live database connection
 - Tests that exercise a complete user-visible action end-to-end (register → login → send message → sync)
 - Tests that require a listening HTTP server
+- Tests that build a homeserver runtime (`start_runtime`, `start_client_server`, `wire_federation_callbacks`) or drive the
+  client-server stack (`handle_client_server_request`), even when they then call one service function directly. Unit
+  files may not name these functions (ADR-0593, `scripts/check-unit-test-isolation.sh`). Run one area's scenarios by tag,
+  for example `merovingian-integration-tests "[homeserver][rooms]"`
 
 ## What does NOT belong here
 

@@ -24,6 +24,16 @@ This rule applies to:
 - Prefer one behavioral assertion group per test.
 - Security-sensitive code requires negative-path tests.
 
+## Unit or integration
+
+A unit test exercises one module. A scenario that builds a homeserver runtime (`start_runtime`, `start_client_server`,
+`wire_federation_callbacks`) or drives the client-server stack (`handle_client_server_request`,
+`handle_client_server_http_request`, `run_client_server_flow`) is an integration test, even when it then calls a single
+service function: starting a runtime wires config, the store, the signing key and every service. Such scenarios go in
+`tests/integration/test_<name>_flow.cpp`; `scripts/check-unit-test-isolation.sh` fails the suite when a file under
+`tests/unit/` names one of those functions (ADR-0593). The directory guides, `tests/unit/AGENTS.md` and
+`tests/integration/AGENTS.md`, have the rest of the split.
+
 ## Concurrency and locking tests
 
 Assert on what a thread holding none of the resource can observe, not on what a

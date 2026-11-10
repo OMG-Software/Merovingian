@@ -84,7 +84,7 @@ using merovingian::homeserver::HomeserverRuntime;
 
 // Seeds a room whose genesis (create/power_levels/member) is recorded both
 // as ordinary events+current_state (so build_pdu_auth_event_map's auth
-// checks succeed, matching test_federation_pdu_ingest_concurrency.cpp's
+// checks succeed, matching test_federation_pdu_ingest_concurrency_flow.cpp's
 // seed_room) and as ADR-0064 phase-A state-group/forward-extremity rows
 // (mirroring what migration 015 seeds for a pre-existing room), so a real
 // inbound PDU whose prev_event is the genesis tip finds a state group.

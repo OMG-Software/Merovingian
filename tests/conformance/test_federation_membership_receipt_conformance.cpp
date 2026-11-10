@@ -179,7 +179,7 @@ struct MembershipRoute final
 // The endpoints themselves list only a signature failure among the reasons to
 // refuse the event: "servers SHOULD return `M_INVALID_PARAM` if: The join event
 // fails a signature check". A hash mismatch therefore reaches the acceptor, which
-// redacts it (test_membership_acceptor_receipt_checks.cpp); a bad signature is
+// redacts it (test_membership_acceptor_receipt_checks_flow.cpp); a bad signature is
 // still refused (audit R06).
 SCENARIO("Direct membership endpoints pass a hash-mismatched event on for redaction and refuse a bad signature",
          "[federation][conformance][membership][r06]")

@@ -22,7 +22,7 @@
 // (unlike the federation outbound path); the injectable
 // `trust_safety_policy_server` hook stands in for the network round trip
 // instead, exactly as the existing #415 regression unit test
-// (test_federation_runtime_callbacks.cpp) already does for the federation
+// (test_federation_runtime_callbacks_flow.cpp) already does for the federation
 // path.
 
 #include "../support/ScopedThreadJoin.hpp"

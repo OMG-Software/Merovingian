@@ -3,7 +3,7 @@
 #include "../support/in_memory_database_config.hpp"
 //
 // Error, boundary, and anomaly tests for room_service functions not covered
-// by test_homeserver_vertical_slice.cpp or test_client_server.cpp.
+// by test_homeserver_vertical_slice_flow.cpp or test_client_server_endpoints_flow.cpp.
 //
 // Coverage:
 //   - ban_user: unauthenticated rejected; non-existent room rejected; creator

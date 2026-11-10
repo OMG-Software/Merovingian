@@ -401,7 +401,7 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
 // Directly seeds `remote_user` as an already-joined member of `room_id`,
 // without driving a real make_join/send_join handshake (out of scope here —
 // see test_join_room_flow.cpp for that path). Mirrors the seeding technique
-// tests/unit/test_federation_pdu_ingest_concurrency.cpp uses for its
+// tests/integration/test_federation_pdu_ingest_concurrency_flow.cpp uses for its
 // remote-member fixture: writes LocalRoom::members, the PersistentMembership
 // row, and a real (state-key, event) pair so build_pdu_auth_event_map finds a
 // sender_member entry when a later PDU from this sender is authorized.

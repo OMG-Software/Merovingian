@@ -63,24 +63,6 @@
 
 namespace
 {
-
-[[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    // A runtime refuses to mint a signing secret it cannot encrypt at rest
-    // (0.12.5 audit, finding 1), so every fixture needs a master key.
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    merovingian::tests::enable_token_registration(security);
-    return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::tests::in_memory_database_config(),
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-    };
-}
-
 using namespace merovingian::tests;
 
 } // namespace
@@ -107,46 +89,6 @@ SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[h
                 // Do NOT remove/change - clients parse this exact shape to display errors
                 REQUIRE(body == R"({"errcode":"M_FORBIDDEN","error":"denied"})");
                 REQUIRE(merovingian::homeserver::is_matrix_error_response(response));
-            }
-        }
-    }
-}
-
-// ─── MSC4186 sliding sync no-pos repeated poll returns delta ─────────────────
-// matrix-rust-sdk sends timeout=0 (no pos in URL) alongside every timeout=30000
-// long-poll to get an immediate snapshot.  Before this fix the server used
-// since_event_ordering=0 for all no-pos requests, re-delivering every room
-// event on every cycle (17 KB per call) and causing the SDK to reset and loop.
-// After the fix, the second and subsequent no-pos requests on a connection that
-// already has state use conn.last_event_ordering as the baseline, returning an
-// empty rooms{} when nothing has changed.
-
-SCENARIO("Sliding Sync diagnostic fields require explicit debug startup enablement",
-         "[homeserver][sync][sliding-sync][observability]")
-{
-    GIVEN("a registration-enabled server configuration")
-    {
-        auto const config = registration_enabled_config();
-
-        WHEN("the server starts without --debug")
-        {
-            auto const started = merovingian::homeserver::start_client_server(config);
-
-            THEN("the sensitive request-shape diagnostics are disabled")
-            {
-                REQUIRE(started.started);
-                REQUIRE_FALSE(started.runtime.sliding_sync_debug_diagnostics_enabled);
-            }
-        }
-
-        WHEN("the server is started with the --debug diagnostic mode")
-        {
-            auto const started = merovingian::homeserver::start_client_server(config, {.debug_startup_enabled = true});
-
-            THEN("the runtime permits Sliding Sync diagnostic fields")
-            {
-                REQUIRE(started.started);
-                REQUIRE(started.runtime.sliding_sync_debug_diagnostics_enabled);
             }
         }
     }

@@ -42,6 +42,7 @@ class HookToolingTests(unittest.TestCase):
         self.assertIn("bash scripts/reject-unsafe.sh", hook)
         self.assertIn("sh scripts/check-catch2-bdd-tests.sh", hook)
         self.assertIn("sh scripts/check-unit-test-registration.sh", hook)
+        self.assertIn("sh scripts/check-unit-test-isolation.sh", hook)
         self.assertIn("sh scripts/check-staged-changelog-docs.sh", hook)
 
     def test_reject_unsafe_gate_requires_review_for_manual_lock_release(self) -> None:

@@ -204,26 +204,3 @@ SCENARIO("An outbound deadline reports the time left and when it has passed", "[
         }
     }
 }
-
-SCENARIO("A runtime started from configuration derives its outbound caps from the configured pool size",
-         "[http-1][http-2][homeserver]")
-{
-    GIVEN("a configuration with a main request pool of thirty-two threads")
-    {
-        auto config = merovingian::config::Config{};
-        config.server().http.request_threads = 32U;
-        config.database() = merovingian::tests::in_memory_database_config();
-        config.security().secrets.master_key_file = merovingian::tests::shared_master_key_file();
-
-        WHEN("the runtime starts")
-        {
-            auto const started = start_runtime(config);
-
-            THEN("the global outbound cap is half the configured pool")
-            {
-                REQUIRE(started.started);
-                REQUIRE(started.runtime.client_outbound_proxy_policy.global_cap == 16U);
-            }
-        }
-    }
-}

@@ -3,7 +3,7 @@
 
 // AUTH-1 (security-audit-report-2026-09-29.md): every attacker-controlled audit
 // field is bounded to `max_audit_field_bytes` before it is stored or logged.
-// These scenarios pin the bounding helper on its own; test_audit_flood.cpp
+// These scenarios pin the bounding helper on its own; test_audit_flood_flow.cpp
 // covers the wiring through the audit-append layer.
 
 #include "merovingian/database/PersistentStore.hpp"

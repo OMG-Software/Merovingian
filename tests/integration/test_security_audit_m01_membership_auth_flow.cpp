@@ -138,7 +138,7 @@ struct SignedMembershipPdu final
 
 // Build a properly signed m.room.member PDU (join, leave, or knock) from the
 // remote server. Mirrors make_signed_join_body() in
-// tests/unit/test_federation_invite_join.cpp, generalised over `membership`.
+// tests/integration/test_federation_invite_join_flow.cpp, generalised over `membership`.
 [[nodiscard]] auto make_signed_membership_body(std::string const& room_id, std::string const& sender,
                                                std::string const& state_key, std::string const& membership,
                                                std::vector<std::string> const& auth_events = {},
@@ -179,7 +179,7 @@ struct SignedMembershipPdu final
 // Plant an invite event directly into the store (simulates a local user
 // inviting a remote user, which normally goes through room_service and
 // stores the event through the ordinary path). Copied from
-// tests/unit/test_federation_invite_join.cpp's plant_invite_event().
+// tests/integration/test_federation_invite_join_flow.cpp's plant_invite_event().
 auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std::string const& room_id,
                         std::string const& sender_user_id, std::string const& invited_user_id,
                         std::string const& invite_event_id) -> void

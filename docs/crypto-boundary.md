@@ -281,7 +281,7 @@ The IPC channel is tested by `tests/unit/test_ipc_framing.cpp` covering:
 concurrent key exchange, request/response pairing, notification delivery,
 timeout behaviour when no reply arrives. That the worker's provider refuses to
 sign is covered by `tests/unit/test_crypto.cpp` and
-`tests/unit/test_server_signing_key_lifecycle.cpp` (tag `[worker_signing_refused]`),
+`tests/integration/test_server_signing_key_lifecycle_flow.cpp` (tag `[worker_signing_refused]`),
 and that main refuses a `sign_request` without signing or taking the runtime lock
 by `tests/integration/test_federation_worker_flow.cpp` (same tag).
 

@@ -42,8 +42,12 @@
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
@@ -61,6 +65,7 @@
 #include <latch>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1362,6 +1367,31 @@ SCENARIO("Only a call whose answer is checked by signature may be carried by the
                 REQUIRE(worker.calls.load() == 1);
                 REQUIRE(ok);
                 REQUIRE(body == R"({"pdus":[]})");
+            }
+        }
+    }
+}
+
+using namespace merovingian::homeserver;
+
+SCENARIO("A runtime started from configuration derives its outbound caps from the configured pool size",
+         "[http-1][http-2][homeserver]")
+{
+    GIVEN("a configuration with a main request pool of thirty-two threads")
+    {
+        auto config = merovingian::config::Config{};
+        config.server().http.request_threads = 32U;
+        config.database() = merovingian::tests::in_memory_database_config();
+        config.security().secrets.master_key_file = merovingian::tests::shared_master_key_file();
+
+        WHEN("the runtime starts")
+        {
+            auto const started = start_runtime(config);
+
+            THEN("the global outbound cap is half the configured pool")
+            {
+                REQUIRE(started.started);
+                REQUIRE(started.runtime.client_outbound_proxy_policy.global_cap == 16U);
             }
         }
     }

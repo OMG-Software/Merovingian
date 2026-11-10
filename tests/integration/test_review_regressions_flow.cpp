@@ -558,3 +558,410 @@ SCENARIO("leave_room takes the federated make_leave/send_leave path for remote r
         }
     }
 }
+
+SCENARIO("Admin routes split missing-token 401 from non-admin 403", "[homeserver][security][review]")
+{
+    GIVEN("a runtime with an admin user and a regular user")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const admin_user = merovingian::homeserver::bootstrap_admin_user(runtime, "alice", "CorrectHorse7!");
+        auto const admin_login =
+            merovingian::homeserver::login_local_user(runtime, admin_user.value, "CorrectHorse7!", "ADMIN1");
+        auto const normal_user = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse8!",
+                                                                              merovingian::tests::registration_token);
+        auto const normal_login =
+            merovingian::homeserver::login_local_user(runtime, normal_user.value, "CorrectHorse8!", "USER1");
+        REQUIRE(admin_login.ok);
+        REQUIRE(normal_login.ok);
+
+        WHEN("admin, non-admin, and missing-token callers hit the admin health route")
+        {
+            auto const admin_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", admin_login.value, {}});
+            auto const normal_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", normal_login.value, {}});
+            auto const missing_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", {}, {}});
+
+            THEN("admin gets 200, non-admin gets 403, missing token gets 401")
+            {
+                REQUIRE(admin_response.status == 200U);
+                REQUIRE(normal_response.status == 403U);
+                REQUIRE(normal_response.body == "admin privileges required");
+                REQUIRE(missing_response.status == 401U);
+                REQUIRE(missing_response.body == "admin authentication required");
+                REQUIRE_FALSE(
+                    merovingian::homeserver::authenticated_admin_user(runtime, normal_login.value).has_value());
+            }
+        }
+
+        WHEN("non-admin and missing-token callers hit the admin media moderation routes")
+        {
+            // The auth gate fires before any media lookup, so a non-existent
+            // media id still surfaces the 401/403 distinction rather than 404.
+            auto constexpr media_id = std::string_view{"media-not-present"};
+            auto const quarantine_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/quarantine/" + std::string{media_id}, normal_login.value,
+                          "policy review"});
+            auto const quarantine_missing = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_merovingian/admin/media/quarantine/" + std::string{media_id}, {}, "policy review"});
+            auto const release_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_merovingian/admin/media/release/" + std::string{media_id}, normal_login.value, {}});
+            auto const release_missing = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/release/" + std::string{media_id}, {}, {}});
+            auto const remove_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/remove/" + std::string{media_id}, normal_login.value,
+                          "operator removal"});
+            auto const remove_missing = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/remove/" + std::string{media_id}, {}, "operator removal"});
+
+            THEN("non-admin gets 403 and missing token gets 401 on every moderation route")
+            {
+                REQUIRE(quarantine_non_admin.status == 403U);
+                REQUIRE(quarantine_non_admin.body == "admin privileges required");
+                REQUIRE(quarantine_missing.status == 401U);
+                REQUIRE(quarantine_missing.body == "admin authentication required");
+                REQUIRE(release_non_admin.status == 403U);
+                REQUIRE(release_missing.status == 401U);
+                REQUIRE(remove_non_admin.status == 403U);
+                REQUIRE(remove_missing.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime served through federation dispatch mode")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        WHEN("admin, client, and federation key routes are requested")
+        {
+            auto const admin = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+            auto const client_register = merovingian::homeserver::dispatch_local_http_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 merovingian::tests::registration_pipe("alice", "CorrectHorse7!")},
+                merovingian::homeserver::HttpDispatchMode::federation);
+            auto const keys = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+
+            THEN("non-federation surfaces are hidden and federation keys remain reachable")
+            {
+                REQUIRE(admin.status == 404U);
+                REQUIRE(client_register.status == 404U);
+                REQUIRE(keys.status == 200U);
+                REQUIRE(keys.body.find("\"verify_keys\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation auth failures do not surface as client-style 401s", "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime handling a federation request without valid auth")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the inbound federation profile route is requested without an X-Matrix signature")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime, {"GET",
+                          "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Apong.ping.me.uk&field=displayname",
+                          {},
+                          {}});
+
+            THEN("the failure is reported as a server-side federation error instead of 401")
+            {
+                // Synapse can propagate 401 from a federation exchange back to a
+                // client-server request, which Element interprets as an invalid
+                // access token and turns into an automatic logout.
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Pipe-delimited federation fixture auth is rejected on the production federation listener",
+         "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime handling a federation request with legacy pipe-delimited auth")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the inbound federation route is requested with the fixture token format")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime, {"GET",
+                          "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Aexample.org&field=displayname",
+                          "remote.example.org|ed25519:auto|signature|example.org|1000|canonical",
+                          {}});
+
+            THEN("the request is rejected instead of being accepted as real X-Matrix auth")
+            {
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body.find("malformed federation authorization") != std::string::npos);
+                REQUIRE(response.body.find("\"errcode\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id fields",
+         "[homeserver][federation][edu][receipt][review][regression]")
+{
+    GIVEN("a started client-server runtime with a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "receipt-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        // Receipt EDUs are only stored for rooms this server is in (0.12.5
+        // audit, finding 13), and the receipt subject must be a joined member
+        // of the room (FED-8), so seed both a local member and the remote
+        // receipt subject before testing event_ids shape behaviour.
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
+
+        auto const content =
+            R"({"!room:example.org":{"m.read":{"@alice:remote.example.org":{"event_ids":["$event:remote.example.org"],"data":{"ts":42}}}}})";
+        auto const transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.receipt", content);
+        REQUIRE(transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-receipt-1"};
+
+        WHEN("the receipt EDU is delivered through the local federation listener")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *transaction),
+                                     *transaction});
+
+            THEN("the stored receipt uses the first event_ids entry as required by the Matrix shape")
+            {
+                REQUIRE(response.status == 200U);
+                auto const receipt = std::ranges::find_if(runtime.homeserver.database.persistent_store.receipts,
+                                                          [](auto const& candidate) {
+                                                              return candidate.user_id == "@alice:remote.example.org";
+                                                          });
+                REQUIRE(receipt != runtime.homeserver.database.persistent_store.receipts.end());
+                REQUIRE(receipt->event_id == "$event:remote.example.org");
+                REQUIRE(receipt->receipt_type == "m.read");
+            }
+        }
+    }
+}
+
+// Spec (S-S API, m.receipt): "only a single <receipt_type> should be used: m.read.
+// m.read.private MUST NOT appear in this federated m.receipt EDU." A peer that sends other
+// receipt types anyway must not get them stored, because the client-server surface would
+// otherwise have to be trusted to withhold them (CSAZ-4).
+SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federation][edu][receipt][security][csaz-4]")
+{
+    GIVEN("a started client-server runtime with a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "receipt-types-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
+
+        auto const content =
+            R"({"!room:example.org":{)"
+            R"("m.read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":42}}},)"
+            R"("m.read.private":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":43}}},)"
+            R"("m.fully_read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":44}}}}})";
+        auto const transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.receipt", content);
+        REQUIRE(transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-receipt-types-1"};
+
+        WHEN("the EDU carrying m.read, m.read.private and m.fully_read is delivered")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *transaction),
+                                     *transaction});
+
+            THEN("only the m.read receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.homeserver.database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.receipts.front().receipt_type == "m.read");
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound presence EDUs persist non-negative last_active_ago values from the sending origin",
+         "[homeserver][federation][edu][presence][review][regression]")
+{
+    GIVEN("a started client-server runtime and a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "presence-last-active-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+        // Presence is kept only for a remote user who shares a joined room with a local user.
+        auto& memberships = runtime.homeserver.database.persistent_store.memberships;
+        memberships.push_back({"!shared:example.org", "@local:example.org", "join", 1U});
+        memberships.push_back({"!shared:example.org", "@alice:remote.example.org", "join", 2U});
+
+        auto const presence_content = R"({
+            "push":[
+                {
+                    "user_id":"@alice:remote.example.org",
+                    "presence":"online",
+                    "status_msg":"available",
+                    "last_active_ago":42000,
+                    "currently_active":true
+                }
+            ]
+        })";
+        auto const presence_transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.presence", presence_content);
+        REQUIRE(presence_transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-presence-accepted-1"};
+
+        WHEN("the remote sends a valid presence EDU with a non-negative last_active_ago")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *presence_transaction),
+                                     *presence_transaction});
+
+            THEN("the presence snapshot is stored with the provided activity age")
+            {
+                REQUIRE(response.status == 200U);
+                auto const persisted =
+                    std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
+                                         [](merovingian::database::PersistentPresence const& state) {
+                                             return state.user_id == "@alice:remote.example.org";
+                                         });
+                REQUIRE(persisted != runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(persisted->presence == "online");
+                REQUIRE(persisted->status_msg == "available");
+                REQUIRE(persisted->last_active_ago == 42000);
+                REQUIRE(persisted->currently_active);
+            }
+        }
+    }
+}
+
+SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][rooms][review]")
+{
+    GIVEN("a logged-in local user with two rooms")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        auto const first_room = merovingian::homeserver::create_room(runtime, login.value);
+        auto const second_room = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(first_room.ok);
+        REQUIRE(second_room.ok);
+        auto const initial_event_count = runtime.database.persistent_store.events.size();
+
+        WHEN("one event is sent to each room")
+        {
+            auto const first_event = merovingian::homeserver::send_event(
+                runtime, login.value, first_room.value,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"event-one"}})");
+            auto const second_event = merovingian::homeserver::send_event(
+                runtime, login.value, second_room.value,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"event-two"}})");
+
+            THEN("event ids do not collide in persistent storage")
+            {
+                REQUIRE(first_event.ok);
+                REQUIRE(second_event.ok);
+                REQUIRE(first_event.value != second_event.value);
+                REQUIRE(runtime.database.persistent_store.events.size() == initial_event_count + 2U);
+                // The last two events are the sent message events; confirm their
+                // IDs are distinct (the core non-collision invariant).
+                auto const& all_evts = runtime.database.persistent_store.events;
+                REQUIRE(all_evts[all_evts.size() - 2U].event_id != all_evts.back().event_id);
+            }
+        }
+    }
+}
+
+SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][review]")
+{
+    GIVEN("a logged-in local user with a room")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        auto const room = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room.ok);
+        auto const initial_event_count = runtime.database.persistent_store.events.size();
+        auto const initial_state_count = runtime.database.persistent_store.state.size();
+
+        WHEN("a room state event is sent")
+        {
+            auto const event = merovingian::homeserver::send_event(runtime, login.value, room.value,
+                                                                   R"({ "type" : "m.room.topic" , "state_key" : "" })");
+
+            THEN("the event is persisted and materialized as current state")
+            {
+                REQUIRE(event.ok);
+                REQUIRE(runtime.database.persistent_store.events.size() == initial_event_count + 1U);
+                REQUIRE(runtime.database.persistent_store.state.size() == initial_state_count + 1U);
+                // Verify the topic entry was materialised with the correct event id.
+                auto const& state_entries = runtime.database.persistent_store.state;
+                auto const topic_it = std::ranges::find_if(state_entries, [](auto const& s) {
+                    return s.event_type == "m.room.topic" && s.state_key.empty();
+                });
+                REQUIRE(topic_it != state_entries.end());
+                REQUIRE(topic_it->event_id == event.value);
+            }
+        }
+    }
+}
