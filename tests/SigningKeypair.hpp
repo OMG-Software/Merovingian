@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/core/SecretBuffer.hpp"
-#include "merovingian/events/EventId.hpp"
+#include "merovingian/events/EventSigner.hpp"
 
 #include <sodium.h>
 

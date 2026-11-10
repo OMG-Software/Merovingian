@@ -17,6 +17,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
 | `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
 | `PersistentServerSigningKey.cpp` | A stored server signing-key row; wipes the secret on destruction and on overwrite |
+| `PostgresqlConnection.cpp` | `PostgresqlConnection`: runs one prepared statement (binary `bytea` parameters) or a `BEGIN`/`COMMIT` transaction on its libpq connection, and judges whether an idle connection may be reused |
+| `PostgresqlExecution.cpp` | Module-internal (`detail`, `PostgresqlExecution.hpp`): the libpq result helpers `PostgresqlStore.cpp` and `PostgresqlConnection.cpp` share: redacted connection errors, result status, `load_result_rows` (decodes `bytea` columns), `execute_raw_command` |
+| `PostgresqlResultDeleter.cpp` | The `PQclear` deleter for `PostgresqlResultPtr` |
 | `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
 | `LibraryVersions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |

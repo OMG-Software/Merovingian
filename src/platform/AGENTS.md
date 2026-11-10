@@ -10,6 +10,7 @@ This module is security-critical. Changes here affect the server's attack surfac
 | `RuntimeHardening.cpp` | Applies all hardening controls at startup in the correct order |
 | `SeccompHardening.cpp` | Builds and installs the seccomp-BPF syscall allow-list (always with `SECCOMP_FILTER_FLAG_TSYNC`), and probes every task's `Seccomp:`/`NoNewPrivs:` state |
 | `LandlockHardening.cpp` | ADR-0062 part 3: builds and installs the federation worker's Linux Landlock filesystem ruleset (`apply_worker_landlock`); real syscalls sit behind an injectable `LandlockHardeningOps` table, mirroring `media::DecoderHardeningOps` |
+| `LandlockHardeningOps.cpp` | The `LandlockHardeningOps` default constructor: the raw `::syscall` wrappers for the Landlock calls and the kernel ABI structs they pass (Linux only) |
 | `SignalHardening.cpp` | `ignore_sigpipe()`: `sigaction(SIGPIPE, SIG_IGN)`, called first in every executable's `main()` (HTTP-5) |
 | `HardeningSelfCheck.cpp` | Verifies that hardening controls are active; aborts if a required control failed |
 | `ElfProbe.cpp` | Checks ELF binary properties (PIE, stack canaries, RELRO, NX) at startup |

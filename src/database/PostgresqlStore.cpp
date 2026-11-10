@@ -12,6 +12,7 @@
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
 #include "merovingian/database/PostgresqlConnectionHandle.hpp"
 #include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
+#include "merovingian/database/PostgresqlExecution.hpp"
 #include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
 #include "merovingian/database/PostgresqlWritePool.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
@@ -24,7 +25,6 @@
 #include <arpa/inet.h>
 #include <libpq-fe.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -119,15 +119,9 @@ namespace
         return result;
     }
 
-    struct PostgresqlResultDeleter final
-    {
-        auto operator()(PGresult* result) const noexcept -> void
-        {
-            PQclear(result);
-        }
-    };
-
-    using PostgresqlResultPtr = std::unique_ptr<PGresult, PostgresqlResultDeleter>;
+    using detail::connection_error;
+    using detail::execute_raw_command;
+    using detail::load_result_rows;
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
@@ -223,190 +217,6 @@ namespace
             }
             destinations.remove_prefix(comma + 1U);
         }
-    }
-
-    [[nodiscard]] auto connection_error(PGconn& /*connection*/) -> std::string
-    {
-        // The host, dbname, user and even malformed options may contain secrets.
-        return "PostgreSQL connection failed (connection details redacted)";
-    }
-
-    [[nodiscard]] auto result_error(PGresult& result) -> std::string
-    {
-        auto const* error = PQresultErrorMessage(&result);
-        if (error == nullptr || std::string_view{error}.empty())
-        {
-            return "PostgreSQL statement failed";
-        }
-        return std::string{error};
-    }
-
-    [[nodiscard]] auto result_is_success(PGresult& result) noexcept -> bool
-    {
-        auto const status = PQresultStatus(&result);
-        return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
-    }
-
-    [[nodiscard]] auto command_is_success(PGresult& result) noexcept -> bool
-    {
-        return PQresultStatus(&result) == PGRES_COMMAND_OK;
-    }
-
-    // PostgreSQL's built-in type OID for bytea (pg_type.dat). Every `BLOB` column
-    // in the schema is translated to BYTEA, so this one OID is how a result
-    // column is recognised as binary, whichever table it came from.
-    constexpr auto bytea_type_oid = Oid{17U};
-
-    // Returns nullopt when a bytea value cannot be decoded: the caller fails the
-    // whole query rather than hand back an empty or garbled secret.
-    [[nodiscard]] auto load_result_rows(PGresult& result) -> std::optional<std::vector<std::vector<std::string>>>
-    {
-        auto rows = std::vector<std::vector<std::string>>{};
-        auto const row_count = PQntuples(&result);
-        auto const column_count = PQnfields(&result);
-        if (row_count <= 0 || column_count <= 0)
-        {
-            return rows;
-        }
-
-        // Result values come back in text format, where a bytea column is its
-        // `\x` hex form (`SET bytea_output = 'hex'` is pinned at connection
-        // open). Decode those columns here, once, so no caller ever sees hex
-        // and no per-table special case is needed.
-        auto column_is_bytea = std::vector<bool>{};
-        column_is_bytea.reserve(static_cast<std::size_t>(column_count));
-        for (auto column = 0; column < column_count; ++column)
-        {
-            column_is_bytea.push_back(PQftype(&result, column) == bytea_type_oid);
-        }
-
-        rows.reserve(static_cast<std::size_t>(row_count));
-        for (auto row = 0; row < row_count; ++row)
-        {
-            auto values = std::vector<std::string>{};
-            values.reserve(static_cast<std::size_t>(column_count));
-            for (auto column = 0; column < column_count; ++column)
-            {
-                if (PQgetisnull(&result, row, column) == 1)
-                {
-                    values.emplace_back();
-                    continue;
-                }
-                auto const* value = PQgetvalue(&result, row, column);
-                auto const length = PQgetlength(&result, row, column);
-                auto text = value == nullptr ? std::string{} : std::string{value, static_cast<std::size_t>(length)};
-                if (column_is_bytea[static_cast<std::size_t>(column)])
-                {
-                    auto decoded = decode_postgresql_bytea_hex(text);
-                    if (!decoded.has_value())
-                    {
-                        return std::nullopt;
-                    }
-                    text = std::move(*decoded);
-                }
-                values.push_back(std::move(text));
-            }
-            rows.push_back(std::move(values));
-        }
-        return rows;
-    }
-
-    [[nodiscard]] auto execute_raw_command(PGconn& connection, std::string_view sql) -> bool
-    {
-        auto command = std::string{sql};
-        auto result = PostgresqlResultPtr{PQexec(&connection, command.c_str())};
-        return result != nullptr && command_is_success(*result);
-    }
-
-    [[nodiscard]] auto execute_prepared_statement(PGconn& connection, PreparedStatement const& statement) -> QueryResult
-    {
-        auto const validation = prepared_statement_is_valid(statement);
-        if (!validation.valid)
-        {
-            return {false, validation.reason, {}};
-        }
-        if (statement.parameters.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        {
-            return {false, "too many PostgreSQL statement parameters", {}};
-        }
-
-        // Parameters marked `binary` (every `BLOB` column: media_blobs.bytes,
-        // server_signing_keys.secret_key) travel in libpq's binary format, with
-        // an explicit length and a declared bytea type. The raw bytes are then
-        // never treated as a null-terminated C string (which truncates at the
-        // first NUL), never parsed as text (which rejects invalid UTF-8) and
-        // never subject to bytea's backslash escaping, so any byte sequence
-        // arrives exactly. Declaring the type also keeps a parameter that
-        // appears in more than one expression (`$5 = ''`, `ELSE $5`) bytea
-        // rather than leaving it to inference. Text parameters keep the text
-        // format and the server's own inference (type 0).
-        auto const parameter_count = statement.parameters.size();
-        auto parameter_types = std::vector<Oid>(parameter_count, Oid{0U});
-        auto parameter_values = std::vector<char const*>{};
-        parameter_values.reserve(parameter_count);
-        auto parameter_lengths = std::vector<int>(parameter_count, 0);
-        auto parameter_formats = std::vector<int>(parameter_count, 0);
-        for (auto index = std::size_t{0U}; index < parameter_count; ++index)
-        {
-            auto const& parameter = statement.parameters[index];
-            parameter_values.push_back(parameter.value.c_str());
-            if (!parameter.binary)
-            {
-                continue;
-            }
-            if (parameter.value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-            {
-                return {false, "PostgreSQL binary parameter is too large", {}};
-            }
-            parameter_types[index] = bytea_type_oid;
-            parameter_lengths[index] = static_cast<int>(parameter.value.size());
-            parameter_formats[index] = 1;
-        }
-
-        auto* const values = parameter_values.empty() ? nullptr : parameter_values.data();
-        auto* const types = parameter_types.empty() ? nullptr : parameter_types.data();
-        auto* const lengths = parameter_lengths.empty() ? nullptr : parameter_lengths.data();
-        auto* const formats = parameter_formats.empty() ? nullptr : parameter_formats.data();
-        auto result = PostgresqlResultPtr{PQexecParams(
-            &connection, statement.sql.c_str(), static_cast<int>(parameter_count), types, values, lengths, formats, 0)};
-        if (result == nullptr)
-        {
-            return {false, connection_error(connection), {}};
-        }
-        if (!result_is_success(*result))
-        {
-            return {false, result_error(*result), {}};
-        }
-        auto rows = load_result_rows(*result);
-        if (!rows.has_value())
-        {
-            return {false, "PostgreSQL returned a malformed bytea value", {}};
-        }
-        return {true, {}, std::move(*rows)};
-    }
-
-    [[nodiscard]] auto execute_postgresql_transaction(PGconn& connection,
-                                                      std::vector<PreparedStatement> const& statements) -> bool
-    {
-        if (!execute_raw_command(connection, "BEGIN"))
-        {
-            return false;
-        }
-        for (auto const& statement : statements)
-        {
-            auto result = execute_prepared_statement(connection, statement);
-            if (!result.ok)
-            {
-                std::ignore = execute_raw_command(connection, "ROLLBACK");
-                return false;
-            }
-        }
-        if (!execute_raw_command(connection, "COMMIT"))
-        {
-            std::ignore = execute_raw_command(connection, "ROLLBACK");
-            return false;
-        }
-        return true;
     }
 
     // Schema.cpp's SchemaTableDefinition::columns_sql is shared, backend-agnostic
@@ -1919,49 +1729,6 @@ namespace
     }
 
 } // namespace
-
-PostgresqlConnection::PostgresqlConnection() noexcept = default;
-PostgresqlConnection::PostgresqlConnection(std::unique_ptr<PostgresqlConnectionHandle> handle) noexcept
-    : handle_{std::move(handle)}
-{
-}
-PostgresqlConnection::PostgresqlConnection(PostgresqlConnection&& other) noexcept = default;
-auto PostgresqlConnection::operator=(PostgresqlConnection&& other) noexcept -> PostgresqlConnection& = default;
-PostgresqlConnection::~PostgresqlConnection() = default;
-
-auto PostgresqlConnection::open() const noexcept -> bool
-{
-    return handle_ != nullptr && handle_->connection != nullptr && PQstatus(handle_->connection.get()) == CONNECTION_OK;
-}
-
-auto PostgresqlConnection::execute(PreparedStatement const& statement) -> QueryResult
-{
-    if (!open())
-    {
-        return {false, "PostgreSQL connection is not open", {}};
-    }
-
-    return execute_prepared_statement(*handle_->connection, statement);
-}
-
-auto PostgresqlConnection::execute_transaction(std::vector<PreparedStatement> const& statements) -> bool
-{
-    return open() && execute_postgresql_transaction(*handle_->connection, statements);
-}
-
-auto PostgresqlConnection::reusable() noexcept -> bool
-{
-    if (!open() || PQtransactionStatus(handle_->connection.get()) != PQTRANS_IDLE)
-    {
-        return false;
-    }
-    // An idle connection has nothing to read: this server never LISTENs, so
-    // readable means the server has sent something unasked, which in practice
-    // is a termination notice followed by end-of-file (restart, idle reaper,
-    // pg_terminate_backend). Such a connection is replaced, not reused.
-    auto readiness = ::pollfd{PQsocket(handle_->connection.get()), POLLIN, 0};
-    return readiness.fd >= 0 && ::poll(&readiness, 1U, 0) == 0;
-}
 
 namespace detail
 {

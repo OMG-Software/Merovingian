@@ -9,7 +9,13 @@
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
+#include "merovingian/homeserver/ConnectionAdmission.hpp"
+#include "merovingian/homeserver/ConnectionContext.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/HttpConnection.hpp"
+#include "merovingian/homeserver/HttpServerInternal.hpp"
+#include "merovingian/homeserver/ParkingReservation.hpp"
+#include "merovingian/homeserver/RoundOutcome.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
@@ -77,6 +83,9 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    using detail::resume_parked_poll;
+    using detail::serve_request_round;
 
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
@@ -164,9 +173,7 @@ namespace
         log_diagnostic("sync.exception", std::move(fields));
     }
 
-    // Per-read I/O timeout. Every wait below is also bounded by the deadline
-    // of whichever phase the connection is in; this is the ceiling.
-    constexpr auto receive_timeout_milliseconds = 15000;
+    using detail::receive_timeout_milliseconds;
     // B3: slowloris hardening for the request HEAD, which a worker reads once
     // the connection is readable (ADR-0077: the first byte is waited for by
     // the dispatcher, never by a worker):
@@ -339,184 +346,6 @@ namespace
     // releases everything it holds (per-IP slot, parking reservation).
     // ---------------------------------------------------------------------
 
-    using ConnectionOwner = std::unique_ptr<net::ConnectionParker::Connection>;
-
-    // A counted slot in one of the dispatcher's parking budgets (kept-alive
-    // connections between requests; new connections before their first
-    // request). The counter is shared so a reservation may outlive the
-    // dispatcher that issued it.
-    class ParkingReservation final
-    {
-    public:
-        using Counter = std::shared_ptr<std::atomic<std::uint32_t>>; // SHARED_PTR: reviewed — outlives the dispatcher
-
-        ParkingReservation(ParkingReservation const&) = delete;
-        auto operator=(ParkingReservation const&) -> ParkingReservation& = delete;
-        ParkingReservation(ParkingReservation&& other) noexcept
-            : m_counter{std::move(other.m_counter)}
-        {
-        }
-        auto operator=(ParkingReservation&& other) noexcept -> ParkingReservation&
-        {
-            if (this != &other)
-            {
-                release();
-                m_counter = std::move(other.m_counter);
-            }
-            return *this;
-        }
-        ~ParkingReservation()
-        {
-            release();
-        }
-
-        // A slot when fewer than `cap` are held; nullopt at the cap. A cap of
-        // 0 means unbounded.
-        [[nodiscard]] static auto try_acquire(Counter const& counter, std::uint32_t cap)
-            -> std::optional<ParkingReservation>
-        {
-            auto current = counter->load(std::memory_order_relaxed);
-            while (cap == 0U || current < cap)
-            {
-                if (counter->compare_exchange_weak(current, current + 1U, std::memory_order_relaxed,
-                                                   std::memory_order_relaxed))
-                {
-                    return ParkingReservation{counter};
-                }
-            }
-            return std::nullopt;
-        }
-
-    private:
-        explicit ParkingReservation(Counter counter) noexcept
-            : m_counter{std::move(counter)}
-        {
-        }
-        auto release() noexcept -> void
-        {
-            if (m_counter != nullptr)
-            {
-                m_counter->fetch_sub(1U, std::memory_order_relaxed);
-                m_counter = nullptr;
-            }
-        }
-
-        Counter m_counter{};
-    };
-
-    // One client connection and everything that travels with it.
-    class HttpConnection final : public net::ConnectionParker::Connection
-    {
-    public:
-        HttpConnection(core::SocketHandle client_socket, HttpDispatchMode dispatch_mode, std::string peer,
-                       std::string key) noexcept
-            : socket{std::move(client_socket)}
-            , mode{dispatch_mode}
-            , peer_addr{std::move(peer)}
-            , client_key{std::move(key)}
-            , opened_at{std::chrono::steady_clock::now()}
-        {
-        }
-        HttpConnection(HttpConnection const&) = delete;
-        auto operator=(HttpConnection const&) -> HttpConnection& = delete;
-        HttpConnection(HttpConnection&&) = delete;
-        auto operator=(HttpConnection&&) -> HttpConnection& = delete;
-        ~HttpConnection() override
-        {
-            // TLS state first (it does not own the descriptor), then an
-            // orderly shutdown; ~socket closes the descriptor last.
-            tls.reset();
-            if (socket.valid())
-            {
-                std::ignore = ::shutdown(socket.native_handle(), SHUT_RDWR);
-            }
-        }
-
-        [[nodiscard]] auto fd() const noexcept -> int override
-        {
-            return socket.native_handle();
-        }
-
-        // Pipelined bytes already read past the previous request, or TLS input
-        // OpenSSL holds: the next request is here even if the socket is quiet.
-        [[nodiscard]] auto has_buffered_input() const noexcept -> bool override
-        {
-            return !leftover.empty() || (tls.has_value() && tls->has_pending_input());
-        }
-
-        auto on_park_expired() noexcept -> void override
-        {
-            try
-            {
-                if (first_request)
-                {
-                    log_diagnostic("connection.first_byte_timeout",
-                                   {
-                                       {"phase", tls_handshake_owed ? "tls_handshake" : "request", false}
-                    });
-                }
-                else
-                {
-                    log_diagnostic("connection.keep_alive_idle_expired", {});
-                }
-            }
-            catch (...)
-            {
-            }
-        }
-
-        // Declared first so it is destroyed last: everything below may still
-        // refer to the descriptor while it is torn down.
-        core::SocketHandle socket;
-        // ADR-0072: the connection's per-IP slot; empty when exempt.
-        std::optional<http::ConnectionLimiter::Slot> connection_slot{};
-        std::optional<TlsConnection> tls{};
-        // Set on a TLS listener until the handshake has run (on a worker).
-        std::optional<std::reference_wrapper<TlsServerContext>> tls_handshake_owed{};
-        HttpDispatchMode mode;
-        std::string peer_addr;
-        // The per-client worker-share key; empty for a trusted proxy.
-        std::string client_key;
-        // Bytes read past the previous request (a pipelined next request).
-        std::string leftover{};
-        std::uint32_t requests_served{0U};
-        std::chrono::steady_clock::time_point opened_at;
-        bool first_request{true};
-        // Held while the connection is parked (see ParkingReservation).
-        std::optional<ParkingReservation> parked_reservation{};
-    };
-
-    [[nodiscard]] auto http_connection(ConnectionOwner const& owner) -> HttpConnection&
-    {
-        // Only HttpConnections are ever parked on an HTTP dispatcher.
-        return dynamic_cast<HttpConnection&>(*owner);
-    }
-
-    // Everything a request round needs besides the connection itself.
-    // `runtime` and `stats` outlive every pool task (main.cpp stops the pools
-    // before the runtime is torn down). `dispatcher` is null for direct
-    // serve_one_http_connection calls, which never keep a connection alive.
-    struct ConnectionContext final
-    {
-        ClientServerRuntime& runtime;
-        HttpServeStats& stats;
-        net::ThreadPool* sync_pool;                     // may be null (tests, no long-poll offload)
-        net::ThreadPool* media_fetch_pool;              // may be null (tests: remote media fetched inline)
-        std::shared_ptr<HttpConnectionDispatcher::Impl> // SHARED_PTR: reviewed — pool tasks keep the dispatcher alive
-            dispatcher;
-        HttpServeTuning tuning;
-        HttpDispatchMode dispatch_mode;
-        std::string peer_addr;
-    };
-
-    struct ConnectionAdmission final
-    {
-        bool admitted{false};
-        std::optional<http::ConnectionLimiter::Slot> slot{};
-        // The per-client worker-share key (ADR-0077); empty when exempt.
-        std::string client_key{};
-    };
-
     // ADR-0072: decided at accept time, before a byte is read. A connection
     // from an address in server.trusted_proxies is exempt, because a reverse
     // proxy carries many clients over its own address; per-client limiting
@@ -555,18 +384,6 @@ namespace
         admission.client_key = std::move(key);
         return admission;
     }
-
-    enum class RoundOutcome : std::uint8_t
-    {
-        // One request round finished and the connection must close.
-        close_connection,
-        // One request round finished with Connection: keep-alive; the
-        // connection goes back to the dispatcher for its next request.
-        continue_keep_alive,
-        // The request was a long-poll handed off to the sync pool, which now
-        // owns the connection (and hands it back to the dispatcher itself).
-        transferred,
-    };
 
     // The effective keep-alive policy for one connection. Keep-alive is off
     // when there is no dispatcher to park the connection on: direct
@@ -1427,78 +1244,6 @@ auto http_request_limits_for(ClientServerRuntime const& runtime, HttpDispatchMod
     return limits;
 }
 
-// The dispatcher's internals (ADR-0077). Shared: every pool task that carries a
-// connection holds a reference, so a worker finishing a round can always hand
-// its connection back (or close it once stopped) even if the public
-// HttpConnectionDispatcher has been destroyed.
-//
-// Threads: the parker thread calls dispatch(); pool workers call serve(); the
-// accept threads call accept(); workers and sync-pool tasks call
-// park_for_next_request(). None of these holds a lock across another: the
-// parker's lock is internal to net::ConnectionParker and is never held while
-// this class runs, and the parking counters are atomics.
-class HttpConnectionDispatcher::Impl final : public std::enable_shared_from_this<HttpConnectionDispatcher::Impl>
-{
-public:
-    Impl(ClientServerRuntime& runtime_ref, HttpServeStats& stats_ref, net::ThreadPool& pool_ref,
-         net::ThreadPool* sync_pool_ptr, HttpServeTuning tuning_value, net::ThreadPool* media_fetch_pool_ptr)
-        : runtime{runtime_ref}
-        , stats{stats_ref}
-        , pool{pool_ref}
-        , sync_pool{sync_pool_ptr}
-        , media_fetch_pool{media_fetch_pool_ptr}
-        , tuning{tuning_value}
-    {
-    }
-    Impl(Impl const&) = delete;
-    auto operator=(Impl const&) -> Impl& = delete;
-    Impl(Impl&&) = delete;
-    auto operator=(Impl&&) -> Impl& = delete;
-    ~Impl() = default;
-
-    [[nodiscard]] auto start() -> bool;
-    auto request_stop() -> void;
-    [[nodiscard]] auto running() const -> bool;
-    // Whether a long-poll with nothing to return can park in the notifier's registry (ADR-0569): the registry was
-    // started by this dispatcher and is still running.
-    [[nodiscard]] auto parks_polls() const -> bool;
-
-    // Accept path: an admitted connection waits, parked, for its first byte.
-    auto accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode, ConnectionAdmission admission,
-                std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void;
-    // A worker or a sync-pool task hands a kept-alive connection back.
-    auto park_for_next_request(ConnectionOwner owner) -> void;
-
-    [[nodiscard]] auto try_reserve_keep_alive(std::uint32_t cap) -> std::optional<ParkingReservation>
-    {
-        return ParkingReservation::try_acquire(m_parked_keep_alive, cap);
-    }
-    [[nodiscard]] auto parked_keep_alive() const noexcept -> std::uint32_t
-    {
-        return m_parked_keep_alive->load(std::memory_order_relaxed);
-    }
-
-    ClientServerRuntime& runtime;
-    HttpServeStats& stats;
-    net::ThreadPool& pool;
-    net::ThreadPool* sync_pool;
-    net::ThreadPool* media_fetch_pool;
-    HttpServeTuning const tuning;
-
-private:
-    auto park_awaiting_first_request(ConnectionOwner owner) -> void;
-    auto dispatch(net::ConnectionParker::Dispatched dispatched) -> void;
-    auto serve(net::ConnectionParker::Dispatched dispatched) -> void;
-
-    ParkingReservation::Counter m_parked_keep_alive{std::make_shared<std::atomic<std::uint32_t>>(0U)};
-    ParkingReservation::Counter m_parked_new{std::make_shared<std::atomic<std::uint32_t>>(0U)};
-    // Created by start() before any listener runs; the pointer never changes
-    // afterwards, so the threads that use it need no lock to read it.
-    std::unique_ptr<net::ConnectionParker> m_parker{};
-    // Set by start(), before any listener runs: this dispatcher started the notifier's registry.
-    bool m_owns_poll_registry{false};
-};
-
 namespace
 {
 
@@ -1796,6 +1541,11 @@ namespace
         finish_sync_handoff(handoff, final_result);
     }
 
+} // namespace
+
+namespace detail
+{
+
     // The registry's resume callback: runs on the registry thread, so it only hands the poll to the sync pool. A
     // pool that is stopping or full drops it, which closes the connection.
     auto resume_parked_poll(net::ThreadPool& pool, std::unique_ptr<sync::ParkedPoll> base, sync::WakeReason reason)
@@ -1812,6 +1562,11 @@ namespace
             log_diagnostic("sync.resume_refused", {});
         }
     }
+
+} // namespace detail
+
+namespace
+{
 
     // A remote media request handed to the media fetch pool (ADR-0121). It owns
     // the connection from the moment it is submitted, and its admission slot
@@ -1902,6 +1657,11 @@ namespace
         }
         handoff.connection.reset();
     }
+
+} // namespace
+
+namespace detail
+{
 
     // Serves exactly one request round on `connection`: read the head, drain
     // the body exactly, route, write one response. Pipelined bytes past this
@@ -2225,207 +1985,7 @@ namespace
                                                                   : RoundOutcome::close_connection;
     }
 
-} // namespace
-
-auto HttpConnectionDispatcher::Impl::start() -> bool
-{
-    if (m_parker != nullptr)
-    {
-        return m_parker->running();
-    }
-    // At most one connection per worker is out of the parker at once, so the
-    // pool's queue never holds more than its workers; and one client key may
-    // hold at most a quarter of them (HTTP-1). A trusted proxy's connections
-    // carry an empty key and are exempt from the second cap only.
-    auto const workers = std::max<std::size_t>(1U, pool.worker_count());
-    auto const limits = net::ConnectionParker::Limits{workers, std::max<std::size_t>(1U, workers / 4U)};
-    m_parker = std::make_unique<net::ConnectionParker>(
-        limits, [weak = weak_from_this()](net::ConnectionParker::Dispatched dispatched) {
-            if (auto const self = weak.lock(); self != nullptr)
-            {
-                self->dispatch(std::move(dispatched));
-            }
-        });
-    if (!m_parker->start())
-    {
-        return false;
-    }
-    // Parking needs a sync pool to resume into and a notifier; otherwise long-polls keep their thread. A registry
-    // already started by another dispatcher on this runtime is left to it.
-    if (sync_pool != nullptr && runtime.sync_notifier != nullptr)
-    {
-        auto const& http_settings = runtime.homeserver.config.server().http;
-        auto const park_limits =
-            sync::ParkedPollLimits{http_settings.sync_max_in_flight, http_settings.sync_max_per_user};
-        m_owns_poll_registry = runtime.sync_notifier->parking().start(
-            park_limits, [pool = sync_pool](std::unique_ptr<sync::ParkedPoll> poll, sync::WakeReason reason) {
-                resume_parked_poll(*pool, std::move(poll), reason);
-            });
-    }
-    return true;
-}
-
-auto HttpConnectionDispatcher::Impl::parks_polls() const -> bool
-{
-    return m_owns_poll_registry && runtime.sync_notifier != nullptr && runtime.sync_notifier->parking().running();
-}
-
-auto HttpConnectionDispatcher::Impl::request_stop() -> void
-{
-    if (m_parker != nullptr)
-    {
-        m_parker->request_stop();
-    }
-    // After the parker: closes every parked long-poll and joins the registry thread before the pools stop (ADR-0569).
-    if (m_owns_poll_registry)
-    {
-        runtime.sync_notifier->parking().request_stop();
-    }
-}
-
-auto HttpConnectionDispatcher::Impl::running() const -> bool
-{
-    return m_parker != nullptr && m_parker->running();
-}
-
-auto HttpConnectionDispatcher::Impl::accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode,
-                                            ConnectionAdmission admission,
-                                            std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void
-{
-    ++stats.accepted_connections;
-    auto owner = std::make_unique<HttpConnection>(std::move(socket), mode, std::move(peer_addr),
-                                                  std::move(admission.client_key));
-    auto& connection = *owner;
-    if (admission.slot.has_value())
-    {
-        connection.connection_slot.emplace(std::move(*admission.slot));
-    }
-    connection.tls_handshake_owed = tls_context;
-    park_awaiting_first_request(std::move(owner));
-}
-
-// A connection that has not yet sent its first request: newly accepted, or a
-// TLS connection whose handshake has just completed. It must send a byte within
-// the first-byte timeout, and at most listeners.max_queued_connections such
-// connections wait at once (0: unbounded).
-auto HttpConnectionDispatcher::Impl::park_awaiting_first_request(ConnectionOwner owner) -> void
-{
-    auto& connection = http_connection(owner);
-    auto const cap = runtime.homeserver.config.listeners().max_queued_connections;
-    auto reservation = ParkingReservation::try_acquire(m_parked_new, cap);
-    if (!reservation.has_value())
-    {
-        log_diagnostic("connection.pending_cap_reached", {
-                                                             {"cap", std::to_string(cap), false}
-        });
-        return; // ~owner closes it
-    }
-    connection.parked_reservation = std::move(reservation);
-    auto key = connection.client_key;
-    if (!m_parker->park(std::move(owner), std::move(key), std::chrono::steady_clock::now() + tuning.first_byte_timeout))
-    {
-        log_diagnostic("connection.refused_stopping", {});
-    }
-}
-
-auto HttpConnectionDispatcher::Impl::park_for_next_request(ConnectionOwner owner) -> void
-{
-    auto& connection = http_connection(owner);
-    auto const idle = std::chrono::seconds{runtime.homeserver.config.server().http.keep_alive_idle_seconds};
-    auto key = connection.client_key;
-    // A stopped parker closes the connection: shutdown in progress.
-    std::ignore = m_parker->park(std::move(owner), std::move(key), std::chrono::steady_clock::now() + idle);
-}
-
-// On the parker thread, with no lock held. The job is shared only because pool
-// tasks are copyable std::functions; exactly one task runs it.
-auto HttpConnectionDispatcher::Impl::dispatch(net::ConnectionParker::Dispatched dispatched) -> void
-{
-    auto job = std::make_shared<net::ConnectionParker::Dispatched>( // SHARED_PTR: reviewed — copyable pool task
-        std::move(dispatched));
-    auto self = shared_from_this();
-    if (!pool.submit([self, job] {
-            self->serve(std::move(*job));
-        }))
-    {
-        // Only when the pool is stopping: the parker never has more
-        // connections out than the pool has workers. ~job closes it.
-        log_diagnostic("connection.dispatch_refused", {});
-    }
-}
-
-// On a pool worker. `dispatched.share` is this connection's claim on the
-// worker caps; it is released when this returns, whichever way.
-auto HttpConnectionDispatcher::Impl::serve(net::ConnectionParker::Dispatched dispatched) -> void
-{
-    auto owner = std::move(dispatched.connection);
-    auto& connection = http_connection(owner);
-    // No longer parked: its parking slot goes back.
-    connection.parked_reservation.reset();
-    if (connection.tls_handshake_owed.has_value())
-    {
-        // The ClientHello is readable; the handshake is bounded by the
-        // handshake timeout and counts against the client's worker share.
-        auto& tls_context = connection.tls_handshake_owed->get();
-        connection.tls_handshake_owed.reset();
-        auto accepted = accept_tls_connection(tls_context, connection.fd(), receive_timeout_milliseconds);
-        if (!accepted.ok())
-        {
-            ++stats.rejected_requests;
-            log_diagnostic("tls.handshake.rejected", {
-                                                         {"reason", accepted.error, false}
-            });
-            return; // ~owner closes it
-        }
-        connection.tls.emplace(std::move(*accepted.connection));
-        park_awaiting_first_request(std::move(owner));
-        return;
-    }
-    auto ctx = ConnectionContext{runtime, stats,           sync_pool,           media_fetch_pool, shared_from_this(),
-                                 tuning,  connection.mode, connection.peer_addr};
-    switch (serve_request_round(ctx, connection, owner))
-    {
-    case RoundOutcome::close_connection:
-        return; // ~owner closes it
-    case RoundOutcome::continue_keep_alive:
-        park_for_next_request(std::move(owner));
-        return;
-    case RoundOutcome::transferred:
-        return; // the sync-pool task owns it
-    }
-}
-
-HttpConnectionDispatcher::HttpConnectionDispatcher(ClientServerRuntime& runtime, HttpServeStats& stats,
-                                                   net::ThreadPool& pool, net::ThreadPool* sync_pool,
-                                                   HttpServeTuning tuning, net::ThreadPool* media_fetch_pool)
-    : m_impl{std::make_shared<Impl>(runtime, stats, pool, sync_pool, tuning, media_fetch_pool)}
-{
-}
-
-HttpConnectionDispatcher::~HttpConnectionDispatcher()
-{
-    m_impl->request_stop();
-}
-
-auto HttpConnectionDispatcher::start() -> bool
-{
-    return m_impl->start();
-}
-
-auto HttpConnectionDispatcher::request_stop() -> void
-{
-    m_impl->request_stop();
-}
-
-auto HttpConnectionDispatcher::running() const -> bool
-{
-    return m_impl->running();
-}
-
-auto HttpConnectionDispatcher::impl() noexcept -> Impl&
-{
-    return *m_impl;
-}
+} // namespace detail
 
 auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
     -> LocalHttpResponse

@@ -16,6 +16,8 @@ homeserver_sources = files(
   'PasswordReset.cpp',
   'FederationProxy.cpp',
   'FederationRequestRouting.cpp',
+  'HttpConnection.cpp',
+  'HttpConnectionDispatcher.cpp',
   'HttpServer.cpp',
   'LocalSmokeFlow.cpp',
   'LocalHttpRouter.cpp',

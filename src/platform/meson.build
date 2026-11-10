@@ -3,6 +3,7 @@ platform_sources = files(
   'FileMetadataSupport.cpp',
   'HardeningSelfCheck.cpp',
   'LandlockHardening.cpp',
+  'LandlockHardeningOps.cpp',
   'RuntimeHardening.cpp',
   'SeccompHardening.cpp',
   'SignalHardening.cpp',

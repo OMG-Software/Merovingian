@@ -8,7 +8,9 @@ This is the largest and most complex module — read this file carefully before 
 | File | Responsibility |
 |---|---|
 | `ClientServerRuntime.cpp` | `handle_client_server_request()` — main dispatch for all `/_matrix/client/...` and `/_matrix/media/...` endpoints |
-| `HttpServer.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers |
+| `HttpServer.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers; serves one request round on a connection (`detail::serve_request_round`, declared with the receive timeout and `resume_parked_poll` in the module-internal `HttpServerInternal.hpp`) |
+| `HttpConnectionDispatcher.cpp` | `HttpConnectionDispatcher` and its `Impl` (defined in `HttpConnectionDispatcher.hpp`): parks connections between requests and hands a readable one to the main pool (ADR-0077) |
+| `HttpConnection.cpp` | `HttpConnection`: one client connection and what travels with it (socket, TLS state, per-IP slot, parking reservation); `ParkingReservation`, `ConnectionContext`, `ConnectionAdmission` and `RoundOutcome` each have their own header |
 | `LocalHttpRouter.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
 | `LocalServices.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
 | `HomeserverRuntime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
