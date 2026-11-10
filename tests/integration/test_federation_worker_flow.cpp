@@ -53,9 +53,11 @@
 #include "merovingian/federation/InboundEduEnvelope.hpp"
 #include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/worker_relay_binding.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -2642,30 +2644,16 @@ SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against m
         REQUIRE(merovingian::database::store_one_time_key(
             runtime.database.persistent_store, {user_id, device_id, key_id, R"({"key":"fakeCurve25519KeyMaterial"})"}));
 
-        WHEN("an otk_claim_ingest request shaped like a real worker's is handled")
+        WHEN("a worker's otk_claim_ingest frame is handled")
         {
             auto const claim_request_body =
                 std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
 
-            // Mirror ipc::ipc_json_str's escaping, same as the other scenarios above.
-            auto const escape = [](std::string_view raw) {
-                auto escaped = std::string{'"'};
-                for (auto const ch : raw)
-                {
-                    if (ch == '"' || ch == '\\')
-                    {
-                        escaped += '\\';
-                    }
-                    escaped += ch;
-                }
-                escaped += '"';
-                return escaped;
-            };
-
-            auto const request_json =
-                std::string{R"({"type":"otk_claim_ingest","request_body":)"} + escape(claim_request_body) + "}";
-
-            auto const response_json = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+            auto const response_json = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::otk_claim, claim_request_body,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_otk_claim_ingest_request(runtime, frame, channel);
+                });
 
             THEN("the response echoes the claimed key back for the requested device")
             {
@@ -2722,16 +2710,21 @@ SCENARIO("handle_otk_claim_ingest_request cannot reissue a one-time key a prior 
 
         auto const claim_request_body =
             std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
-        auto const request_json = std::string{R"({"type":"otk_claim_ingest","request_body":)"} +
-                                  ipc_escape_json_string(claim_request_body) + "}";
 
-        auto const first_response = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+        auto const first_response = merovingian::tests::permitted_relay(
+            merovingian::federation::WorkerRelayKind::otk_claim, claim_request_body,
+            [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                return merovingian::homeserver::handle_otk_claim_ingest_request(runtime, frame, channel);
+            });
         REQUIRE(first_response.find("fakeCurve25519KeyMaterial") != std::string::npos);
 
         WHEN("a second otk_claim_ingest request for the same user/device/algorithm is handled immediately after")
         {
-            auto const second_response =
-                merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+            auto const second_response = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::otk_claim, claim_request_body,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_otk_claim_ingest_request(runtime, frame, channel);
+                });
 
             THEN("no key material is returned — the one-time key was already consumed by the first claim")
             {
@@ -2767,10 +2760,12 @@ SCENARIO("handle_otk_claim_ingest_request returns no keys when the requested dev
         {
             auto const claim_request_body =
                 std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
-            auto const request_json = std::string{R"({"type":"otk_claim_ingest","request_body":)"} +
-                                      ipc_escape_json_string(claim_request_body) + "}";
 
-            auto const response_json = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+            auto const response_json = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::otk_claim, claim_request_body,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_otk_claim_ingest_request(runtime, frame, channel);
+                });
 
             THEN("the response body carries an empty one_time_keys object rather than an error or crash")
             {
@@ -2818,13 +2813,13 @@ SCENARIO("handle_user_devices_ingest_request reads a device list from main's own
             runtime.database.persistent_store,
             {user_id, device_id, R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
 
-        WHEN("a user_devices_ingest request shaped like a real worker's is handled")
+        WHEN("a worker's user_devices_ingest frame is handled")
         {
-            auto const request_json =
-                std::string{R"({"type":"user_devices_ingest","user_id":)"} + ipc_escape_json_string(user_id) + "}";
-
-            auto const response_json =
-                merovingian::homeserver::handle_user_devices_ingest_request(runtime, request_json);
+            auto const response_json = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::user_devices, user_id,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_user_devices_ingest_request(runtime, frame, channel);
+                });
 
             THEN("the response reflects main's own store rather than an empty worker-local snapshot")
             {
@@ -2861,14 +2856,15 @@ SCENARIO("handle_device_keys_query_ingest_request reads device keys from main's 
             runtime.database.persistent_store,
             {user_id, device_id, R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
 
-        WHEN("a device_keys_query_ingest request shaped like a real worker's is handled")
+        WHEN("a worker's device_keys_query_ingest frame is handled")
         {
             auto const query_request_body = std::string{R"({"device_keys":{")"} + user_id + R"(":[]}})";
-            auto const request_json = std::string{R"({"type":"device_keys_query_ingest","request_body":)"} +
-                                      ipc_escape_json_string(query_request_body) + "}";
 
-            auto const response_json =
-                merovingian::homeserver::handle_device_keys_query_ingest_request(runtime, request_json);
+            auto const response_json = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::device_keys_query, query_request_body,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_device_keys_query_ingest_request(runtime, frame, channel);
+                });
 
             THEN("the response reflects main's own store rather than an empty worker-local snapshot")
             {
@@ -2904,13 +2900,13 @@ SCENARIO("handle_profile_query_ingest_request reads a profile from main's own st
         REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store,
                                                      {user_id, "Test Display Name", "mxc://example.com/avatar"}));
 
-        WHEN("a profile_query_ingest request shaped like a real worker's is handled")
+        WHEN("a worker's profile_query_ingest frame is handled")
         {
-            auto const request_json =
-                std::string{R"({"type":"profile_query_ingest","user_id":)"} + ipc_escape_json_string(user_id) + "}";
-
-            auto const response_json =
-                merovingian::homeserver::handle_profile_query_ingest_request(runtime, request_json);
+            auto const response_json = merovingian::tests::permitted_relay(
+                merovingian::federation::WorkerRelayKind::profile_query, user_id,
+                [&](std::string const& frame, merovingian::ipc::IpcChannel& channel) {
+                    return merovingian::homeserver::handle_profile_query_ingest_request(runtime, frame, channel);
+                });
 
             THEN("the response reflects main's own store rather than an empty worker-local snapshot")
             {
@@ -2918,6 +2914,224 @@ SCENARIO("handle_profile_query_ingest_request reads a profile from main's own st
                 REQUIRE(response_json.find(R"("found":true)") != std::string::npos);
                 REQUIRE(response_json.find("Test Display Name") != std::string::npos);
                 REQUIRE(response_json.find("mxc://example.com/avatar") != std::string::npos);
+            }
+        }
+    }
+}
+
+// GHSA-3p5v-vrg8-f545 (ADR-0595): a worker relays a one-time-key claim (which deletes the keys it returns) and three
+// key/profile queries to main, and its own database role is denied the tables they read. Main admits such a relay only
+// for the argument of a verified request it forwarded on that channel, once. Spec: server-server-api.md "Claiming
+// one-time keys" (each key claimed is removed from the server).
+SCENARIO("main admits a worker's one-time-key claim only as the verified claim it forwarded",
+         "[integration][federation-worker][e2ee][otk][ghsa-3p5v]")
+{
+    GIVEN("two one-time keys on a local device and the body of a verified claim for one of them")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-otk-binding");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "otk-binding-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        REQUIRE(merovingian::database::store_one_time_key(
+            runtime.database.persistent_store,
+            {user_id, device_id, "signed_curve25519:AAAAAA", R"({"key":"firstCurve25519KeyMaterial"})"}));
+        REQUIRE(merovingian::database::store_one_time_key(
+            runtime.database.persistent_store,
+            {user_id, device_id, "signed_curve25519:BBBBBB", R"({"key":"secondCurve25519KeyMaterial"})"}));
+        auto const held_keys = [&] {
+            return std::ranges::count_if(runtime.database.persistent_store.one_time_keys,
+                                         [&](merovingian::database::PersistentOneTimeKey const& key) {
+                                             return key.user_id == user_id && key.device_id == device_id;
+                                         });
+        };
+
+        auto const claim_body =
+            std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
+        auto const claim_frame =
+            std::string{R"({"type":"otk_claim_ingest","request_body":)"} + ipc_escape_json_string(claim_body) + "}";
+        auto const claim_permit = merovingian::federation::worker_relay_digest(
+            merovingian::federation::WorkerRelayKind::otk_claim, claim_body);
+        REQUIRE(claim_permit.has_value());
+
+        auto channels = merovingian::tests::make_edu_relay_channels();
+        auto context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+
+        WHEN("a worker relays the claim with no parent request")
+        {
+            REQUIRE(context.establish("remote.example", {}, {*claim_permit}));
+            auto const response =
+                merovingian::homeserver::handle_otk_claim_ingest_request(runtime, claim_frame, *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("no key is returned and none is deleted")
+            {
+                INFO("response: " << response);
+                CHECK(response.find("Curve25519KeyMaterial") == std::string::npos);
+                CHECK(held_keys() == 2);
+            }
+        }
+        WHEN("a worker relays the claim under a verified parent that carried no claim, such as a /send")
+        {
+            REQUIRE(context.establish("remote.example"));
+            auto const response = merovingian::homeserver::handle_otk_claim_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::otk_claim, claim_body),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("no key is returned and none is deleted")
+            {
+                INFO("response: " << response);
+                CHECK(response.find("Curve25519KeyMaterial") == std::string::npos);
+                CHECK(held_keys() == 2);
+            }
+        }
+        WHEN("a worker relays a claim for this device under a parent whose verified claim was for another user")
+        {
+            auto const other_body =
+                std::string{R"({"one_time_keys":{"@someone:remote.example":{"D":"signed_curve25519"}}})"};
+            auto const other_permit = merovingian::federation::worker_relay_digest(
+                merovingian::federation::WorkerRelayKind::otk_claim, other_body);
+            REQUIRE(other_permit.has_value());
+            REQUIRE(context.establish("remote.example", {}, {*other_permit}));
+            auto const response = merovingian::homeserver::handle_otk_claim_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::otk_claim, claim_body),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("no key is returned and none is deleted")
+            {
+                INFO("response: " << response);
+                CHECK(response.find("Curve25519KeyMaterial") == std::string::npos);
+                CHECK(held_keys() == 2);
+            }
+        }
+        WHEN("a worker relays the verified claim twice under its one parent")
+        {
+            REQUIRE(context.establish("remote.example", {}, {*claim_permit}));
+            auto const first = merovingian::homeserver::handle_otk_claim_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::otk_claim, claim_body),
+                *channels.main);
+            auto const replay = merovingian::homeserver::handle_otk_claim_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::otk_claim, claim_body),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("the first claims one key and the replay claims nothing, so the second key is still held")
+            {
+                INFO("first: " << first << "\nreplay: " << replay);
+                CHECK(first.find("Curve25519KeyMaterial") != std::string::npos);
+                CHECK(replay.find("Curve25519KeyMaterial") == std::string::npos);
+                CHECK(held_keys() == 1);
+            }
+        }
+        WHEN("a worker relays the verified claim after its parent request has completed")
+        {
+            REQUIRE(context.establish("remote.example", {}, {*claim_permit}));
+            REQUIRE(context.finish());
+            auto const response = merovingian::homeserver::handle_otk_claim_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::otk_claim, claim_body),
+                *channels.main);
+
+            THEN("no key is returned and none is deleted")
+            {
+                INFO("response: " << response);
+                CHECK(response.find("Curve25519KeyMaterial") == std::string::npos);
+                CHECK(held_keys() == 2);
+            }
+        }
+    }
+}
+
+SCENARIO("main admits a worker's key and profile query only as the verified query it forwarded",
+         "[integration][federation-worker][query-relay][ghsa-3p5v]")
+{
+    GIVEN("a local user with a device and a profile")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-query-binding");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "query-binding-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        REQUIRE(merovingian::database::store_device_key(
+            runtime.database.persistent_store,
+            {user_id, device_id, R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
+        REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store,
+                                                     {user_id, "Bound Display Name", "mxc://example.com/avatar"}));
+
+        auto const devices_permit = merovingian::federation::worker_relay_digest(
+            merovingian::federation::WorkerRelayKind::user_devices, user_id);
+        REQUIRE(devices_permit.has_value());
+
+        auto channels = merovingian::tests::make_edu_relay_channels();
+        auto context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+
+        WHEN("a verified device-list request's permit is spent on a profile query for the same user")
+        {
+            REQUIRE(context.establish("remote.example", {}, {*devices_permit}));
+            auto const profile = merovingian::homeserver::handle_profile_query_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::profile_query, user_id),
+                *channels.main);
+            auto const devices = merovingian::homeserver::handle_user_devices_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::user_devices, user_id),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("the profile query is refused, and the refusal leaves the device-list permit for its own relay")
+            {
+                INFO("profile: " << profile << "\ndevices: " << devices);
+                CHECK(profile.find("Bound Display Name") == std::string::npos);
+                CHECK(profile.find(R"("found":true)") == std::string::npos);
+                CHECK(devices.find(device_id) != std::string::npos);
+            }
+        }
+        WHEN("a device-list query for this user is relayed under a parent whose verified request named another user")
+        {
+            auto const other_permit = merovingian::federation::worker_relay_digest(
+                merovingian::federation::WorkerRelayKind::user_devices, "@someone:remote.example");
+            REQUIRE(other_permit.has_value());
+            REQUIRE(context.establish("remote.example", {}, {*other_permit}));
+            auto const devices = merovingian::homeserver::handle_user_devices_ingest_request(
+                runtime, context.frame(merovingian::federation::WorkerRelayKind::user_devices, user_id),
+                *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("it is refused and the device is not disclosed")
+            {
+                INFO("devices: " << devices);
+                CHECK(devices.find(device_id) == std::string::npos);
+            }
+        }
+        WHEN("a keys query is relayed with no parent request")
+        {
+            REQUIRE(context.establish("remote.example"));
+            auto const query_body = std::string{R"({"device_keys":{")"} + user_id + R"(":[]}})";
+            auto const keys_frame = std::string{R"({"type":"device_keys_query_ingest","request_body":)"} +
+                                    ipc_escape_json_string(query_body) + "}";
+            auto const keys =
+                merovingian::homeserver::handle_device_keys_query_ingest_request(runtime, keys_frame, *channels.main);
+            REQUIRE(context.finish());
+
+            THEN("it is refused and the device is not disclosed")
+            {
+                INFO("keys: " << keys);
+                CHECK(keys.find(device_id) == std::string::npos);
             }
         }
     }

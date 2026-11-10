@@ -6,6 +6,7 @@ federation_worker_lib = static_library(
     'ipc_key_fd.cpp',
     'StoreReadGuard.cpp',
     'WorkerEventLoop.cpp',
+    'worker_relay_frame.cpp',
   ),
   include_directories: [inc, include_directories('.')],
   dependencies: [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],

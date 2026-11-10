@@ -98,8 +98,16 @@ struct HomeserverRuntime;
 // Exposed as a free function for the same test-seam reason
 // handle_membership_ingest_request is. Takes and returns the same wire JSON
 // a worker sends/receives over the IPC channel.
-[[nodiscard]] auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
-    -> std::string;
+//
+// This and the three query relays below are admitted only through
+// IpcChannel::consume_pending_relay on `receiving_channel`: the frame's
+// parent_request_id must name a live, signature-verified request main
+// forwarded on that channel, and the relayed argument (claim or query body,
+// user ID) must be the one that request carried. Each permit is spent once.
+// A refused frame gets the provider's empty answer (GHSA-3p5v-vrg8-f545,
+// ADR-0595).
+[[nodiscard]] auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                                   ipc::IpcChannel& receiving_channel) -> std::string;
 
 // Handles a "user_devices_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/user/devices/{userId} so the device list is
@@ -111,16 +119,16 @@ struct HomeserverRuntime;
 // user/device/profile/event query relay"). Exposed as a free function for the same
 // test-seam reason handle_membership_ingest_request is. Takes and returns the
 // same wire JSON a worker sends/receives over the IPC channel.
-[[nodiscard]] auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
-    -> std::string;
+[[nodiscard]] auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                                      ipc::IpcChannel& receiving_channel) -> std::string;
 
 // Handles a "device_keys_query_ingest" IPC request (a worker relaying an
 // inbound POST /_matrix/federation/v1/user/keys/query), for the same reason
 // and against the same stale-snapshot failure mode as
 // handle_user_devices_ingest_request above. See docs/architecture.md,
 // "Federation worker user/device/profile/event query relay".
-[[nodiscard]] auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
-    -> std::string;
+[[nodiscard]] auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                                           ipc::IpcChannel& receiving_channel) -> std::string;
 
 // Handles a "profile_query_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/query/profile), for the same reason and against
@@ -128,8 +136,8 @@ struct HomeserverRuntime;
 // above — PersistentStore::profiles is likewise a worker-startup snapshot
 // never refreshed by a later client-server profile update on main. See
 // docs/architecture.md, "Federation worker user/device/profile/event query relay".
-[[nodiscard]] auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
-    -> std::string;
+[[nodiscard]] auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                                       ipc::IpcChannel& receiving_channel) -> std::string;
 
 // Handles a "directory_query_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/query/directory). The route carries no room ID, so a worker's

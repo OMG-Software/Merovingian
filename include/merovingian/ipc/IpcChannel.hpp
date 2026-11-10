@@ -150,9 +150,11 @@ public:
     // edu_digests are the digests of the EDUs the main-verified request body carries, one per occurrence
     // (F-74, ADR-0395). Like verified_origin they are main-owned and never read from worker JSON; the entry
     // owns them before it is published, and an EDU relay is admitted only against one it has not yet used.
+    // relay_digests are the same for the claim and query relays the request may cause (GHSA-3p5v-vrg8-f545,
+    // ADR-0595): main-owned, made by federation::verified_request_relay_digests, each admitted once.
     [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30},
-                                    std::string_view verified_origin = {}, std::vector<std::string> edu_digests = {})
-        -> std::optional<std::string>;
+                                    std::string_view verified_origin = {}, std::vector<std::string> edu_digests = {},
+                                    std::vector<std::string> relay_digests = {}) -> std::optional<std::string>;
 
     // EDU admission linearizes at this locked check, after the caller has acquired
     // its runtime lock. No pending lock escapes this call or covers a sink callback.
@@ -166,6 +168,13 @@ public:
     // most the transaction's EDU limit); the caller runs the sink after it returns. False for no match.
     [[nodiscard]] auto consume_pending_edu(std::uint64_t parent_request_id, std::string_view claimed_origin,
                                            std::string_view edu_digest) -> bool;
+
+    // The admission for a claim or query relay (GHSA-3p5v-vrg8-f545, ADR-0595): the parent must be live on this
+    // channel with a verified origin, and hold a relay digest equal to relay_digest that no earlier relay used. The
+    // first such digest is marked used under the pending lock, so one verified request authorises each relay once.
+    // The relay carries no origin of its own (the providers take none), so none is compared. Holds the pending lock
+    // only for this call; the caller runs the provider after it returns. False for no match.
+    [[nodiscard]] auto consume_pending_relay(std::uint64_t parent_request_id, std::string_view relay_digest) -> bool;
 
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
@@ -238,6 +247,9 @@ private:
             bool used{false};
         };
         std::vector<EduDigest> edu_digests{};
+        // One per claim or query relay the verified request may cause; `used` set by consume_pending_relay under
+        // pending_mu_. Kept apart from edu_digests so neither admission can spend the other's entries.
+        std::vector<EduDigest> relay_digests{};
         std::chrono::steady_clock::time_point deadline{};
         std::condition_variable cv{};
     };

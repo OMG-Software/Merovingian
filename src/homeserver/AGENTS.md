@@ -516,6 +516,15 @@ authenticated instead (F-74, ADR-0395): `WorkerPool::handle` gives the pending r
 admits it only through `IpcChannel::consume_pending_edu`. Never admit an EDU relay on origin alone, and never run the
 sink with the channel's pending lock held.
 
+The one-time-key claim and the key, device-list and profile query relays (`otk_claim_ingest`, `device_keys_query_ingest`,
+`user_devices_ingest`, `profile_query_ingest`) reach tables the worker's database role is denied, and a claim deletes
+keys, so they are bound the same way (GHSA-3p5v-vrg8-f545, ADR-0595): `WorkerPool::handle` gives a verified request one
+permit (`federation::verified_request_relay_digests`), and each handler hashes the frame's argument with
+`federation::worker_relay_digest` before taking `runtime.mutex` and admits it only through
+`IpcChannel::consume_pending_relay` once the mutex is held, answering a refusal with the provider's empty answer. A new
+relay that reaches data the worker's role cannot read gets a `WorkerRelayKind`, a case in
+`verified_request_relay_digests`, and this check; a relay of data the worker may read needs none.
+
 Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame

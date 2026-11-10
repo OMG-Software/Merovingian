@@ -192,6 +192,32 @@ SCENARIO("URL path component encoding escapes Matrix identifiers for outbound ro
     }
 }
 
+// One named parameter, read the same way by the federation handlers and the worker relay binding (ADR-0595).
+SCENARIO("A single named query parameter is read from its first occurrence and decoded", "[core][query]")
+{
+    GIVEN("request targets naming the parameter twice, a longer name, a bare key, or no query at all")
+    {
+        WHEN("the parameter is read from each")
+        {
+            auto const repeated =
+                merovingian::core::query_parameter("/q?a=1&user_id=%40b%3Ac&user_id=%40d%3Ae", "user_id");
+            auto const longer_name = merovingian::core::query_parameter("/q?user_idx=1", "user_id");
+            auto const bare_key = merovingian::core::query_parameter("/q?user_id&x=1", "user_id");
+            auto const no_query = merovingian::core::query_parameter("/q", "user_id");
+            auto const empty_value = merovingian::core::query_parameter("/q?user_id=", "user_id");
+
+            THEN("only the first exact match counts, decoded, and anything else is empty")
+            {
+                CHECK(repeated == "@b:c");
+                CHECK(longer_name.empty());
+                CHECK(bare_key.empty());
+                CHECK(no_query.empty());
+                CHECK(empty_value.empty());
+            }
+        }
+    }
+}
+
 // Regression for #440: from_hex silently mapped non-hex characters to 0, so
 // malformed sequences like "%ZZ" decoded to NUL bytes that propagated into
 // filter ids and downstream C-string handling.

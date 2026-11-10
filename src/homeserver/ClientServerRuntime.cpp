@@ -10146,32 +10146,6 @@ namespace
         return core::percent_decode_path_component(room_id);
     }
 
-    [[nodiscard]] auto messages_query_value(std::string_view target, std::string_view name) -> std::string
-    {
-        auto const query_start = target.find('?');
-        if (query_start == std::string_view::npos)
-        {
-            return {};
-        }
-        auto remaining = target.substr(query_start + 1U);
-        while (!remaining.empty())
-        {
-            auto const amp = remaining.find('&');
-            auto const pair = remaining.substr(0U, amp);
-            auto const eq = pair.find('=');
-            if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
-            {
-                return core::percent_decode(pair.substr(eq + 1U));
-            }
-            if (amp == std::string_view::npos)
-            {
-                break;
-            }
-            remaining = remaining.substr(amp + 1U);
-        }
-        return {};
-    }
-
     // Spec (Server-side key backups): "When a client uploads a key for a session that the server
     // already has a key for, the server will choose to either keep the existing key or replace it
     // ... if the keys have different values for `is_verified`, then it will keep the key that has
@@ -10515,8 +10489,8 @@ namespace
     {
         auto const& store = rt.homeserver.database.persistent_store;
         // The route has already refused a `dir` that is missing or not "b" or "f".
-        auto const backwards = messages_query_value(target, "dir") != "f";
-        auto const from_text = messages_query_value(target, "from");
+        auto const backwards = core::query_parameter(target, "dir") != "f";
+        auto const from_text = core::query_parameter(target, "from");
         // `from` "can be obtained from a prev_batch or next_batch token returned by the /sync
         // endpoint, or from an end token returned by a previous request to this endpoint". A
         // plain token T is the boundary at event T: backward returns events before T, forward
@@ -10537,7 +10511,7 @@ namespace
         // ordering at which the walk stops: a plain token T stops at the event T; a /sync next_batch names the
         // position just after its newest event N, so backward stops at N and forward at N + 1.
         auto const to_boundary = [&]() -> std::optional<std::uint64_t> {
-            auto const to_text = messages_query_value(target, "to");
+            auto const to_text = core::query_parameter(target, "to");
             if (auto const plain = parse_u64(to_text); plain.has_value())
             {
                 return plain;
@@ -10550,13 +10524,13 @@ namespace
         }();
         // The request's RoomEventFilter selects the returned events (`filter`: "A JSON
         // RoomEventFilter to filter returned events with") and drives lazy-loaded members.
-        auto const room_filter =
-            sync::parse_room_event_filter_argument(messages_query_value(target, "filter")).value_or(sync::RoomFilter{});
+        auto const room_filter = sync::parse_room_event_filter_argument(core::query_parameter(target, "filter"))
+                                     .value_or(sync::RoomFilter{});
         auto const& event_filter = room_filter.timeline;
         // Its `rooms` and `not_rooms` select rooms: a room they exclude contributes no events.
         auto const room_selected = sync::room_passes_filter(room_filter, room_id);
         auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_messages_page_size));
-        if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
+        if (auto const parsed = parse_u64(core::query_parameter(target, "limit")); parsed.has_value())
         {
             limit = static_cast<std::size_t>(
                 std::min<std::uint64_t>(*parsed, static_cast<std::uint64_t>(rt.limits.max_messages_page_size)));
@@ -11561,7 +11535,7 @@ namespace
         -> InitialSyncMessages
     {
         auto limit = std::size_t{20U};
-        if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
+        if (auto const parsed = parse_u64(core::query_parameter(target, "limit")); parsed.has_value())
         {
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
         }
@@ -17286,7 +17260,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
         // "only: ... Supply highlight to return only events where the
         // notification had the highlight tweak set."
-        if (messages_query_value(req.target, "only") == "highlight")
+        if (core::query_parameter(req.target, "only") == "highlight")
         {
             std::erase_if(notifications, [](database::PersistentNotification const& entry) {
                 return !entry.highlight;
@@ -17302,12 +17276,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                               return lhs.stream_ordering > rhs.stream_ordering;
                           });
 
-        auto const from_token = parse_u64(messages_query_value(req.target, "from"));
+        auto const from_token = parse_u64(core::query_parameter(req.target, "from"));
         // Spec leaves the default unspecified; 50 balances a useful first
         // page against response size, clamped to bound a hostile/careless
         // limit= value the same way GET /messages clamps its own.
         auto limit = std::min<std::size_t>(50U, rt.limits.max_notifications_page_size);
-        if (auto const parsed = parse_u64(messages_query_value(req.target, "limit")); parsed.has_value())
+        if (auto const parsed = parse_u64(core::query_parameter(req.target, "limit")); parsed.has_value())
         {
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, rt.limits.max_notifications_page_size));
         }
@@ -19411,7 +19385,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
 
-                auto const filter_argument = messages_query_value(req.target, "filter");
+                auto const filter_argument = core::query_parameter(req.target, "filter");
                 auto const parsed_filter = sync::parse_room_event_filter_argument(filter_argument);
                 if (!parsed_filter.has_value())
                 {
@@ -19422,7 +19396,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // events_after; defaults to 10. Clamp to the same maximum
                 // GET /messages uses to bound resource usage.
                 auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_context_events));
-                if (auto const parsed_limit = parse_u64(messages_query_value(req.target, "limit"));
+                if (auto const parsed_limit = parse_u64(core::query_parameter(req.target, "limit"));
                     parsed_limit.has_value())
                 {
                     limit = static_cast<std::size_t>(std::min<std::uint64_t>(
@@ -20127,7 +20101,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // Spec (GET /messages, `dir`): required, "One of: [b, f]". A missing value is
                 // M_MISSING_PARAM and any other M_INVALID_PARAM, as on /timestamp_to_event, never a
                 // silent backward page.
-                if (auto const dir_text = messages_query_value(req.target, "dir"); dir_text.empty())
+                if (auto const dir_text = core::query_parameter(req.target, "dir"); dir_text.empty())
                 {
                     return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "dir query parameter is required");
                 }
@@ -20137,7 +20111,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
                 // /context, never silently dropped for an unfiltered page.
-                if (!sync::parse_room_event_filter_argument(messages_query_value(req.target, "filter")).has_value())
+                if (!sync::parse_room_event_filter_argument(core::query_parameter(req.target, "filter")).has_value())
                 {
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
                 }
@@ -20830,7 +20804,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
                                 "search_term is longer than " + std::to_string(core::max_search_term_bytes) + " bytes");
         }
-        auto const resume_before = parse_u64(messages_query_value(req.target, "next_batch"));
+        auto const resume_before = parse_u64(core::query_parameter(req.target, "next_batch"));
         return dispatch_resp(req, rt, 200U, search_room_events_json(rt, *user, *parsed_request, resume_before));
     }
 

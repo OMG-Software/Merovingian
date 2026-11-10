@@ -22,6 +22,7 @@ federation_sources = files(
   'server_discovery.cpp',
   'third_party_invite.cpp',
   'transactions.cpp',
+  'worker_relay_binding.cpp',
 )
 
 federation_lib = static_library(

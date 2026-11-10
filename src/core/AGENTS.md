@@ -29,7 +29,8 @@ Low-level utilities used across all other modules. No module-specific logic live
 - `SecretBuffer` must be used for any bytes that must not survive past their scope: tokens,
   private key material, passwords in transit. It zeroes memory on destruction even under exceptions.
 - `FileDescriptor` must be used for all raw OS fds — never store a bare `int` fd outside RAII scope.
-- `query_params` handles percent-decoding per RFC 3986; do not roll your own URL decoding.
+- `query_params` handles percent-decoding per RFC 3986; do not roll your own URL decoding. Read one named parameter
+  with `query_parameter` (first match, decoded), never a private loop over the query string.
 - `Error` is the only error type for `std::expected` returns — no custom error enums in other modules.
 - A semaphore slot is only ever returned by a `SemaphorePermit` destructor, never by a hand-written
   `release()` that a throw can skip. Parallel work with a cap goes through `run_bounded_parallel`

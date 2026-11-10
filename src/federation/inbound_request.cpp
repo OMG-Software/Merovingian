@@ -55,6 +55,7 @@
 #include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/worker_relay_binding.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
@@ -1302,8 +1303,6 @@ namespace
         return {200U, std::move(body)};
     }
 
-    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string;
-
     [[nodiscard]] auto handle_send_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
                                               FederationRoute const& route, FederationRemoteRuntime& remote)
         -> FederationResponse
@@ -1409,7 +1408,7 @@ namespace
         // Spec v1.19 PUT /send_join, query parameter `omit_members`: "If true, indicates that that
         // calling server can accept a reduced response". Only a send_join has it.
         envelope->omit_members = route.endpoint == FederationEndpoint::send_join &&
-                                 query_param_value(request.target, "omit_members") == "true";
+                                 core::query_parameter(request.target, "omit_members") == "true";
         auto const acceptance =
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
@@ -1691,34 +1690,6 @@ namespace
         return {200U, std::move(body)};
     }
 
-    // Extracts and percent-decodes a single named parameter from the query
-    // string of a request target. Returns an empty string when absent.
-    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string
-    {
-        auto const query_start = target.find('?');
-        if (query_start == std::string_view::npos)
-        {
-            return {};
-        }
-        auto remaining = target.substr(query_start + 1U);
-        while (!remaining.empty())
-        {
-            auto const amp = remaining.find('&');
-            auto const pair = remaining.substr(0U, amp);
-            auto const eq = pair.find('=');
-            if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
-            {
-                return core::percent_decode(pair.substr(eq + 1U));
-            }
-            if (amp == std::string_view::npos)
-            {
-                break;
-            }
-            remaining = remaining.substr(amp + 1U);
-        }
-        return {};
-    }
-
     // Spec: GET /_matrix/federation/v1/query/directory
     // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
     //
@@ -1731,7 +1702,7 @@ namespace
         {
             return {501U, "query_directory not implemented"};
         }
-        auto const alias = query_param_value(request.target, "room_alias");
+        auto const alias = core::query_parameter(request.target, "room_alias");
         if (alias.empty())
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "room_alias is required")};
@@ -1780,10 +1751,10 @@ namespace
         auto const parsed =
             request.method == "POST"
                 ? parse_public_rooms_body(request.body)
-                : parse_public_rooms_query(query_param_value(request.target, "limit"),
-                                           query_param_value(request.target, "since"),
-                                           query_param_value(request.target, "include_all_networks"),
-                                           query_param_value(request.target, "third_party_instance_id"));
+                : parse_public_rooms_query(core::query_parameter(request.target, "limit"),
+                                           core::query_parameter(request.target, "since"),
+                                           core::query_parameter(request.target, "include_all_networks"),
+                                           core::query_parameter(request.target, "third_party_instance_id"));
         if (auto const* const refusal = std::get_if<PublicRoomsRefusal>(&parsed); refusal != nullptr)
         {
             return {400U, homeserver::matrix_error(refusal->errcode, refusal->message)};
@@ -1803,7 +1774,7 @@ namespace
         {
             return {501U, "query_profile not implemented"};
         }
-        auto const user_id = query_param_value(request.target, "user_id");
+        auto const user_id = core::query_parameter(request.target, "user_id");
         if (user_id.empty())
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "query/profile requires a user_id parameter")};
@@ -1820,7 +1791,7 @@ namespace
         // set additional key/value pairs." Any key is therefore a valid request; a key the user has not set
         // (`m.tz` included, audit R18) is a field the user does not have, which the spec answers with 404:
         // "the queried field does not exist".
-        auto const field = query_param_value(request.target, "field");
+        auto const field = core::query_parameter(request.target, "field");
         auto const profile = runtime.profile_query_provider(user_id);
         if (!profile.found)
         {
@@ -1905,13 +1876,13 @@ namespace
         {
             return {501U, "query_user_devices not implemented"};
         }
-        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/user/devices/"};
-        auto const path = std::string_view{request.target}.substr(0U, request.target.find('?'));
-        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        // The same extraction main binds a worker's relay of this call to (GHSA-3p5v-vrg8-f545, ADR-0595).
+        auto const path_user_id = user_devices_path_user_id(request.target);
+        if (!path_user_id.has_value())
         {
             return {400U, "user/devices path is malformed"};
         }
-        auto const user_id = core::percent_decode(path.substr(prefix.size()));
+        auto const& user_id = *path_user_id;
         // As for query/profile: a malformed user ID is a bad request, and is never looked up or
         // relayed to main by a worker (F-08).
         if (!auth::user_id_is_valid_federated(user_id))
@@ -2002,7 +1973,7 @@ namespace
         }
         // Spec: the event_id query parameter is REQUIRED — the response is the
         // resolved state of the room as of that event.
-        auto const event_id = query_param_value(request.target, "event_id");
+        auto const event_id = core::query_parameter(request.target, "event_id");
         if (event_id.empty())
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
@@ -2025,7 +1996,7 @@ namespace
         }
         // Spec: the event_id query parameter is REQUIRED — the response is the
         // resolved state IDs of the room as of that event.
-        auto const event_id = query_param_value(request.target, "event_id");
+        auto const event_id = core::query_parameter(request.target, "event_id");
         if (event_id.empty())
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
@@ -2111,8 +2082,8 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_INVALID_PARAM", "timestamp_to_event path is malformed")};
         }
-        auto const ts_text = query_param_value(request.target, "ts");
-        auto const dir_text = query_param_value(request.target, "dir");
+        auto const ts_text = core::query_parameter(request.target, "ts");
+        auto const dir_text = core::query_parameter(request.target, "dir");
         auto ts = std::int64_t{0};
         auto const parsed = std::from_chars(ts_text.data(), ts_text.data() + ts_text.size(), ts);
         if (ts_text.empty() || parsed.ec != std::errc{} || parsed.ptr != ts_text.data() + ts_text.size())
@@ -2141,7 +2112,7 @@ namespace
         {
             return {400U, "hierarchy path is malformed"};
         }
-        auto const suggested_only_param = query_param_value(request.target, "suggested_only");
+        auto const suggested_only_param = core::query_parameter(request.target, "suggested_only");
         auto suggested_only = bool{false};
         if (!suggested_only_param.empty() && suggested_only_param != "false" && suggested_only_param != "true")
         {
@@ -2269,15 +2240,15 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_INVALID_PARAM", "mediaId is required")};
         }
-        auto const width = parse_thumbnail_dimension(query_param_value(request.target, "width"));
-        auto const height = parse_thumbnail_dimension(query_param_value(request.target, "height"));
+        auto const width = parse_thumbnail_dimension(core::query_parameter(request.target, "width"));
+        auto const height = parse_thumbnail_dimension(core::query_parameter(request.target, "height"));
         if (!width.has_value() || !height.has_value())
         {
             return {400U, homeserver::matrix_error("M_INVALID_PARAM", "width and height must be positive integers")};
         }
         query.width = *width;
         query.height = *height;
-        if (auto const method = query_param_value(request.target, "method"); method == "crop")
+        if (auto const method = core::query_parameter(request.target, "method"); method == "crop")
         {
             query.method = media::ThumbnailMethod::crop;
         }

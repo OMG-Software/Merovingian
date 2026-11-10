@@ -7,7 +7,10 @@
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/worker_relay_binding.hpp"
+#include "merovingian/federation_worker/worker_relay_frame.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -132,7 +135,10 @@ public:
     // from the worker's EDU frame (whose claimed origin may be invalid).
     // edu_digests are the digests of the EDUs the testcase says the verified body carried (F-74): an EDU
     // relayed against this parent is admitted only if its digest is among them and unused.
-    [[nodiscard]] auto establish(std::string_view trusted_origin, std::vector<std::string> edu_digests = {}) -> bool
+    // relay_digests are the permits for the claim and query relays the verified request may cause (GHSA-3p5v-vrg8-f545,
+    // ADR-0595), as WorkerPool::handle computes them with federation::verified_request_relay_digests.
+    [[nodiscard]] auto establish(std::string_view trusted_origin, std::vector<std::string> edu_digests = {},
+                                 std::vector<std::string> relay_digests = {}) -> bool
     {
         REQUIRE(!pending_.valid());
         auto request = homeserver::LocalHttpRequest{};
@@ -142,8 +148,9 @@ public:
         request.verified_origin = trusted_origin;
         auto frame = ipc::serialize_fed_request(request);
         pending_ = std::async(std::launch::async, [this, frame = std::move(frame), origin = std::string{trusted_origin},
-                                                   digests = std::move(edu_digests)]() mutable {
-            return main_.send_request(frame, std::chrono::seconds{30}, origin, std::move(digests));
+                                                   digests = std::move(edu_digests),
+                                                   permits = std::move(relay_digests)]() mutable {
+            return main_.send_request(frame, std::chrono::seconds{30}, origin, std::move(digests), std::move(permits));
         });
         auto guard = std::unique_lock{mutex_};
         if (!received_.wait_for(guard, std::chrono::seconds{10}, [this] {
@@ -162,6 +169,17 @@ public:
         auto guard = std::lock_guard{mutex_};
         REQUIRE(parent_id_ != 0U);
         return "{\"parent_request_id\":" + std::to_string(parent_id_) + "," + std::string{relay_json.substr(1U)};
+    }
+
+    // The frame a real worker sends for a relay of `kind` carrying `argument` while serving this parent
+    // (federation_worker::worker_relay_frame), so main is tested against the worker's own serialisation.
+    [[nodiscard]] auto frame(federation::WorkerRelayKind kind, std::string_view argument) const -> std::string
+    {
+        auto guard = std::lock_guard{mutex_};
+        REQUIRE(parent_id_ != 0U);
+        auto built = federation_worker::worker_relay_frame(kind, argument, parent_id_);
+        REQUIRE(built.has_value());
+        return std::move(*built);
     }
 
     [[nodiscard]] auto finish() noexcept -> bool
@@ -238,6 +256,32 @@ private:
     auto const response = homeserver::handle_edu_ingest_request(runtime, context.wrap(relay_json), *channels.main);
     REQUIRE(context.finish());
     return response;
+}
+
+// Runs a claim or query relay handler (handle_otk_claim_ingest_request and the three query relays) on the frame a real
+// worker sends for a relay of `kind` carrying `argument`, under a live verified parent whose permits are
+// `relay_digests`, then completes the parent.
+template <typename RelayHandler>
+[[nodiscard]] auto relay_with_live_parent(federation::WorkerRelayKind kind, std::string_view argument,
+                                          std::vector<std::string> relay_digests, RelayHandler&& handler) -> std::string
+{
+    auto channels = make_edu_relay_channels();
+    auto context = EduRelayContext{*channels.main, *channels.worker};
+    REQUIRE(context.establish("remote.example", {}, std::move(relay_digests)));
+    auto const response = std::forward<RelayHandler>(handler)(context.frame(kind, argument), *channels.main);
+    REQUIRE(context.finish());
+    return response;
+}
+
+// As relay_with_live_parent, with the one permit a verified request whose relay of `kind` carries `argument` gets: the
+// relay a real worker makes while serving that request.
+template <typename RelayHandler>
+[[nodiscard]] auto permitted_relay(federation::WorkerRelayKind kind, std::string_view argument, RelayHandler&& handler)
+    -> std::string
+{
+    auto digest = federation::worker_relay_digest(kind, argument);
+    REQUIRE(digest.has_value());
+    return relay_with_live_parent(kind, argument, {std::move(*digest)}, std::forward<RelayHandler>(handler));
 }
 
 } // namespace merovingian::tests

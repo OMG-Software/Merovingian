@@ -20,10 +20,12 @@
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
 #include "merovingian/federation_worker/db_uri_fd.hpp"
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
+#include "merovingian/federation_worker/worker_relay_frame.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
@@ -471,34 +473,10 @@ namespace
         return result;
     }
 
-    // Serialize a raw one-time-keys-claim request body for the
-    // otk_claim_ingest IPC call to main. The body is the untouched federation
-    // request payload (embedded as an escaped JSON string, same technique as
-    // above), so main's own one_time_keys_claim_provider parses it exactly as
-    // if it had received the federation request directly.
-    auto serialize_otk_claim_ingest(std::string_view request_body) -> std::string
-    {
-        auto result = std::string{R"({"type":"otk_claim_ingest","request_body":)"};
-        result.reserve(128U + request_body.size());
-        result += ipc::ipc_json_str(request_body);
-        result += '}';
-        return result;
-    }
-
     // Deserialize an `otk_claim_ingest_result` JSON frame from main.
     auto deserialize_otk_claim_ingest_result(std::string_view json) -> std::string
     {
         return ipc::ipc_json_get_str(json, "response_body");
-    }
-
-    // Serialize a user_id for the user_devices_ingest IPC call to main.
-    auto serialize_user_devices_ingest(std::string_view user_id) -> std::string
-    {
-        auto result = std::string{R"({"type":"user_devices_ingest","user_id":)"};
-        result.reserve(64U + user_id.size());
-        result += ipc::ipc_json_str(user_id);
-        result += '}';
-        return result;
     }
 
     // Deserialize a `user_devices_ingest_result` JSON frame from main.
@@ -507,35 +485,10 @@ namespace
         return ipc::ipc_json_get_str(json, "response_body");
     }
 
-    // Serialize a raw device-keys-query request body for the
-    // device_keys_query_ingest IPC call to main. The body is the untouched
-    // federation request payload (embedded as an escaped JSON string, same
-    // technique as serialize_otk_claim_ingest above), so main's own
-    // device_keys_query_provider parses it exactly as if it had received the
-    // federation request directly.
-    auto serialize_device_keys_query_ingest(std::string_view request_body) -> std::string
-    {
-        auto result = std::string{R"({"type":"device_keys_query_ingest","request_body":)"};
-        result.reserve(128U + request_body.size());
-        result += ipc::ipc_json_str(request_body);
-        result += '}';
-        return result;
-    }
-
     // Deserialize a `device_keys_query_ingest_result` JSON frame from main.
     auto deserialize_device_keys_query_ingest_result(std::string_view json) -> std::string
     {
         return ipc::ipc_json_get_str(json, "response_body");
-    }
-
-    // Serialize a user_id for the profile_query_ingest IPC call to main.
-    auto serialize_profile_query_ingest(std::string_view user_id) -> std::string
-    {
-        auto result = std::string{R"({"type":"profile_query_ingest","user_id":)"};
-        result.reserve(64U + user_id.size());
-        result += ipc::ipc_json_str(user_id);
-        result += '}';
-        return result;
     }
 
     // Deserialize a `profile_query_ingest_result` JSON frame from main. Uses
@@ -887,8 +840,10 @@ auto WorkerEventLoop::run() -> void
     // authoritative copy removes the split-brain. See docs/architecture.md,
     // "Federation worker one-time-key claim relay".
     runtime.federation.one_time_keys_claim_provider = [channel_ptr](std::string_view request_body) -> std::string {
-        auto const json_body = serialize_otk_claim_ingest(request_body);
-        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        // GHSA-3p5v-vrg8-f545 (ADR-0595): main admits the relay only for the verified request it forwarded.
+        auto const reply =
+            federation_worker::relay_to_main(*channel_ptr, federation::WorkerRelayKind::otk_claim, request_body,
+                                             current_fed_parent_request_id, std::chrono::seconds{60});
         if (!reply.has_value())
         {
             return {};
@@ -919,8 +874,10 @@ auto WorkerEventLoop::run() -> void
     // docs/architecture.md, "Federation worker user/device/profile/event query
     // relay".
     runtime.federation.user_devices_provider = [channel_ptr](std::string_view user_id) -> std::string {
-        auto const json_body = serialize_user_devices_ingest(user_id);
-        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        // GHSA-3p5v-vrg8-f545 (ADR-0595): main admits the relay only for the verified request it forwarded.
+        auto const reply =
+            federation_worker::relay_to_main(*channel_ptr, federation::WorkerRelayKind::user_devices, user_id,
+                                             current_fed_parent_request_id, std::chrono::seconds{60});
         if (!reply.has_value())
         {
             return {};
@@ -929,8 +886,10 @@ auto WorkerEventLoop::run() -> void
     };
 
     runtime.federation.device_keys_query_provider = [channel_ptr](std::string_view request_body) -> std::string {
-        auto const json_body = serialize_device_keys_query_ingest(request_body);
-        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        // GHSA-3p5v-vrg8-f545 (ADR-0595): main admits the relay only for the verified request it forwarded.
+        auto const reply =
+            federation_worker::relay_to_main(*channel_ptr, federation::WorkerRelayKind::device_keys_query, request_body,
+                                             current_fed_parent_request_id, std::chrono::seconds{60});
         if (!reply.has_value())
         {
             return {};
@@ -940,8 +899,10 @@ auto WorkerEventLoop::run() -> void
 
     runtime.federation.profile_query_provider =
         [channel_ptr](std::string_view user_id) -> federation::FederationProfile {
-        auto const json_body = serialize_profile_query_ingest(user_id);
-        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        // GHSA-3p5v-vrg8-f545 (ADR-0595): main admits the relay only for the verified request it forwarded.
+        auto const reply =
+            federation_worker::relay_to_main(*channel_ptr, federation::WorkerRelayKind::profile_query, user_id,
+                                             current_fed_parent_request_id, std::chrono::seconds{60});
         if (!reply.has_value())
         {
             return {};

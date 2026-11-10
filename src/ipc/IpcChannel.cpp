@@ -438,8 +438,8 @@ auto IpcChannel::report_oversize_drop(std::string_view json_body, char const* ki
 }
 
 auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout,
-                              std::string_view verified_origin, std::vector<std::string> edu_digests)
-    -> std::optional<std::string>
+                              std::string_view verified_origin, std::vector<std::string> edu_digests,
+                              std::vector<std::string> relay_digests) -> std::optional<std::string>
 {
     auto const now = std::chrono::steady_clock::now();
     // Check conversion and addition before computing an absolute deadline.
@@ -478,6 +478,11 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
     for (auto& digest : edu_digests)
     {
         entry->edu_digests.push_back({std::move(digest), false});
+    }
+    entry->relay_digests.reserve(relay_digests.size());
+    for (auto& digest : relay_digests)
+    {
+        entry->relay_digests.push_back({std::move(digest), false});
     }
     entry->deadline = deadline;
     {
@@ -537,6 +542,32 @@ auto IpcChannel::consume_pending_edu(std::uint64_t parent_request_id, std::strin
     for (auto& candidate : found->second->edu_digests)
     {
         if (!candidate.used && candidate.digest == edu_digest)
+        {
+            candidate.used = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+auto IpcChannel::consume_pending_relay(std::uint64_t parent_request_id, std::string_view relay_digest) -> bool
+{
+    auto const lock = std::lock_guard{pending_mu_};
+    auto const found = pending_.find(parent_request_id);
+    if (found == pending_.end())
+    {
+        return false;
+    }
+    auto& entry = *found->second;
+    // A relay needs a parent main verified: the same liveness test as an EDU, with the verified origin standing for
+    // itself since the relay names none.
+    if (!pending_admits_origin(entry, entry.verified_origin))
+    {
+        return false;
+    }
+    for (auto& candidate : entry.relay_digests)
+    {
+        if (!candidate.used && candidate.digest == relay_digest)
         {
             candidate.used = true;
             return true;
