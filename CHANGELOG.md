@@ -36,6 +36,8 @@ The rule is now checked. `scripts/check-unit-test-isolation.sh` fails when a fil
 
 Tests: `tests/tooling/test_check_unit_test_isolation.py` (`unit-test-isolation-tooling`) covers a clean tree, each of the six names with its file and line, a header under `tests/unit/`, an empty directory failing closed, and this repository passing. `tests/tooling/test_hooks.py` checks that the pre-commit hook runs the gate.
 
+The moved AUTH-3 scenario ("appservice sender_localpart users are created at runtime startup") wrote its registration file to one fixed name in the temp directory and never deleted it, so two runs on one host could overwrite each other's file. It now writes a uniquely named file under `temporary_directory()` and removes it when the scenario ends, a failed `REQUIRE` included.
+
 ## 0.12.85
 
 The federation and event-auth low findings of security audit run 4.

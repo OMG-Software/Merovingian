@@ -13,6 +13,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/appservice/AppserviceRegistration.hpp"
 #include "merovingian/appservice/AppserviceRegistry.hpp"
 #include "merovingian/appservice/EventInterestFacts.hpp"
@@ -32,9 +33,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 using merovingian::appservice::any_exclusive_namespace_matches;
@@ -68,6 +73,37 @@ namespace
     };
 }
 
+// A scratch path no other run on this host shares, so concurrent runs never overwrite each other's file.
+[[nodiscard]] auto unique_registration_path(std::string const& label) -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return merovingian::tests::temporary_directory() / ("merovingian-" + label + "-" + std::to_string(now) + ".json");
+}
+
+// Removes a scratch file when the scope ends, including when a failed REQUIRE unwinds it.
+class RemoveFileOnExit final
+{
+public:
+    explicit RemoveFileOnExit(std::filesystem::path path)
+        : path_{std::move(path)}
+    {
+    }
+
+    RemoveFileOnExit(RemoveFileOnExit const&) = delete;
+    auto operator=(RemoveFileOnExit const&) -> RemoveFileOnExit& = delete;
+    RemoveFileOnExit(RemoveFileOnExit&&) = delete;
+    auto operator=(RemoveFileOnExit&&) -> RemoveFileOnExit& = delete;
+
+    ~RemoveFileOnExit() noexcept
+    {
+        auto error = std::error_code{};
+        std::ignore = std::filesystem::remove(path_, error);
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
 } // namespace
 
 // AUTH-3: the sender_localpart user must be created at runtime startup,
@@ -77,7 +113,8 @@ SCENARIO("appservice sender_localpart users are created at runtime startup",
 {
     GIVEN("a registration file whose sender_localpart is outside its users namespace")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-auth3-sender.json";
+        auto const path = unique_registration_path("auth3-sender");
+        auto const remove_registration = RemoveFileOnExit{path};
         {
             auto out = std::ofstream{path, std::ios::binary};
             out << R"({
