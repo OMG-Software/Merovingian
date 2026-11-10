@@ -1050,6 +1050,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    config.server().client_api.to_device_message_ttl_seconds, 31536000U);
     validate_count("server.client_api.max_one_time_keys_per_device",
                    config.server().client_api.max_one_time_keys_per_device, 100000U);
+    validate_count("server.client_api.max_fallback_keys_per_device",
+                   config.server().client_api.max_fallback_keys_per_device, 1024U);
     validate_count("server.client_api.max_key_signatures_per_user",
                    config.server().client_api.max_key_signatures_per_user, 1000000U);
     validate_count("server.client_api.max_filters_per_user", config.server().client_api.max_filters_per_user, 100000U);

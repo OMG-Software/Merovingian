@@ -821,6 +821,7 @@ shell = find_program('sh')
       'integration/test_create_room_power_level_override_flow.cpp',
       'integration/test_device_caps_flow.cpp',
       'integration/test_device_list_fanout_batch_flow.cpp',
+      'integration/test_fallback_key_cap_flow.cpp',
       'integration/test_filter_cap_flow.cpp',
       'integration/test_homeserver_cross_signing_upload_flow.cpp',
       'integration/test_homeserver_password_policy_flow.cpp',

@@ -3529,6 +3529,12 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     return claimed;
 }
 
+[[nodiscard]] auto fallback_key_algorithm(std::string_view key_id) noexcept -> std::string_view
+{
+    auto const colon = key_id.find(':');
+    return colon == std::string_view::npos ? key_id : key_id.substr(0U, colon + 1U);
+}
+
 [[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool
 {
     if (!key_payload_is_valid(key.json) || key.key_id.empty())
@@ -3542,11 +3548,10 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     // algorithm is the key id up to and including its first ':'). The deletes
     // and the insert commit as one transaction so a failure leaves the
     // previous key in place, and the in-memory mirror changes only afterwards.
-    auto const colon = key.key_id.find(':');
-    auto const algorithm_prefix = colon == std::string::npos ? key.key_id : key.key_id.substr(0U, colon + 1U);
+    auto const algorithm_prefix = std::string{fallback_key_algorithm(key.key_id)};
     auto const same_algorithm = [&key, &algorithm_prefix](PersistentFallbackKey const& current) {
         return current.user_id == key.user_id && current.device_id == key.device_id &&
-               current.key_id.starts_with(algorithm_prefix);
+               fallback_key_algorithm(current.key_id) == algorithm_prefix;
     };
     auto statements = std::vector<PreparedStatement>{};
     for (auto const& current : store.fallback_keys)

@@ -81,3 +81,46 @@ SCENARIO("a device that uploads a new fallback key for an algorithm keeps only t
         }
     }
 }
+
+SCENARIO("the algorithm of a fallback key ID is the part up to and including its first colon",
+         "[ghsa-3p9g][e2ee][database][fallback-key]")
+{
+    GIVEN("fallback key IDs with one, several and no colons")
+    {
+        WHEN("their algorithms are taken")
+        {
+            THEN("each is the prefix through the first colon, or the whole ID when there is none")
+            {
+                using merovingian::database::fallback_key_algorithm;
+                REQUIRE(fallback_key_algorithm("signed_curve25519:AAAA") == "signed_curve25519:");
+                REQUIRE(fallback_key_algorithm("a:b:c") == "a:");
+                REQUIRE(fallback_key_algorithm(":x") == ":");
+                REQUIRE(fallback_key_algorithm("nocolon") == "nocolon");
+                REQUIRE(fallback_key_algorithm("") == "");
+            }
+        }
+    }
+}
+
+SCENARIO("a fallback key replaces only keys of exactly its own algorithm", "[ghsa-3p9g][e2ee][database][fallback-key]")
+{
+    GIVEN("a device holding fallback keys whose IDs share a text prefix but not an algorithm")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::store_fallback_key(store,
+                                                          {"@alice:example.org", "DEVICE1", "curve25519:A", R"("a")"}));
+        REQUIRE(merovingian::database::store_fallback_key(
+            store, {"@alice:example.org", "DEVICE1", "curve25519extra", R"("b")"}));
+
+        WHEN("a key whose whole ID is the algorithm 'curve25519' is stored")
+        {
+            REQUIRE(merovingian::database::store_fallback_key(
+                store, {"@alice:example.org", "DEVICE1", "curve25519", R"("c")"}));
+
+            THEN("neither 'curve25519:A' nor 'curve25519extra' is replaced, since neither has that algorithm")
+            {
+                REQUIRE(store.fallback_keys.size() == 3U);
+            }
+        }
+    }
+}

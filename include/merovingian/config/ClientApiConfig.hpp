@@ -52,6 +52,10 @@ struct ClientApiConfig final
     // M_TOO_LARGE and stores nothing; stored rows are never evicted to make
     // room.  Re-uploading an id the user already holds does not count twice.
     //   - max_one_time_keys_per_device: one-time keys held per (user, device).
+    //   - max_fallback_keys_per_device: fallback keys held per (user, device).
+    //     A device keeps one per algorithm, so this bounds the algorithms;
+    //     replacing the key of a held algorithm is always allowed.
+    //     GHSA-3p9g-gpvx-2cx9, ADR-0594.
     //   - max_key_signatures_per_user: cross-signing signatures a user has
     //     uploaded, counted per (target user, target key).
     //   - max_filters_per_user: stored sync filters per user.
@@ -68,6 +72,7 @@ struct ClientApiConfig final
     //     user; server-default rules are not counted and updating an existing
     //     rule is always allowed.
     std::uint32_t max_one_time_keys_per_device{1000U};
+    std::uint32_t max_fallback_keys_per_device{16U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_global_account_data_per_user{1000U};

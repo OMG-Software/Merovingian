@@ -146,6 +146,7 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
         THEN("the defaults are bounded and valid")
         {
             REQUIRE(parsed.config.server().client_api.max_one_time_keys_per_device == 1000U);
+            REQUIRE(parsed.config.server().client_api.max_fallback_keys_per_device == 16U);
             REQUIRE(parsed.config.server().client_api.max_key_signatures_per_user == 10000U);
             REQUIRE(parsed.config.server().client_api.max_filters_per_user == 1000U);
             REQUIRE(parsed.config.server().client_api.max_global_account_data_per_user == 1000U);
@@ -159,10 +160,11 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
         }
     }
 
-    GIVEN("a configuration that overrides all six caps")
+    GIVEN("a configuration that overrides every cap")
     {
         auto const parsed =
             merovingian::config::parse_key_value_config("server.client_api.max_one_time_keys_per_device=250\n"
+                                                        "server.client_api.max_fallback_keys_per_device=4\n"
                                                         "server.client_api.max_key_signatures_per_user=500\n"
                                                         "server.client_api.max_filters_per_user=40\n"
                                                         "server.client_api.max_global_account_data_per_user=60\n"
@@ -182,6 +184,7 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
                 REQUIRE(parsed.findings.empty());
                 REQUIRE(findings.empty());
                 REQUIRE(parsed.config.server().client_api.max_one_time_keys_per_device == 250U);
+                REQUIRE(parsed.config.server().client_api.max_fallback_keys_per_device == 4U);
                 REQUIRE(parsed.config.server().client_api.max_key_signatures_per_user == 500U);
                 REQUIRE(parsed.config.server().client_api.max_filters_per_user == 40U);
                 REQUIRE(parsed.config.server().client_api.max_global_account_data_per_user == 60U);
@@ -294,6 +297,9 @@ SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
             "server.client_api.max_one_time_keys_per_device=0\n",
             "server.client_api.max_one_time_keys_per_device=100001\n",
             "server.client_api.max_one_time_keys_per_device=many\n",
+            "server.client_api.max_fallback_keys_per_device=0\n",
+            "server.client_api.max_fallback_keys_per_device=1025\n",
+            "server.client_api.max_fallback_keys_per_device=many\n",
             "server.client_api.max_key_signatures_per_user=0\n",
             "server.client_api.max_key_signatures_per_user=1000001\n",
             "server.client_api.max_key_signatures_per_user=-1\n", "server.client_api.max_filters_per_user=0\n",

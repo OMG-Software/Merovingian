@@ -22,6 +22,7 @@
 - State resolution
 - Device and key APIs
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
+- E2EE /keys/upload storage caps: one-time keys per device and fallback-key algorithms per device (`max_fallback_keys_per_device`, GHSA-3p9g-gpvx-2cx9, ADR-0594), refused whole with 400 M_TOO_LARGE before anything is stored
 - Token handling
 - The operator surface (`/_merovingian/admin/*`): one route table (`observability::admin_routes()`) that the dispatcher, the router and the rate limiter all read (ADR-0504); administrators can lock, suspend and permanently deactivate accounts (`confirm` required, ADR-0506); there is no route that stops the process (ADR-0505)
 - Server signing-key persistence
