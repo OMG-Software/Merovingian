@@ -723,8 +723,8 @@ value. Test fixtures that do not exercise persistence select it through
   with the in-memory `state_transition_index` mirror updated to match.
 
   Tests: `tests/unit/test_state_bookkeeping.cpp`,
-  `tests/unit/test_pdu_ingestion_state_groups.cpp`,
-  `tests/unit/test_local_event_state_bookkeeping.cpp`, and
+  `tests/integration/test_pdu_ingestion_state_groups_flow.cpp`,
+  `tests/integration/test_local_event_state_bookkeeping_flow.cpp`, and
   `tests/unit/test_store_event_choke_point.cpp` (all
   `[pdu_ingestion][state_groups]`) cover the module directly, end-to-end
   through `ingest_pdu_event`, end-to-end through local send/create paths,

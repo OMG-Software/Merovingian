@@ -90,7 +90,7 @@ struct AliceRoom final
 // Builds a well-formed inbound PDU envelope naming `prev_event_ids`,
 // "sent" by alice (the room creator, so power-level auth trivially
 // succeeds) — matching the pattern
-// tests/unit/test_federation_pdu_ingest_concurrency.cpp's make_message_pdu
+// tests/integration/test_federation_pdu_ingest_concurrency_flow.cpp's make_message_pdu
 // uses to exercise ingest_pdu_event directly, without a real X-Matrix
 // signature (ingest_pdu_event's trust boundary does not re-verify it; see
 // the comment above ingest_pdu_event itself).

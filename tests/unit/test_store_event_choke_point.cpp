@@ -7,7 +7,7 @@
 // itself does not. persist_composed_event/send_event (room_service.cpp) and
 // ingest_pdu_event (local_http_router.cpp) both learned this the hard way:
 // each silently bypassed bookkeeping for months before the regression was
-// caught by tests/unit/test_local_event_state_bookkeeping.cpp. This test
+// caught by tests/integration/test_local_event_state_bookkeeping_flow.cpp. This test
 // fails the build the moment a NEW call site appears anywhere in src/ that
 // is not one of the reviewed, documented exceptions below, so that
 // regression cannot recur unnoticed.

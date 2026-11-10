@@ -252,6 +252,7 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 | `scripts/reject-unsafe.sh` | Selected allocation patterns, void-cast discards, required review markers on `std::shared_ptr` and manual lock release, and the libsodium boundary |
 | `scripts/check-catch2-bdd-tests.sh` | Required BDD macro patterns in unit test files |
 | `scripts/check-unit-test-registration.sh` | Unit test source registration |
+| `scripts/check-unit-test-isolation.sh` | No file under `tests/unit/` names a function that builds a runtime or drives the client-server stack (ADR-0593); meson test `unit-test-isolation`, covered by `unit-test-isolation-tooling` |
 | `scripts/rewrite_merovingian_includes.py --check` | Project include quoting |
 | `include-order-tooling` (`tests/tooling/test_include_order.py`) | Include grouping and ordering. Nothing else checks formatting, and no tool enforces `.clang-format` |
 | `scripts/check-conformance-gate.sh` | Runs `meson test conformance-tests` in a given build directory (CI, per build). It does not detect a removed conformance test |

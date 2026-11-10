@@ -3,7 +3,7 @@
 #include "../support/in_memory_database_config.hpp"
 //
 // Unit tests for homeserver authentication and HTTP-dispatch error paths.
-// Happy paths live in test_homeserver_vertical_slice.cpp. This file targets
+// Happy paths live in test_homeserver_vertical_slice_flow.cpp. This file targets
 // the failure and anomaly cases:
 //
 //   - Login with wrong password returns !ok

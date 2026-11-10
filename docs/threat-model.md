@@ -2047,7 +2047,7 @@ until the refresh).
   a forward extremity and is excluded from every client-facing timeline
   (`/sync`, sliding sync, `/messages`, `/context`, `/event/{eventId}`,
   search — see `docs/event-engine.md`, "Phase B2"). See
-  `tests/unit/test_pdu_ingestion_auth_checks.cpp`, "Ban evasion" scenario.
+  `tests/integration/test_pdu_ingestion_auth_checks_flow.cpp`, "Ban evasion" scenario.
 - **Residual risk, unchanged by phase B2:** a soft-failed *state* event can
   still be admitted into `current_state` if state resolution later favors it
   — this is spec-mandated (resolution, not delivery-order tricks, decides
@@ -2830,7 +2830,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   **Residual risk:** a room whose state is above about half the frame cap needs `omit_members` from the joining server,
   which a server that never sends it (this one) cannot join until the operator raises `join_response_max_size`. The
   joiner's hold on the resident's thread for the duration of the planning pass is bounded by the room's state, not by the
-  answer. Tests: `tests/unit/test_send_join_answer.cpp` `[f23]`, `tests/conformance/test_send_join_omit_members_conformance.cpp`.
+  answer. Tests: `tests/integration/test_send_join_answer_flow.cpp` `[f23]`, `tests/conformance/test_send_join_omit_members_conformance.cpp`.
 - **`make_join` cost followed the size of the server (audit run-2 F-19).** The template's auth events and the restricted-join
   decision, run for every make_join by any authenticated federating server, passed over every room's state rows and every
   stored event under the runtime lock. **Mitigation:** they read by key through the state index and by room through the

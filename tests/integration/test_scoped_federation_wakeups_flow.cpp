@@ -153,7 +153,7 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     // homeserver::compute_state_before), which needs a real state group —
     // not just the naive store.state rows above — matching
     // seed_room_with_genesis_state_group in
-    // tests/unit/test_pdu_ingestion_state_groups.cpp.
+    // tests/integration/test_pdu_ingestion_state_groups_flow.cpp.
     auto const* policy = rooms::find_room_version_policy("12");
     REQUIRE(policy != nullptr);
     auto const genesis_state = std::vector<database::PersistentStateGroupStateEntry>{

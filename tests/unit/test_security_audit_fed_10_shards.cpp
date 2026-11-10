@@ -34,18 +34,6 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto runtime_config() -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    return {merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::tests::in_memory_database_config(),
-            security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{}};
-}
-
 } // namespace
 
 SCENARIO("FED-10 a worker shard's key-resolution budgets are its share of the configured ones",
@@ -84,31 +72,6 @@ SCENARIO("FED-10 a worker shard's key-resolution budgets are its share of the co
             {
                 CHECK(share.key_resolution_max_in_flight == 16U);
                 CHECK(share.key_resolution_per_ip_rate.max_requests == 30U);
-            }
-        }
-    }
-}
-
-SCENARIO("FED-10 a runtime started for one of several worker shards resolves within its share",
-         "[federation][fed10][fed10-shards]")
-{
-    GIVEN("the default key-resolution budgets (16 in flight, 30 per source IP)")
-    {
-        WHEN("a runtime starts as one of four worker shards, and another as main")
-        {
-            auto worker = merovingian::homeserver::start_runtime(
-                merovingian::homeserver::RuntimeStartOptions{.config = runtime_config(), .key_resolution_shards = 4U});
-            auto main = merovingian::homeserver::start_runtime(
-                merovingian::homeserver::RuntimeStartOptions{.config = runtime_config()});
-
-            THEN("the worker gets a quarter and main keeps the whole budget")
-            {
-                REQUIRE(worker.started);
-                REQUIRE(main.started);
-                CHECK(worker.runtime.federation.config.key_resolution_max_in_flight == 4U);
-                CHECK(worker.runtime.federation.config.key_resolution_per_ip_rate.max_requests == 7U);
-                CHECK(main.runtime.federation.config.key_resolution_max_in_flight == 16U);
-                CHECK(main.runtime.federation.config.key_resolution_per_ip_rate.max_requests == 30U);
             }
         }
     }

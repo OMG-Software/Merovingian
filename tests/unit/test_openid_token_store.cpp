@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PersistentStore-level coverage for OpenID tokens (Matrix v1.19 CS API
-// §OpenID / SS API §OpenID). See tests/unit/test_homeserver_auth_service.cpp
+// §OpenID / SS API §OpenID). See tests/integration/test_homeserver_auth_service_flow.cpp
 // for the higher-level mint/redeem and access-token-separation coverage;
 // this file exercises store_openid_token itself in isolation.
 

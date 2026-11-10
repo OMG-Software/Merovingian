@@ -44,23 +44,6 @@ namespace
 }
 
 constexpr auto key = std::string_view{"security.password_hashing.max_concurrent"};
-
-// How many Argon2id slots the runtime hands out before refusing one.
-[[nodiscard]] auto admitted_slots(merovingian::homeserver::HomeserverRuntime& runtime) -> std::size_t
-{
-    REQUIRE(runtime.argon2id_admission != nullptr);
-    auto held = std::vector<merovingian::auth::Argon2idSlot>{};
-    while (held.size() <= merovingian::auth::argon2id_admission_max_capacity)
-    {
-        auto slot = runtime.argon2id_admission->try_acquire();
-        if (!slot.has_value())
-        {
-            break;
-        }
-        held.push_back(std::move(*slot));
-    }
-    return held.size();
-}
 } // namespace
 
 SCENARIO("Password hashing admits four hashes at once by default", "[config][password-hashing]")
@@ -142,44 +125,6 @@ SCENARIO("A password hashing cap change takes effect only on restart", "[config]
                 }));
                 REQUIRE(merovingian::config::reload_policy_for_key(key) ==
                         merovingian::config::ReloadPolicy::restart_required);
-            }
-        }
-    }
-}
-
-SCENARIO("The runtime admits as many concurrent hashes as the config says", "[homeserver][auth][password-hashing]")
-{
-    for (auto const configured :
-         {std::optional<std::uint32_t>{}, std::optional<std::uint32_t>{2U}, std::optional<std::uint32_t>{16U}})
-    {
-        auto const description =
-            configured.has_value() ? "a cap of " + std::to_string(*configured) : std::string{"no cap configured"};
-        GIVEN(description)
-        {
-            auto security = merovingian::config::SecurityConfig{};
-            security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-            if (configured.has_value())
-            {
-                security.password_hashing.max_concurrent = *configured;
-            }
-            auto started = merovingian::homeserver::start_runtime({
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::tests::in_memory_database_config(),
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
-            });
-            REQUIRE(started.started);
-
-            WHEN("hash slots are taken until one is refused")
-            {
-                auto const admitted = admitted_slots(started.runtime);
-
-                THEN("exactly the configured number is admitted, four by default")
-                {
-                    REQUIRE(admitted == configured.value_or(4U));
-                }
             }
         }
     }

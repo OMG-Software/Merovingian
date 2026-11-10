@@ -128,18 +128,6 @@ struct SignedKeyResponse final
 
 constexpr auto now_ms = std::uint64_t{1'800'000'000'000U};
 constexpr auto day_ms = std::uint64_t{24U * 60U * 60U * 1000U};
-
-[[nodiscard]] auto runtime_config() -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    return {merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::tests::in_memory_database_config(),
-            security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{}};
-}
 } // namespace
 
 SCENARIO("A federation worker reads a key main cached after the worker started instead of fetching it again",
@@ -326,34 +314,6 @@ SCENARIO("A worker's key refresh reads public columns only and never this server
             THEN("the refresh is a successful no-op")
             {
                 REQUIRE(merovingian::database::refresh_remote_signing_keys(memory.store, "remote.example.org"));
-            }
-        }
-    }
-}
-
-SCENARIO("Only a federation worker's runtime reads signing keys through to the database",
-         "[federation][remote-key-cache][worker-key-cache][worker-key-read-through]")
-{
-    GIVEN("a runtime started as main and another started with the federation worker load profile")
-    {
-        REQUIRE(sodium_init() >= 0);
-        auto const main = merovingian::homeserver::start_runtime(merovingian::homeserver::RuntimeStartOptions{
-            .config = runtime_config(),
-        });
-        auto const worker = merovingian::homeserver::start_runtime(merovingian::homeserver::RuntimeStartOptions{
-            .config = runtime_config(),
-            .signing_disabled = true,
-            .database_load_profile = merovingian::database::TableLoadProfile::federation_worker,
-        });
-
-        WHEN("each runtime's database state is inspected")
-        {
-            THEN("main's mirror stays authoritative and the worker's re-reads on a miss")
-            {
-                REQUIRE(main.started);
-                REQUIRE(worker.started);
-                REQUIRE_FALSE(main.runtime.database.remote_signing_keys_read_through);
-                REQUIRE(worker.runtime.database.remote_signing_keys_read_through);
             }
         }
     }

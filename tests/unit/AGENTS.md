@@ -2,7 +2,13 @@
 
 Unit tests isolate a single module. They do not touch the network or any module outside the one under test.
 SQLite may be used only when testing database-specific module behavior.
-Request-level tests that drive the client-server stack through `handle_client_server_request` belong in `tests/integration/`.
+
+A unit test never builds a homeserver runtime or drives the client-server stack (ADR-0593). A file here must not name
+`start_runtime`, `start_client_server`, `wire_federation_callbacks`, `handle_client_server_request`,
+`handle_client_server_http_request` or `run_client_server_flow`, in code or in comments. A scenario that needs one of
+them, directly or through a helper, belongs in `tests/integration/test_<name>_flow.cpp`. `scripts/check-unit-test-isolation.sh`
+(the `unit-test-isolation` meson test) fails the suite with the file and line. A bare `HomeserverRuntime{}` that none of
+them touches is still allowed, for example to test a policy function that takes the runtime.
 
 ## File naming
 
@@ -41,6 +47,7 @@ Tags: use `[module]` matching the directory (e.g., `[crypto]`, `[auth]`, `[sync]
 |---|---|
 | Single function / class in isolation | Matrix spec MUST/SHOULD → `conformance/` |
 | Pure logic, no I/O | Requires database or HTTP → `integration/` |
+| A bare `HomeserverRuntime{}` passed to the function under test | Builds a runtime (`start_runtime`, `start_client_server`, `wire_federation_callbacks`) → `integration/` |
 | Concurrency scenarios for thread-safe types | Live network required → `integration/` (opt-in) |
 
 ## Thread safety tests

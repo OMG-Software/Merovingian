@@ -151,7 +151,7 @@ using merovingian::homeserver::HomeserverRuntime;
 }
 
 // Directly seeds an event + state-group bookkeeping as if it had already
-// been accepted, mirroring tests/unit/test_pdu_ingestion_auth_checks.cpp's
+// been accepted, mirroring tests/integration/test_pdu_ingestion_auth_checks_flow.cpp's
 // seed_accepted_event.
 auto seed_accepted_event(HomeserverRuntime& runtime, std::string const& room_id, std::string const& event_id,
                          std::string const& type, std::optional<std::string> const& state_key,

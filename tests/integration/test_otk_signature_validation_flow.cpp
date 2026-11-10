@@ -61,7 +61,7 @@
 namespace
 {
 
-// registration_enabled_config mirrors the helper in test_client_server.cpp so
+// registration_enabled_config mirrors the helper in test_client_server_endpoints_flow.cpp so
 // the test files are independent.
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {

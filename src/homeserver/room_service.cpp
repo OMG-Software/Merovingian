@@ -4534,10 +4534,10 @@ namespace
 //
 // Returns the user IDs with membership="join" found within the ingested events.
 //
-// IMPORTANT: this function is also called directly from unit tests to verify
+// IMPORTANT: this function is also called directly from integration tests to verify
 // that state events with empty state_key (m.room.encryption, m.room.create, etc.)
 // are correctly persisted. Do NOT change the state-key check without updating the
-// corresponding test in tests/unit/test_federation_invite_join.cpp.
+// corresponding test in tests/integration/test_federation_invite_join_flow.cpp.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
                                           canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
     -> SendJoinStateIngestResult

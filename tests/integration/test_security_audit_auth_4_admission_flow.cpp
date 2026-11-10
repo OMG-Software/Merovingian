@@ -18,6 +18,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -27,6 +28,8 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
@@ -42,11 +45,13 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <semaphore>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -380,6 +385,151 @@ SCENARIO("A user-interactive-auth password check is refused when the password ch
             THEN("the stale check is not counted as a wrong guess")
             {
                 REQUIRE(runtime.uia_failures_by_device.size() == 0U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+constexpr auto alice_password = "AlicePass99!x";
+
+auto exhaust_argon2id_admission(merovingian::homeserver::HomeserverRuntime& runtime) -> void
+{
+    runtime.argon2id_admission = std::make_unique<merovingian::auth::Argon2idAdmission>(0U);
+}
+
+auto restore_argon2id_admission(merovingian::homeserver::HomeserverRuntime& runtime) -> void
+{
+    runtime.argon2id_admission =
+        std::make_unique<merovingian::auth::Argon2idAdmission>(merovingian::auth::default_argon2id_capacity());
+}
+
+[[nodiscard]] auto user_count(merovingian::homeserver::HomeserverRuntime const& runtime) -> std::size_t
+{
+    return runtime.database.users.size();
+}
+} // namespace
+
+SCENARIO("Password hashing in make_user shares the Argon2id admission budget",
+         "[homeserver][auth][security][audit][auth-4]")
+{
+    GIVEN("a runtime with no Argon2id capacity")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const users_before = user_count(runtime);
+        exhaust_argon2id_admission(runtime);
+
+        WHEN("the bootstrap admin is created")
+        {
+            auto const result = merovingian::homeserver::bootstrap_admin_user(runtime, "root", "RootPass99!x");
+
+            THEN("it is refused with 429 and a retry delay, and no account exists")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 429U);
+                REQUIRE(result.retry_after_ms > 0U);
+                REQUIRE(user_count(runtime) == users_before);
+            }
+        }
+
+        WHEN("an appservice registers a user")
+        {
+            auto const result = merovingian::homeserver::register_appservice_user(runtime, "bridge_alice");
+
+            THEN("it is refused with 429 and a retry delay, and no account exists")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 429U);
+                REQUIRE(result.retry_after_ms > 0U);
+                REQUIRE(user_count(runtime) == users_before);
+            }
+        }
+    }
+}
+
+SCENARIO("Password change sheds load when the Argon2id admission budget is spent",
+         "[homeserver][auth][security][audit][auth-4]")
+{
+    GIVEN("alice is signed in and no Argon2id capacity remains")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registered = merovingian::homeserver::register_local_user(
+            runtime, "alice", alice_password, std::string{merovingian::tests::registration_token});
+        REQUIRE(registered.ok);
+        auto const signed_in =
+            merovingian::homeserver::login_local_user(runtime, registered.value, alice_password, "DEV1");
+        REQUIRE(signed_in.ok);
+        auto const hash_before = stored_hash_of(runtime, registered.value);
+        REQUIRE_FALSE(hash_before.empty());
+        exhaust_argon2id_admission(runtime);
+
+        WHEN("she changes her password")
+        {
+            auto const result =
+                merovingian::homeserver::change_local_user_password(runtime, signed_in.value, "NewAlicePass99!y");
+
+            THEN("it is refused with 429 and a retry delay, and her password is unchanged")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 429U);
+                REQUIRE(result.retry_after_ms > 0U);
+                REQUIRE(stored_hash_of(runtime, registered.value) == hash_before);
+            }
+        }
+    }
+}
+
+SCENARIO("A user-interactive-auth password check sheds load without counting as a failure",
+         "[homeserver][auth][security][audit][auth-4]")
+{
+    GIVEN("alice is signed in and no Argon2id capacity remains")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registered = merovingian::homeserver::register_local_user(
+            runtime, "alice", alice_password, std::string{merovingian::tests::registration_token});
+        REQUIRE(registered.ok);
+        auto const signed_in =
+            merovingian::homeserver::login_local_user(runtime, registered.value, alice_password, "DEV1");
+        REQUIRE(signed_in.ok);
+        exhaust_argon2id_admission(runtime);
+
+        WHEN("the password stage is attempted with the correct password")
+        {
+            auto const result =
+                merovingian::homeserver::verify_local_user_password(runtime, signed_in.value, alice_password);
+
+            THEN("it is not verified and carries a retry delay")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.retry_after_ms > 0U);
+            }
+
+            THEN("no failed UIA attempt is recorded")
+            {
+                REQUIRE(runtime.uia_failures_by_device.size() == 0U);
+            }
+
+            AND_WHEN("the budget is available again")
+            {
+                restore_argon2id_admission(runtime);
+                auto const retried =
+                    merovingian::homeserver::verify_local_user_password(runtime, signed_in.value, alice_password);
+
+                THEN("the same password is accepted: shedding spent none of the account's guessing budget")
+                {
+                    REQUIRE(retried.ok);
+                }
             }
         }
     }
