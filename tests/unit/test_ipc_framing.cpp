@@ -23,11 +23,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <future>
+#include <latch>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1874,6 +1877,33 @@ SCENARIO("a pending request admits each relay permit of its verified request onc
                 CHECK_FALSE(empty);
                 CHECK_FALSE(as_edu);
                 CHECK(genuine);
+            }
+        }
+        // Main's relay handlers run on a pool, so two relays of one permit can arrive together (ADR-0595).
+        WHEN("eight threads spend the permit at the same moment")
+        {
+            constexpr auto spenders = std::size_t{8U};
+            auto start = std::latch{static_cast<std::ptrdiff_t>(spenders)};
+            auto admitted = std::array<bool, spenders>{};
+            {
+                auto threads = std::vector<std::thread>{};
+                threads.reserve(spenders);
+                for (auto index = std::size_t{0U}; index < spenders; ++index)
+                {
+                    threads.emplace_back([&pair, &start, &admitted, parent, index] {
+                        start.arrive_and_wait();
+                        admitted.at(index) = pair.server->consume_pending_relay(parent, "permit-claim");
+                    });
+                }
+                for (auto& thread : threads)
+                {
+                    thread.join();
+                }
+            }
+
+            THEN("exactly one of them is admitted")
+            {
+                CHECK(std::ranges::count(admitted, true) == 1);
             }
         }
         WHEN("the permit is offered under another parent or on the worker's end of the channel")

@@ -57,10 +57,13 @@ Relays left unbound, and why:
 
 * `pdu_ingest`, `membership_ingest`, `invite_ingest`: main re-verifies the event's signatures (ADR-0071).
 * `edu_ingest`: bound by ADR-0395.
-* `directory_query_ingest`, `public_rooms_ingest`, `event_query_ingest`, `membership_template_ingest`: they read only
-  tables the worker's role may already read (`room_aliases`, `rooms`, `current_state`, `events`, the state tables), or
-  public data; the event read keeps the origin-in-room gate and history-visibility filter in main. Binding them would
-  protect nothing the worker cannot already reach.
+* `directory_query_ingest`, `event_query_ingest`, `membership_template_ingest`: they read only tables the worker's role
+  may already read (`room_aliases`, `rooms`, `current_state`, `events`, the state tables); the event read keeps the
+  origin-in-room gate and history-visibility filter in main. Binding them would protect nothing the worker cannot
+  already reach.
+* `public_rooms_ingest`: it answers with the published room directory, which any server may request. The worker relays
+  it because the listing reads appservice registration files the worker does not load (ADR-0296, ADR-0461), not
+  because its database role is denied the data, so a permit would protect nothing either.
 
 ### Positive Consequences
 

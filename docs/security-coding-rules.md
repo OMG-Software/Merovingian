@@ -704,8 +704,11 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **Bind every worker relay that reaches data the worker's database role is denied to the request main verified.**
   The one-time-key claim and the key, device-list and profile query relays are admitted only through
   `IpcChannel::consume_pending_relay`, against the one permit `federation::verified_request_relay_digests` gave the
-  verified request (a digest of the relay kind and its argument), once; the argument is read only through
-  `worker_relay_binding.hpp`. A new relay of such data gets a `WorkerRelayKind` and the same check.
+  verified request (a digest of the relay kind and its argument), once. The claim and keys-query relays carry the
+  request body unchanged, the device-list relay the user ID `federation::user_devices_path_user_id` reads, and the
+  profile relay the `user_id` `core::query_parameter` reads; the federation handler and the permit use the same reader,
+  and the worker sends the frame only through `federation_worker::relay_to_main`. A new relay of such data gets a
+  `WorkerRelayKind` and the same check.
   Why: main ran these frames as sent, so a compromised worker could claim, and so delete, any device's one-time keys
   and read any user's devices, keys and profile, around its own database grants (GHSA-3p5v-vrg8-f545, ADR-0595).
   Source: `src/homeserver/AGENTS.md`, `src/ipc/AGENTS.md`, `src/federation_worker/AGENTS.md`.

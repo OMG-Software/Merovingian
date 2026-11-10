@@ -581,8 +581,11 @@ only through `IpcChannel::consume_pending_relay`, which applies the parent's liv
 checks and marks the first equal unused permit used. A refused relay is logged at warning level and answered with the
 provider's empty answer. The worker's handlers read the argument through the functions main uses
 (`federation/worker_relay_binding.hpp` and `core::query_parameter`), so the two cannot disagree, and the worker builds
-and sends its four frames only through `federation_worker::worker_relay_frame` / `relay_to_main`. The directory, public rooms, event and `make_join`
-relays stay unbound: they read only what the worker's role may already read.
+and sends its four frames only through `federation_worker::worker_relay_frame` / `relay_to_main`. The directory, event and `make_join` relays stay unbound:
+they read only what the worker's role may already read. The public rooms relay stays unbound too, for another reason:
+it answers with the published room directory, which any server may request, and the worker relays it only because the
+listing reads appservice registration files the worker does not load (ADR-0296, ADR-0461), not because its database
+role is denied the data.
 
 ### IPC reader/dispatch split
 
