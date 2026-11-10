@@ -12,6 +12,8 @@ DEPENDENCY_TRIAGE_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "dependency-vulnerability-triage.yml"
 )
 SBOM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sbom.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+PACKAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "packages.yml"
 SANITIZERS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sanitizers.yml"
 CODEQL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "codeql.yml"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
@@ -183,19 +185,26 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("license-check: true", config)
         self.assertIn("show-patched-versions: true", config)
 
-    def test_sbom_workflow_generates_spdx_and_cyclonedx_outputs(self) -> None:
-        # GIVEN the repository SBOM workflow.
-        self.assertTrue(SBOM_WORKFLOW.is_file(), "sbom workflow is missing")
-        workflow = SBOM_WORKFLOW.read_text(encoding="utf-8")
+    def test_both_publishing_workflows_attach_the_sbom_before_signing(self) -> None:
+        # GIVEN the tag release and rolling latest workflows.
+        release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN CI or a published release requests an inventory.
-        # THEN the workflow emits both SPDX and CycloneDX JSON SBOMs.
-        self.assertIn("release:", workflow)
-        self.assertIn("published", workflow)
-        self.assertIn("format: spdx-json", workflow)
-        self.assertIn("format: cyclonedx-json", workflow)
-        self.assertIn("artifact-name: merovingian-sbom-spdx", workflow)
-        self.assertIn("artifact-name: merovingian-sbom-cyclonedx", workflow)
+        # WHEN either stages the assets it publishes (ADR-0598).
+        # THEN each generates the SPDX and CycloneDX SBOM into those assets
+        # before they go to the GPG signing workflow, and no separate SBOM
+        # workflow remains to wait on a release event that a GITHUB_TOKEN-made
+        # release never sends.
+        for name, workflow, staged in (("release.yml", release, "release-assets/"),
+                                       ("packages.yml", packages, "packages/")):
+            with self.subTest(workflow=name):
+                generate = workflow.index("python scripts/generate_sbom.py")
+                self.assertIn(f"--spdx {staged}merovingian.spdx.json", workflow)
+                self.assertIn(f"--cyclonedx {staged}merovingian.cdx.json", workflow)
+                self.assertLess(generate, workflow.index("uses: ./.github/workflows/sign-artifacts.yml"))
+        self.assertLess(packages.index("python scripts/generate_sbom.py"),
+                        packages.index("sha256sum packages/* > packages/SHA256SUMS"))
+        self.assertFalse(SBOM_WORKFLOW.exists(), "sbom.yml publishes nothing a release keeps")
 
     def test_codeql_filters_catch2_false_positives_before_upload(self) -> None:
         # GIVEN the repository CodeQL workflow.
@@ -258,11 +267,12 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertTrue(RELEASE_READINESS_SCRIPT.is_file(), "release readiness script is missing")
         script = RELEASE_READINESS_SCRIPT.read_text(encoding="utf-8")
 
-        # WHEN alpha release metadata is checked.
-        # THEN the secret-scan, dependency-triage, SBOM, and their configs must exist.
+        # WHEN release metadata is checked.
+        # THEN the secret-scan and dependency-triage workflows, the SBOM generator, and their configs must exist.
         self.assertIn(".github/workflows/secret-scan.yml", script)
         self.assertIn(".github/workflows/dependency-vulnerability-triage.yml", script)
-        self.assertIn(".github/workflows/sbom.yml", script)
+        self.assertIn("scripts/generate_sbom.py", script)
+        self.assertNotIn(".github/workflows/sbom.yml", script)
         self.assertIn(".gitleaks.toml", script)
         self.assertIn(".github/dependency-review-config.yml", script)
 

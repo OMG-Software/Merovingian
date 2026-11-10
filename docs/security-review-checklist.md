@@ -143,16 +143,17 @@ Use this checklist for every release candidate.
 
 ## Release evidence
 
-- Alpha tags matching `v*-alpha*` publish hardened Linux and FreeBSD tarballs
-  plus SHA-256 checksum files through `.github/workflows/release.yml`.
+- A `v<version>` tag naming the `meson.build` version publishes hardened Linux
+  and FreeBSD tarballs, carrying both workers, plus SHA-256 checksum files
+  through `.github/workflows/release.yml`; any other tag is refused (ADR-0597).
 - CI (`ci.yml`, covering Linux and BSD build/test jobs), sanitizers
   (`sanitizers.yml`), static-analysis (`static-analysis.yml`), fuzz
   (`fuzz.yml`), and reproducible-build (`reproducible-build.yml`) workflows
   passed, and `scripts/check-release-readiness.sh` (run from `ci.yml` and
   `release.yml`) passed.
 - CodeQL (`codeql.yml`), secret-scanning (`secret-scan.yml`),
-  dependency-triage (`dependency-vulnerability-triage.yml`), and SBOM
-  (`sbom.yml`) workflows passed for the release candidate commit.
+  and dependency-triage (`dependency-vulnerability-triage.yml`) workflows
+  passed for the release candidate commit.
   CodeQL's report reaches code scanning through `scripts/filter_codeql_sarif.py`,
   which drops only `cpp/unused-static-function` on files under `tests/`
   (Catch2 scenarios, ADR-0226), every result on the vendored `subprojects/`
@@ -170,7 +171,8 @@ Use this checklist for every release candidate.
   not a pass. A finding in an analysed path is
   fixed or reviewed in SonarQube, never hidden by widening that list.
 - Dependency vulnerability triage artifacts were reviewed before tagging.
-- SBOM and package checksums are attached.
+- The SBOM (`merovingian.spdx.json`, `merovingian.cdx.json`) and package
+  checksums are attached, each with its `.asc` signature (ADR-0598).
 - Release artifacts are signed with a detached GPG `.asc` signature by the
   maintainer key (`.github/workflows/sign-artifacts.yml`; verify with
   `gpg --verify <file>.asc <file>`).

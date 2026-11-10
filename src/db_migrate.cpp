@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.88"};
+constexpr auto version = std::string_view{"0.12.90"};
 
 auto print_help() -> void
 {

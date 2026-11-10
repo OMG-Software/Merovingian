@@ -7,7 +7,7 @@
         --log complement-<v>.jsonl \\
         --package merovingian_<v>_amd64-debian.deb \\
         --package-signature merovingian_<v>_amd64-debian.deb.asc \\
-        --tag v<v>-alpha.N
+        --tag v<v>
 
 Run by the maintainer after the release workflow has published the tag's
 release. It refuses, before signing anything:

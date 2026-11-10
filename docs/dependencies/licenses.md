@@ -10,7 +10,7 @@ license is compatible with Merovingian's `GPL-3.0-or-later` distribution.
 | --- | --- | --- | --- | --- |
 | LibSodium | ISC | `ISC` | Yes | Runtime cryptography; dynamically linked from the OS package. |
 | OpenSSL | Apache-2.0 / OpenSSL-3.0 | `Apache-2.0` | Yes | Runtime TLS listener; dynamically linked from the OS package. |
-| libcurl | curl license (MIT-like) | `curl` | Yes | Federation outbound HTTP client; dynamically linked from the OS package. |
+| libcurl | curl license (MIT-like) | `curl` | Yes | Federation outbound HTTP client; dynamically linked from the OS package, except the static Linux tarball, which statically links the pinned Meson wrap. |
 | PostgreSQL libpq | PostgreSQL license | `PostgreSQL` | Yes | PostgreSQL client library; dynamically linked from the OS package. |
 | SQLite | Public-domain dedication | `blessing` | Yes | Embedded database; statically linked from the pinned Meson wrap. |
 | yyjson | MIT | `MIT` | Yes | Canonical JSON parser; statically linked from the pinned Meson wrap. |
@@ -48,6 +48,10 @@ with a Merovingian binary or package. The full transitive set is hash-locked in
 - Any new dependency must be added to this table before the corresponding code
   or wrap is merged, and must be covered by the `dependency-review-action`
   license gate.
+- The release SBOM is generated from these tables and the wraps
+  (`scripts/generate_sbom.py`, ADR-0598). A new row in a shipped table, a new
+  section, or a new wrap must also be classified in that script's mapping, or
+  SBOM generation, and with it the release-readiness gate, fails.
 
 ## Verification
 

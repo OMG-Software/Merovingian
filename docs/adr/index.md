@@ -516,3 +516,5 @@
 * [0593 - A unit test never builds a homeserver runtime](0593-a-unit-test-never-builds-a-homeserver-runtime.md)
 * [0594 - Fallback keys are capped per device by algorithm count, not by an algorithm allow-list](0594-fallback-keys-are-capped-per-device-by-algorithm-count-not-by-an-algorithm-allow-list.md)
 * [0595 - Bind worker key-claim and key/profile query relays to the verified request by digest](0595-bind-worker-key-claim-and-query-relays-to-the-verified-request-by-digest.md)
+* [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
+* [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)

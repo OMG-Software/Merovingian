@@ -326,7 +326,7 @@ class PublisherTests(unittest.TestCase):
             "source": SOURCE,
         }), encoding="utf-8")
 
-    def publish(self, tag: str = f"v{VERSION}-alpha.1") -> subprocess.CompletedProcess[str]:
+    def publish(self, tag: str = f"v{VERSION}") -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-I", str(PUBLISHER), "--results", str(self.results), "--log", str(self.log),
              "--package", str(self.package), "--package-signature", str(self.package_signature), "--tag", tag],

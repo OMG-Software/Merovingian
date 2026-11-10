@@ -1,12 +1,39 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+STAGE_SCRIPT = REPO_ROOT / "scripts" / "stage-release-tarball.sh"
+
+
+def job_text(workflow: str, job: str) -> str:
+    """The text of one job, from its key to the next top-level job key."""
+    lines = workflow.splitlines(keepends=True)
+    start = lines.index(f"  {job}:\n")
+    end = next((index for index in range(start + 1, len(lines))
+                if lines[index].startswith("  ") and not lines[index].startswith("   ")
+                and lines[index].rstrip().endswith(":")), len(lines))
+    return "".join(lines[start:end])
+
+
+def check_tag_script(workflow: str) -> str:
+    """The shell that the check-tag job's version step runs."""
+    step = job_text(workflow, "check-tag").split("- name: Compare the tag with meson.build", 1)[1]
+    body = step.split("run: |\n", 1)[1]
+    kept = []
+    for line in body.splitlines():
+        if line.strip() and not line.startswith("          "):
+            break
+        kept.append(line[10:])
+    return "\n".join(kept) + "\n"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -40,22 +67,70 @@ class ReleaseWorkflowTests(unittest.TestCase):
         replace = after.index('sed -i "s/<version>/${version}/g" release-notes.md')
         self.assertLess(replace, after.index(">> release-notes.md"))
 
-    def test_alpha_tags_trigger_release_publication(self) -> None:
+    def test_every_v_tag_triggers_release_publication(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN alpha tags are pushed.
-        # THEN the workflow triggers on the alpha tag pattern.
-        self.assertIn("tags:", workflow)
-        self.assertIn("- 'v*-alpha*'", workflow)
+        # WHEN a release tag is pushed.
+        # THEN every v* tag triggers it, with no alpha suffix required.
+        self.assertIn("tags:\n      - 'v*'\n", workflow)
+        self.assertNotIn("alpha", workflow)
+
+    @unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh")
+    def test_check_tag_accepts_only_the_meson_version_and_marks_0x_prereleases(self) -> None:
+        # GIVEN the shell of the check-tag step, and a checkout whose meson.build
+        # names a version.
+        script = check_tag_script(WORKFLOW.read_text(encoding="utf-8"))
+
+        def run(version: str, tag: str) -> tuple[int, str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                (work / "meson.build").write_text(
+                    f"project(\n  'merovingian',\n  'cpp',\n  version: '{version}',\n)\n",
+                    encoding="utf-8", newline="\n")
+                (work / "step.sh").write_text(script, encoding="utf-8", newline="\n")
+                output = work / "output"
+                output.write_text("", encoding="utf-8")
+                env = dict(os.environ, GITHUB_REF_NAME=tag, GITHUB_OUTPUT=str(output))
+                result = subprocess.run([shutil.which("sh"), "-e", "step.sh"], cwd=work, env=env,
+                                        capture_output=True, text=True, check=False)
+                return result.returncode, output.read_text(encoding="utf-8")
+
+        # WHEN tags are checked against it.
+        accepted_0x = run("0.12.90", "v0.12.90")
+        accepted_1x = run("1.0.0", "v1.0.0")
+        other_version = run("0.12.90", "v0.12.89")
+        suffixed = run("0.12.90", "v0.12.90-alpha.1")
+        bare = run("0.12.90", "0.12.90")
+
+        # THEN only v<version> passes; a 0.x version is a prerelease and 1.0.0 is not.
+        self.assertEqual(accepted_0x, (0, "version=0.12.90\nprerelease=true\n"))
+        self.assertEqual(accepted_1x, (0, "version=1.0.0\nprerelease=false\n"))
+        for refused in (other_version, suffixed, bare):
+            self.assertNotEqual(refused[0], 0)
+            self.assertEqual(refused[1], "")
+
+    def test_every_job_waits_for_the_tag_check_and_prerelease_follows_it(self) -> None:
+        # GIVEN the repository release workflow.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the packages are built and published.
+        # THEN both builds need check-tag, and the published release's
+        # prerelease flag is check-tag's output rather than a constant.
+        self.assertIn("needs: check-tag", job_text(workflow, "linux-release-package"))
+        self.assertIn("needs: check-tag", job_text(workflow, "freebsd-release-package"))
+        publish = job_text(workflow, "publish-release")
+        self.assertIn("- check-tag", publish)
+        self.assertIn("prerelease: ${{ needs.check-tag.outputs.prerelease == 'true' }}", publish)
+        self.assertNotIn("prerelease: true", workflow)
 
     def test_hardened_linux_and_freebsd_packages_are_built(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN alpha assets are built.
+        # WHEN release assets are built.
         # THEN both supported package jobs use the hardened profile.
         self.assertIn(
             "sh scripts/build-linux.sh --builddir build-linux-release --profile hardened",
@@ -67,40 +142,77 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("sh scripts/check-release-readiness.sh", workflow)
 
-    def test_alpha_packages_include_system_package_scaffolds(self) -> None:
-        # GIVEN the repository release workflow.
-        self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
+    def test_release_tarballs_are_staged_from_meson_install_with_both_workers(self) -> None:
+        # GIVEN the repository release workflow and its staging script.
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        script = STAGE_SCRIPT.read_text(encoding="utf-8")
 
-        # WHEN alpha assets are staged.
+        # WHEN release assets are staged.
+        # THEN both platforms stage through the script, which installs with
+        # Meson and requires both workers, and the Linux job installs the image
+        # codecs the thumbnail worker is built from.
+        self.assertIn('sh scripts/stage-release-tarball.sh build-linux-release "${package_root}"', workflow)
+        self.assertIn('sh scripts/stage-release-tarball.sh build-freebsd-release "${package_root}"', workflow)
+        self.assertNotIn("cp build-", workflow)
+        self.assertIn("meson install", script)
+        self.assertIn("libexec/merovingian/merovingian-fed-worker", script)
+        self.assertIn("libexec/merovingian/merovingian-thumbnail-worker", script)
+        linux = job_text(workflow, "linux-release-package")
+        self.assertIn("libpng-dev", linux)
+        self.assertIn("libturbojpeg0-dev", linux)
+        self.assertIn("png libjpeg-turbo", job_text(workflow, "freebsd-release-package"))
+
+    def test_release_packages_include_system_package_scaffolds(self) -> None:
+        # GIVEN the repository release workflow and its staging script.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        script = STAGE_SCRIPT.read_text(encoding="utf-8")
+
+        # WHEN release assets are staged.
         # THEN Debian, RPM, and BSD package scaffolds are copied into the release tarballs.
-        self.assertIn("packaging/deb", workflow)
-        self.assertIn("packaging/rpm", workflow)
-        self.assertIn("packaging/freebsd", workflow)
-        self.assertIn("packaging/openbsd", workflow)
-        self.assertIn("packaging/netbsd", workflow)
+        self.assertIn("packaging/deb", script)
+        self.assertIn("packaging/rpm", script)
+        self.assertIn("packaging/freebsd", script)
+        self.assertIn("packaging/openbsd", script)
+        self.assertIn("packaging/netbsd", script)
         self.assertIn("libsodium-dev", workflow)
         self.assertIn("libpq-dev", workflow)
         self.assertIn("libsodium postgresql17-client", workflow)
 
-    def test_alpha_release_publishes_prerelease_assets_and_checksums(self) -> None:
+    def test_sbom_and_licence_summary_are_staged_before_signing(self) -> None:
+        # GIVEN the repository release workflow.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the release assets are staged.
+        stage = job_text(workflow, "stage-release-assets")
+
+        # THEN the SBOM (both formats) and the licence summary are generated
+        # into the unsigned assets before they are uploaded for signing, so
+        # each is published with a detached signature.
+        self.assertIn("python scripts/generate_sbom.py", stage)
+        self.assertIn("--spdx release-assets/merovingian.spdx.json", stage)
+        self.assertIn("--cyclonedx release-assets/merovingian.cdx.json", stage)
+        self.assertIn('--commit "${{ github.sha }}"', stage)
+        self.assertIn("generate-license-summary.py release-assets/merovingian.licenses.json", stage)
+        self.assertLess(stage.index("generate_sbom.py"), stage.index("name: unsigned-release-assets"))
+        self.assertNotIn("generate-license-summary", job_text(workflow, "publish-release"))
+
+    def test_release_publishes_assets_and_checksums(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN alpha packages are published.
-        # THEN the workflow generates checksums and uploads a GitHub prerelease.
+        # WHEN release packages are published.
+        # THEN the workflow generates checksums and uploads a GitHub release.
         self.assertIn("sha256sum", workflow)
         self.assertIn("sha256 -q", workflow)
         self.assertIn("softprops/action-gh-release@", workflow)
-        self.assertIn("prerelease: true", workflow)
 
-    def test_alpha_release_attaches_slsa_provenance_attestation(self) -> None:
+    def test_release_attaches_slsa_provenance_attestation(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN alpha packages are published.
+        # WHEN release packages are published.
         # THEN each artifact carries a SLSA provenance attestation generated by
         # actions/attest-build-provenance and verifiable with `gh attestation verify`.
         # The job must also declare the `attestations: write` permission that the
