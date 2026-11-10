@@ -89,17 +89,6 @@ auto lapse_all_signing_key_windows(merovingian::homeserver::HomeserverRuntime& r
     }
 }
 
-[[nodiscard]] auto json_string_field(std::string const& body, std::string const& field) -> std::string
-{
-    auto const key = "\"" + field + "\":\"";
-    auto const begin = body.find(key);
-    REQUIRE(begin != std::string::npos);
-    auto const value_begin = begin + key.size();
-    auto const value_end = body.find('"', value_begin);
-    REQUIRE(value_end != std::string::npos);
-    return body.substr(value_begin, value_end - value_begin);
-}
-
 } // namespace
 
 // Spec: Matrix Server-Server API v1.19 - Publishing Keys
@@ -168,56 +157,6 @@ SCENARIO("The runtime signing provider always holds the key ensure_runtime_serve
             {
                 REQUIRE(signed_payload.error.empty());
                 REQUIRE(signed_payload.signature.bytes.size() == 64U);
-            }
-        }
-    }
-}
-
-// Merovingian invariant (client-visible):
-// A server whose uptime exceeds the published key window must keep accepting locally
-// composed events. This is the exact failure reported by mobile clients: every
-// PUT /rooms/{roomId}/send/... returned 403 "event authorization or signing failed"
-// because the preferred key had been silently replaced behind the signing provider.
-SCENARIO("Sending a room event still succeeds after the published key window lapses",
-         "[homeserver][signing][client-server][rooms]")
-{
-    GIVEN("a logged-in user in a room on a server whose key window has lapsed")
-    {
-        auto started = merovingian::homeserver::start_client_server(signing_lifecycle_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST",
-                              "/_matrix/client/v3/register",
-                              {},
-                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .response.status == 200U);
-        auto const login = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST",
-             "/_matrix/client/v3/login",
-             {},
-             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.response.status == 200U);
-        auto const token = json_string_field(login.response.body, "access_token");
-
-        auto const created = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(created.response.status == 200U);
-        auto const room = json_string_field(created.response.body, "room_id");
-
-        lapse_all_signing_key_windows(runtime.homeserver);
-
-        WHEN("the user sends a message")
-        {
-            auto const sent = merovingian::homeserver::handle_client_server_request(
-                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room + "/send/m.room.message/txn-lapsed-1", token,
-                          R"({"msgtype":"m.text","body":"hello"})"});
-
-            THEN("the event is accepted and assigned an event id")
-            {
-                REQUIRE(sent.response.status == 200U);
-                REQUIRE(json_string_field(sent.response.body, "event_id").starts_with("$"));
             }
         }
     }

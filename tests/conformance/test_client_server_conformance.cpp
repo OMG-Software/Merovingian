@@ -23,7 +23,8 @@
 // |                                                                         |
 // |  These tests check RESPONSE SHAPE only — status code, required fields,  |
 // |  and field types. Auth behaviour, routing, and persistence are covered   |
-// |  in test_client_server.cpp and test_auth_client_server_api.cpp.         |
+// |  in test_client_server_endpoints_flow.cpp and                            |
+// |  test_auth_client_server_api.cpp.                                        |
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"

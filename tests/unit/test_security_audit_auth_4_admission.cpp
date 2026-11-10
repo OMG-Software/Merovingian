@@ -83,76 +83,7 @@ auto restore_argon2id_admission(merovingian::homeserver::HomeserverRuntime& runt
     return it == runtime.database.users.end() ? std::string{} : it->password_hash;
 }
 
-[[nodiscard]] auto contains(std::string const& haystack, std::string_view needle) -> bool
-{
-    return haystack.find(needle) != std::string::npos;
-}
-
 } // namespace
-
-SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is spent",
-         "[homeserver][auth][security][audit][auth-4]")
-{
-    GIVEN("a runtime with token registration and no Argon2id capacity")
-    {
-        REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(token_registration_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        auto const users_before = user_count(runtime.homeserver);
-        exhaust_argon2id_admission(runtime.homeserver);
-
-        WHEN("a client registers through the service function")
-        {
-            auto const result = merovingian::homeserver::register_local_user(
-                runtime.homeserver, "carol", "CarolPass99!x", std::string{merovingian::tests::registration_token});
-
-            THEN("it is refused with 429 and a retry delay, and no account exists")
-            {
-                REQUIRE_FALSE(result.ok);
-                REQUIRE(result.status == 429U);
-                REQUIRE(result.retry_after_ms > 0U);
-                REQUIRE(user_count(runtime.homeserver) == users_before);
-            }
-
-            THEN("the failed-login counters are untouched")
-            {
-                REQUIRE(runtime.homeserver.login_failures_by_source.size() == 0U);
-                REQUIRE(runtime.homeserver.login_failures_by_account.size() == 0U);
-            }
-        }
-
-        WHEN("a client registers over HTTP")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register",
-                          {},
-                          merovingian::tests::registration_json("carol", "CarolPass99!x")});
-
-            THEN("it is answered with M_LIMIT_EXCEEDED carrying retry_after_ms, and no account exists")
-            {
-                REQUIRE(response.response.status == 429U);
-                REQUIRE(contains(response.response.body, "M_LIMIT_EXCEEDED"));
-                REQUIRE(contains(response.response.body, "retry_after_ms"));
-                REQUIRE(user_count(runtime.homeserver) == users_before);
-            }
-        }
-
-        WHEN("the budget is available again and the same client retries")
-        {
-            restore_argon2id_admission(runtime.homeserver);
-            auto const result = merovingian::homeserver::register_local_user(
-                runtime.homeserver, "carol", "CarolPass99!x", std::string{merovingian::tests::registration_token});
-
-            THEN("the registration succeeds")
-            {
-                REQUIRE(result.ok);
-                REQUIRE(user_count(runtime.homeserver) == users_before + 1U);
-            }
-        }
-    }
-}
 
 SCENARIO("Password hashing in make_user shares the Argon2id admission budget",
          "[homeserver][auth][security][audit][auth-4]")
@@ -224,47 +155,6 @@ SCENARIO("Password change sheds load when the Argon2id admission budget is spent
                 REQUIRE(result.status == 429U);
                 REQUIRE(result.retry_after_ms > 0U);
                 REQUIRE(stored_hash_of(runtime, registered.value) == hash_before);
-            }
-        }
-    }
-}
-
-SCENARIO("Password change over HTTP reports admission saturation as M_LIMIT_EXCEEDED",
-         "[homeserver][auth][security][audit][auth-4]")
-{
-    GIVEN("alice is signed in and no Argon2id capacity remains")
-    {
-        REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(token_registration_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        auto const registered = merovingian::homeserver::register_local_user(
-            runtime.homeserver, "alice", alice_password, std::string{merovingian::tests::registration_token});
-        REQUIRE(registered.ok);
-        auto const signed_in =
-            merovingian::homeserver::login_local_user(runtime.homeserver, registered.value, alice_password, "DEV1");
-        REQUIRE(signed_in.ok);
-        auto const hash_before = stored_hash_of(runtime.homeserver, registered.value);
-        exhaust_argon2id_admission(runtime.homeserver);
-
-        WHEN("she changes her password, answering the UIA challenge with the correct password")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/account/password", signed_in.value,
-                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"AlicePass99!x"},"new_password":"NewAlicePass99!y"})"});
-
-            THEN("it is answered with M_LIMIT_EXCEEDED carrying retry_after_ms and nothing changes")
-            {
-                REQUIRE(response.response.status == 429U);
-                REQUIRE(contains(response.response.body, "M_LIMIT_EXCEEDED"));
-                REQUIRE(contains(response.response.body, "retry_after_ms"));
-                REQUIRE(stored_hash_of(runtime.homeserver, registered.value) == hash_before);
-            }
-
-            THEN("the saturated check is not recorded as a failed UIA attempt")
-            {
-                REQUIRE(runtime.homeserver.uia_failures_by_device.size() == 0U);
             }
         }
     }

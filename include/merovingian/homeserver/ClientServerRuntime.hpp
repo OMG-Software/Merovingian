@@ -113,9 +113,9 @@ struct ClientServerRuntime final
 
 // Test-only helper: replace the rate-limit engine with one that allows
 // exactly one request per route per 60s window. The test scenarios in
-// tests/unit/test_client_server.cpp install this to drive the 429 path
-// from a single request without depending on the operator-configurable
-// per-route caps. In production the engine is built in
+// tests/integration/test_client_server_endpoints_flow.cpp install this to
+// drive the 429 path from a single request without depending on the
+// operator-configurable per-route caps. In production the engine is built in
 // `start_client_server()` from `config.client_rate_limits()`. Not in the
 // public API: declared here so test files can find it via the runtime
 // header, defined in src/homeserver/ClientServerRuntime.cpp.

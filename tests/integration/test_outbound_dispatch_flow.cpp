@@ -1,0 +1,1362 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
+#include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
+#include "../support/registration_token.hpp"
+#include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ObjectMember.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentFederationTransaction.hpp"
+#include "merovingian/database/PersistentMembership.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
+#include "merovingian/federation/EduIdempotenceWindow.hpp"
+#include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/PduIngestionStatus.hpp"
+#include "merovingian/federation/ServerDiscoveryResult.hpp"
+#include "merovingian/homeserver/ClientServerClock.hpp"
+#include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/http/OutboundClient.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace
+{
+
+[[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto make_dispatch_worker(merovingian::http::OutboundClient& client,
+                                        merovingian::database::PersistentStore* persistent_store = nullptr)
+    -> std::unique_ptr<merovingian::federation::DispatchWorker>
+{
+    auto config = merovingian::federation::DispatchWorkerConfig{};
+    config.origin = "example.org";
+    config.key_id = "ed25519:auto";
+    config.secret_key = merovingian::federation::test::secret_key_buffer(
+        merovingian::federation::test::keypair_from_seed("outbound-dispatch-test"));
+    config.max_queue_depth = 64U;
+    config.max_retries = 2U;
+    config.idle_poll = std::chrono::milliseconds{5};
+    auto resolver = merovingian::federation::DispatchResolver{[](std::string_view server_name) {
+        auto result = merovingian::federation::ServerDiscoveryResult{};
+        result.server_name = std::string{server_name};
+        result.resolved_host = std::string{server_name};
+        result.resolved_port = 8448U;
+        result.discovery_allowed = true;
+        return std::optional<merovingian::federation::ServerDiscoveryResult>{result};
+    }};
+    auto clock = []() -> std::uint64_t {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    auto sleep_fn = [](std::chrono::milliseconds) {
+    };
+    return std::make_unique<merovingian::federation::DispatchWorker>(
+        std::move(config), client, std::move(resolver), std::move(clock), std::move(sleep_fn), persistent_store);
+}
+
+[[nodiscard]] auto login_token(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"access_token\":\""};
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
+[[nodiscard]] auto room_id(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"room_id\":\""};
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
+[[nodiscard]] auto has_membership(merovingian::database::PersistentStore const& store, std::string_view id,
+                                  std::string_view user_id, std::string_view membership) -> bool
+{
+    return std::ranges::any_of(store.memberships, [&](merovingian::database::PersistentMembership const& current) {
+        return current.room_id == id && current.user_id == user_id && current.membership == membership;
+    });
+}
+
+[[nodiscard]] auto has_local_member(merovingian::homeserver::LocalDatabase const& database, std::string_view id,
+                                    std::string_view user_id) -> bool
+{
+    auto const room = std::ranges::find_if(database.rooms, [&](auto const& current) {
+        return current.room_id == id;
+    });
+    return room != database.rooms.end() && std::ranges::any_of(room->members, [&](std::string const& member) {
+               return member == user_id;
+           });
+}
+
+[[nodiscard]] auto first_invite_transaction_body(merovingian::database::PersistentStore const& store) -> std::string
+{
+    auto const transaction = std::ranges::find_if(
+        store.federation_transactions, [](merovingian::database::PersistentFederationTransaction const& current) {
+            return current.target.find("/_matrix/federation/v2/invite/") != std::string::npos;
+        });
+    REQUIRE(transaction != store.federation_transactions.end());
+    return transaction->body;
+}
+
+[[nodiscard]] auto device_list_update_transactions(merovingian::database::PersistentStore const& store,
+                                                   std::string_view destination = "")
+    -> std::vector<merovingian::database::PersistentFederationTransaction const*>
+{
+    auto transactions = std::vector<merovingian::database::PersistentFederationTransaction const*>{};
+    for (auto const& transaction : store.federation_transactions)
+    {
+        if (transaction.body.find(R"("edu_type":"m.device_list_update")") == std::string::npos)
+        {
+            continue;
+        }
+        if (!destination.empty() && transaction.server_name != destination)
+        {
+            continue;
+        }
+        transactions.push_back(&transaction);
+    }
+    return transactions;
+}
+
+// Extract the user_id field from the first EDU in a m.device_list_update transaction body.
+[[nodiscard]] auto device_list_update_user_id(std::string_view transaction_body) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(std::string{transaction_body});
+    if (parsed.error != merovingian::canonicaljson::ParseError::none)
+    {
+        return {};
+    }
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+        return {};
+    auto const edus_it = std::ranges::find_if(*root, [](auto const& m) {
+        return m.key == "edus";
+    });
+    if (edus_it == root->end() || edus_it->value == nullptr)
+        return {};
+    auto const* edus = std::get_if<merovingian::canonicaljson::Array>(&edus_it->value->storage());
+    if (edus == nullptr || edus->empty())
+        return {};
+    auto const* edu = std::get_if<merovingian::canonicaljson::Object>(&(*edus)[0].storage());
+    if (edu == nullptr)
+        return {};
+    auto const content_it = std::ranges::find_if(*edu, [](auto const& m) {
+        return m.key == "content";
+    });
+    if (content_it == edu->end() || content_it->value == nullptr)
+        return {};
+    auto const* content = std::get_if<merovingian::canonicaljson::Object>(&content_it->value->storage());
+    if (content == nullptr)
+        return {};
+    auto const user_it = std::ranges::find_if(*content, [](auto const& m) {
+        return m.key == "user_id";
+    });
+    if (user_it == content->end() || user_it->value == nullptr)
+        return {};
+    auto const* uid = std::get_if<std::string>(&user_it->value->storage());
+    return uid != nullptr ? *uid : std::string{};
+}
+
+[[nodiscard]] auto direct_to_device_transactions(merovingian::database::PersistentStore const& store)
+    -> std::vector<merovingian::database::PersistentFederationTransaction const*>
+{
+    auto transactions = std::vector<merovingian::database::PersistentFederationTransaction const*>{};
+    for (auto const& transaction : store.federation_transactions)
+    {
+        if (transaction.body.find(R"("edu_type":"m.direct_to_device")") != std::string::npos)
+        {
+            transactions.push_back(&transaction);
+        }
+    }
+    return transactions;
+}
+
+[[nodiscard]] auto direct_to_device_message_id(std::string_view transaction_body) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(std::string{transaction_body});
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(root != nullptr);
+
+    auto const edus_it = std::ranges::find_if(*root, [](merovingian::canonicaljson::ObjectMember const& member) {
+        return member.key == "edus";
+    });
+    REQUIRE(edus_it != root->end());
+    REQUIRE(edus_it->value != nullptr);
+    auto const* edus = std::get_if<merovingian::canonicaljson::Array>(&edus_it->value->storage());
+    REQUIRE(edus != nullptr);
+    REQUIRE(edus->size() == 1U);
+
+    auto const* edu = std::get_if<merovingian::canonicaljson::Object>(&(*edus)[0].storage());
+    REQUIRE(edu != nullptr);
+    auto const content_it = std::ranges::find_if(*edu, [](merovingian::canonicaljson::ObjectMember const& member) {
+        return member.key == "content";
+    });
+    REQUIRE(content_it != edu->end());
+    REQUIRE(content_it->value != nullptr);
+    auto const* content = std::get_if<merovingian::canonicaljson::Object>(&content_it->value->storage());
+    REQUIRE(content != nullptr);
+
+    auto const message_id_it =
+        std::ranges::find_if(*content, [](merovingian::canonicaljson::ObjectMember const& member) {
+            return member.key == "message_id";
+        });
+    REQUIRE(message_id_it != content->end());
+    REQUIRE(message_id_it->value != nullptr);
+    auto const* message_id = std::get_if<std::string>(&message_id_it->value->storage());
+    REQUIRE(message_id != nullptr);
+    return *message_id;
+}
+
+} // namespace
+
+SCENARIO("send_event enqueues outbound transactions for remote room members",
+         "[homeserver][outbound-dispatch][send-event]")
+{
+    GIVEN("a homeserver runtime with a dispatch worker and a room containing a remote member")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        // Add a remote member to the room.
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org");
+
+        auto const summary_before = homeserver.dispatch_worker->summary();
+
+        WHEN("a local user sends a message event to the room")
+        {
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hello remote","msgtype":"m.text"}})"});
+
+            THEN("the event is persisted and a transaction is enqueued for the remote server")
+            {
+                REQUIRE(message.response.status == 200U);
+                auto const summary_after = homeserver.dispatch_worker->summary();
+                REQUIRE(summary_after.enqueued > summary_before.enqueued);
+                REQUIRE(summary_after.pending > 0U);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("Remote sendToDevice federation dispatch keeps durable unique transaction IDs across counter resets",
+         "[homeserver][outbound-dispatch][send-to-device][regression]")
+{
+    GIVEN("a logged-in local sender with a persistent dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        WHEN("two remote sendToDevice requests are issued across a restarted local counter")
+        {
+            auto const first_counter = homeserver.database.next_session_id;
+            auto const first_send = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/client-txn-1", token,
+                 R"({"messages":{"@bob:remote.example.org":{"REMOTE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{"curve25519:REMOTE1":{"body":"cipher-1","type":0}}}}}})"});
+            REQUIRE(first_send.response.status == 200U);
+
+            auto first_transactions = direct_to_device_transactions(homeserver.database.persistent_store);
+            REQUIRE(first_transactions.size() == 1U);
+            auto const first_txn_id = first_transactions.front()->transaction_id;
+            REQUIRE_FALSE(first_txn_id.empty());
+            REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(
+                direct_to_device_message_id(first_transactions.front()->body)));
+
+            homeserver.database.next_session_id = first_counter;
+
+            auto const second_send = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/client-txn-2", token,
+                 R"({"messages":{"@bob:remote.example.org":{"REMOTE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{"curve25519:REMOTE1":{"body":"cipher-2","type":0}}}}}})"});
+            REQUIRE(second_send.response.status == 200U);
+
+            THEN("both outbound federation transactions remain durable and carry distinct, valid message IDs")
+            {
+                auto direct_to_device = direct_to_device_transactions(homeserver.database.persistent_store);
+                REQUIRE(direct_to_device.size() == 2U);
+
+                auto transaction_ids = std::vector<std::string>{};
+                auto message_ids = std::vector<std::string>{};
+                for (auto const* transaction : direct_to_device)
+                {
+                    transaction_ids.push_back(transaction->transaction_id);
+                    message_ids.push_back(direct_to_device_message_id(transaction->body));
+                }
+
+                std::ranges::sort(transaction_ids);
+                auto const unique_transaction_ids = std::ranges::unique(transaction_ids);
+                REQUIRE(unique_transaction_ids.begin() == transaction_ids.end());
+                std::ranges::sort(message_ids);
+                auto const unique_message_ids = std::ranges::unique(message_ids);
+                REQUIRE(unique_message_ids.begin() == message_ids.end());
+                REQUIRE(std::ranges::all_of(message_ids, [](std::string const& message_id) {
+                    return merovingian::federation::direct_to_device_message_id_is_valid(message_id);
+                }));
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("Remote sendToDevice EDUs carry a message_id that is unique per sender and valid for any transaction ID",
+         "[homeserver][outbound-dispatch][send-to-device][message-id][to-device]")
+{
+    // Spec: SS API v1.19, "Send-to-device messaging": message_id is "Unique ID for the message, used for
+    // idempotence. Arbitrary utf8 string, of maximum length 32 codepoints." Client transaction IDs are only
+    // unique per user, so two local users may well send the same one.
+    GIVEN("two logged-in local senders and a persistent dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        auto tokens = std::vector<std::string>{};
+        for (auto const* localpart : {"alice", "bob"})
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json(localpart, "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
+                              localpart + R"(:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+            REQUIRE(login.response.status == 200U);
+            tokens.push_back(login_token(login.response.body));
+        }
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const body = std::string{
+            R"({"messages":{"@carol:remote.example.org":{"REMOTE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{"curve25519:REMOTE1":{"body":"cipher","type":0}}}}}})"};
+
+        WHEN("both senders use the same client transaction ID towards the same remote user")
+        {
+            for (auto const& token : tokens)
+            {
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/1", token, body})
+                            .response.status == 200U);
+            }
+
+            THEN("the two EDUs carry different, valid message IDs, so the receiver cannot mistake one for a replay")
+            {
+                auto const transactions = direct_to_device_transactions(homeserver.database.persistent_store);
+                REQUIRE(transactions.size() == 2U);
+                auto const first = direct_to_device_message_id(transactions[0]->body);
+                auto const second = direct_to_device_message_id(transactions[1]->body);
+                REQUIRE(first != second);
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(first));
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(second));
+            }
+        }
+
+        WHEN("a sender uses a 200 character client transaction ID")
+        {
+            auto const long_txn = std::string(200U, 'x');
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime,
+                        {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/" + long_txn, tokens.front(), body})
+                        .response.status == 200U);
+
+            THEN("the EDU still carries a valid message_id of at most 32 codepoints")
+            {
+                auto const transactions = direct_to_device_transactions(homeserver.database.persistent_store);
+                REQUIRE(transactions.size() == 1U);
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(
+                    direct_to_device_message_id(transactions.front()->body)));
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("send_event without dispatch worker persists events locally", "[homeserver][outbound-dispatch][no-worker]")
+{
+    GIVEN("a homeserver runtime without a dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+        REQUIRE(homeserver.dispatch_worker == nullptr);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        WHEN("a local user sends a message event")
+        {
+            auto const events_before = homeserver.database.persistent_store.events.size();
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
+
+            THEN("the event is persisted even without outbound dispatch")
+            {
+                REQUIRE(message.response.status == 200U);
+                REQUIRE(homeserver.database.persistent_store.events.size() > events_before);
+            }
+        }
+    }
+}
+
+SCENARIO("send_event does not enqueue transactions for local-only rooms", "[homeserver][outbound-dispatch][local-only]")
+{
+    GIVEN("a homeserver runtime with a dispatch worker and a room with only local members")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        auto const summary_before = homeserver.dispatch_worker->summary();
+
+        WHEN("a local user sends a message event to the local-only room")
+        {
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"local only","msgtype":"m.text"}})"});
+
+            THEN("the event is persisted but no outbound transactions are enqueued")
+            {
+                REQUIRE(message.response.status == 200U);
+                auto const summary_after = homeserver.dispatch_worker->summary();
+                REQUIRE(summary_after.enqueued == summary_before.enqueued);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("Inbound send_join records remote membership for outbound delivery",
+         "[homeserver][federation][send-join][membership]")
+{
+    GIVEN("a local room and a production membership acceptor")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const device_keys_body =
+            std::string{R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"} +
+            R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)" +
+            R"("keys":{"curve25519:DEVICE1":"YWxpY2VDdXJ2ZQ","ed25519:DEVICE1":"YWxpY2VFZDI1NTE5"},)" +
+            R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})";
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/keys/upload", token, device_keys_body});
+        REQUIRE(upload.response.status == 200U);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        // public_chat, not the default preset: these scenarios drive a remote
+        // send_join for a user who holds no invite, and membership_acceptor now
+        // runs the room's authorization rules before persisting (M-01). Under the
+        // default private_chat preset that join is correctly refused. These tests
+        // are about device-list and outbound-dispatch behaviour on a join, so the
+        // join itself has to be one the room actually permits.
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        merovingian::homeserver::wire_federation_callbacks(homeserver);
+        REQUIRE(homeserver.federation.membership_acceptor);
+
+        WHEN("a remote homeserver completes send_join for one of its users")
+        {
+            auto const remote_user = std::string{"@bob:remote.example.org"};
+            auto envelope = merovingian::federation::InboundPduEnvelope{};
+            envelope.event_id = "$join_event:remote.example.org";
+            envelope.room_id = id;
+            envelope.sender = remote_user;
+            envelope.event_type = "m.room.member";
+            envelope.state_key = remote_user;
+            envelope.depth = 10U;
+            // A realistic join names the room's selected auth events and its
+            // forward extremities: ADR-0064 phase B2 authorises an inbound
+            // membership against its own auth_events and the state before it,
+            // so an event with neither is rejected, as a conformant peer's
+            // never would be. v12 rooms omit the create event by rule.
+            auto const fx_ids = [](std::vector<std::string> const& ids) {
+                auto out = std::string{"["};
+                for (std::size_t i = 0U; i < ids.size(); ++i)
+                {
+                    out += (i == 0U ? "" : ",");
+                    out += "\"" + ids[i] + "\"";
+                }
+                return out + "]";
+            };
+            auto const& fx_store = runtime.homeserver.database.persistent_store;
+            envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
+            envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
+            envelope.json = "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                            ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                            "\"prev_events\":" +
+                            fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" + id + "\",\"sender\":\"" +
+                            remote_user + "\",\"state_key\":\"" + remote_user + "\",\"type\":\"m.room.member\"}";
+
+            auto const txns_before =
+                device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();
+            auto const accepted = homeserver.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, id, envelope.event_id, envelope);
+
+            THEN("the persistent and in-memory room membership include the remote user")
+            {
+                REQUIRE(accepted.accepted);
+                REQUIRE(has_membership(homeserver.database.persistent_store, id, remote_user, "join"));
+                REQUIRE(has_local_member(homeserver.database, id, remote_user));
+            }
+
+            THEN("the joining remote server is told about existing local devices in the shared room")
+            {
+                REQUIRE(accepted.accepted);
+                auto const txns =
+                    device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org");
+                REQUIRE(txns.size() > txns_before);
+                auto const any_for_alice = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@alice:example.org";
+                });
+                REQUIRE(any_for_alice);
+            }
+
+            THEN("later local messages are queued for that remote homeserver")
+            {
+                auto const summary_before = homeserver.dispatch_worker->summary();
+                auto const message = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                     R"({"type":"m.room.message","content":{"body":"hello joined remote","msgtype":"m.text"}})"});
+
+                REQUIRE(message.response.status == 200U);
+                auto const summary_after = homeserver.dispatch_worker->summary();
+                REQUIRE(summary_after.enqueued > summary_before.enqueued);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+
+    GIVEN("a local room whose existing local member has not uploaded device keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        // public_chat, not the default preset: these scenarios drive a remote
+        // send_join for a user who holds no invite, and membership_acceptor now
+        // runs the room's authorization rules before persisting (M-01). Under the
+        // default private_chat preset that join is correctly refused. These tests
+        // are about device-list and outbound-dispatch behaviour on a join, so the
+        // join itself has to be one the room actually permits.
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        merovingian::homeserver::wire_federation_callbacks(homeserver);
+        REQUIRE(homeserver.federation.membership_acceptor);
+
+        WHEN("a remote homeserver completes send_join for one of its users")
+        {
+            auto const remote_user = std::string{"@carol:remote.example.org"};
+            auto envelope = merovingian::federation::InboundPduEnvelope{};
+            envelope.event_id = "$join_without_keys:remote.example.org";
+            envelope.room_id = id;
+            envelope.sender = remote_user;
+            envelope.event_type = "m.room.member";
+            envelope.state_key = remote_user;
+            envelope.depth = 10U;
+            // A realistic join names the room's selected auth events and its
+            // forward extremities: ADR-0064 phase B2 authorises an inbound
+            // membership against its own auth_events and the state before it,
+            // so an event with neither is rejected, as a conformant peer's
+            // never would be. v12 rooms omit the create event by rule.
+            auto const fx_ids = [](std::vector<std::string> const& ids) {
+                auto out = std::string{"["};
+                for (std::size_t i = 0U; i < ids.size(); ++i)
+                {
+                    out += (i == 0U ? "" : ",");
+                    out += "\"" + ids[i] + "\"";
+                }
+                return out + "]";
+            };
+            auto const& fx_store = runtime.homeserver.database.persistent_store;
+            envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
+            envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
+            envelope.json = "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                            ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                            "\"prev_events\":" +
+                            fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" + id + "\",\"sender\":\"" +
+                            remote_user + "\",\"state_key\":\"" + remote_user + "\",\"type\":\"m.room.member\"}";
+
+            auto const txns_before =
+                device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();
+            auto const accepted = homeserver.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, id, envelope.event_id, envelope);
+
+            THEN("the remote join is accepted without advertising a login-only local device")
+            {
+                REQUIRE(accepted.accepted);
+                REQUIRE(has_membership(homeserver.database.persistent_store, id, remote_user, "join"));
+                auto const txns_after =
+                    device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();
+                REQUIRE(txns_after == txns_before);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("Inbound federation invites are signed, persisted, and visible in sync",
+         "[homeserver][federation][invite][sync]")
+{
+    GIVEN("a local user and a production invite handler")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        homeserver.outbound_client.reset();
+        homeserver.discovery_network.reset();
+        merovingian::homeserver::wire_federation_callbacks(homeserver);
+        REQUIRE(homeserver.federation.invite_handler);
+
+        WHEN("a remote homeserver invites the local user")
+        {
+            auto request = merovingian::federation::InviteRequest{};
+            request.room_id = "!remote_room:remote.example.org";
+            request.event_id = "$invite_event:remote.example.org";
+            request.room_version = "12";
+            request.invite_event_json =
+                R"({"auth_events":[],"content":{"membership":"invite"},"depth":7,"origin_server_ts":1,)"
+                R"("prev_events":[],"room_id":"!remote_room:remote.example.org","sender":"@alice:remote.example.org",)"
+                R"("state_key":"@bob:example.org","type":"m.room.member"})";
+            request.invite_room_state_json = {
+                R"({"content":{"creator":"@alice:remote.example.org","room_version":"12"},"sender":"@alice:remote.example.org","state_key":"","type":"m.room.create"})",
+                R"({"content":{"name":"Remote DM"},"sender":"@alice:remote.example.org","state_key":"","type":"m.room.name"})",
+                R"({"content":{"displayname":"Alice Remote","membership":"join"},"sender":"@alice:remote.example.org","state_key":"@alice:remote.example.org","type":"m.room.member"})",
+            };
+
+            auto const accepted = homeserver.federation.invite_handler(request);
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the invite is accepted as a signed event and sync exposes the stripped invite state")
+            {
+                REQUIRE(accepted.accepted);
+                REQUIRE(accepted.status == 200U);
+                REQUIRE(accepted.signed_event_json.find("\"signatures\"") != std::string::npos);
+                REQUIRE(has_membership(homeserver.database.persistent_store, request.room_id, "@bob:example.org",
+                                       "invite"));
+                REQUIRE(sync.response.status == 200U);
+                REQUIRE(sync.response.body.find("\"invite\"") != std::string::npos);
+                REQUIRE(sync.response.body.find(request.room_id) != std::string::npos);
+                REQUIRE(sync.response.body.find("\"m.room.name\"") != std::string::npos);
+                REQUIRE(sync.response.body.find("Remote DM") != std::string::npos);
+                REQUIRE(sync.response.body.find("@alice:remote.example.org") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom invites remote Matrix users through outbound federation",
+         "[homeserver][federation][create-room][invite]")
+{
+    GIVEN("a local user creating a room with a remote invitee")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+        auto const summary_before = homeserver.dispatch_worker->summary();
+
+        WHEN("the createRoom body contains a remote invite")
+        {
+            auto const room = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"invite":["@bob:remote.example.org"]})"});
+
+            THEN("the invite membership is persisted and an outbound invite transaction is queued")
+            {
+                REQUIRE(room.response.status == 200U);
+                auto const id = room_id(room.response.body);
+                REQUIRE(has_membership(homeserver.database.persistent_store, id, "@bob:remote.example.org", "invite"));
+                auto const summary_after = homeserver.dispatch_worker->summary();
+                REQUIRE(summary_after.enqueued > summary_before.enqueued);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("createRoom outbound invites carry the created room's version",
+         "[homeserver][federation][create-room][invite][room-version]")
+{
+    GIVEN("a local user creating a room with a remote invitee and a requested room version")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        WHEN("createRoom targets room version 11")
+        {
+            auto const room = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token,
+                          R"({"invite":["@bob:remote.example.org"],"room_version":"11"})"});
+
+            THEN("the queued outbound invite body advertises that same room version")
+            {
+                REQUIRE(room.response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(
+                    first_invite_transaction_body(homeserver.database.persistent_store));
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const room_version = std::ranges::find_if(*root, [](auto const& member) {
+                    return member.key == "room_version";
+                });
+                REQUIRE(room_version != root->end());
+                auto const* version_text = std::get_if<std::string>(&room_version->value->storage());
+                REQUIRE(version_text != nullptr);
+                REQUIRE(*version_text == "11");
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec device-list-updates-between-servers: the homeserver MUST send
+// m.device_list_update EDUs to remote servers that share rooms with the
+// local user whenever that user's device list changes.
+// ---------------------------------------------------------------------------
+
+SCENARIO("key upload broadcasts m.device_list_update to remote servers in shared rooms",
+         "[homeserver][e2ee][device-list-update][key-upload]")
+{
+    GIVEN("a user in a room that contains a remote member and a dispatch worker is wired")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        // Inject a remote member so the server has a remote destination to notify
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org");
+
+        WHEN("alice uploads her device keys")
+        {
+            auto const txns_before = device_list_update_transactions(homeserver.database.persistent_store).size();
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
+                          R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"
+                          R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)"
+                          R"("keys":{"curve25519:DEVICE1":"aGFzaGVkY3VydmU=","ed25519:DEVICE1":"aGFzaGVkZWQ="},)"
+                          R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})"});
+
+            THEN("a m.device_list_update EDU is dispatched to remote.example.org for alice's device")
+            {
+                REQUIRE(upload.response.status == 200U);
+                auto const txns =
+                    device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org");
+                REQUIRE(txns.size() > txns_before);
+                // The EDU must identify alice as the user whose device list changed
+                auto const any_for_alice = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@alice:example.org";
+                });
+                REQUIRE(any_for_alice);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+
+    GIVEN("a user in a room with only local members and a dispatch worker is wired")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        // Room contains only alice -- no remote servers to notify
+
+        WHEN("alice uploads her device keys")
+        {
+            auto const txns_before = device_list_update_transactions(homeserver.database.persistent_store).size();
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
+                          R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"
+                          R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)"
+                          R"("keys":{"curve25519:DEVICE1":"aGFzaGVkY3VydmU=","ed25519:DEVICE1":"aGFzaGVkZWQ="},)"
+                          R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})"});
+
+            THEN("no m.device_list_update EDU is dispatched (no remote servers in room)")
+            {
+                auto const txns_after = device_list_update_transactions(homeserver.database.persistent_store).size();
+                REQUIRE(txns_after == txns_before);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("local join to a room with remote members broadcasts m.device_list_update",
+         "[homeserver][e2ee][device-list-update][join]")
+{
+    GIVEN("a public room with a remote member and a second local user with a device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        // alice creates a public room
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE1"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        // Inject a remote member so there is a remote server to notify on join
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@remote:other.example.org");
+
+        // charlie is a second local user who will join the room
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("charlie", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const charlie_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@charlie:example.org"},"password":"CorrectHorse7!","device_id":"CHARLIE1"})"});
+        REQUIRE(charlie_login.response.status == 200U);
+        auto const charlie_token = login_token(charlie_login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        WHEN("charlie joins the room")
+        {
+            auto const txns_before =
+                device_list_update_transactions(homeserver.database.persistent_store, "other.example.org").size();
+            auto const join_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/join", charlie_token, {}});
+
+            THEN("a m.device_list_update EDU is dispatched to other.example.org for charlie")
+            {
+                REQUIRE(join_resp.response.status == 200U);
+                auto const txns =
+                    device_list_update_transactions(homeserver.database.persistent_store, "other.example.org");
+                REQUIRE(txns.size() > txns_before);
+                auto const any_for_charlie = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@charlie:example.org";
+                });
+                REQUIRE(any_for_charlie);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+// Security audit run-1 (fed.outbound-fanout-rfind-colon-port-server-name): a member's server name
+// is everything after the FIRST ':' of their user ID (server_name = hostname [ ":" port ]). The
+// fan-out split on the last ':', so a member on "remote.example.org:8448" was addressed as "8448"
+// and never received the room's events.
+SCENARIO("send_event addresses members on a port-suffixed server name by the full server name",
+         "[homeserver][outbound-dispatch][send-event][security]")
+{
+    GIVEN("a room with members on a port-suffixed server and on a bare server, and a recording worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto queue_store = merovingian::database::PersistentStore{};
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &queue_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org:8448");
+        local_room->members.push_back("@carol:other.example.org");
+        queue_store.federation_transactions.clear();
+
+        WHEN("a local user sends a message event to the room")
+        {
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
+
+            THEN("one transaction is queued per server, addressed to the full server names")
+            {
+                REQUIRE(message.response.status == 200U);
+                auto destinations = std::vector<std::string>{};
+                for (auto const& transaction : queue_store.federation_transactions)
+                {
+                    destinations.push_back(transaction.server_name);
+                }
+                std::ranges::sort(destinations);
+                REQUIRE(destinations == std::vector<std::string>{"other.example.org", "remote.example.org:8448"});
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+// Security audit run-1 (fed.outbound-fanout-unbounded-destinations-queue-poison): when the dispatch
+// worker refuses a destination's transaction (its share of the queue is full), the local send still
+// succeeds, the refusal is counted rather than discarded, and operators see it in the admin metrics.
+SCENARIO("send_event still succeeds when the dispatch worker refuses a destination, and the refusal is counted",
+         "[homeserver][outbound-dispatch][send-event][security][metrics]")
+{
+    GIVEN("a room with a remote member and a worker whose share for that destination is sixteen")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+        auto share_config = merovingian::federation::DispatchWorkerConfig{};
+        share_config.max_queue_depth = 64U; // make_dispatch_worker's depth
+        REQUIRE(merovingian::federation::effective_max_pending_per_destination(share_config) == 16U);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org");
+        auto const before = homeserver.dispatch_worker->summary();
+
+        WHEN("seventeen messages are sent while the worker is not draining")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            for (auto i = 0; i < 17; ++i)
+            {
+                statuses.push_back(
+                    merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                                  R"({"type":"m.room.message","content":{"body":"hi","msgtype":"m.text"}})"})
+                        .response.status);
+            }
+
+            THEN("every send succeeds, and the one transaction past the share is refused and counted")
+            {
+                REQUIRE(std::ranges::all_of(statuses, [](auto const status) {
+                    return status == 200U;
+                }));
+                auto const after = homeserver.dispatch_worker->summary();
+                REQUIRE(after.rejected == before.rejected + 1U);
+                REQUIRE(after.pending == 16U);
+            }
+
+            AND_THEN("the admin metrics report the refusal")
+            {
+                auto const admin =
+                    merovingian::homeserver::bootstrap_admin_user(homeserver, "operator", "AdminPass99!");
+                REQUIRE(admin.ok);
+                auto const admin_login = merovingian::homeserver::handle_local_http_request(
+                    homeserver, {"POST", "/_matrix/client/v3/login", {}, admin.value + "|AdminPass99!|ADMINDEV"});
+                REQUIRE(admin_login.status == 200U);
+                auto const metrics = merovingian::homeserver::handle_local_http_request(
+                    homeserver, {"GET", "/_merovingian/admin/metrics", admin_login.body, {}});
+                REQUIRE(metrics.status == 200U);
+                REQUIRE(metrics.body.find("merovingian_federation_outbound_rejected_total") != std::string::npos);
+                REQUIRE(metrics.body.find("merovingian_federation_outbound_pending") != std::string::npos);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}

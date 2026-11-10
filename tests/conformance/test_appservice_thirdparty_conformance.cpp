@@ -223,7 +223,7 @@ SCENARIO("every /thirdparty/* route requires authentication", "[appservice][conf
 
 // Spec: every one of the six /thirdparty/* routes is documented
 // "Rate-limited: No". Proven by installing an artificially tight 1
-// request/60s cap (the same test seam test_client_server.cpp's rate-limit
+// request/60s cap (the same test seam test_client_server_endpoints_flow.cpp's rate-limit
 // scenarios use) and showing repeated calls to a /thirdparty/* route never
 // 429 — while an ordinary generic-tier route under the identical cap does,
 // confirming the cap itself is actually load-bearing in this test.

@@ -321,7 +321,7 @@ reports the full set rather than nothing, so a freshly logged-in device is
 prompted to `/keys/query` its own user's devices straight away. The spec permits
 either ("the server need only populate this property for an incremental
 `/sync`"); this project chose to populate, and
-`tests/unit/test_sync_handler.cpp` pins that behaviour. Deduplication is what
+`tests/integration/test_sync_handler_flow.cpp` pins that behaviour. Deduplication is what
 keeps the initial response bounded.
 
 All three surfaces that report device-list changes — `/sync`, the MSC4186 e2ee
