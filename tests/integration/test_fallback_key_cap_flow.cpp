@@ -165,6 +165,51 @@ SCENARIO("/keys/upload refuses fallback keys of more algorithms than the per-dev
     }
 }
 
+SCENARIO("A device already holding more fallback-key algorithms than the cap can replace them but add none",
+         "[ghsa-3p9g][fallback-key-cap][e2ee][homeserver][client-server][limits]")
+{
+    GIVEN("a device holding keys of 3 algorithms, and then the cap lowered to 2 as a restart with a lower cap would")
+    {
+        auto started = merovingian::homeserver::start_client_server(capped_runtime_config(3U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_and_login_alice(runtime);
+        REQUIRE(upload(runtime, token, fallback_keys_body({"alg0:K", "alg1:K", "alg2:K"})).response.status == 200U);
+        runtime.limits.max_fallback_keys_per_device = 2U;
+
+        WHEN("the device uploads new keys for two algorithms it already holds")
+        {
+            auto const response = upload(runtime, token, fallback_keys_body({"alg0:NEW", "alg2:NEW"}));
+
+            THEN("the replacements are accepted, so the device can still rotate its keys above the cap")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const stored = stored_fallback_keys(runtime);
+                REQUIRE(stored.size() == 3U);
+                REQUIRE(std::ranges::any_of(stored, [](auto const& row) {
+                    return row.first == "alg0:NEW";
+                }));
+                REQUIRE(std::ranges::any_of(stored, [](auto const& row) {
+                    return row.first == "alg2:NEW";
+                }));
+            }
+        }
+
+        WHEN("the device uploads a replacement together with a key of an algorithm it does not hold")
+        {
+            auto const before = stored_fallback_keys(runtime);
+            auto const response = upload(runtime, token, fallback_keys_body({"alg0:NEW", "alg3:K"}));
+
+            THEN("it is refused with M_TOO_LARGE and not even the replacement is stored")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_TOO_LARGE") != std::string::npos);
+                REQUIRE(stored_fallback_keys(runtime) == before);
+            }
+        }
+    }
+}
+
 SCENARIO("The fallback-key cap is per device, so another device's keys are not counted",
          "[ghsa-3p9g][fallback-key-cap][e2ee][homeserver][client-server][limits]")
 {

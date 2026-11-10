@@ -8502,7 +8502,9 @@ namespace
     // GHSA-3p9g-gpvx-2cx9 (ADR-0594): true when storing the fallback keys named in `keys` would leave `device_id`
     // holding more than `max_fallback_keys_per_device`. A device holds one fallback key per algorithm
     // (database::fallback_key_algorithm), so an algorithm it already holds, or one the request names twice, is a
-    // replacement and adds nothing: a device at its cap can always refresh the keys it has.
+    // replacement and adds nothing: a device can always refresh the keys it has. That holds for a device already
+    // over the cap too (one that held more before the cap existed or was lowered): only an upload that adds an
+    // algorithm is judged against the cap.
     [[nodiscard]] auto fallback_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view user,
                                                    std::string_view device_id, canonicaljson::Object const& keys)
         -> bool
@@ -8515,11 +8517,12 @@ namespace
                 algorithms.insert(database::fallback_key_algorithm(key.key_id));
             }
         }
+        auto const held = algorithms.size();
         for (auto const& member : keys)
         {
             algorithms.insert(database::fallback_key_algorithm(member.key));
         }
-        return algorithms.size() > rt.limits.max_fallback_keys_per_device;
+        return algorithms.size() > held && algorithms.size() > rt.limits.max_fallback_keys_per_device;
     }
 
     [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,

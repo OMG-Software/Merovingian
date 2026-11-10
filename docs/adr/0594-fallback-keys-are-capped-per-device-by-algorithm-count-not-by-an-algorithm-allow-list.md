@@ -18,7 +18,8 @@ should the fallback keys one device holds be bounded?
 * Bounded storage per authenticated account, under `runtime.mutex` and across restarts.
 * The CSAZ-10 policy for end-to-end key material: an over-cap upload is refused with `400 M_TOO_LARGE`, nothing from it is
   stored, nothing is evicted, and the caps are operator-configurable.
-* A device at its cap must still be able to replace its fallback keys: clients rotate them after one is used.
+* A device at or above its cap must still be able to replace its fallback keys: clients rotate them after one is used.
+  A device can be above the cap when it stored its keys before an operator lowered it.
 * The specification does not name the algorithms a fallback key may use.
 
 ## Considered Options
@@ -33,14 +34,16 @@ Chosen option: a per-device cap on distinct algorithms, because it bounds the ro
 algorithms exist, and it keeps the CSAZ-10 policy of refusing whole requests rather than evicting.
 
 The cap counts `database::fallback_key_algorithm(key_id)` over the device's held keys and the request's keys together, so
-an algorithm already held, or named twice in one request, is a replacement and adds nothing. `store_fallback_key`
+an algorithm already held, or named twice in one request, is a replacement and adds nothing. Only a request that adds
+an algorithm is judged against the cap, so a device above it (after the cap was lowered) can still replace every key it
+holds but can add none. `store_fallback_key`
 replaces by the same function, so the cap and the replacement rule cannot disagree about what one algorithm is. The check
 sits beside the one-time-key cap, before anything in the request (device keys, one-time keys, fallback keys) is written.
 
 ### Positive Consequences
 
 * A device holds at most `max_fallback_keys_per_device` fallback keys, whatever the client sends.
-* A device at the cap can always rotate the keys of algorithms it holds.
+* A device at or above the cap can always rotate the keys of algorithms it holds.
 * A future algorithm needs no server change.
 
 ### Negative Consequences
