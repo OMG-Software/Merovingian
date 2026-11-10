@@ -55,6 +55,7 @@
 #include "merovingian/federation/public_rooms.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/worker_relay_binding.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
@@ -1693,30 +1694,11 @@ namespace
 
     // Extracts and percent-decodes a single named parameter from the query
     // string of a request target. Returns an empty string when absent.
+    // One definition, shared with the relay binding (worker_relay_binding.hpp): main computes a profile relay's digest
+    // from the same parameter this reads.
     [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string
     {
-        auto const query_start = target.find('?');
-        if (query_start == std::string_view::npos)
-        {
-            return {};
-        }
-        auto remaining = target.substr(query_start + 1U);
-        while (!remaining.empty())
-        {
-            auto const amp = remaining.find('&');
-            auto const pair = remaining.substr(0U, amp);
-            auto const eq = pair.find('=');
-            if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
-            {
-                return core::percent_decode(pair.substr(eq + 1U));
-            }
-            if (amp == std::string_view::npos)
-            {
-                break;
-            }
-            remaining = remaining.substr(amp + 1U);
-        }
-        return {};
+        return request_query_parameter(target, name);
     }
 
     // Spec: GET /_matrix/federation/v1/query/directory
@@ -1905,13 +1887,13 @@ namespace
         {
             return {501U, "query_user_devices not implemented"};
         }
-        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/user/devices/"};
-        auto const path = std::string_view{request.target}.substr(0U, request.target.find('?'));
-        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        // The same extraction main binds a worker's relay of this call to (GHSA-3p5v-vrg8-f545, ADR-0595).
+        auto const path_user_id = user_devices_path_user_id(request.target);
+        if (!path_user_id.has_value())
         {
             return {400U, "user/devices path is malformed"};
         }
-        auto const user_id = core::percent_decode(path.substr(prefix.size()));
+        auto const& user_id = *path_user_id;
         // As for query/profile: a malformed user ID is a bad request, and is never looked up or
         // relayed to main by a worker (F-08).
         if (!auth::user_id_is_valid_federated(user_id))

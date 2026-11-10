@@ -22,11 +22,13 @@
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/invite_room_state.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/worker_relay_binding.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
@@ -884,6 +886,24 @@ namespace
         return relay_room_acl_refusal(runtime, room_id, {origin});
     }
 
+    // GHSA-3p5v-vrg8-f545 (ADR-0595): whether a claim or query relay is one the request it names as its parent could
+    // cause. `digest` is computed by the caller before it takes runtime.mutex, from the argument the frame carries;
+    // call this after the lock is held, as the EDU admission is, so a parent that finished during the wait cannot
+    // authorise anything. Each digest is admitted once.
+    [[nodiscard]] auto worker_relay_admitted(ipc::IpcChannel& receiving_channel, std::string_view request_json,
+                                             std::optional<std::string> const& digest, std::string_view frame_type)
+        -> bool
+    {
+        auto const parent_request_id = ipc::ipc_json_get_u64(request_json, "parent_request_id");
+        if (digest.has_value() && receiving_channel.consume_pending_relay(parent_request_id, *digest))
+        {
+            return true;
+        }
+        LOG_WARNING(std::string{frame_type} +
+                    " refused: no live verified parent request on this channel carries it, or it was already relayed");
+        return false;
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -1185,7 +1205,8 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
     return serialize_invite_ingest_result(result);
 }
 
-auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                     ipc::IpcChannel& receiving_channel) -> std::string
 {
     // A one-time-key claim accepted by a worker must be decided against
     // main's own store, not a worker's — see docs/architecture.md,
@@ -1200,10 +1221,19 @@ auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_vie
     // return it to their caller, reusing an Olm one-time prekey — exactly
     // the property a one-time key exists to prevent. Routing every claim
     // through main's own single copy removes the split-brain entirely.
+    //
+    // GHSA-3p5v-vrg8-f545 (ADR-0595): the claim deletes the keys it returns, and the worker's database role cannot
+    // touch one_time_keys, so this relay is the only way the worker could. It is admitted only for the body of a
+    // claim request main verified and forwarded on this channel, once.
     auto const request_body = json_get_str(request_json, "request_body");
+    auto const digest = federation::worker_relay_digest(federation::WorkerRelayKind::otk_claim, request_body);
     auto response_body = std::string{};
     {
         auto guard = RuntimeLock{runtime.mutex};
+        if (!worker_relay_admitted(receiving_channel, request_json, digest, "otk_claim_ingest"))
+        {
+            return serialize_otk_claim_ingest_result({});
+        }
         if (runtime.federation.one_time_keys_claim_provider)
         {
             response_body = runtime.federation.one_time_keys_claim_provider(request_body);
@@ -1212,7 +1242,8 @@ auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_vie
     return serialize_otk_claim_ingest_result(response_body);
 }
 
-auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                        ipc::IpcChannel& receiving_channel) -> std::string
 {
     // A federated device-list query decided by a worker must read main's own
     // store, not a worker's — see docs/architecture.md, "Federation worker
@@ -1223,10 +1254,17 @@ auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_
     // through main afterward is invisible to a worker's copy, and this
     // non-room-scoped route always lands on shard 0 with no mechanism (unlike
     // room_sync) to ever refresh it.
+    // The worker's role cannot read devices or device_keys, so the relay is bound to the user the verified request
+    // named (GHSA-3p5v-vrg8-f545, ADR-0595).
     auto const user_id = json_get_str(request_json, "user_id");
+    auto const digest = federation::worker_relay_digest(federation::WorkerRelayKind::user_devices, user_id);
     auto response_body = std::string{};
     {
         auto guard = RuntimeLock{runtime.mutex};
+        if (!worker_relay_admitted(receiving_channel, request_json, digest, "user_devices_ingest"))
+        {
+            return serialize_user_devices_ingest_result({});
+        }
         if (runtime.federation.user_devices_provider)
         {
             response_body = runtime.federation.user_devices_provider(user_id);
@@ -1235,16 +1273,23 @@ auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_
     return serialize_user_devices_ingest_result(response_body);
 }
 
-auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                             ipc::IpcChannel& receiving_channel) -> std::string
 {
     // Same stale-snapshot failure mode as handle_user_devices_ingest_request
     // above, for POST /_matrix/federation/v1/user/keys/query instead of
     // GET /user/devices/{userId}. See docs/architecture.md, "Federation
     // worker user/device/profile/event query relay".
+    // Bound to the body of the verified query (GHSA-3p5v-vrg8-f545, ADR-0595).
     auto const request_body = json_get_str(request_json, "request_body");
+    auto const digest = federation::worker_relay_digest(federation::WorkerRelayKind::device_keys_query, request_body);
     auto response_body = std::string{};
     {
         auto guard = RuntimeLock{runtime.mutex};
+        if (!worker_relay_admitted(receiving_channel, request_json, digest, "device_keys_query_ingest"))
+        {
+            return serialize_device_keys_query_ingest_result({});
+        }
         if (runtime.federation.device_keys_query_provider)
         {
             response_body = runtime.federation.device_keys_query_provider(request_body);
@@ -1253,17 +1298,25 @@ auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::st
     return serialize_device_keys_query_ingest_result(response_body);
 }
 
-auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                         ipc::IpcChannel& receiving_channel) -> std::string
 {
     // Same stale-snapshot failure mode as handle_user_devices_ingest_request
     // above, for GET /_matrix/federation/v1/query/profile: PersistentStore::
     // profiles is likewise a worker-startup snapshot never refreshed by a
     // later client-server profile update on main. See docs/architecture.md,
     // "Federation worker user/device/profile/event query relay".
+    // The worker's role cannot read profiles, so the relay is bound to the user_id of the verified query
+    // (GHSA-3p5v-vrg8-f545, ADR-0595).
     auto const user_id = json_get_str(request_json, "user_id");
+    auto const digest = federation::worker_relay_digest(federation::WorkerRelayKind::profile_query, user_id);
     auto profile = federation::FederationProfile{};
     {
         auto guard = RuntimeLock{runtime.mutex};
+        if (!worker_relay_admitted(receiving_channel, request_json, digest, "profile_query_ingest"))
+        {
+            return serialize_profile_query_ingest_result({});
+        }
         if (runtime.federation.profile_query_provider)
         {
             profile = runtime.federation.profile_query_provider(user_id);
@@ -1552,7 +1605,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 {
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
-                            ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+                            ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json, *ch));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));
@@ -1562,7 +1615,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 {
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
-                            ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
+                            ch->send_response(id, handle_user_devices_ingest_request(runtime_, json, *ch));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));
@@ -1572,7 +1625,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 {
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
-                            ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+                            ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json, *ch));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));
@@ -1582,7 +1635,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 {
                     if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                             auto const guard = InFlightGuard{*ch};
-                            ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                            ch->send_response(id, handle_profile_query_ingest_request(runtime_, json, *ch));
                         }))
                     {
                         ch->send_response(id, overload_response_for(type));
@@ -1689,8 +1742,12 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     // F-74 (ADR-0395): the EDUs of the body main authenticated, so a relay can be bound to them.
     auto edu_digests = verified_send_edu_digests(
         request, std::max<std::uint32_t>(1U, runtime_.config.security().federation.max_transaction_edus));
-    auto const reply =
-        ch->send_request(ipc::serialize_fed_request(request), timeout, verified_origin, std::move(edu_digests));
+    // GHSA-3p5v-vrg8-f545 (ADR-0595): the one claim or key/profile query relay this verified request may cause.
+    auto relay_digests = verified_origin.empty()
+                             ? std::vector<std::string>{}
+                             : federation::verified_request_relay_digests(request.method, request.target, request.body);
+    auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout, verified_origin,
+                                        std::move(edu_digests), std::move(relay_digests));
     if (!reply.has_value())
     {
         LOG_WARNING("WorkerPool: shard " + std::to_string(index) + " request timed out or failed for " +

@@ -1825,3 +1825,117 @@ SCENARIO("A body just under the frame cap whose frame is over it fails the send 
         pair.client->stop();
     }
 }
+
+// GHSA-3p5v-vrg8-f545 (ADR-0595): a claim or key/profile query a worker relays is admitted only against a permit
+// main gave the verified request it forwarded, once. Spec: server-server-api.md "Claiming one-time keys" (a claimed
+// key is removed: the claim is a write, so only the requesting server's own claim may cause one).
+SCENARIO("a pending request admits each relay permit of its verified request once", "[ipc][ghsa-3p5v]")
+{
+    GIVEN("a pending verified request carrying one relay permit")
+    {
+        auto pair = make_channel_pair();
+        auto observed_promise = std::promise<std::uint64_t>{};
+        auto observed = observed_promise.get_future();
+        auto const stop = Fed12StopChannels{pair};
+        pair.client->set_request_handler([&](std::uint64_t id, std::string) {
+            observed_promise.set_value(id);
+        });
+        pair.server->start();
+        pair.client->start();
+        auto reply = std::async(std::launch::async, [&] {
+            return pair.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{10}, "a.remote.example",
+                                             std::vector<std::string>{}, std::vector<std::string>{"permit-claim"});
+        });
+        REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        auto const parent = observed.get();
+
+        WHEN("the permit is spent twice")
+        {
+            auto const first = pair.server->consume_pending_relay(parent, "permit-claim");
+            auto const second = pair.server->consume_pending_relay(parent, "permit-claim");
+
+            THEN("the first relay is admitted and the replay is refused")
+            {
+                CHECK(first);
+                CHECK_FALSE(second);
+            }
+        }
+        // A wrong guess must consume nothing, and a relay permit is not an EDU digest or the reverse.
+        WHEN("another permit, an empty one, or the permit as an EDU digest is offered")
+        {
+            auto const absent = pair.server->consume_pending_relay(parent, "permit-forged");
+            auto const empty = pair.server->consume_pending_relay(parent, "");
+            auto const as_edu = pair.server->consume_pending_edu(parent, "a.remote.example", "permit-claim");
+            auto const genuine = pair.server->consume_pending_relay(parent, "permit-claim");
+
+            THEN("each is refused, and the refusals leave the genuine permit unspent")
+            {
+                CHECK_FALSE(absent);
+                CHECK_FALSE(empty);
+                CHECK_FALSE(as_edu);
+                CHECK(genuine);
+            }
+        }
+        WHEN("the permit is offered under another parent or on the worker's end of the channel")
+        {
+            auto const other_parent = pair.server->consume_pending_relay(parent + 1U, "permit-claim");
+            auto const no_parent = pair.server->consume_pending_relay(0U, "permit-claim");
+            auto const wrong_channel = pair.client->consume_pending_relay(parent, "permit-claim");
+            auto const rightful = pair.server->consume_pending_relay(parent, "permit-claim");
+
+            THEN("only the owning channel and parent admit it")
+            {
+                CHECK_FALSE(other_parent);
+                CHECK_FALSE(no_parent);
+                CHECK_FALSE(wrong_channel);
+                CHECK(rightful);
+            }
+        }
+
+        pair.client->send_response(parent, R"({"type":"fed_response"})");
+        REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        std::ignore = reply.get();
+
+        WHEN("the request has completed")
+        {
+            THEN("its permit admits nothing")
+            {
+                CHECK_FALSE(pair.server->consume_pending_relay(parent, "permit-claim"));
+            }
+        }
+    }
+
+    // WorkerPool::handle gives no permit to an unverified request; a permit there must not count either.
+    GIVEN("a pending request with a permit but no verified origin")
+    {
+        auto pair = make_channel_pair();
+        auto observed_promise = std::promise<std::uint64_t>{};
+        auto observed = observed_promise.get_future();
+        auto const stop = Fed12StopChannels{pair};
+        pair.client->set_request_handler([&](std::uint64_t id, std::string) {
+            observed_promise.set_value(id);
+        });
+        pair.server->start();
+        pair.client->start();
+        auto reply = std::async(std::launch::async, [&] {
+            return pair.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{10}, "",
+                                             std::vector<std::string>{}, std::vector<std::string>{"permit-claim"});
+        });
+        REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        auto const parent = observed.get();
+
+        WHEN("the permit is offered")
+        {
+            auto const admitted = pair.server->consume_pending_relay(parent, "permit-claim");
+
+            THEN("it is refused")
+            {
+                CHECK_FALSE(admitted);
+            }
+        }
+
+        pair.client->send_response(parent, R"({"type":"fed_response"})");
+        REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+        std::ignore = reply.get();
+    }
+}

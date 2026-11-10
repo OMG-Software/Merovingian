@@ -2171,6 +2171,16 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   pair, consumed once per occurrence. A compromised worker can no longer inject an
   EDU as another server's users; it can still replay or reorder, within one live
   request, EDUs that server really sent. ADR-0071 covers PDU re-verification.
+- **A compromised federation worker could claim any one-time key and read any device list, keys or profile
+  (GHSA-3p5v-vrg8-f545).** The worker's database role is denied `one_time_keys`, `devices`, `device_keys` and
+  `profiles`, but main ran its `otk_claim_ingest`, `device_keys_query_ingest`, `user_devices_ingest` and
+  `profile_query_ingest` frames as sent, so a worker under an attacker's control could drain every local device's
+  one-time keys (each claim deletes them, breaking Olm session setup for those devices until clients upload more) and
+  read any local user's devices, keys and profile with no remote request behind it. Mitigation (0.12.88, ADR-0595): a
+  verified request of one of these routes carries one permit, a digest of the relay kind and the argument main read
+  from it, and main admits a relay only by consuming an equal unused permit on the live parent the frame names. **Residual
+  risk:** a compromised worker can still relay the claim or query a remote server really sent, once, and answer that
+  server as it likes; it cannot widen the claim to other users or repeat it.
 - **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
   room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
   stored the remote event as the target's current `m.room.member` state, so local composition

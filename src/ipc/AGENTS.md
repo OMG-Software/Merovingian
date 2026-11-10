@@ -56,7 +56,10 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    the body (`WorkerPool::handle`, `verified_send_edu_digests`). `consume_pending_edu` is the only way an EDU relay is
    admitted: live parent on this channel, exact origin, and an unused equal digest, marked used under `pending_mu_`.
    The pending lock covers that scan only, never a sink or network call. This module hashes nothing: digests are
-   opaque strings made by `federation::edu_relay_digest`.
+   opaque strings made by `federation::edu_relay_digest`. The same holds for the claim and key/profile query relays
+   (GHSA-3p5v-vrg8-f545, ADR-0595): `send_request`'s `relay_digests` come from `federation::verified_request_relay_digests`
+   for a verified request only, and `consume_pending_relay` is the only way such a relay is admitted (live verified
+   parent on this channel, an unused equal permit, marked used under `pending_mu_`).
 
 ## Thread safety — the reader/dispatch split
 
@@ -74,7 +77,7 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 
 ## Testing
 
-- `tests/unit/test_ipc_framing.cpp` — framing, request/response pairing, notifications, timeouts, pending-request admission of EDU relays (`[f74-edu-binding]`)
+- `tests/unit/test_ipc_framing.cpp` — framing, request/response pairing, notifications, timeouts, pending-request admission of EDU relays (`[f74-edu-binding]`) and of claim and query relays (`[ghsa-3p5v]`)
 - `tests/unit/test_ipc_stream_cipher.cpp` — handshake and AEAD framing
 - `tests/unit/test_ipc_federation_frames.cpp` — federation frame (de)serialisation
 

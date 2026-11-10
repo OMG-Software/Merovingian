@@ -491,6 +491,7 @@ shell = find_program('sh')
       'unit/test_federation_worker_args.cpp',
       'unit/test_federation_worker_ipc_key_fd.cpp',
       'unit/test_worker_db_uri.cpp',
+      'unit/test_worker_relay_binding.cpp',
       'unit/test_worker_supervisor.cpp',
       'unit/test_worker_event_loop.cpp',
       'unit/test_ipc_stream_cipher.cpp',

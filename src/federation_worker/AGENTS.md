@@ -127,6 +127,12 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    verified `/send` body and refuses any other. Never re-serialise, normalise or edit the content before relaying, and
    never relay an EDU from a request other than the `/send` that carried it (`FedRequestParentScope`).
 
+12. **A claim or key/profile query relay names the request it serves (GHSA-3p5v-vrg8-f545, ADR-0595).** The
+   `one_time_keys_claim_provider`, `device_keys_query_provider`, `user_devices_provider` and `profile_query_provider`
+   overrides put `current_fed_parent_request_id` in the frame and relay nothing when it is 0. They relay the argument the
+   federation handler passed unchanged (the request body, or the user ID read by `worker_relay_binding.hpp`): main admits
+   only a digest of that exact argument, once, for the verified request it forwarded.
+
 ## Hardening
 
 `main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure). No thread may exist
