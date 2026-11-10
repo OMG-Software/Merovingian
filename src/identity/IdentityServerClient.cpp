@@ -4,9 +4,9 @@
 #include "merovingian/identity/IdentityServerClient.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/identity/IdentityServerResult.hpp"
 #include "merovingian/identity/IdentityServerUrl.hpp"
 #include "merovingian/identity/LookupResponse.hpp"

@@ -30,7 +30,7 @@ struct ServerConfig final
     // time per the CORS spec.
     CorsConfig cors{};
     // HTTP/1.1 persistent-connection (keep-alive) policy for the client and
-    // federation listeners. See merovingian/http/keep_alive.hpp for the
+    // federation listeners. See merovingian/http/KeepAlive.hpp for the
     // semantics of each field; validation enforces the documented ranges.
     HttpTransportConfig http{};
     ClientApiConfig client_api{};

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.88
+Version:        0.12.89
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Nov 10 2026 James Chapman <claude@ping.me.uk> - 0.12.89-1
+- Name every module header and source in PascalCase.
+
 * Tue Nov 10 2026 James Chapman <claude@ping.me.uk> - 0.12.88-1
 - Bind federation worker key-claim and key/profile query relays to the verified request (GHSA-3p5v-vrg8-f545).
 

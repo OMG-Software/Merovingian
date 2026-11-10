@@ -10,9 +10,9 @@
 // Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names
 // ("Responses (successful or otherwise) to the /.well-known endpoint should be
 // cached by the requesting server"; errors "up to an hour").
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -25,7 +25,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

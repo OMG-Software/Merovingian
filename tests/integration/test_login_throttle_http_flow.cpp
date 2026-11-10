@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // AUTH-2 / AUTH-1 (security-audit-report-2026-09-29.md): the login failure
 // throttle is keyed on (account, client source), has a per-account ceiling across
@@ -12,8 +12,8 @@
 // with retry_after_ms; a bad credential is 403 M_FORBIDDEN.
 // ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

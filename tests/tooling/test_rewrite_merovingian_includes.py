@@ -21,7 +21,7 @@ class RewriteMerovingianIncludesTests(unittest.TestCase):
                 '#include <merovingian/core/not_null.hpp>\n'
                 '#include <vector>\n'
                 '#include "merovingian/already_quoted.hpp"\n'
-                '  # include <merovingian/http/request.hpp> // keep comment\n',
+                '  # include <merovingian/http/Request.hpp> // keep comment\n',
                 encoding="utf-8",
             )
 
@@ -40,14 +40,14 @@ class RewriteMerovingianIncludesTests(unittest.TestCase):
                 '#include "merovingian/core/not_null.hpp"\n'
                 '#include <vector>\n'
                 '#include "merovingian/already_quoted.hpp"\n'
-                '  # include "merovingian/http/request.hpp" // keep comment\n',
+                '  # include "merovingian/http/Request.hpp" // keep comment\n',
             )
 
     def test_check_mode_reports_pending_rewrites_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             # GIVEN a source file that still uses an angle-bracket project include.
             source = Path(temporary_directory) / "example.hpp"
-            original = '#include <merovingian/events/event.hpp>\n'
+            original = '#include <merovingian/events/Event.hpp>\n'
             source.write_text(original, encoding="utf-8")
 
             # WHEN the tool runs in check mode.

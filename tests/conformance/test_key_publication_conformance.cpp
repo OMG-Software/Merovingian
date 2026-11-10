@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Matrix Server-Server API v1.19 conformance for:
 //   GET /_matrix/key/v2/server
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

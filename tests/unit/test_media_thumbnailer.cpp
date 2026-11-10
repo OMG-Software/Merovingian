@@ -11,7 +11,7 @@
 #include "merovingian/media/ThumbnailWorkerResponse.hpp"
 #include "merovingian/media/ThumbnailWorkerStatus.hpp"
 #include "merovingian/media/ThumbnailerConfig.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>

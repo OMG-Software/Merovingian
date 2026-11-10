@@ -3,13 +3,13 @@
 
 #include "merovingian/homeserver/WorkerPool.hpp"
 
-#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
-#include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
@@ -23,23 +23,23 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/invite_room_state.hpp"
-#include "merovingian/federation/server_acl.hpp"
-#include "merovingian/federation/transactions.hpp"
-#include "merovingian/federation/worker_relay_binding.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/InviteRoomState.hpp"
+#include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/Transactions.hpp"
+#include "merovingian/federation/WorkerRelayBinding.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/worker_ipc_limits.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/WorkerIpcLimits.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <algorithm>
@@ -660,7 +660,7 @@ namespace
 
     // The room version main itself records for the room; the worker's claim is
     // used only for a room main does not hold (an invite to a remote room),
-    // and "12" when neither is known, matching inbound_request.cpp.
+    // and "12" when neither is known, matching InboundRequest.cpp.
     [[nodiscard]] auto relayed_room_version(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view claimed) -> std::string
     {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/ingested_state_fixture.hpp"
-#include "merovingian/federation/event_query.hpp"
+#include "../support/IngestedStateFixture.hpp"
+#include "merovingian/federation/EventQuery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

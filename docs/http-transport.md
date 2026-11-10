@@ -35,7 +35,7 @@ Implemented now:
 - HTTP request-head fuzz target
 - TCP listener and accept loop via `merovingian::net::TcpAcceptor`
 - accepted client sockets (both plain-HTTP and TLS accept loops in
-  `http_server.cpp`) are created with `accept4(..., SOCK_CLOEXEC)`, matching
+  `HttpServer.cpp`) are created with `accept4(..., SOCK_CLOEXEC)`, matching
   the listening socket, so they cannot leak into a `posix_spawn`/`fork()`ed
   worker subprocess (federation worker, thumbnail worker) while a connection
   — e.g. a long-poll `/sync` — is still open
@@ -87,7 +87,7 @@ Not implemented yet:
 - `llhttp` dependency wrapper
 - request body streaming implementation
 - runtime application of the slowloris progress policy to the request-head
-  read deadline (the head deadline and inter-byte caps in `http_server.cpp`
+  read deadline (the head deadline and inter-byte caps in `HttpServer.cpp`
   are the inline enforcement of that policy)
 - HTTP/2
 - HTTP pipelining (more than one outstanding request per connection):
@@ -104,7 +104,7 @@ partial read; the pool was a hard-coded 8 threads, so eight sockets from one
 client — kept alive with one request every idle − 1 seconds, or trickling
 bodies, or simply connecting and saying nothing — stalled every listener.
 
-`homeserver::HttpConnectionDispatcher` (in `http_server.cpp`, over the generic
+`homeserver::HttpConnectionDispatcher` (in `HttpServer.cpp`, over the generic
 `net::ConnectionParker`) now owns every connection while it is not being
 served: a new connection until its first byte, a TLS connection until its
 ClientHello and again after the handshake until its first request byte, and a
@@ -162,7 +162,7 @@ used to bound the pool's queue: beyond it a new connection is closed at once.
 
 Matrix v1.19 is served over HTTP/1.1, where persistent connections are the
 default. Merovingian serves each connection as a sequence of request rounds
-(`serve_request_round` in `src/homeserver/http_server.cpp`), each on whichever
+(`serve_request_round` in `src/homeserver/HttpServer.cpp`), each on whichever
 worker the dispatcher hands the connection to: read one request head, drain
 exactly its Content-Length bytes, route, write one response, then either close
 or hand the connection back to the dispatcher for the next request.
@@ -337,7 +337,7 @@ in `include/merovingian/http/OutboundRequest.hpp`:
    destinations, which an appservice URL is not. The bypass is
    `AppserviceClient`'s own code, not an effect of the flag.
 2. A URL preview hop (ADR-0213), made only through `gated_fetch` in
-   `src/homeserver/url_preview_service.cpp`: the page, each redirect it
+   `src/homeserver/UrlPreviewService.cpp`: the page, each redirect it
    follows itself, and the `og:image`. The URL is client-named, so the
    opposite of the appservice case applies: every hop's host is resolved
    and refused if any address is private, loopback, link-local, CGNAT,
@@ -653,7 +653,7 @@ The slowloris guard tracks bytes received versus elapsed time using:
 - grace period
 - header deadline
 
-The request-head read applies the equivalent deadlines inline (`request_head_deadline`, inter-byte cap, per-`recv` poll timeout in `http_server.cpp`); a request head that dribbles bytes is dropped with a 408 once any bound is exceeded.
+The request-head read applies the equivalent deadlines inline (`request_head_deadline`, inter-byte cap, per-`recv` poll timeout in `HttpServer.cpp`); a request head that dribbles bytes is dropped with a 408 once any bound is exceeded.
 
 Request-**body** reads are bounded by a continuous **minimum body rate**
 (2026-09-29 audit HTTP-1, ADR-0077): once a grace of 10 s has passed since the
@@ -751,7 +751,7 @@ client can wait out its window on the same connection and retry.
 ### Route tiers
 
 Every client-server route is classified into one of six explicit tiers by the
-prefix table in `http::rate_limit_tier_for()` (`src/http/rate_limit.cpp`) — one
+prefix table in `http::rate_limit_tier_for()` (`src/http/RateLimit.cpp`) — one
 greppable place, no magic. Path parameters such as `roomId`, `deviceId`, and
 `mediaId` are coalesced into placeholders by `normalized_target()` so the same
 cap applies regardless of which room, device, or media ID appears in the URL.
@@ -1169,7 +1169,7 @@ Rules:
 - **Constants, not configuration.** The caps and deadlines live in
   `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/ClientOutboundProxyPolicy.hpp`),
   derived from the main request pool size (`client_outbound_proxy_policy_for_pool` in
-  `client_outbound_proxy.hpp`,
+  `ClientOutboundProxy.hpp`,
   applied by `start_runtime` from `server.http.request_threads`, ADR-0077). A
   separate configuration key would let an operator raise the caps above the
   pool size, which is the defect. Tests lower the deadline through
@@ -1270,7 +1270,7 @@ in main (ADR-0358), so the worker never makes the call.
 
 `HomeserverRuntime::mutex` is a recursive mutex specifically so that a service
 function such as `create_room` can take its own lock and remain independently
-callable outside a request handler (`local_smoke_flow.cpp` does exactly this).
+callable outside a request handler (`LocalSmokeFlow.cpp` does exactly this).
 But `create_room` is *also* called from `ClientServerRuntime.cpp`, which already
 holds its own outer guard for the whole request. A recursive mutex permits that
 nested acquisition silently — the same thread increments a recursion count — so
@@ -1338,7 +1338,7 @@ Consequences worth knowing:
 
 - Releasing the caller's guard before calling a self-locking function is no
   longer necessary. The existing call sites that do (`create_room` and
-  `join_room` in `local_http_router.cpp`, `create_room` in `ClientServerRuntime.cpp`)
+  `join_room` in `LocalHttpRouter.cpp`, `create_room` in `ClientServerRuntime.cpp`)
   are kept because they are correct and explicit, not because they are load
   bearing.
 - A blocking call should open its release scope where the call is, not where
@@ -1369,7 +1369,7 @@ boundary: nothing needs hoisting, every declaration keeps its `const`, and the
 release itself is a two-line `RuntimeLockRelease` scope around the call. The
 same idea at smaller scale — an immediately-invoked lambda returning a small
 result struct — is what `invite_user_by_threepid` and the three
-`local_http_router.cpp` sites use.
+`LocalHttpRouter.cpp` sites use.
 
 **No hand-written `unlock()`/`lock()` pair around `runtime.mutex` remains in
 `include/` or `src/`.** `scripts/reject-unsafe.sh` rejects new ones, matching

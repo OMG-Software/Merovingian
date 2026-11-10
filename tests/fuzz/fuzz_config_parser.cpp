@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 
 #include <cstddef>
 #include <cstdint>

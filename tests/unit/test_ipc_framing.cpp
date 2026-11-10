@@ -10,11 +10,11 @@
 
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>

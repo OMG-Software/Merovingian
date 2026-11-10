@@ -1,0 +1,23 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/crypto/LibraryVersions.hpp"
+
+#include "merovingian/core/LibraryVersion.hpp"
+
+#include <sodium.h>
+
+#include <vector>
+
+namespace merovingian::crypto
+{
+
+auto library_versions() -> std::vector<core::LibraryVersion>
+{
+    // sodium_version_string() returns libsodium's own copy of the string, so its address says
+    // which object libsodium lives in.
+    auto const* const running = ::sodium_version_string();
+    return {core::describe_library("libsodium", running, SODIUM_VERSION_STRING, running)};
+}
+
+} // namespace merovingian::crypto

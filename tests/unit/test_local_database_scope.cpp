@@ -12,7 +12,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/auth/RegistrationPolicy.hpp"
-#include "merovingian/auth/session.hpp"
+#include "merovingian/auth/Session.hpp"
 #include "merovingian/homeserver/LocalDatabaseScope.hpp"
 
 #include <catch2/catch_test_macros.hpp>

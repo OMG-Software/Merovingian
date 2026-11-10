@@ -3,7 +3,7 @@
 
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/CorrelationScope.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

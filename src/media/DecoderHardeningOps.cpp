@@ -3,8 +3,8 @@
 
 #include "merovingian/media/DecoderHardeningOps.hpp"
 
-#include "merovingian/media/decoder_hardening.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
+#include "merovingian/media/DecoderHardening.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
 
 #include <sys/resource.h>
 

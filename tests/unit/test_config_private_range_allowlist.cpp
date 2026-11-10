@@ -12,8 +12,8 @@
 #include "merovingian/config/FederationSecurityConfig.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/special_use_ip_ranges.hpp"
+#include "merovingian/config/ConfigParser.hpp"
+#include "merovingian/config/SpecialUseIpRanges.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

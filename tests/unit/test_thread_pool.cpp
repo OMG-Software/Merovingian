@@ -145,7 +145,7 @@ SCENARIO("ThreadPool worker does not terminate when a work item throws std::exce
 // per-thread setup before a worker started dequeuing work, so callers that
 // needed to install a thread_local resource on every worker thread (e.g. the
 // homeserver's audit-sink database pointer, see
-// homeserver/local_services.cpp and main.cpp's serve_until_shutdown) had no
+// homeserver/LocalServices.cpp and main.cpp's serve_until_shutdown) had no
 // hook to do it with — only the thread that constructed the runtime got the
 // install. on_thread_start runs once on each worker thread before any work
 // item executes.

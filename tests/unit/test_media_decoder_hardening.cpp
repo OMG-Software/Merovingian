@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/media/DecoderHardeningOps.hpp"
-#include "merovingian/media/decoder_hardening.hpp"
+#include "merovingian/media/DecoderHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/resource.h>
@@ -202,7 +202,7 @@ SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media]
             auto const result = merovingian::media::apply_decoder_hardening(ops);
 
             // Sanitizer builds deliberately skip RLIMIT_AS (their shadow memory
-            // needs the address space; see decoder_hardening.cpp). Each build
+            // needs the address space; see DecoderHardening.cpp). Each build
             // type is held to its own contract.
             if (merovingian::media::decoder_hardening_is_sanitizer_build())
             {
@@ -376,7 +376,7 @@ SCENARIO("decoder hardening fails closed when the decoder seccomp filter cannot 
             auto const result = merovingian::media::apply_decoder_hardening(ops);
 
             // Sanitizer builds deliberately skip the seccomp filter (their
-            // runtimes need syscalls it denies; see decoder_hardening.cpp).
+            // runtimes need syscalls it denies; see DecoderHardening.cpp).
             if (merovingian::media::decoder_hardening_is_sanitizer_build())
             {
                 THEN("a sanitizer build never installs the filter, so its failure cannot matter")

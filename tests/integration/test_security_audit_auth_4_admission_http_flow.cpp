@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // AUTH-4 (security-audit-report-2026-09-29.md), residual: every Argon2id call a
 // client request can reach shares the one admission budget `/login` already
@@ -16,10 +16,10 @@
 // 429 M_LIMIT_EXCEEDED with retry_after_ms.
 // ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -30,7 +30,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -4,13 +4,13 @@
 // HTTP-2 / OUT-7 / ADR-0079: the policy, deadline and admission helpers that
 // bound client-triggered outbound proxying. Tags: [http-2][out-7][homeserver].
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

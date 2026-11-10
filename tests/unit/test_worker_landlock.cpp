@@ -12,13 +12,13 @@
 #include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/platform/LandlockAccess.hpp"
 #include "merovingian/platform/LandlockAddRuleOutcome.hpp"
 #include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/LandlockPathRule.hpp"
-#include "merovingian/platform/landlock_hardening.hpp"
+#include "merovingian/platform/LandlockHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -37,7 +37,7 @@
 #include <unistd.h>
 #endif
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 
 namespace
 {

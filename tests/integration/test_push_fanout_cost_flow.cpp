@@ -4,14 +4,14 @@
 // one committed INSERT and linear scans of the global notification table, all under runtime.mutex. These scenarios
 // pin the cost by rows examined and transactions committed, never by time, and pin that the results are unchanged.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentNotification.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/trust_safety/ignore_list.hpp"
+#include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

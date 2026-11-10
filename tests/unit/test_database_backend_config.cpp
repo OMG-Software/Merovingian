@@ -10,7 +10,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/database/RuntimeDatabaseConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>

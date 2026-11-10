@@ -8,7 +8,7 @@
 // the base URL and the rest as the reference.
 
 #include "fuzz_input.hpp"
-#include "merovingian/media/url_preview.hpp"
+#include "merovingian/media/UrlPreview.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -14,7 +14,7 @@ namespace merovingian::database
 // (the registration file's `id`, not a secret). Delivery replays forward
 // through the `events` table's `stream_ordering`, so this row -- not a
 // separate durable outbox -- is the entire persisted delivery state; see
-// `room_service.cpp`'s appservice dispatch for how it is used:
+// `RoomService.cpp`'s appservice dispatch for how it is used:
 //   - `next_txn_id`: the next FRESH transaction id to allocate. Monotonic,
 //     never reused, so a retried transaction always carries the exact id
 //     the appservice may have already partially processed.

@@ -8,10 +8,10 @@
 // TestRestrictedRoomsRemoteJoin: a remote user's leave, ordering 22, applied just after a sync
 // returned 22).
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

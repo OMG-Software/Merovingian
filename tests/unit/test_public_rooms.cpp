@@ -5,21 +5,21 @@
 // the handler that the spec does not state. What the spec requires of the endpoints is covered by
 // tests/conformance/test_federation_public_rooms_conformance.cpp.
 
-#include "../federation_signing_test_support.hpp"
-#include "../support/json_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/JsonTestSupport.hpp"
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/PublicRoomsFilter.hpp"
 #include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/PublicRooms.hpp"
+#include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
-#include "merovingian/homeserver/public_rooms.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/homeserver/PublicRooms.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

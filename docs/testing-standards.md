@@ -60,7 +60,7 @@ The unit, conformance and integration binaries hash passwords and registration t
 ([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)). `-Wl,--wrap=crypto_pwhash_str` sends the
 production code's call to `tests/support/RealPasswordHashCost.cpp`, so no production code changes.
 
-- The override refuses any cost but the one production asks for, so a downgrade in `src/auth/password.cpp` makes every
+- The override refuses any cost but the one production asks for, so a downgrade in `src/auth/Password.cpp` makes every
   registration and login fail rather than go unnoticed.
 - `merovingian-password-cost-tests` is linked without the override and proves what the shipped code does.
 - A scenario that needs the hash to take real time holds `merovingian::tests::RealPasswordHashCost` from its first line. That
@@ -76,7 +76,7 @@ production code's call to `tests/support/RealPasswordHashCost.cpp`, so no produc
 Every socket call in an integration test has a deadline, so a server that never
 answers fails one scenario instead of holding the whole binary until meson's
 timeout kills it. Connect with `merovingian::tests::connect_within`
-(`tests/integration/bounded_connect.hpp`), never a blocking `::connect()`: on
+(`tests/integration/BoundedConnect.hpp`), never a blocking `::connect()`: on
 OpenBSD 7.9 a blocking connect to the test's own in-process listener never
 returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
 
@@ -278,7 +278,7 @@ hoping for the timing: the `[create-room-collision]` scenarios are the example
 
 `join_room`'s outbound calls always resolve through `federation::discover_server()`,
 which unconditionally rejects loopback and private-range addresses
-(`src/federation/security.cpp` `ip_address_is_private_or_loopback`) with no config
+(`src/federation/Security.cpp` `ip_address_is_private_or_loopback`) with no config
 or environment override, and production outbound calls never populate an
 in-memory CA bundle — so a local test TLS server can never be reached through the
 real discovery path, and a self-signed test certificate always fails TLS

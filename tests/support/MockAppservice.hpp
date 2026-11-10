@@ -16,7 +16,7 @@
 
 #include "CapturedAppserviceRequest.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
-#include "tls_mock_server.hpp"
+#include "TlsMockServer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <poll.h>

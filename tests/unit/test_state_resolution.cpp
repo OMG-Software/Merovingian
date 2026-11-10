@@ -2,13 +2,13 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateGroup.hpp"
 #include "merovingian/events/StateKey.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
-#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/StateResolution.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

@@ -16,15 +16,15 @@
 // |    -> Do NOT weaken, comment out, or remove assertions to make CI pass. |
 // +-------------------------------------------------------------------------+
 
-#include "../support/ingested_state_fixture.hpp"
+#include "../support/IngestedStateFixture.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/event_query.hpp"
+#include "merovingian/federation/EventQuery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

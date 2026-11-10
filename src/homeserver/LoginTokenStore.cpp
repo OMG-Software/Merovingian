@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/LoginTokenStore.hpp"
 
-#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
 
 #include <algorithm>
 #include <limits>

@@ -7,9 +7,9 @@
 
 #include "../support/EduRelayContext.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation_worker/worker_relay_frame.hpp"
+#include "merovingian/federation_worker/WorkerRelayFrame.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

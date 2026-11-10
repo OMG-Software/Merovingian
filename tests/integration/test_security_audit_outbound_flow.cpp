@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/ScopedThreadJoin.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"

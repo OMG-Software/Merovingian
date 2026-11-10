@@ -174,7 +174,7 @@ class FilterCodeqlSarifTests(unittest.TestCase):
                 [
                     result(RULE, "tests/unit/test_database_schema.cpp"),
                     result(RULE, "tests/integration/test_database_upgrade_flow.cpp"),
-                    result(RULE, "src/database/schema.cpp"),
+                    result(RULE, "src/database/Schema.cpp"),
                     result("cpp/uncontrolled-allocation-size", "tests/unit/test_crypto.cpp"),
                 ]
             ),
@@ -188,7 +188,7 @@ class FilterCodeqlSarifTests(unittest.TestCase):
         self.assertEqual(
             kept_locations(json.loads(path.read_text(encoding="utf-8"))),
             [
-                (RULE, "src/database/schema.cpp"),
+                (RULE, "src/database/Schema.cpp"),
                 ("cpp/uncontrolled-allocation-size", "tests/unit/test_crypto.cpp"),
             ],
         )
@@ -419,7 +419,7 @@ class FilterCodeqlSarifTests(unittest.TestCase):
             sarif(
                 [
                     tainted_path("src/main.cpp", [cli], [cli]),
-                    tainted_path("src/platform/file_metadata.cpp", [cli, cli], [cli, cli]),
+                    tainted_path("src/platform/FileMetadataSupport.cpp", [cli, cli], [cli, cli]),
                     tainted_path("src/mixed.cpp", [cli, REMOTE_SOURCE], [cli, REMOTE_SOURCE]),
                     tainted_path("src/remote.cpp", [REMOTE_SOURCE], [REMOTE_SOURCE]),
                     tainted_path("src/dangling.cpp", [cli], [cli], link_ids=[7]),

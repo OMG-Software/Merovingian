@@ -6,10 +6,10 @@
 // room version 12 or later, the event_id property inside predecessor MAY be omitted", while
 // the field "SHOULD still be populated where possible/practical"); a version 12 room is
 // named by its create event, so this server omits it there and keeps it for older versions.
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

@@ -3,11 +3,11 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/events/EventParseResult.hpp"
-#include "merovingian/events/event.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Event.hpp"
+#include "merovingian/events/Limits.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

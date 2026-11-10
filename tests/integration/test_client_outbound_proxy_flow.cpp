@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // HTTP-2 and OUT-7 (security audit 2026-09-29, ADR-0079).
 //
@@ -21,9 +21,9 @@
 // observe that no outbound call was made.
 
 #include "../support/JoiningThreads.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -38,7 +38,7 @@
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -47,8 +47,8 @@
 #include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"

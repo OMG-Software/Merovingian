@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -13,15 +13,15 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/media/AdminQuarantineAction.hpp"
 #include "merovingian/media/AdminQuarantineRequest.hpp"
 #include "merovingian/media/DecoderSafetyPolicy.hpp"
 #include "merovingian/media/DecoderSafetyRequest.hpp"
 #include "merovingian/media/MediaDisposition.hpp"
 #include "merovingian/media/RemoteMediaFetchRequest.hpp"
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/Security.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>
@@ -292,7 +292,7 @@ SCENARIO("Integrated local media repository flow covers upload download dedupe q
 // embedded slashes. A request like ".../remove/<id>?reason=x" would treat
 // the query string as part of the media ID, silently acting on the wrong
 // object (or none) instead of the intended one. Fixed via
-// admin_media_id_from_suffix() in local_http_router.cpp.
+// admin_media_id_from_suffix() in LocalHttpRouter.cpp.
 SCENARIO("Admin media routes reject query strings and path-confusion characters in the media ID",
          "[media][repository][integration][security]")
 {

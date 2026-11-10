@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

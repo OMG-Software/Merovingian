@@ -7,7 +7,7 @@
 // PDU text run on it.
 
 #include "fuzz_input.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 
 #include <array>
 #include <cstddef>

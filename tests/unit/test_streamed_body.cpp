@@ -4,7 +4,7 @@
 // ADR-0574: a response body produced in chunks. The writer holds at most one chunk and stops at the first failure.
 
 #include "merovingian/homeserver/StreamedBodyResult.hpp"
-#include "merovingian/homeserver/streamed_body.hpp"
+#include "merovingian/homeserver/StreamedBody.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -3,7 +3,7 @@
 #include "merovingian/platform/HardeningAction.hpp"
 #include "merovingian/platform/HardeningGate.hpp"
 #include "merovingian/platform/HardeningMode.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

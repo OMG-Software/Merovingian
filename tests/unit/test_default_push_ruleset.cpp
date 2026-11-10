@@ -19,9 +19,9 @@
 // |  evaluation behaviour.                                                 |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/homeserver/default_push_ruleset.hpp"
+#include "merovingian/homeserver/DefaultPushRuleset.hpp"
 #include "merovingian/push/PushEvaluationContext.hpp"
-#include "merovingian/push/push_rules.hpp"
+#include "merovingian/push/PushRules.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -116,7 +116,7 @@ SCENARIO("The default override ruleset does not contain the legacy body-scanning
 SCENARIO("A message body containing literal \"@room\" text alone no longer produces a highlighted notification",
          "[push]")
 {
-    GIVEN("the real default ruleset, parsed and evaluated exactly as room_service.cpp does for delivery")
+    GIVEN("the real default ruleset, parsed and evaluated exactly as RoomService.cpp does for delivery")
     {
         auto const raw_ruleset = merovingian::homeserver::default_push_ruleset("@receiver:example.org");
         auto const ruleset = merovingian::push::parse_push_ruleset(raw_ruleset);

@@ -10,7 +10,7 @@
 #include "merovingian/media/ThumbnailCache.hpp"
 #include "merovingian/media/ThumbnailCacheKey.hpp"
 #include "merovingian/media/ThumbnailMethod.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

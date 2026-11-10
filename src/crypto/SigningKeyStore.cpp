@@ -4,7 +4,7 @@
 #include "merovingian/crypto/SigningKeyStore.hpp"
 
 #include "merovingian/crypto/SigningKeyRecord.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/SigningService.hpp"
 
 #include <string_view>
 #include <utility>

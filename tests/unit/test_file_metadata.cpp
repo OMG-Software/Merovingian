@@ -2,7 +2,7 @@
 
 #include "merovingian/platform/FileKind.hpp"
 #include "merovingian/platform/FileMetadata.hpp"
-#include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

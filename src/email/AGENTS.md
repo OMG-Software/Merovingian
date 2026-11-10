@@ -2,7 +2,7 @@
 
 The SMTP client and the email messages this server sends. Its users are kind `"email"`
 pushers (ADR-0219, ADR-0220) and password reset by email (ADR-0481): the policy (who is mailed, when, and what) is in
-`push/EmailDigestQueue.cpp` and `homeserver/email_push.cpp`. This module only checks addresses,
+`push/EmailDigestQueue.cpp` and `homeserver/EmailPush.cpp`. This module only checks addresses,
 parses the relay URL, builds a message, and sends it.
 
 Spec authority: [client-server-api.md](../../docs/matrix-v1.19-spec/client-server-api.md),
@@ -13,12 +13,12 @@ address). The spec says nothing about transport or content; ADR-0219 and ADR-022
 
 | File | Responsibility |
 |---|---|
-| `mailbox_address.cpp` | `is_safe_mailbox_address`: whether an address may be written into an SMTP command or a header as it stands |
+| `MailboxAddress.cpp` | `is_safe_mailbox_address`: whether an address may be written into an SMTP command or a header as it stands |
 | `SmtpEndpoint.cpp` | `parse_smtp_url`: `smtps://host[:port]` or `smtp://host[:port]`, and whether the host is a loopback IP literal (decided by `net::is_loopback_ip_literal`, which the appservice cleartext rule also uses) |
-| `notification_email.cpp` | `build_unread_notification_email`: the RFC 5322 message carrying an unread count, and nothing else; `build_password_reset_email`: the message carrying a password-reset code (ADR-0481) |
-| `smtp_client.cpp` | `send_smtp_message` (one libcurl SMTP session) and `smtp_protocol_available` |
+| `NotificationEmail.cpp` | `build_unread_notification_email`: the RFC 5322 message carrying an unread count, and nothing else; `build_password_reset_email`: the message carrying a password-reset code (ADR-0481) |
+| `SmtpClient.cpp` | `send_smtp_message` (one libcurl SMTP session) and `smtp_protocol_available` |
 
-`mailbox_address.cpp` and `SmtpEndpoint.cpp` are pure and are called by `config::validate`, which
+`MailboxAddress.cpp` and `SmtpEndpoint.cpp` are pure and are called by `config::validate`, which
 is why `email` is built before `config` in `src/meson.build`.
 
 ## Rules — non-negotiable

@@ -12,13 +12,13 @@
 // |    - GET /_matrix/federation/v1/media/download/{mediaId}                  |
 // +-------------------------------------------------------------------------+
 
-#include "federation_signing_test_support.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/homeserver/MediaService.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>

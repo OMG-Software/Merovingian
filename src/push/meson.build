@@ -4,7 +4,7 @@ push_sources = files(
   'GatewayInFlightLimiter.cpp',
   'PushGatewayClient.cpp',
   'PushRetryQueue.cpp',
-  'push_rules.cpp',
+  'PushRules.cpp',
   'UserPushRules.cpp',
 )
 

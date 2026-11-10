@@ -6,7 +6,7 @@ This capability note describes runtime-wired trust-and-safety behavior.
 
 - Registration policy checks in the runtime registration path.
 - Account lock/suspension enforcement: the request-path gate in `ClientServerRuntime.cpp` (`M_USER_LOCKED` on all but
-  logout, `M_USER_SUSPENDED` outside the spec's allowlist) and the lock check in `/refresh` (`auth_service.cpp`). The
+  logout, `M_USER_SUSPENDED` outside the spec's allowlist) and the lock check in `/refresh` (`AuthService.cpp`). The
   engine's `evaluate_account_policy` and `evaluate_invite_policy` had no caller and were removed; there is no
   invite-scope policy.
 - Invite permission (0.12.81, SS7, [ADR-0552](adr/0552-invite-permission-is-decided-where-account-data-is-held-and-createroom-drops-only-a-remote-block.md)).
@@ -16,7 +16,7 @@ This capability note describes runtime-wired trust-and-safety behavior.
   `PUT /state/m.room.member` with membership `invite`, and `POST /createRoom` (which creates nothing when a local
   invitee blocks). A remote server's `M_INVITE_BLOCKED` makes `POST /invite` answer the same, and in `createRoom`
   drops only that invite. Invites already stored are withheld from `/sync` and sliding sync while the block lasts
-  (`src/homeserver/invite_permission.cpp`).
+  (`src/homeserver/InvitePermission.cpp`).
 - Room policy checks in the runtime room creation path.
 - Media policy checks in the runtime client and federation download paths and
   persisted moderation rules in the admin workflow. Federation's production
@@ -56,7 +56,7 @@ This capability note describes runtime-wired trust-and-safety behavior.
 - Admin review actions through
   `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` and, for an operator,
   `POST /_merovingian/admin/review/{targetType}/{targetId}`. Both call `apply_admin_review`
-  (`homeserver/operator_admin.cpp`), so the stored policy rule, the audit row and the admin action row are the same;
+  (`homeserver/OperatorAdmin.cpp`), so the stored policy rule, the audit row and the admin action row are the same;
   only the rendering of a refusal differs (a Matrix error object on the client route, a plain-text line on the
   operator route, ADR-0504). Target types are `media`, `room`, `federation` and `federation_server`; the identifier is
   percent-decoded once (#454).

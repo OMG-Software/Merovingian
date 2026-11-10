@@ -7,13 +7,13 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 
 | File | Responsibility |
 |---|---|
-| `session.cpp` | Registration policy (enabled, token required). Whether a session is live is decided by `find_session` and the `revoked` flag in `src/homeserver/auth_service.cpp`, not here |
-| `token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
-| `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
-| `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
-| `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
+| `Session.cpp` | Registration policy (enabled, token required). Whether a session is live is decided by `find_session` and the `revoked` flag in `src/homeserver/AuthService.cpp`, not here |
+| `Token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
+| `Identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
+| `Password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
+| `OidcDiscovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
 | `FailureWindowTable.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
-| `key_api.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
+| `KeyApi.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
 UIAA and `/whoami` are implemented in `src/homeserver/ClientServerRuntime.cpp`, not in this module.
 
@@ -22,9 +22,9 @@ UIAA and `/whoami` are implemented in `src/homeserver/ClientServerRuntime.cpp`, 
 1. **Never log tokens or passwords.** Wrap in `SecretBuffer` from `core/SecretBuffer.hpp`.
 2. **Always hash tokens before storing.** Store a token hash, never the raw token. Hashes are
    BLAKE2b (`crypto_generichash`): the `v2` scheme is unkeyed; `v3` and `v4` are keyed with
-   `crypto::TokenHmacKey`, derived from the operator master key in `crypto/token_key.cpp`.
+   `crypto::TokenHmacKey`, derived from the operator master key in `crypto/TokenKey.cpp`.
 3. **Always compare tokens with constant-time equality.** Use `constant_time_equal()` from
-   `crypto/constant_time.hpp`, never `==` or `memcmp`.
+   `crypto/ConstantTime.hpp`, never `==` or `memcmp`.
 4. **Argon2id for password hashing.** Use `crypto_pwhash` with `OPSLIMIT_INTERACTIVE` and
    `MEMLIMIT_INTERACTIVE`. Never use SHA or bcrypt for passwords.
    The test binaries replace the cost at link time and refuse any other parameters, so changing these fails every
@@ -62,7 +62,7 @@ See `docs/auth-identity.md` "Argon2id admission".
 ## Failed-login throttle
 
 Three `FailureWindowTable`s on `HomeserverRuntime` back it (AUTH-2, AUTH-10); the policy lives in
-`src/homeserver/auth_service.cpp`. Never merge them: login failures keyed (account, source) and per
+`src/homeserver/AuthService.cpp`. Never merge them: login failures keyed (account, source) and per
 account must not be consulted by user-interactive-auth password checks, which have their own
 (account, device) table, or any stranger can lock the owner out of changing their password. UIA
 failures must not feed the login tables either. A successful login clears only the (account,
@@ -97,7 +97,7 @@ client request → hash incoming token → look up / constant-time compare with 
 logout → revoke the stored hash
 ```
 
-Token bytes come from `crypto/random.hpp`. Tokens are never stored or logged in plaintext.
+Token bytes come from `crypto/Random.hpp`. Tokens are never stored or logged in plaintext.
 
 ## UIAA (User-Interactive Authentication)
 

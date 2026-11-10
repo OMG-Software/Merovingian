@@ -7,15 +7,15 @@
 // stored, at POST /login, POST /register and PUT /devices/{deviceId}; an announcement of all of a user's devices makes
 // a fixed number of passes over the device tables.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentDeviceKey.hpp"
 #include "merovingian/federation/DeviceListUpdateBatch.hpp"
-#include "merovingian/federation/key_query.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/device_limits.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/DeviceLimits.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

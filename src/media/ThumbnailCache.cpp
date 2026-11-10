@@ -6,7 +6,7 @@
 #include "merovingian/media/CachedThumbnail.hpp"
 #include "merovingian/media/ThumbnailCacheKey.hpp"
 #include "merovingian/media/ThumbnailMethod.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
 
 #include <algorithm>
 #include <string>

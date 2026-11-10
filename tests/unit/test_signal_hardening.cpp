@@ -11,7 +11,7 @@
 // hid the defect. Each scenario therefore runs in a forked child that first
 // resets SIGPIPE to SIG_DFL, so it never inherits any harness setting.
 
-#include "merovingian/platform/signal_hardening.hpp"
+#include "merovingian/platform/SignalHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

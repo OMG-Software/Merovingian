@@ -7,19 +7,20 @@ This module is security-critical. Changes here affect the server's attack surfac
 
 | File | Responsibility |
 |---|---|
-| `runtime_hardening.cpp` | Applies all hardening controls at startup in the correct order |
-| `seccomp_hardening.cpp` | Builds and installs the seccomp-BPF syscall allow-list (always with `SECCOMP_FILTER_FLAG_TSYNC`), and probes every task's `Seccomp:`/`NoNewPrivs:` state |
-| `landlock_hardening.cpp` | ADR-0062 part 3: builds and installs the federation worker's Linux Landlock filesystem ruleset (`apply_worker_landlock`); real syscalls sit behind an injectable `LandlockHardeningOps` table, mirroring `media::DecoderHardeningOps` |
-| `signal_hardening.cpp` | `ignore_sigpipe()`: `sigaction(SIGPIPE, SIG_IGN)`, called first in every executable's `main()` (HTTP-5) |
+| `RuntimeHardening.cpp` | Applies all hardening controls at startup in the correct order |
+| `SeccompHardening.cpp` | Builds and installs the seccomp-BPF syscall allow-list (always with `SECCOMP_FILTER_FLAG_TSYNC`), and probes every task's `Seccomp:`/`NoNewPrivs:` state |
+| `LandlockHardening.cpp` | ADR-0062 part 3: builds and installs the federation worker's Linux Landlock filesystem ruleset (`apply_worker_landlock`); real syscalls sit behind an injectable `LandlockHardeningOps` table, mirroring `media::DecoderHardeningOps` |
+| `LandlockHardeningOps.cpp` | The `LandlockHardeningOps` default constructor: the raw `::syscall` wrappers for the Landlock calls and the kernel ABI structs they pass (Linux only) |
+| `SignalHardening.cpp` | `ignore_sigpipe()`: `sigaction(SIGPIPE, SIG_IGN)`, called first in every executable's `main()` (HTTP-5) |
 | `HardeningSelfCheck.cpp` | Verifies that hardening controls are active; aborts if a required control failed |
-| `elf_probe.cpp` | Checks ELF binary properties (PIE, stack canaries, RELRO, NX) at startup |
-| `file_metadata.cpp` | Safe file metadata helpers that avoid TOCTOU races |
+| `ElfProbe.cpp` | Checks ELF binary properties (PIE, stack canaries, RELRO, NX) at startup |
+| `FileMetadataSupport.cpp` | Safe file metadata helpers that avoid TOCTOU races |
 
 ## Security rules — non-negotiable
 
 1. **Hardening is applied at startup before any network sockets are opened.**
    If you add a new syscall that is blocked by seccomp, add it to the allow-list in
-   `seccomp_hardening.cpp` — do not disable seccomp.
+   `SeccompHardening.cpp` — do not disable seccomp.
 
 2. **`hardening_self_check` must pass before serving requests.** `main.cpp` refuses to start
    (`runtime_start_error`) unless `HardeningSelfCheck::is_ready()`, which requires every
@@ -32,7 +33,7 @@ This module is security-critical. Changes here affect the server's attack surfac
    The probe reads the running image with `dl_iterate_phdr` and opens no file, because the
    final self-check runs inside Capsicum (ADR-0378).
 
-   Off Linux, `runtime_hardening.cpp` applies the platform sandbox instead of seccomp:
+   Off Linux, `RuntimeHardening.cpp` applies the platform sandbox instead of seccomp:
    OpenBSD `pledge(2)`, and FreeBSD Capsicum capability mode, which `main.cpp` enters after
    the listeners bind. NetBSD has neither, so its seccomp check stays a blocker until the
    thumbnail decoder is confined; do not clear it before then (ADR-0378). The federation worker has its own path (`apply_worker_hardening`);
@@ -43,7 +44,7 @@ This module is security-critical. Changes here affect the server's attack surfac
    filesystem and none can be undone. Apply any new sequence of irreversible restrictions the
    same way.
 
-4. **File paths from config must be validated** before use in `file_metadata.cpp`.
+4. **File paths from config must be validated** before use in `FileMetadataSupport.cpp`.
    Never pass user-supplied paths to `open()` or `stat()` without validation.
 
 5. **`apply_worker_landlock` is Linux-only, worker-specific, and fail-closed like
@@ -85,7 +86,7 @@ This module is security-critical. Changes here affect the server's attack surfac
 ## Platform support
 
 Seccomp is Linux-only. On other platforms (`__linux__` not defined), the seccomp functions
-are no-ops. Landlock (`landlock_hardening.cpp`) is likewise Linux-only and, unlike seccomp, is
+are no-ops. Landlock (`LandlockHardening.cpp`) is likewise Linux-only and, unlike seccomp, is
 applied only to the federation worker, not the main process — the self-check adapts accordingly.
 Check `docs/platform-support.md` for the per-platform hardening matrix.
 

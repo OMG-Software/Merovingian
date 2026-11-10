@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/email/SmtpEndpoint.hpp"
 
-#include "merovingian/net/loopback_literal.hpp"
+#include "merovingian/net/LoopbackLiteral.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

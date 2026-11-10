@@ -2,7 +2,7 @@
 
 // ADR-0064 phase B2 follow-up: the membership-acceptor path
 // (send_join/send_leave/send_knock acceptance, `runtime.federation.
-// membership_acceptor` in src/homeserver/local_http_router.cpp) runs the
+// membership_acceptor` in src/homeserver/LocalHttpRouter.cpp) runs the
 // same receipt-order checks as the /send transaction path
 // (run_pdu_receipt_checks, shared by both). Tags: [pdu_ingestion][auth].
 //
@@ -11,14 +11,14 @@
 // against the event's own auth_events -> reject; step 6: auth against
 // current state -> soft-fail, not reject), "Joining rooms".
 
-#include "../support/MembershipGenesis.hpp"
-#include "../support/master_key.hpp"
-#include "../support/membership_acceptor_fixture.hpp"
+#include "../support/Genesis.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/MembershipAcceptorFixture.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -31,19 +31,19 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/authorization.hpp"
-#include "merovingian/events/event.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/Event.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

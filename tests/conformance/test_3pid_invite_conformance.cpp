@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         3PID INVITE CONFORMANCE TEST (IS-BACKED POSITIVE PATH)          |
@@ -18,10 +18,10 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/ScopedThreadJoin.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -141,7 +141,7 @@ SCENARIO("POST /rooms/{roomId}/invite with a trusted id_server issues an IS-back
         auto const is_base_url = std::string{"https://"} + is_host_port;
 
         // Configure the runtime's identity-server trust BEFORE dispatching.
-        // The matcher (room_service.cpp::invite_user_by_threepid) parses each
+        // The matcher (RoomService.cpp::invite_user_by_threepid) parses each
         // trusted_servers entry as an https URL and matches host+port against
         // the client's id_server (also host:port).
         started.runtime.homeserver.config.server().identity_server.trusted_servers = {is_base_url};

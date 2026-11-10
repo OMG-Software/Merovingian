@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // CS8 (ADR-0548): POST /_matrix/client/v1/login/get_token, the `m.login.token` login it feeds, the
 // `m.get_login_token` capability, and GET /_matrix/client/v3/admin/whois/{userId}.
@@ -9,9 +9,9 @@
 // "m.get_login_token capability", "User-Interactive Authentication API" and "GET /admin/whois/{userId}".
 // ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -20,7 +20,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

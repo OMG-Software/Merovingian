@@ -2,11 +2,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/SocketHandle.hpp"
+#include "merovingian/homeserver/ConnectionAdmission.hpp"
+#include "merovingian/homeserver/HttpConnection.hpp"
+#include "merovingian/homeserver/HttpDispatchMode.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
+#include "merovingian/homeserver/ParkingReservation.hpp"
+#include "merovingian/homeserver/TlsServerContext.hpp"
+#include "merovingian/net/ConnectionParker.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 
 namespace merovingian::homeserver
 {
@@ -54,6 +66,78 @@ public:
 
 private:
     std::shared_ptr<Impl> m_impl; // SHARED_PTR: reviewed — pool tasks keep the dispatcher internals alive
+};
+
+// The dispatcher's internals (ADR-0077). Shared: every pool task that carries a
+// connection holds a reference, so a worker finishing a round can always hand
+// its connection back (or close it once stopped) even if the public
+// HttpConnectionDispatcher has been destroyed.
+//
+// Threads: the parker thread calls dispatch(); pool workers call serve(); the
+// accept threads call accept(); workers and sync-pool tasks call
+// park_for_next_request(). None of these holds a lock across another: the
+// parker's lock is internal to net::ConnectionParker and is never held while
+// this class runs, and the parking counters are atomics.
+class HttpConnectionDispatcher::Impl final : public std::enable_shared_from_this<HttpConnectionDispatcher::Impl>
+{
+public:
+    Impl(ClientServerRuntime& runtime_ref, HttpServeStats& stats_ref, net::ThreadPool& pool_ref,
+         net::ThreadPool* sync_pool_ptr, HttpServeTuning tuning_value, net::ThreadPool* media_fetch_pool_ptr)
+        : runtime{runtime_ref}
+        , stats{stats_ref}
+        , pool{pool_ref}
+        , sync_pool{sync_pool_ptr}
+        , media_fetch_pool{media_fetch_pool_ptr}
+        , tuning{tuning_value}
+    {
+    }
+    Impl(Impl const&) = delete;
+    auto operator=(Impl const&) -> Impl& = delete;
+    Impl(Impl&&) = delete;
+    auto operator=(Impl&&) -> Impl& = delete;
+    ~Impl() = default;
+
+    [[nodiscard]] auto start() -> bool;
+    auto request_stop() -> void;
+    [[nodiscard]] auto running() const -> bool;
+    // Whether a long-poll with nothing to return can park in the notifier's registry (ADR-0569): the registry was
+    // started by this dispatcher and is still running.
+    [[nodiscard]] auto parks_polls() const -> bool;
+
+    // Accept path: an admitted connection waits, parked, for its first byte.
+    auto accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode, ConnectionAdmission admission,
+                std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void;
+    // A worker or a sync-pool task hands a kept-alive connection back.
+    auto park_for_next_request(ConnectionOwner owner) -> void;
+
+    [[nodiscard]] auto try_reserve_keep_alive(std::uint32_t cap) -> std::optional<ParkingReservation>
+    {
+        return ParkingReservation::try_acquire(m_parked_keep_alive, cap);
+    }
+    [[nodiscard]] auto parked_keep_alive() const noexcept -> std::uint32_t
+    {
+        return m_parked_keep_alive->load(std::memory_order_relaxed);
+    }
+
+    ClientServerRuntime& runtime;
+    HttpServeStats& stats;
+    net::ThreadPool& pool;
+    net::ThreadPool* sync_pool;
+    net::ThreadPool* media_fetch_pool;
+    HttpServeTuning const tuning;
+
+private:
+    auto park_awaiting_first_request(ConnectionOwner owner) -> void;
+    auto dispatch(net::ConnectionParker::Dispatched dispatched) -> void;
+    auto serve(net::ConnectionParker::Dispatched dispatched) -> void;
+
+    ParkingReservation::Counter m_parked_keep_alive{std::make_shared<std::atomic<std::uint32_t>>(0U)};
+    ParkingReservation::Counter m_parked_new{std::make_shared<std::atomic<std::uint32_t>>(0U)};
+    // Created by start() before any listener runs; the pointer never changes
+    // afterwards, so the threads that use it need no lock to read it.
+    std::unique_ptr<net::ConnectionParker> m_parker{};
+    // Set by start(), before any listener runs: this dispatcher started the notifier's registry.
+    bool m_owns_poll_registry{false};
 };
 
 } // namespace merovingian::homeserver

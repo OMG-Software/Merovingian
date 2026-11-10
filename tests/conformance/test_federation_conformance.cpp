@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |              MATRIX FEDERATION CONFORMANCE TESTS                        |
@@ -21,20 +21,20 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/MasterKey.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/query_params.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/core/QueryParams.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/federation/BackfillRequest.hpp"
 #include "merovingian/federation/BackfillResult.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
@@ -51,15 +51,15 @@
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/ServerAclDecision.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/key_query.hpp"
-#include "merovingian/federation/server_acl.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
+#include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/federation_request_routing.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

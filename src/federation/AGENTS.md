@@ -9,7 +9,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 1. **Authenticate every inbound request with X-Matrix auth** before touching any body data.
    Reject with `401 Unauthorized` if the header is absent, malformed, or the signature is invalid.
-   See `inbound_request.hpp` and `security.hpp`.
+   See `InboundRequest.hpp` and `Security.hpp`.
 
 2. **Verify every inbound PDU's signature** against the sending server's published key before
    allowing it to enter the event graph. Unverified events must be silently dropped (not persisted).
@@ -89,7 +89,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    trust record: a 2xx answer on any other endpoint never resets or persists it, and a worker's
    synthetic remote (ADR-0110) is never written back (F-59, ADR-0347).
 
-3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
+3. **Fetch remote server keys via `RemoteKeyCache.hpp`** — never trust a key the remote server
    supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
    signing key must be valid at the event's own `origin_server_ts`, never judged against the
@@ -103,13 +103,13 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `/send_join` state verification waits for a slot instead (`resolve_join_state_key`,
    ADR-0155), because refusing there drops member events.
 
-4. **Run authorization rules** (`events/authorization.hpp`) before persisting any inbound PDU.
+4. **Run authorization rules** (`events/Authorization.hpp`) before persisting any inbound PDU.
 
 5. **Never relay or act on a rejected or soft-failed event as if it were normal** — a rejected
    event (fails auth against its own `auth_events` or the state before it) or a soft-failed one
    (fails auth against current state) is stored and takes part in state resolution, but must never
    reach a client timeline, become a forward extremity, or drive membership/push side effects.
-   Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
+   Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/LocalHttpRouter.cpp`, ADR-0064
    phase B2) for the `/send` transaction path, and in the membership acceptor for
    `send_join`/`send_leave`/`send_knock` (the same auth_events / state-before / current-state
    checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2". The membership acceptor differs
@@ -121,8 +121,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
    E2EE keys use `accept_remote_key_query_response()` and, for a `/keys/claim` answer,
-   `accept_remote_key_claim_response()` (`key_query.hpp`, ADR-0337). Merge uploaded key
-   signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
+   `accept_remote_key_claim_response()` (`KeyQuery.hpp`, ADR-0337). Merge uploaded key
+   signatures only through `KeySignatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
 
 7. **Every room-scoped federation read checks the origin is in the room.** `/state`,
@@ -130,17 +130,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    origin to their provider, which answers 403 `M_FORBIDDEN` unless
    `federation::origin_may_read_room()` holds (a joined user on that server in the room's
    current state, or `world_readable` history visibility). Never take the origin from the
-   query string or body. The gate lives in `event_query.cpp`, not the handler, so it holds on
+   query string or body. The gate lives in `EventQuery.cpp`, not the handler, so it holds on
    both the worker-snapshot path and the main-relay path (`/event`, which resolves the event's
    own room). `/state` and `/state_ids` return 404 for an unknown `event_id` or one with no state this server
    recorded — never fall back to current state or to a walk of the graph (rule 19) — and `get_missing_events` is a bounded walk (limit at most 20), not
-   a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
+   a room scan. The server ACL check in `InboundRequest.cpp` stays in front of all of this.
 
    **The gate is not the whole rule: what comes back is filtered per event by server-level history
    visibility.** The S2S spec says nothing about it, so the project applies the client-server "Room
    History Visibility" settings to the requesting server (owner decision 2026-10-29). `/event`,
    `/backfill` and `/get_missing_events` send an event in full only when `ServerEventFilter` (in
-   `event_query.cpp`; `event_visible_to_server()` for one event) finds it visible to `origin`, judged on the
+   `EventQuery.cpp`; `event_visible_to_server()` for one event) finds it visible to `origin`, judged on the
    room's state AT the event (its ADR-0064 state group, never current state): `world_readable` is
    visible; `shared` (also the default when the state has no `m.room.history_visibility`) needs a user of `origin`
    joined in that state or joined now (ADR-0585); `invited`
@@ -239,7 +239,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 14. **An invite's `invite_room_state` is validated for room versions 12 and up, and left alone below.**
    Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
    full PDU of the room version, not a stripped event. `validate_invite_room_state`
-   (`invite_room_state.cpp`) refuses with 400 `M_INVALID_PARAM` a missing create event, an entry that is
+   (`InviteRoomState.cpp`) refuses with 400 `M_INVALID_PARAM` a missing create event, an entry that is
    not a version-formatted PDU, an entry in another room (a v12 create event has no `room_id`; its room is
    `!` plus its reference hash), an entry whose signature does not verify, or more than
    `max_invite_room_state_entries` (16) entries. Every entry's signature goes through the same admitted
@@ -294,12 +294,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` read
    `room_server_acl_allows` from main's store under `runtime.mutex` for the transport origin (before any key lookup) and,
    for `pdu_ingest` and `membership_ingest`, for the verified sender's server, and judge the origin's federation policy
-   rule; `edu_ingest` judges the rule for the origin main authenticated and admits only an EDU whose digest the verified `/send` body carried, once per occurrence (F-74, ADR-0395; `extract_transaction_edus` and `edu_relay_digest` are the one definition of that digest). The claim and key, device-list and profile query relays are admitted only for the argument of the verified request a worker is serving, once (GHSA-3p5v-vrg8-f545, ADR-0595); `worker_relay_binding.hpp` (with `core::query_parameter` for the profile query's `user_id`) is the one definition of that argument and its digest, and `handle_user_devices` and every handler that reads a query parameter use the same functions, so never extract it another way. A refused PDU is `PduIngestionStatus::rejected_acl`,
+   rule; `edu_ingest` judges the rule for the origin main authenticated and admits only an EDU whose digest the verified `/send` body carried, once per occurrence (F-74, ADR-0395; `extract_transaction_edus` and `edu_relay_digest` are the one definition of that digest). The claim and key, device-list and profile query relays are admitted only for the argument of the verified request a worker is serving, once (GHSA-3p5v-vrg8-f545, ADR-0595); `WorkerRelayBinding.hpp` (with `core::query_parameter` for the profile query's `user_id`) is the one definition of that argument and its digest, and `handle_user_devices` and every handler that reads a query parameter use the same functions, so never extract it another way. A refused PDU is `PduIngestionStatus::rejected_acl`,
    which `/send` reports as an `error` entry (a rejection is stored and silent, the opposite of the spec's "ignored with an
    error"). `load_room_server_acl` reads the ACL through `find_current_state_event_id`. A new relay does the same.
 19. **The state at an event is the state this server recorded, never a walk of the event graph (F-25, F-26, ADR-0363).**
    `/state`, `/state_ids` and the client `/context` `state` answer through `state_before_event` and
-   `resolve_state_event_ids_at` (`event_query.cpp`). The state BEFORE an event is its own state group when the event is
+   `resolve_state_event_ids_at` (`EventQuery.cpp`). The state BEFORE an event is its own state group when the event is
    not a state event or was rejected (a group holds the state AFTER its event, and a rejected event is recorded with the
    state before it), else, with a single `prev_event`, its own group with its own key's entry from that `prev_event`'s
    group (that group for any event but a fallback one, whose recorded state may hold a ban the cited fork lacks,
@@ -320,7 +320,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 20. **A received event is held to its room version's format by `pdu_format_violation` (F-56, F-57, ADR-0397, ADR-0399).**
    Size, `prev_events` and `auth_events` caps, and no top-level `event_id` from room version 3 on. A new path taking events from
    another server calls it. `make_event_signing_payload` is the spec's pseudocode: do not strip anything else from it.
-   A resident's `make_join`/`make_leave`/`make_knock` template is such an event too: `room_service.cpp` runs it through
+   A resident's `make_join`/`make_leave`/`make_knock` template is such an event too: `RoomService.cpp` runs it through
    `membership_template_format_refusal` before signing it as the local user's own (F-13).
 20. **A number outside Canonical JSON is that PDU's error (F-83, ADR-0398).** `parse_preserving_numbers` is for rebuilding
    what a peer signed and reading a `/send` body, never for anything this server hashes, signs or stores.
@@ -359,25 +359,25 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 | File | Responsibility |
 |---|---|
-| `public_rooms.cpp` | Reads a published room directory request (query or body) and writes it as the relay frame's body; the listing is `homeserver/public_rooms.cpp` |
-| `inbound_request.cpp` | Parses and authenticates inbound federation HTTP requests |
-| `inbound_ingestion.cpp` | Validates, verifies, and ingests inbound PDUs |
-| `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |
-| `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
-| `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
-| `third_party_invite.cpp` | Parsers for `exchange_third_party_invite` and `3pid/onbind` bodies and the outbound exchange body (ADR-0484) |
-| `invite_room_state.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
-| `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
-| `key_query.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_batch` for all of a user's devices in a fixed number of table passes, F-05, never a loop of `build_device_list_update_content` over them; `build_device_list_update_content` for one, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
-| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
-| `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
-| `transactions.cpp` | Transaction batching and deduplication |
-| `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `PublicRooms.cpp` | Reads a published room directory request (query or body) and writes it as the relay frame's body; the listing is `homeserver/PublicRooms.cpp` |
+| `InboundRequest.cpp` | Parses and authenticates inbound federation HTTP requests |
+| `InboundIngestion.cpp` | Validates, verifies, and ingests inbound PDUs |
+| `OutboundTransactionSupport.cpp` | Batches local events and delivers them to remote servers |
+| `ServerDiscovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
+| `RemoteKeyCache.cpp` | Caches remote server signing keys with validity TTL |
+| `ThirdPartyInvite.cpp` | Parsers for `exchange_third_party_invite` and `3pid/onbind` bodies and the outbound exchange body (ADR-0484) |
+| `InviteRoomState.cpp` | `validate_invite_room_state`: the `invite_room_state` checks of an inbound v12+ invite (rule 14) |
+| `MembershipEndpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
+| `KeyQuery.cpp` | E2EE key responses served over federation, key EDU contents (`build_device_list_update_batch` for all of a user's devices in a fixed number of table passes, F-05, never a loop of `build_device_list_update_content` over them; `build_device_list_update_content` for one, and `build_device_deleted_update_content` for a removed device: `deleted: true`, no keys), filtering remote key-query responses |
+| `KeySignatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
+| `Security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
+| `Transactions.cpp` | Transaction batching and deduplication |
+| `ServerAcl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
 | `RemoteDeviceListCache.cpp` | The in-memory device lists of remote users who share a room with a local user (G14, ADR-0560, ADR-0561): fill tickets, update sequencing by `stream_id`/`prev_id`, caps per user and in all. Guarded by `runtime.mutex` |
 | `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
 | `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
-| `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
-| `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
+| `EventQuery.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
+| `OutboundMembership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
 | `CachedServerDiscovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
 | `RuntimeFederationConfig.cpp` | Federation route registration and per-origin request caps |
 

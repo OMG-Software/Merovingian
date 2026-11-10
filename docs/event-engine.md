@@ -70,7 +70,7 @@ Implemented now:
   rejected state-resolution candidates, which the spec can reauthorize.
 - **Legacy floating power levels (EVT-12(d)), auth rules only.** v3-v5 permit finite
   floating power levels with truncation. `RoomVersionPolicy::power_levels_accept_floats`
-  is set for those versions and `src/events/authorization.cpp` truncates
+  is set for those versions and `src/events/Authorization.cpp` truncates
   accordingly, but only for values that are already parsed. Hashing and parsing stay
   strict, so a received event that contains a float still fails parsing before
   authorization and cannot be accepted over federation ([ADR-0150](adr/0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)).
@@ -135,7 +135,7 @@ Implemented now:
   conditional on the presence of a create event in room state to allow
   the simplified room-creation bootstrap flow
 - auth checking wired into the inbound federation PDU path: `pdu_sink`
-  (`ingest_pdu_event`, `local_http_router.cpp`) originally ran
+  (`ingest_pdu_event`, `LocalHttpRouter.cpp`) originally ran
   `authorize_event_against_auth_events` against the room's current resolved
   state only, before calling `store_event_with_state`; events that fail auth
   return `rejected_auth` without a non-200 HTTP status (per Matrix /send spec
@@ -292,7 +292,7 @@ Implemented now:
   and before it hashes and signs it (F-13); the three calls cap the response at four times the event limit.
   `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
   `matrix_id_is_valid` and `parse_event_envelope`. See
-  `include/merovingian/events/limits.hpp` and
+  `include/merovingian/events/Limits.hpp` and
   [ADR-0067](adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md).
 - **`content.m.federate: false` enforced for every room version (0.12.13,
   M4).** Authorization rule step 3 now rejects cross-domain senders in v1–v5
@@ -347,8 +347,8 @@ From room version 3 on such a PDU is refused outright (rooms/v3.md, ADR-0397).
 
 Step 3 uses `canonicaljson::serialize_canonical_strict()`, not the general-purpose
 `serialize_canonical()` — it fails closed with `CanonicalJsonError::float_not_allowed`
-on a `Value` tree containing any double, rather than serializing one. `event_id.cpp`'s
-reference-hash computation and `signable.cpp` use the same strict entry point. Floats
+on a `Value` tree containing any double, rather than serializing one. `EventId.cpp`'s
+reference-hash computation and `Signable.cpp` use the same strict entry point. Floats
 are already excluded from this path in practice by `parse_lossless()` rejecting them
 at the parse boundary, but the strict serializer closes the same gap for any Value
 tree built programmatically rather than parsed.
@@ -414,7 +414,7 @@ each create event strictly after the previous one it composed
 room ID already exists, as after a restart with the clock stepped back
 ([ADR-0156](adr/0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)).
 A received v12 `m.room.create` PDU has no `room_id`, so
-`room_id_for_received_event` (`src/federation/inbound_ingestion.cpp`) takes its room ID from
+`room_id_for_received_event` (`src/federation/InboundIngestion.cpp`) takes its room ID from
 its own event ID (0.12.81, F8). The create event is also excluded from every other
 event's `auth_events`, because the room ID already implies it. Room versions 10
 and 11 keep server-scoped IDs (`!opaque:server`), a `room_id` in the create event,
@@ -454,7 +454,7 @@ letting the ban it authorised be dropped even though the promoting event was
 never actually in dispute — two conformant servers could resolve the same
 input differently. `StateResolutionRequest::event_lookup` gives the resolver a
 way to fetch those ancestor events (the persistent store, in production; see
-`homeserver::make_store_event_lookup`, `state_bookkeeping.cpp`, used by
+`homeserver::make_store_event_lookup`, `StateBookkeeping.cpp`, used by
 `compute_state_before` and `recompute_current_state`), and `resolve_state_v2`
 now computes ∪Ci − ∩Ci (the auth difference across the
 submitted state groups' full auth chains) before selecting X.
@@ -532,7 +532,7 @@ stating explicitly, because all three were defects (the first two until
   `RoomVersionPolicy` and reads levels through `effective_sender_power`, which
   follows `events::power_level_encoding(policy)` (integers; plus strings in
   v1-v9; plus floats, truncated, in v1-v5: EVT-12 (d), ADR-0150). **The
-  resolver and `authorization.cpp` must agree on this**: if they disagree,
+  resolver and `Authorization.cpp` must agree on this**: if they disagree,
   events are ordered by a power level the auth rules cannot see.
 - **Code outside the auth rules reads a single power-level value through
   `events::decode_power_level(value, encoding)`**, the decoder the rules use
@@ -563,7 +563,7 @@ stating explicitly, because all three were defects (the first two until
   fixed by `find_auth_ancestor_context` walking the candidate's own
   `auth_events` (via the same fail-closed `AuthChainEventSource` used for
   the auth difference) and feeding the result to
-  `events::effective_sender_power` (moved out of `authorization.cpp`'s
+  `events::effective_sender_power` (moved out of `Authorization.cpp`'s
   anonymous namespace and exposed publicly, so the ordering and the auth
   rules read power identically, including MSC4289 creator-infinite power
   for room v12). `reverse_topological_power_sort` correspondingly takes
@@ -666,14 +666,14 @@ those privileges through its content. See ADR-0089 for the policy and tradeoffs.
 
 Until 0.12.13's phase B1, `resolve_state_v2` was correct in isolation (see
 above) but never ran on the production inbound-PDU path: `ingest_pdu_event`
-(`src/homeserver/local_http_router.cpp`) authorised each PDU against current
+(`src/homeserver/LocalHttpRouter.cpp`) authorised each PDU against current
 state only and wrote its state straight into `current_state` — two
 concurrent, individually valid state events resolved as whichever arrived
 last, so resolved state could diverge from every other conformant server on
 the same DAG depending on delivery order.
 
 Phase B1 (`merovingian::homeserver::state_bookkeeping`,
-`include/merovingian/homeserver/state_bookkeeping.hpp`) makes state
+`include/merovingian/homeserver/StateBookkeeping.hpp`) makes state
 bookkeeping — not yet the receipt-order auth checks themselves, still B2 —
 spec-conformant for every event stored through `ingest_pdu_event`:
 
@@ -768,7 +768,7 @@ retired keys). Auth-chain events are stored as outliers with no
 
 ### Locally composed events: size limits and membership (CSAZ-9, CSAZ-6)
 
-`compose_signed_event` (`src/homeserver/room_service.cpp`) returns a `ComposeResult` whose `failure` says why
+`compose_signed_event` (`src/homeserver/RoomService.cpp`) returns a `ComposeResult` whose `failure` says why
 no event was composed. `too_large` is the spec's "Size limits": an event `type` or `state_key` over 255 bytes
 (`events::max_event_type_length_bytes`, `events::max_state_key_length_bytes`), checked before anything is
 composed, or a signed event over 65536 bytes (`events::max_event_size_bytes`), measured on the signed canonical
@@ -888,7 +888,7 @@ phase B2 changes behaviour that was previously "at least safe": before this
 phase, a step-4/5 auth failure returned early without persisting the event
 at all, which broke the spec requirement that later events referencing a
 rejected event can still be authorised against it. `record_event_state`/
-`record_event_state_with_parent` (`state_bookkeeping.hpp`/`.cpp`) gained an
+`record_event_state_with_parent` (`StateBookkeeping.hpp`/`.cpp`) gained an
 `accepted` flag (default `true`, so every phase-B1 caller is unaffected):
 `false` still creates/reuses the event's after-state group and maps the
 event to it (so `compute_state_before` can still resolve a later event's
@@ -911,7 +911,7 @@ at ingest time.
 **Client-delivery filtering.** Every path that serves room timeline events
 excludes `status == "rejected"` and `status == "soft_failed"`: `/sync`
 (`ClientServerRuntime.cpp`), MSC4186 sliding sync
-(`sync/sliding_sync_room_builder.cpp`), `GET .../messages`, `GET
+(`sync/SlidingSyncRoomBuilder.cpp`), `GET .../messages`, `GET
 .../context/{eventId}` (both its `events_before`/`events_after` window and
 the target-event lookup, which 404s the same as a nonexistent event id),
 `GET .../event/{eventId}` (same 404), and search. Current-state delivery
@@ -919,7 +919,7 @@ the target-event lookup, which 404s the same as a nonexistent event id),
 entirely by `current_state`/`recompute_current_state` and is untouched by
 this filter, so a soft-failed state event resolution admits is still
 delivered there. Federation-facing reads
-(`src/federation/event_query.cpp`: `/event/<id>`, `/backfill`,
+(`src/federation/EventQuery.cpp`: `/event/<id>`, `/backfill`,
 `/get_missing_events`) are deliberately not filtered by event status, matching the spec:
 `/event/<id>` may return a soft-failed event, and `/backfill`/
 `/get_missing_events` only return one when the request itself references
@@ -934,7 +934,7 @@ transaction request to be responded to with an error response").
 `PduIngestionStatus` gained `soft_failed`, threaded through the worker IPC
 status mapping (`src/homeserver/WorkerPool.cpp`,
 `src/federation_worker/WorkerEventLoop.cpp`) and the `/send` transaction
-per-PDU switch (`src/federation/inbound_request.cpp`) alongside the
+per-PDU switch (`src/federation/InboundRequest.cpp`) alongside the
 existing `missing_prev_state`.
 
 **Dead plumbing removed.** `PduStateConflictContext`,
@@ -1064,7 +1064,7 @@ status is `PduIngestionStatus::deferred`. The pending-federated-join queue
 * **Bounds.** 100 retained PDUs per room, 1000 in total, 16 MiB of JSON in total; a PDU is
   dropped after 24 hours or 10 retries that did not place it
   (`federation.pdu_deferral_expired`). See `docs/database-persistence.md`.
-* **Retry.** `homeserver::retry_deferred_pdus` (`src/homeserver/deferred_pdu_retry.cpp`),
+* **Retry.** `homeserver::retry_deferred_pdus` (`src/homeserver/DeferredPduRetry.cpp`),
   run by `DeferredPduRetryJob` (a `PeriodicJob`, started in `main.cpp` after the dispatcher),
   rebuilds each due PDU's envelope (`federation::rebuild_inbound_pdu_envelope`, with the
   room version the room resolves to now) and sends it through the production PDU sink.
@@ -1115,7 +1115,7 @@ and returns oldest first. The request `limit` defaults to 10 and is capped at
 between servers, so `/event`, `/backfill` and `/get_missing_events` apply the
 client-server "Room History Visibility" settings to the requesting server (owner decision
 2026-10-29). For each returned event, `ServerEventFilter`
-(`src/federation/event_query.cpp`) reads the room's state at that event from the event's
+(`src/federation/EventQuery.cpp`) reads the room's state at that event from the event's
 state group (ADR-0064), never the current state, and the event is sent in full when the
 `m.room.history_visibility` in that state is `world_readable`, or `shared` (the default when
 absent) and a user of the origin is joined in that state or joined now (ADR-0585), or `invited`
@@ -1154,7 +1154,7 @@ rooms/v3.md to v12.md "Handling redactions": the sender's power level is at leas
 event sender's domain. A redaction of `m.room.create` never applies: before v11 the algorithm would
 strip `room_version`, which the server reads from that event.
 
-`homeserver::reconcile_redactions_for_event` (`src/homeserver/redaction_service.cpp`) runs for every
+`homeserver::reconcile_redactions_for_event` (`src/homeserver/RedactionService.cpp`) runs for every
 event the main process stores, through `PersistentStore::redaction_observer`, and once at startup
 (`reconcile_all_redactions`). It judges the redactions involving that event, and judges again once the event's
 state group is recorded. A redaction applies by power level only when the sender meets the redact level in
@@ -1175,7 +1175,7 @@ event (`database::add_redaction_compat`, rooms/v11.md).
 
 `unsigned` is outside the content hash, the reference hash and every signature, so the server that relayed an
 event chose it. Every path that stores a received PDU removes it first (`events::without_unsigned`,
-`events/unsigned_data.hpp`): `parse_inbound_pdu_envelope`, `verify_and_store_backfilled_event`, the `send_join`
+`events/UnsignedData.hpp`): `parse_inbound_pdu_envelope`, `verify_and_store_backfilled_event`, the `send_join`
 state and auth-chain writer, a knock's stored `knock_room_state`, the inbound invite handler and the signed
 `make_join`/`make_leave`/`make_knock` template. The event ID, content hash and signatures are unchanged by it. A
 client's `unsigned` is built from what this server computes (`replaces_state`, `redacted_because`, and the viewer's

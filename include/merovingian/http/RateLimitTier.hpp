@@ -6,7 +6,7 @@ namespace merovingian::http
 {
 
 // Explicit client-server route tiers. The classification lives in
-// rate_limit_tier_for() (src/http/rate_limit.cpp) as one greppable prefix
+// rate_limit_tier_for() (src/http/RateLimit.cpp) as one greppable prefix
 // table, and each tier's default policy lives in rate_limit_tier_default().
 // Operators override a whole tier via `client_rate_limits.tier.<name>`
 // config keys (auth_sensitive, media, sync, federation, admin, generic).

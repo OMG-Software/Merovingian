@@ -22,12 +22,12 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "../support/json_test_support.hpp"
+#include "../support/JsonTestSupport.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/signable.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Signable.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

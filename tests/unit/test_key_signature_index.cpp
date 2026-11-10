@@ -6,7 +6,7 @@
 // lookup touches only that target's rows. The index must agree with the row
 // vector after every mutation, reload and copy.
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 

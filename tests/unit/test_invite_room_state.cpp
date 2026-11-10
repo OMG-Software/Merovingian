@@ -9,11 +9,11 @@
 // the invite; the server answers M_INVALID_PARAM (400) otherwise. For room versions 1 through 11 the
 // validation is optional and entries are accepted as they arrive.
 
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/federation/FederationDecision.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/invite_room_state.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/InviteRoomState.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

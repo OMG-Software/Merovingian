@@ -59,11 +59,11 @@ TimeoutStopSec=300s
 # System call allow-list (ADR-0499). @system-service covers what glibc, the
 # runtime and the database drivers use during start-up. The explicit names are
 # every system call the server's own seccomp filter, the federation worker's and
-# the thumbnail worker's allow (src/platform/seccomp_hardening.cpp), plus the ones
+# the thumbnail worker's allow (src/platform/SeccompHardening.cpp), plus the ones
 # the hardening installs itself with (seccomp, landlock_*, prctl, setrlimit), so
 # the unit filter is never narrower than what the processes install on themselves
 # and cannot make that installation fail. A system call outside both sets fails
-# with EPERM (SystemCallErrorNumber). Keep this list a superset of seccomp_hardening.cpp
+# with EPERM (SystemCallErrorNumber). Keep this list a superset of SeccompHardening.cpp
 # (tests/tooling/test_systemd_unit.py checks it). A name the running systemd
 # does not know is ignored with a warning.
 SystemCallFilter=@system-service

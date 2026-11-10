@@ -4,9 +4,9 @@
 // security.password_policy (ADR-0236) reaches registration and password
 // changes: the server applies the configured policy, not a built-in one.
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

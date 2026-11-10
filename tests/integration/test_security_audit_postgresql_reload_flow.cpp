@@ -6,8 +6,8 @@
 #include "merovingian/database/PersistentEventSignature.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/federation/server_acl.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/federation/ServerAcl.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

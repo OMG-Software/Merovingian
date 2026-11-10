@@ -1,0 +1,261 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/events/EventId.hpp"
+
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/SerializeResult.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/events/EventHashResult.hpp"
+#include "merovingian/events/EventIdResult.hpp"
+#include "merovingian/events/Limits.hpp"
+#include "merovingian/events/Redaction.hpp"
+
+#include <sodium.h>
+
+#include <algorithm>
+#include <array>
+#include <initializer_list>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <variant>
+
+namespace merovingian::events
+{
+namespace
+{
+
+    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
+    {
+        static auto const ready = sodium_init() >= 0;
+        return ready;
+    }
+
+    [[nodiscard]] auto matrix_base64_from_digest(std::array<unsigned char, crypto_hash_sha256_BYTES> const& digest,
+                                                 bool url_safe) -> std::string
+    {
+        auto output =
+            std::string(sodium_base64_ENCODED_LEN(digest.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
+        auto const variant =
+            url_safe ? sodium_base64_VARIANT_URLSAFE_NO_PADDING : sodium_base64_VARIANT_ORIGINAL_NO_PADDING;
+        std::ignore = sodium_bin2base64(output.data(), output.size(), digest.data(), digest.size(), variant);
+        output.resize(std::char_traits<char>::length(output.c_str()));
+        return output;
+    }
+
+    [[nodiscard]] auto sha256_base64(std::string_view input, bool url_safe) -> EventHashResult
+    {
+        if (!sodium_is_ready())
+        {
+            return {{}, "libsodium initialization failed"};
+        }
+
+        auto digest = std::array<unsigned char, crypto_hash_sha256_BYTES>{};
+        if (crypto_hash_sha256(digest.data(), reinterpret_cast<unsigned char const*>(input.data()), input.size()) != 0)
+        {
+            return {{}, "sha256 failed"};
+        }
+
+        return {matrix_base64_from_digest(digest, url_safe), {}};
+    }
+
+    [[nodiscard]] auto clone_without_fields(canonicaljson::Object const& object,
+                                            std::initializer_list<std::string_view> fields) -> canonicaljson::Object
+    {
+        auto stripped = canonicaljson::Object{};
+        stripped.reserve(object.size());
+        for (auto const& member : object)
+        {
+            auto const excluded = std::ranges::any_of(fields, [&member](std::string_view field) {
+                return member.key == field;
+            });
+            if (!excluded)
+            {
+                stripped.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
+        }
+        return stripped;
+    }
+
+    [[nodiscard]] auto serialize_object_without(canonicaljson::Value const& event,
+                                                std::initializer_list<std::string_view> fields)
+        -> canonicaljson::SerializeResult
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+        if (object == nullptr)
+        {
+            return {{}, canonicaljson::CanonicalJsonError::invalid_string};
+        }
+
+        return canonicaljson::serialize_canonical_strict(canonicaljson::Value{clone_without_fields(*object, fields)});
+    }
+
+} // namespace
+
+auto event_id_is_valid(std::string_view event_id) noexcept -> bool
+{
+    if (event_id.size() < 3U || event_id.front() != '$')
+    {
+        return false;
+    }
+
+    for (auto const character : event_id.substr(1U))
+    {
+        auto const valid = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                           (character >= '0' && character <= '9') || character == '_' || character == '-' ||
+                           character == ':' || character == '.';
+        if (!valid)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+auto event_id_is_acceptable_in_receipt(std::string_view event_id) noexcept -> bool
+{
+    if (event_id.size() > max_id_length_bytes)
+    {
+        return false;
+    }
+    // A version 3 event ID is standard base64, whose `+` and `/` the URL-safe grammar lacks.
+    return event_id_is_valid(event_id) ||
+           (event_id.size() >= 3U && event_id.front() == '$' &&
+            std::ranges::all_of(event_id.substr(1U), [](char character) {
+                return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                       (character >= '0' && character <= '9') || character == '+' || character == '/';
+            }));
+}
+
+auto make_content_hash_id(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> EventIdResult
+{
+    return make_reference_hash_event_id(event, policy);
+}
+
+auto make_content_hash(canonicaljson::Value const& event) -> EventHashResult
+{
+    auto const serialized = serialize_object_without(event, {"unsigned", "signatures", "hashes"});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+    }
+
+    return sha256_base64(serialized.output, false);
+}
+
+namespace
+{
+
+    [[nodiscard]] auto encoded_reference_hash(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy,
+                                              bool url_safe) -> EventHashResult
+    {
+        auto redacted = redact_event(event, policy);
+        if (!redacted.error.empty())
+        {
+            return {{}, redacted.error};
+        }
+
+        auto const serialized = serialize_object_without(redacted.event, {"signatures", "unsigned"});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+        }
+
+        return sha256_base64(serialized.output, url_safe);
+    }
+
+} // namespace
+
+auto make_reference_hash(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> EventHashResult
+{
+    return encoded_reference_hash(event, policy, true);
+}
+
+auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> EventIdResult
+{
+    // rooms/v3.md: the event ID is the reference hash in Unpadded Base64;
+    // rooms/v4.md onwards use URL-safe base64.
+    auto const hash = encoded_reference_hash(event, policy, policy.event_id_url_safe_base64);
+    if (!hash.error.empty())
+    {
+        return {{}, hash.error};
+    }
+
+    return {"$" + hash.sha256, {}};
+}
+
+auto make_noncanonical_event_id_label(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> EventIdResult
+{
+    auto const redacted = redact_event(event, policy);
+    auto const* object = std::get_if<canonicaljson::Object>(&redacted.event.storage());
+    if (!redacted.error.empty() || object == nullptr)
+    {
+        return {{}, redacted.error.empty() ? "event is not an object" : redacted.error};
+    }
+    auto const serialized = canonicaljson::serialize_canonical(
+        canonicaljson::Value{clone_without_fields(*object, {"signatures", "unsigned"})});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+    }
+    auto const hash = sha256_base64(serialized.output, policy.event_id_url_safe_base64);
+    if (!hash.error.empty())
+    {
+        return {{}, hash.error};
+    }
+    return {"$" + hash.sha256, {}};
+}
+
+auto verify_pdu_content_hash(canonicaljson::Value const& event) -> bool
+{
+    // Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+    //
+    // Servers MUST check that hashes.sha256 matches the SHA-256 of the canonical
+    // JSON of the event with unsigned, signatures, and hashes stripped.
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return false;
+    }
+
+    // Extract the claimed sha256 from hashes.sha256.
+    auto const hashes_it = std::ranges::find_if(*root, [](canonicaljson::ObjectMember const& m) {
+        return m.key == "hashes";
+    });
+    if (hashes_it == root->end() || hashes_it->value == nullptr)
+    {
+        return false;
+    }
+    auto const* hashes_obj = std::get_if<canonicaljson::Object>(&hashes_it->value->storage());
+    if (hashes_obj == nullptr)
+    {
+        return false;
+    }
+    auto const sha256_it = std::ranges::find_if(*hashes_obj, [](canonicaljson::ObjectMember const& m) {
+        return m.key == "sha256";
+    });
+    if (sha256_it == hashes_obj->end() || sha256_it->value == nullptr)
+    {
+        return false;
+    }
+    auto const* claimed = std::get_if<std::string>(&sha256_it->value->storage());
+    if (claimed == nullptr || claimed->empty())
+    {
+        return false;
+    }
+
+    auto const computed = make_content_hash(event);
+    if (!computed.error.empty() || computed.sha256.empty())
+    {
+        return false;
+    }
+
+    return *claimed == computed.sha256;
+}
+
+} // namespace merovingian::events

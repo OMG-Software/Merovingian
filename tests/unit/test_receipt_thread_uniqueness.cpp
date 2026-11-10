@@ -9,7 +9,7 @@
 // thread_id) tuple is associated with only a single event_id.
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#receipts
 
-#include "../support/json_test_support.hpp"
+#include "../support/JsonTestSupport.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentReceipt.hpp"

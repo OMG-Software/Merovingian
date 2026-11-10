@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/auth/RegistrationPolicy.hpp"
-#include "merovingian/auth/session.hpp"
+#include "merovingian/auth/Session.hpp"
 #include "merovingian/homeserver/LocalDatabaseScope.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -20,7 +20,7 @@ SCENARIO("Registration policy remains disabled by default and token-gated when e
         // out of scope. The auth test never exercises the audit log, so
         // clear this thread's pointer — `local_audit_sink` early-returns on
         // a null database. This resets only the thread_local database
-        // pointer (homeserver/local_services.cpp), NOT the process-wide
+        // pointer (homeserver/LocalServices.cpp), NOT the process-wide
         // `observability::the_audit_sink()` function pointer: that one is a
         // global singleton shared by every test in the binary, permanently
         // downgraded to `default_audit_sink` for the rest of the process by

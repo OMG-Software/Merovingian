@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/cross_signing_fixture.hpp"
-#include "../support/in_memory_database_config.hpp"
+#include "../support/CrossSigningFixture.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
@@ -27,28 +27,28 @@
 // |  test_auth_client_server_api.cpp.                                        |
 // +-------------------------------------------------------------------------+
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/MockIdentityServer.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -7818,7 +7818,7 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
                                   token,
                                   // Real PNG magic bytes: the media repository now sniffs
                                   // actual content and quarantines declared/actual MIME
-                                  // mismatches (media/security.hpp sniff_mime_type), so a
+                                  // mismatches (media/Security.hpp sniff_mime_type), so a
                                   // plain string declared as image/png would be quarantined.
                                   "\x89PNG\r\n\x1a\ntest-image-data",
                                   {merovingian::http::Header{"Content-Type", "image/png"}}});
@@ -7856,7 +7856,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns 404 for newly up
                               token,
                               // Real PNG magic bytes: the media repository now sniffs actual
                               // content and quarantines declared/actual MIME mismatches (see
-                              // media/security.hpp sniff_mime_type).
+                              // media/Security.hpp sniff_mime_type).
                               "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
@@ -7995,7 +7995,7 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for newly u
                               token,
                               // Real PNG magic bytes: the media repository now sniffs actual
                               // content and quarantines declared/actual MIME mismatches (see
-                              // media/security.hpp sniff_mime_type).
+                              // media/Security.hpp sniff_mime_type).
                               "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
@@ -8154,7 +8154,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media",
                               token,
                               // Real PNG magic bytes: the media repository now sniffs actual
                               // content and quarantines declared/actual MIME mismatches (see
-                              // media/security.hpp sniff_mime_type).
+                              // media/Security.hpp sniff_mime_type).
                               "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
@@ -8331,7 +8331,7 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for u
                               token,
                               // Real PNG magic bytes: the media repository now sniffs actual
                               // content and quarantines declared/actual MIME mismatches (see
-                              // media/security.hpp sniff_mime_type).
+                              // media/Security.hpp sniff_mime_type).
                               "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);

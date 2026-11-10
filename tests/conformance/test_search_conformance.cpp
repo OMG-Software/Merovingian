@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            POST /_matrix/client/v3/search — CONFORMANCE                 |
@@ -15,9 +15,9 @@
 // |  result set cannot pass the negative check by accident.                 |
 // +-------------------------------------------------------------------------+
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -103,7 +103,7 @@ using namespace merovingian::tests;
 
 // Creates a room with `preset` and optionally invites `invitee_user_id`
 // (does not join them). `preset == "private_chat"` auto-enables
-// m.room.encryption (see room_service.cpp); `preset == "public_chat"` never
+// m.room.encryption (see RoomService.cpp); `preset == "public_chat"` never
 // does.
 [[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& owner_token,
                                std::string const& preset, std::string const& invitee_user_id = {}) -> std::string

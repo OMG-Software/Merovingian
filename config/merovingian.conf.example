@@ -169,7 +169,7 @@ listeners.max_queued_connections=1024
 # SET ROLE to migration_role before applying pending migrations (0.12.5 audit
 # finding 18), so DDL no longer runs as the connection's own login role.
 # Setting it does not otherwise narrow the privileges migrations run with
-# beyond assuming the role. See src/database/postgresql_store.cpp and
+# beyond assuming the role. See src/database/PostgresqlStore.cpp and
 # docs/todos/capability-gaps.md.
 # Both keys must be set together or both left empty.
 # Changing either requires a restart: roles are assumed at connect time, so a

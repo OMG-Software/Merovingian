@@ -9,17 +9,17 @@
 
 #include "../support/ScopedThreadJoin.hpp"
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
-#include "../support/tls_mock_server.hpp"
-#include "bounded_connect.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
+#include "../support/TlsMockServer.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>

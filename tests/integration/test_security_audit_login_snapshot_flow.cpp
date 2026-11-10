@@ -3,10 +3,10 @@
 
 #include "../support/JoiningThreads.hpp"
 #include "../support/RealPasswordHashCost.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
-#include "merovingian/auth/password.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
+#include "merovingian/auth/Password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -22,7 +22,7 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -7,14 +7,14 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 
 | File | Responsibility |
 |---|---|
-| `event.cpp` | Parse raw JSON into `EventEnvelope`; validate field types and required keys |
-| `event_id.cpp` | Generate and validate event IDs (format is room-version-dependent) |
-| `event_signer.cpp` | Compute content hash, reference hash, and apply Ed25519 signature |
-| `authorization.cpp` | Authorization rules — room-version-aware; called before persisting any PDU |
-| `state_resolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
-| `redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
-| `unsigned_data.cpp` | `without_unsigned` / `without_unsigned_json`: a received PDU without its top-level `unsigned`, which every ingestion path stores it through (ADR-0402) |
-| `redaction_validity.cpp` | Where a room version keeps `redacts`, and whether a redaction applies to its target ("Handling redactions") |
+| `Event.cpp` | Parse raw JSON into `EventEnvelope`; validate field types and required keys |
+| `EventId.cpp` | Generate and validate event IDs (format is room-version-dependent) |
+| `EventSigner.cpp` | Compute content hash, reference hash, and apply Ed25519 signature |
+| `Authorization.cpp` | Authorization rules — room-version-aware; called before persisting any PDU |
+| `StateResolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
+| `Redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
+| `UnsignedData.cpp` | `without_unsigned` / `without_unsigned_json`: a received PDU without its top-level `unsigned`, which every ingestion path stores it through (ADR-0402) |
+| `RedactionValidity.cpp` | Where a room version keeps `redacts`, and whether a redaction applies to its target ("Handling redactions") |
 
 ## Event IDs are room-version dependent
 
@@ -24,15 +24,15 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | v3 | `$` + unpadded standard base64 of the reference hash (`+`, `/`) |
 | v4+ | `$` + unpadded URL-safe base64 of the reference hash (`-`, `_`) |
 
-Always use `event_id.hpp` — never construct an event ID manually.
+Always use `EventId.hpp` — never construct an event ID manually.
 
-`event_id.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
+`EventId.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
 `EventIdFormat::reference_hash`). Room versions 1 and 2, whose `$localpart:server` format this
 is, are not supported and are absent from `rooms/RoomVersionPolicy.cpp` (ADR-0076).
 
 ## Canonical JSON is required for signing and hashing
 
-All signing and hashing operates on canonical JSON output from `canonicaljson/serializer.hpp`.
+All signing and hashing operates on canonical JSON output from `canonicaljson/Serializer.hpp`.
 Never sign or hash a string that was not produced by the canonical serializer.
 
 ## Signing pipeline
@@ -43,14 +43,14 @@ EventEnvelope → redact → canonical JSON → SHA-256 (content hash) → injec
               → add "signatures" field via signing_service
 ```
 
-Call `event_signer.hpp` — do not call `crypto/signing_service.hpp` directly.
+Call `EventSigner.hpp` — do not call `crypto/SigningService.hpp` directly.
 
 The signing payload removes what redaction removes, then `signatures` and `unsigned`, and nothing else. A top-level
 `event_id` stays in it, as it stays in the reference hash, so one signature cannot cover two event IDs (ADR-0397).
 
 ## Authorization rules
 
-`authorization.hpp` is room-version-aware. Always pass the correct `RoomVersionPolicy`
+`Authorization.hpp` is room-version-aware. Always pass the correct `RoomVersionPolicy`
 (from `rooms/RoomVersionPolicy.hpp`). Do not assume v10 rules apply to all room versions.
 
 Authorization must be checked:
@@ -59,7 +59,7 @@ Authorization must be checked:
 
 ## State resolution
 
-`state_resolution.hpp` implements state-res v2 (room versions 2-11) and v2.1
+`StateResolution.hpp` implements state-res v2 (room versions 2-11) and v2.1
 (room v12, `rooms::StateResolutionAlgorithm::v2_1` — empty starting map for
 the iterative auth checks, plus the conflicted state subgraph). Never inline
 resolution logic; always delegate to this module.
@@ -79,17 +79,17 @@ the whole resolution, matching its behaviour before the fallback existed.
 
 ## Redaction
 
-`redaction.hpp` applies the room-version-specific redaction algorithm.
+`Redaction.hpp` applies the room-version-specific redaction algorithm.
 Do not trim event fields manually — the algorithm determines what survives.
 
-`redaction_validity.hpp` decides whether a redaction applies: `redaction_target` reads `redacts` from the
+`RedactionValidity.hpp` decides whether a redaction applies: `redaction_target` reads `redacts` from the
 location the room version uses (top level before v11, `content` from v11), and `judge_redaction` applies the
 two conditions of "Handling redactions" (sender's power level at least the redact level, or the sender's
 domain equals the original sender's). Callers pass power levels read from the state this server recorded, never
 from the redaction's own `auth_events`, which its sender chose: `reconcile_redaction` requires `applies` for the state
 before the redaction and for current state (ADR-0586), and `power_levels_known` false means no sender meets the level. It never applies a redaction of
 `m.room.create`: the server reads the room version from that event and, before v11, the algorithm strips it.
-Applying a redaction is `homeserver/redaction_service.cpp`, not this module.
+Applying a redaction is `homeserver/RedactionService.cpp`, not this module.
 
 ## Key spec sections
 

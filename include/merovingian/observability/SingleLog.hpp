@@ -11,7 +11,7 @@
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/LowSeverityFlushPolicy.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 
 #include <array>
 #include <atomic>

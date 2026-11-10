@@ -4,7 +4,7 @@
 #include "merovingian/push/UserPushRules.hpp"
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/push/PushRuleEditOutcome.hpp"
 #include "merovingian/push/PushRuleEntry.hpp"
 #include "merovingian/push/PushRulePlacement.hpp"

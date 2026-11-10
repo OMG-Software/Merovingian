@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/room_history_fixture.hpp"
+#include "../support/RoomHistoryFixture.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
-#include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

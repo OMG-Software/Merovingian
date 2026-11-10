@@ -5,11 +5,11 @@
 // SET ROLE) while the runtime mutex was usually held. Writes now reuse at most
 // database.pool_size connections (ADR-0154).
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>

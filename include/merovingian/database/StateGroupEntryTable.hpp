@@ -4,7 +4,7 @@
 
 #include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/StateGroupKeyHash.hpp"
-#include "merovingian/database/state_group_table_support.hpp"
+#include "merovingian/database/StateGroupTableSupport.hpp"
 
 #include <cstddef>
 #include <functional>

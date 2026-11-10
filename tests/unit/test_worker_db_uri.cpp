@@ -8,10 +8,10 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
-#include "merovingian/federation_worker/db_uri_fd.hpp"
+#include "merovingian/federation_worker/DbUriFd.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -279,10 +279,10 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         // ADR-0212: mxc:// URIs reserved by POST /_matrix/media/v1/create.
         // The client API and the federation media download run in main.
         "media_pending_uploads",
-        // Vestigial: declared in src/database/schema.cpp's DDL but never
+        // Vestigial: declared in src/database/Schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside
-        // schema.cpp). state_groups was vestigial too until 0.12.13's
+        // Schema.cpp). state_groups was vestigial too until 0.12.13's
         // ADR-0064 phase A (migration 015) gave it real readers and
         // extended it with parent_state_group_id/delta_depth -- it now
         // belongs to the worker allowlist above, not here.

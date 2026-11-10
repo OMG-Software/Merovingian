@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // F-16 (security audit run 4): POST /_matrix/media/v1/create swept every expired reservation with a scan of the
 // expired list per stored row, under runtime.mutex. The sweep is now hash-set membership over a bounded batch (256),
@@ -10,10 +10,10 @@
 // concurrent pending media uploads") and "PUT /_matrix/media/v3/upload/{serverName}/{mediaId}" (404 M_NOT_FOUND when
 // "The MXC ID has expired"). ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -25,7 +25,7 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/MediaService.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/media/PendingMediaUpload.hpp"

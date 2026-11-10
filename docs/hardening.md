@@ -65,8 +65,8 @@ All cryptography is delegated to libsodium. The project does not implement its
 own primitives.
 
 * `sodium_init()` is wrapped in per-module `static` `sodium_is_ready()` helpers
-  so it is called once and failures are checked (`src/events/event_signer.cpp`,
-  `src/homeserver/auth_service.cpp`, `src/crypto/secret_box.cpp`, etc.).
+  so it is called once and failures are checked (`src/events/EventSigner.cpp`,
+  `src/homeserver/AuthService.cpp`, `src/crypto/SecretBox.cpp`, etc.).
 * Passwords and the registration token are hashed with Argon2id
   (`crypto_pwhash_str` / `crypto_pwhash_str_verify`).
 * Access-token HMAC and signing-secret encryption keys are derived from the
@@ -103,7 +103,7 @@ own primitives.
 Before loading configuration or secret files, the bootstrap path validates
 POSIX metadata:
 
-* `src/platform/file_metadata.cpp` reads file kind and mode with `lstat`.
+* `src/platform/FileMetadataSupport.cpp` reads file kind and mode with `lstat`.
 * Configuration and TLS certificate files must be regular files without group
   or other write or any execute bit (`is_secure_config_file`).
 * Secret files (master key, TLS private key, registration token) must be
@@ -220,7 +220,7 @@ an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
 `SIGPIPE` is ignored process-wide so a peer that vanishes mid-write cannot
 terminate the process (HTTP-5, 2026-09-29 security audit). Before the HTTP-5 fix
 this was only true after the first thumbnail was generated, because the sole
-`SIG_IGN` sat in `src/media/thumbnailer.cpp`. OpenSSL's socket BIO writes with
+`SIG_IGN` sat in `src/media/Thumbnailer.cpp`. OpenSSL's socket BIO writes with
 plain `write()` and no `MSG_NOSIGNAL`, so a TLS client that completed the
 handshake, sent a partial request head and reset the connection made the
 server's 408 write raise SIGPIPE, and the default disposition killed the
@@ -228,7 +228,7 @@ homeserver. The plain-HTTP and IPC paths use `MSG_NOSIGNAL` and were never
 affected. Every executable (`merovingian-server`, `merovingian-fed-worker`,
 `merovingian-thumbnail-worker`, `merovingian-db-migrate`) now calls
 `platform::ignore_sigpipe()` (`sigaction(SIGPIPE, SIG_IGN)`,
-`src/platform/signal_hardening.cpp`) first thing in `main()`, before any thread
+`src/platform/SignalHardening.cpp`) first thing in `main()`, before any thread
 starts and before any seccomp filter exists. A failure is fatal: the server and
 `db-migrate` exit with `bootstrap::ExitCode::runtime_start_error` (80), the two
 workers exit 1. The lazy `::signal(SIGPIPE, SIG_IGN)` in the thumbnailer is
@@ -241,7 +241,7 @@ child is killed without the call and that it survives with it.
 ### Out-of-process thumbnail worker sandbox
 
 The main server **never** decodes untrusted image bytes in-process. It spawns
-`merovingian-thumbnail-worker` via `fork()`/`execve()` (`src/media/thumbnailer.cpp`
+`merovingian-thumbnail-worker` via `fork()`/`execve()` (`src/media/Thumbnailer.cpp`
 and `src/media/thumbnail_worker_main.cpp`):
 
 * Parent and child communicate through `O_CLOEXEC` pipes (`pipe2()` on Linux,
@@ -264,8 +264,8 @@ and `src/media/thumbnail_worker_main.cpp`):
 * Before `execve()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
 * Inside the worker, `main()` calls `media::apply_decoder_hardening()`
-  (`include/merovingian/media/decoder_hardening.hpp`,
-  `src/media/decoder_hardening.cpp`) **before reading a single byte of
+  (`include/merovingian/media/DecoderHardening.hpp`,
+  `src/media/DecoderHardening.cpp`) **before reading a single byte of
   stdin**, and it is fail-closed (0.12.13 audit fix): the sequence clamps
   resources, then installs the platform sandbox, and if any applicable
   control fails the worker prints the failed control's name to stderr and
@@ -273,7 +273,7 @@ and `src/media/thumbnail_worker_main.cpp`):
   Before 0.12.13, `harden()` discarded every hardening call's result with
   `std::ignore`, so a sandbox that failed to install still let the worker
   decode attacker-controlled bytes completely unconfined, silently. The
-  parent (`src/media/thumbnailer.cpp`) already treats a worker that exits
+  parent (`src/media/Thumbnailer.cpp`) already treats a worker that exits
   before producing output as a normal failed-thumbnail response (malformed/
   empty worker response → HTTP 502), so this fails closed without any
   parent-side change.
@@ -569,7 +569,7 @@ separate process on the same host:
   denies `execve`/`execveat`/spawn-oriented `clone` — the worker never execs or
   spawns, so those syscalls are unreachable in normal operation and kill the
   worker on attempted abuse. This sequence (`apply_worker_hardening()` in
-  `src/platform/runtime_hardening.cpp`) is Linux-only, gated by
+  `src/platform/RuntimeHardening.cpp`) is Linux-only, gated by
   `federation.worker.apply_hardening` (default `true`). **Fail-closed on
   other platforms (0.12.1):** on FreeBSD/OpenBSD/NetBSD there is no
   in-process worker sandbox equivalent to seccomp, and until 0.12.1
@@ -612,14 +612,14 @@ Linux receives the richest set of in-process controls.
 
 | Defence | Implementation | Notes |
 | --- | --- | --- |
-| seccomp-bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker, always with `SECCOMP_FILTER_FLAG_TSYNC` so every existing thread is covered (ADR-0082). |
-| Architecture guard | `src/platform/seccomp_hardening.cpp` | Filter starts with an `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` guard and fails closed on unsupported architectures. |
-| Fail-closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
+| seccomp-bpf syscall allowlist | `src/platform/SeccompHardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker, always with `SECCOMP_FILTER_FLAG_TSYNC` so every existing thread is covered (ADR-0082). |
+| Architecture guard | `src/platform/SeccompHardening.cpp` | Filter starts with an `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` guard and fails closed on unsupported architectures. |
+| Fail-closed default | `src/platform/SeccompHardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
 | No new privileges | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` | Applied by `apply_seccomp_filter()` and `apply_runtime_hardening_controls()`. |
 | Capability bounding set drop | `apply_linux_capability_bounding_set()` | Calls `prctl(PR_CAPBSET_DROP, cap, ...)` for every capability. |
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
 | Self-check probes | `src/platform/HardeningSelfCheck.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
-| Ignored SIGPIPE | `src/platform/signal_hardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
+| Ignored SIGPIPE | `src/platform/SignalHardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, `UMask=0077`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=true`, `ProtectKernelTunables=`/`Modules=`/`Logs=`, `ProtectControlGroups=`, `ProtectClock=`, `ProtectHostname=` (ISO-8, ADR-0147), `ProtectProc=invisible`, `LimitNOFILE=65536`, `TasksMax=4096`, `TimeoutStopSec=300s` and a `SystemCallFilter` that is `@system-service` plus every call the processes' own seccomp filters allow (ADR-0499; `WatchdogSec` is absent because the server never calls `sd_notify`), etc. |
 
 The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the

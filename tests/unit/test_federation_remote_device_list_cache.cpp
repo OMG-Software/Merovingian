@@ -3,12 +3,12 @@
 // Spec: docs/matrix-v1.19-spec/server-server-api.md, "Device Management" and `m.device_list_update`.
 
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/federation/RemoteDeviceList.hpp"
 #include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/RemoteDeviceListOutcome.hpp"
 #include "merovingian/federation/RemoteDeviceListUpdate.hpp"
-#include "merovingian/federation/key_query.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

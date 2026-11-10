@@ -3,7 +3,7 @@
 // The other test binaries hash at minimum cost (ADR-0510). This one is linked without that override, so it sees
 // what the shipped server does.
 
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Password.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -24,8 +24,8 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -227,8 +227,8 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
 // URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 //
 // "Integers in the range [-(2^53)+1, (2^53)-1]... no floats in signed/hashed
-// data." serialize_canonical_strict is the entry point event_signer.cpp and
-// event_id.cpp use for signing/hashing payloads; it must fail closed on a
+// data." serialize_canonical_strict is the entry point EventSigner.cpp and
+// EventId.cpp use for signing/hashing payloads; it must fail closed on a
 // Value tree containing a double rather than serializing a plausible-looking
 // but non-canonical result.
 SCENARIO("Canonical JSON strict serialization rejects floats at every nesting depth",

@@ -284,7 +284,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   fixed PATH, and fd 2 points to a pre-opened `/dev/null` sink. Main checks the
   full PNG signature and initial IHDR dimensions against the worker's report,
   rejecting malformed/mismatched output with 502 and no media payload. It does
-  not decode or validate image data in-process. See `media/thumbnailer.hpp` and
+  not decode or validate image data in-process. See `media/Thumbnailer.hpp` and
   [media-repository.md](media-repository.md).
 
 - **Variable-length secret comparison leaking length (#8):** comparing a config
@@ -322,7 +322,7 @@ threat it closes; the controls above are the standing defences these reinforce.
 - **Relayed-PDU fail-open with no sender-domain key (#270):** the prior (C1)
   mitigation only fail-closed when `remote_key_resolver` was wired but returned
   no key. On a receive-only/locked-down deployment where the resolver is never
-  wired (because `local_http_router.cpp` gates wiring on `outbound && discovery`),
+  wired (because `LocalHttpRouter.cpp` gates wiring on `outbound && discovery`),
   `authorize_federation_pdu` fell through to accept the PDU with no cryptographic
   check, so a known peer could forge events attributed to another server. Fixed
   by returning `403 "sender domain signing key unavailable"` whenever the
@@ -349,7 +349,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   device; device records are retained.
 
 - **Power-levels sender self-elevation (#273):** the elevation guard in
-  `events/authorization.cpp` exempted the sender (`if (user_entry.key != *sender)`),
+  `events/Authorization.cpp` exempted the sender (`if (user_entry.key != *sender)`),
   letting a moderator raise their own power above their current level in a single
   event and seize admin. Fixed by removing the exemption so spec rule 9.9 applies
   to the sender's own entry.
@@ -862,7 +862,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   internal lookups of already-accepted prior state still fall back to
   `leave` (the safe "not a member" default).
 - **Federation PDUs verified against an expired signing key (2026-07
-  audit):** `remote_key_cache.cpp`'s resolver deliberately falls back to a
+  audit):** `RemoteKeyCache.cpp`'s resolver deliberately falls back to a
   stale cached key when a live refresh fails, so callers can distinguish
   "known but unreachable" from "never seen" — but `authorize_federation_pdu`
   never checked the returned key's `valid_until_ts` before using it to
@@ -926,7 +926,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   ("this endpoint does not require authentication via an access token").
   Fixed by excluding `refresh_token` from the access-token requirement.
 - **Accepted client sockets leaked into forked worker subprocesses (2026-07
-  audit):** `http_server.cpp`'s plain-HTTP and TLS accept loops used
+  audit):** `HttpServer.cpp`'s plain-HTTP and TLS accept loops used
   `::accept()` instead of `accept4(..., SOCK_CLOEXEC)`, unlike every other
   fd-creation site in the codebase. Because federation workers and the
   thumbnail worker are spawned via `posix_spawn`/`fork()` while client
@@ -945,7 +945,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   portable shortest-round-tripping conversion, for ordinary never-signed
   responses like `m.tag` order) and `serialize_canonical_strict()`
   (rejects any float with `CanonicalJsonError::float_not_allowed`), with
-  `event_signer.cpp`, `event_id.cpp`, and `signable.cpp` switched to the
+  `EventSigner.cpp`, `EventId.cpp`, and `Signable.cpp` switched to the
   strict entry point.
 - **Master key material and its derived keys held in unwiped, unmlocked
   memory (2026-07 audit):** `load_master_key_material()` — the root secret
@@ -972,7 +972,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   private key is read the same way and handed to OpenSSL from memory, and every
   master-key derived-key cache takes the file identity and the key material from
   one descriptor (`crypto::open_master_key_file`), so a cached key is always the
-  one derived from the file its identity describes. `src/homeserver/room_service.cpp`'s duplicate root loader remains
+  one derived from the file its identity describes. `src/homeserver/RoomService.cpp`'s duplicate root loader remains
   removed in favor of the single `src/crypto/` implementation.
 
 - **Outbound identity-server `store-invite` SSRF and trust-bypass surface
@@ -1101,7 +1101,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   `matrix_pusher_url_is_valid`), so this module does not rely solely on
   upstream validation holding. (3) **Config gate, disabled by default,
   enforced at both call sites** — `notify()` checks `config::PushConfig::enabled`
-  before doing anything else, and `room_service.cpp`'s
+  before doing anything else, and `RoomService.cpp`'s
   `build_pending_push_deliveries()` re-checks the same flag before reading a
   single pusher row or building a gateway-bound `PendingPushDelivery` (rule
   evaluation and `GET /_matrix/client/v3/notifications` history recording now
@@ -1113,7 +1113,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   lock held
   across network I/O** — like the identity and federation clients,
   `PushGatewayClient` holds no lock of its own, and the routing that calls it
-  (`room_service.cpp`'s `run_pending_push_deliveries`) never holds
+  (`RoomService.cpp`'s `run_pending_push_deliveries`) never holds
   `runtime.mutex` while it runs: gateway calls happen entirely on a detached
   `std::async` task parked in `HomeserverRuntime::orphan_futures_` (the same
   mechanism `join_room`'s background member-fill task uses — see
@@ -1169,7 +1169,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   race cannot starve push delivery or vice versa — see the deadlock note
   below for why it is atomic rather than mutex-guarded), is
   checked against a validated configurable cap, `server.push.max_in_flight_deliveries` (256 by default,
-  `room_service.cpp`) before a task is spawned. At capacity the delivery is
+  `RoomService.cpp`) before a task is spawned. At capacity the delivery is
   dropped — never spawned, never blocked on — and a warning is logged: a
   missed push is recoverable (the client still sees the event on its next
   `/sync`), an exhausted thread pool is not. This is the same "bound all
@@ -1233,7 +1233,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   delivery previously fired only from `send_event()` (`/send` and `/state`
   PUTs); the membership-mutating endpoints (invite/join/leave/kick/ban, and
   the 3PID invite) each go through their own dedicated functions in
-  `room_service.cpp` and never called `build_pending_push_deliveries()` /
+  `RoomService.cpp` and never called `build_pending_push_deliveries()` /
   `dispatch_push_deliveries()` at all. The concrete consequence: the default,
   enabled-by-default rule `.m.rule.invite_for_me` — whose entire purpose is
   to notify a user they were invited — could never fire, since nothing ever
@@ -1275,7 +1275,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   shutdown no longer blocks a concurrent `dispatch_push_deliveries` call
   trying to reap or park a future while the drain is in progress. Every
   other site that parks or reaps `orphan_futures_` (the make_join race in
-  `room_service.cpp`'s `join_room`) was audited and does not wait on a
+  `RoomService.cpp`'s `join_room`) was audited and does not wait on a
   future while holding the mutex — this failure mode was unique to the two
   fixed call sites.
 
@@ -1318,11 +1318,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   membership, produced no `/notifications` history row and no Push Gateway
   request for a local recipient — push notifications silently did not work
   for federated rooms at all. Fixed with `deliver_federation_push_
-  notifications()` (`room_service.cpp`), called from the `pdu_sink` lambda
-  (`local_http_router.cpp`'s `wire_federation_callbacks_impl`) immediately
+  notifications()` (`RoomService.cpp`), called from the `pdu_sink` lambda
+  (`LocalHttpRouter.cpp`'s `wire_federation_callbacks_impl`) immediately
   after a PDU is accepted. This lambda is the single convergence point for
   every accepted PDU regardless of origin — both the direct main-process
-  federation path (`inbound_request.cpp` calling `runtime.pdu_sink`
+  federation path (`InboundRequest.cpp` calling `runtime.pdu_sink`
   synchronously) and the worker-relayed path (`WorkerPool.cpp`'s
   `pdu_ingest` IPC handler calling the same `runtime_.federation.pdu_sink`
   on main) — so wiring the call in exactly one place cannot result in a PDU
@@ -1970,7 +1970,7 @@ Mitigation:
 - Every room-scoped read now takes the X-Matrix-authenticated origin and answers
   `403 M_FORBIDDEN` with no room data unless the origin has a joined user in the room's
   current state or the room's current `m.room.history_visibility` is `world_readable`
-  (`federation::origin_may_read_room`, `src/federation/event_query.cpp`). The gate runs
+  (`federation::origin_may_read_room`, `src/federation/EventQuery.cpp`). The gate runs
   where the data is served: the worker room snapshot for `state`, `state_ids`, `backfill`
   and `get_missing_events`, and main for `/event` (the worker relays the origin over IPC
   and main resolves the event's own room). An unknown room answers 403 so its existence is
@@ -2016,7 +2016,7 @@ until the refresh).
   guarded by a source-tree test —
   `tests/unit/test_store_event_choke_point.cpp` — that fails the build if a
   new call site bypasses it), the same treatment for
-  `local_http_router.cpp`'s `membership_acceptor` (inbound
+  `LocalHttpRouter.cpp`'s `membership_acceptor` (inbound
   send_join/send_leave/send_knock acceptance), and federated-join snapshot
   seeding in `join_room`. See `docs/database-persistence.md`, "Phase B1 of
   spec-conformant PDU ingestion", for the full call-site list.
@@ -2057,7 +2057,7 @@ until the refresh).
   state diverging by delivery order" above.
 - **Membership-acceptor path:** `send_join`/`send_leave`/`send_knock`
   acceptance runs the same three-way check in the membership acceptor
-  (`src/homeserver/local_http_router.cpp`). Since 0.12.36 (R06) a content-hash
+  (`src/homeserver/LocalHttpRouter.cpp`). Since 0.12.36 (R06) a content-hash
   mismatch there, and on `/invite`, is redacted and processed further rather
   than refused; see "What a remote server can get accepted or signed:
   conformance audit wave 2 (0.12.36)" below and `src/federation/AGENTS.md`.

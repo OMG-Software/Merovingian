@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Regression cover for the global-stall bug: HomeserverRuntime::mutex was held
 // across blocking outbound federation calls, so one slow or unreachable peer
@@ -27,10 +27,10 @@
 
 #include "../support/ScopedThreadJoin.hpp"
 #include "../support/StallingTlsServerState.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -42,7 +42,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
@@ -380,7 +380,7 @@ SCENARIO("A stalled trust-safety policy-server hook during media download leaves
 
         auto gate = PolicyServerGate{};
         // media upload does not consult the policy-server hook (only
-        // download/thumbnail do — see media_service.cpp's
+        // download/thumbnail do — see MediaService.cpp's
         // media_policy_decision), but set the gate on PolicySurface::media
         // before the upload anyway so this test does not depend on that.
         runtime.homeserver.trust_safety_policy_server =
@@ -513,7 +513,7 @@ SCENARIO("A stalled identity server during a third-party invite leaves the rest 
          "[homeserver][client-server][integration][concurrency][locking][3pid]")
 {
     // Third instance of the same bug class, and the one the 0.12.6 review
-    // found still live. invite_user_by_threepid (room_service.cpp) locks
+    // found still live. invite_user_by_threepid (RoomService.cpp) locks
     // runtime.mutex itself, validates, then released its OWN guard around the
     // identity-server /store-invite round trip. Called from the client-server
     // dispatcher — which already holds the mutex for the whole request — that

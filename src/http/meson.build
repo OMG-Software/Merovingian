@@ -1,13 +1,13 @@
 http_sources = files(
-  'client_address.cpp',
-  'connection_guard.cpp',
+  'ClientAddress.cpp',
+  'ConnectionGuard.cpp',
   'ConnectionLimiter.cpp',
   'InFlightBudget.cpp',
-  'keep_alive.cpp',
-  'library_versions.cpp',
+  'KeepAlive.cpp',
+  'LibraryVersions.cpp',
   'OutboundClient.cpp',
-  'rate_limit.cpp',
-  'request.cpp',
+  'RateLimit.cpp',
+  'Request.cpp',
   'RequestLimits.cpp',
 )
 

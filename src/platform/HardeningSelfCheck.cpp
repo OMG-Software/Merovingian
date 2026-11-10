@@ -10,9 +10,9 @@
 #include "merovingian/platform/HardeningCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
 #include "merovingian/platform/SeccompProbeResult.hpp"
-#include "merovingian/platform/elf_probe.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
+#include "merovingian/platform/ElfProbe.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
 
 #include <sys/resource.h>
 #include <unistd.h>

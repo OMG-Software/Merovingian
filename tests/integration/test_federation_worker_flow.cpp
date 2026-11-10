@@ -8,20 +8,20 @@
 // |  no-signing refusal, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/EduRelayContext.hpp"
 #include "../support/JoiningThreads.hpp"
-#include "../support/ingested_state_fixture.hpp"
-#include "../support/master_key.hpp"
-#include "../support/membership_fixture_support.hpp"
-#include "../support/remote_room_fixture.hpp"
-#include "../support/temp_directory.hpp"
-#include "bounded_connect.hpp"
+#include "../support/IngestedStateFixture.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/MembershipFixtureSupport.hpp"
+#include "../support/RemoteRoomFixture.hpp"
+#include "../support/TempDirectory.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -36,8 +36,8 @@
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentInvite.hpp"
@@ -54,10 +54,10 @@
 #include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/worker_relay_binding.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/federation/WorkerRelayBinding.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -72,13 +72,13 @@
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
-#include "merovingian/homeserver/federation_request_routing.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"
@@ -835,7 +835,7 @@ SCENARIO("Room-scoped federation requests are routed to the correct shard",
 
         WHEN("a request-derived shard is compared against notify_room_changed()'s own shard for the same room")
         {
-            // notify_room_changed() (room_service.cpp) always hashes the plain,
+            // notify_room_changed() (RoomService.cpp) always hashes the plain,
             // already-decoded room_id — it never touches a URL. The federation
             // proxy instead hashes whatever federation_worker_room_id_from_request()
             // extracts from the live HTTP request. If those two ever disagree for
@@ -1522,7 +1522,7 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
     // serialize_membership_ingest() produces, in and out. Driving a real
     // send_join through a real worker subprocess end-to-end would additionally
     // require it to pass the "remote is unknown" federation-policy gate ahead
-    // of membership_acceptor (src/federation/inbound_request.cpp), which needs
+    // of membership_acceptor (src/federation/InboundRequest.cpp), which needs
     // a live, network-resolvable remote signing key — orthogonal infrastructure
     // this bug isn't about. That gate is exactly why this file's *other*
     // scenarios only assert `status != 503` rather than a specific success
@@ -1721,7 +1721,7 @@ SCENARIO("handle_membership_ingest_request rejects a relayed join for a room mai
          "[integration][federation-worker][membership][send_join][error-paths]")
 {
     // The default membership_acceptor's only precondition is that the room
-    // row already exists (see local_http_router.cpp: "room not found", 404).
+    // row already exists (see LocalHttpRouter.cpp: "room not found", 404).
     // A worker relaying a send_join for a room main never learned about
     // (e.g. a stale worker snapshot, or a genuinely bogus remote request)
     // must not silently persist a member into a non-existent room.
@@ -1831,7 +1831,7 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
     // transport for E2EE megolm room-key shares. A recipient whose key-share
     // transaction landed on a worker shard was left permanently unable to
     // decrypt the corresponding room event, with nothing in the server logs
-    // to show why (inbound_request.cpp counts an EDU with no edu_sink
+    // to show why (InboundRequest.cpp counts an EDU with no edu_sink
     // installed as "dispatched", not "dropped").
     GIVEN("a runtime with the default federation callbacks wired")
     {
@@ -2419,7 +2419,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
     // network-resolvable remote signing key.
     //
     // This pins the fix for the bug where invite_handler's default
-    // implementation (local_http_router.cpp) persisted the invite's
+    // implementation (LocalHttpRouter.cpp) persisted the invite's
     // membership row, invite metadata, and event straight into whichever
     // process's PersistentStore ran it — and since PUT /invite is
     // room-scoped, with federation.worker.shards >= 1 (the shipped example
@@ -2511,7 +2511,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
 SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this server does not host",
          "[integration][federation-worker][invite][error-paths]")
 {
-    // Mirrors the invite_handler branch in local_http_router.cpp: {false,
+    // Mirrors the invite_handler branch in LocalHttpRouter.cpp: {false,
     // 404, "invited local user not found"} when the invite's target state_key
     // is not registered locally. A worker must relay this rejection through
     // main unchanged, not silently drop it or persist a membership row for a
@@ -2616,7 +2616,7 @@ SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against m
     // this file use.
     //
     // This pins the fix for the bug where one_time_keys_claim_provider's
-    // default implementation (local_http_router.cpp) decided key
+    // default implementation (LocalHttpRouter.cpp) decided key
     // availability from PersistentStore::one_time_keys — a per-process
     // in-memory snapshot hydrated once at worker startup — before issuing a
     // DELETE. Two independent processes (main and a worker, or two workers)
@@ -2784,7 +2784,7 @@ SCENARIO("handle_user_devices_ingest_request reads a device list from main's own
     // use.
     //
     // This pins the fix for the bug where user_devices_provider's default
-    // implementation (local_http_router.cpp) read PersistentStore::
+    // implementation (LocalHttpRouter.cpp) read PersistentStore::
     // device_keys — a per-process in-memory snapshot hydrated once at worker
     // startup — with no mechanism to ever refresh it, since GET
     // /_matrix/federation/v1/user/devices/{userId} carries no room ID for
@@ -3699,7 +3699,7 @@ SCENARIO("The federation worker starts and serves a request under the worker sec
 #ifndef __linux__
         // seccomp-bpf and the sibling controls apply_worker_hardening() installs
         // are Linux-only. apply_worker_hardening() now fails closed on other
-        // platforms instead of silently accepting (see runtime_hardening.cpp) --
+        // platforms instead of silently accepting (see RuntimeHardening.cpp) --
         // with apply_hardening=true below, the worker process now correctly
         // refuses to start here, so this scenario's "reaches healthy" assertion
         // no longer applies on non-Linux. The fail-closed behaviour itself is

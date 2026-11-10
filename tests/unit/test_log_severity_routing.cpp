@@ -5,7 +5,7 @@
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

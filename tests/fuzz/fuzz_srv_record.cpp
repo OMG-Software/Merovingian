@@ -5,7 +5,7 @@
 // The parser is fully bounds-checked (no ns_* API); any out-of-bounds read
 // or write is a bug that should be caught here.
 
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 
 #include <cstddef>
 #include <cstdint>

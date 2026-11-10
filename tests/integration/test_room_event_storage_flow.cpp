@@ -5,10 +5,10 @@
 // that a restart rebuilds the same rooms, members and reads, and that a stored, redacted and reloaded event is
 // served from that one copy.
 
-#include "../support/e2ee_caps_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/E2eeCapsSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"

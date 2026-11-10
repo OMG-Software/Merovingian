@@ -9,7 +9,7 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"

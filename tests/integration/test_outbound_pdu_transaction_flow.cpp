@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/TestAppservice.hpp"
-#include "../support/appservice_test_config.hpp"
-#include "../support/in_memory_database_config.hpp"
+#include "../support/AppserviceTestConfig.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Regression for Complement run 3 (0.12.59): the /send transaction carrying a locally sent
 // event had no `origin` and no `origin_server_ts`, which the Transaction object marks
@@ -13,15 +13,15 @@
 // Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v1/send/{txnId}
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/membership_fixture_support.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/MembershipFixtureSupport.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -37,7 +37,7 @@
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

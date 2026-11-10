@@ -15,12 +15,12 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -33,7 +33,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/email/SmtpTestResolution.hpp"
-#include "merovingian/email/smtp_client.hpp"
+#include "merovingian/email/SmtpClient.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -42,8 +42,8 @@
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>

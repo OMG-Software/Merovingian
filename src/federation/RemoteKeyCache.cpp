@@ -1,0 +1,806 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/RemoteKeyCache.hpp"
+
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/events/EventSigner.hpp"
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/RemoteKeyFetchResult.hpp"
+#include "merovingian/federation/RemoteKeyResponse.hpp"
+#include "merovingian/federation/RemoteOldVerifyKey.hpp"
+#include "merovingian/federation/RemoteVerifyKey.hpp"
+#include "merovingian/federation/Security.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace merovingian::federation
+{
+namespace
+{
+
+    auto constexpr key_endpoint = std::string_view{"/_matrix/key/v2/server"};
+    // Refresh slack: re-fetch when within this window of expiry so verifications
+    // don't race the cutoff. Five minutes matches the federation clock-skew bound.
+    auto constexpr refresh_slack_ms = std::uint64_t{5U * 60U * 1000U};
+    // rooms/v5.md, "Signing key validity period": a fetched key is trusted for
+    // at most 7 days before it must be fetched again.
+    auto constexpr max_key_trust_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+
+    // rooms/v5.md: "Servers MUST use the lesser of valid_until_ts and 7 days
+    // into the future when determining if a key is valid." Measured from the
+    // fetch, so a key its owner has withdrawn stops being trusted (ADR-0075).
+    [[nodiscard]] auto trusted_until(std::uint64_t valid_until_ts, std::uint64_t fetched_at_ms) noexcept
+        -> std::uint64_t
+    {
+        return std::min(valid_until_ts, fetched_at_ms + max_key_trust_ms);
+    }
+
+    [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto extract_string(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto const* text = std::get_if<std::string>(&value.storage());
+        return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
+    }
+
+    [[nodiscard]] auto extract_integer(canonicaljson::Value const& value) -> std::optional<std::uint64_t>
+    {
+        auto const* number = std::get_if<std::int64_t>(&value.storage());
+        if (number == nullptr || *number < 0)
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(*number);
+    }
+
+    struct RemoteKeyParsed final
+    {
+        std::string server_name{};
+        std::uint64_t valid_until_ts{0U};
+        std::vector<RemoteVerifyKey> verify_keys{};
+        std::vector<RemoteOldVerifyKey> old_verify_keys{};
+        // signatures[server_name][key_id] = base64 signature
+        std::vector<std::pair<std::string, std::string>> server_signatures{};
+        canonicaljson::Value canonical_payload{};
+    };
+
+    [[nodiscard]] auto strip_signatures(canonicaljson::Object const& original) -> canonicaljson::Object
+    {
+        auto stripped = canonicaljson::Object{};
+        stripped.reserve(original.size());
+        for (auto const& member : original)
+        {
+            if (member.key == "signatures")
+            {
+                continue;
+            }
+            stripped.push_back(canonicaljson::make_member(member.key, *member.value));
+        }
+        return stripped;
+    }
+
+    // server-server-api.md, Publishing keys: `old_verify_keys` maps a key ID to
+    // {expired_ts, key}. Each entry stands alone: one that is malformed, lacks a
+    // usable expired_ts (an integer above zero), repeats a current key's ID or
+    // carries key material that is not a 32-byte Ed25519 key is skipped, and
+    // never costs the response its verify_keys. A member that is not an object
+    // yields no old keys. The response signature already covers this member.
+    [[nodiscard]] auto parse_old_verify_keys(canonicaljson::Object const& root,
+                                             std::vector<RemoteVerifyKey> const& verify_keys)
+        -> std::vector<RemoteOldVerifyKey>
+    {
+        auto old_keys = std::vector<RemoteOldVerifyKey>{};
+        auto const* member = find_member(root, "old_verify_keys");
+        auto const* object = member == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&member->storage());
+        if (object == nullptr)
+        {
+            return old_keys;
+        }
+        for (auto const& entry : *object)
+        {
+            auto const is_current = std::ranges::any_of(verify_keys, [&entry](RemoteVerifyKey const& current) {
+                return current.key_id == entry.key;
+            });
+            auto const is_repeat = std::ranges::any_of(old_keys, [&entry](RemoteOldVerifyKey const& seen) {
+                return seen.key_id == entry.key;
+            });
+            auto const* fields = std::get_if<canonicaljson::Object>(&entry.value->storage());
+            if (is_current || is_repeat || fields == nullptr)
+            {
+                continue;
+            }
+            auto const* key_value = find_member(*fields, "key");
+            auto const* expired_value = find_member(*fields, "expired_ts");
+            auto key = key_value == nullptr ? std::nullopt : extract_string(*key_value);
+            auto expired_ts = expired_value == nullptr ? std::nullopt : extract_integer(*expired_value);
+            if (!key.has_value() || !expired_ts.has_value() || *expired_ts == 0U ||
+                events::matrix_bytes_from_base64(*key).size() != crypto::ed25519_public_key_bytes)
+            {
+                continue;
+            }
+            old_keys.push_back({entry.key, std::move(*key), *expired_ts});
+        }
+        return old_keys;
+    }
+
+    [[nodiscard]] auto parse_response(std::string_view body) -> std::optional<RemoteKeyParsed>
+    {
+        auto const parsed = canonicaljson::parse_lossless(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        auto const* server_name_value = find_member(*root, "server_name");
+        auto const* valid_until_value = find_member(*root, "valid_until_ts");
+        auto const* verify_keys_value = find_member(*root, "verify_keys");
+        auto const* signatures_value = find_member(*root, "signatures");
+        if (server_name_value == nullptr || valid_until_value == nullptr || verify_keys_value == nullptr ||
+            signatures_value == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        auto record = RemoteKeyParsed{};
+        auto server_name = extract_string(*server_name_value);
+        auto valid_until_ts = extract_integer(*valid_until_value);
+        auto const* verify_keys_object = std::get_if<canonicaljson::Object>(&verify_keys_value->storage());
+        auto const* signatures_object = std::get_if<canonicaljson::Object>(&signatures_value->storage());
+        if (!server_name.has_value() || !valid_until_ts.has_value() || verify_keys_object == nullptr ||
+            signatures_object == nullptr)
+        {
+            return std::nullopt;
+        }
+        record.server_name = std::move(*server_name);
+        record.valid_until_ts = *valid_until_ts;
+
+        for (auto const& key_member : *verify_keys_object)
+        {
+            auto const* key_object = std::get_if<canonicaljson::Object>(&key_member.value->storage());
+            if (key_object == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto const* key_value = find_member(*key_object, "key");
+            if (key_value == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto encoded = extract_string(*key_value);
+            if (!encoded.has_value() || encoded->empty())
+            {
+                return std::nullopt;
+            }
+            record.verify_keys.push_back({key_member.key, std::move(*encoded)});
+        }
+        if (record.verify_keys.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto const* server_signatures_value = find_member(*signatures_object, record.server_name);
+        if (server_signatures_value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* server_signatures_object = std::get_if<canonicaljson::Object>(&server_signatures_value->storage());
+        if (server_signatures_object == nullptr)
+        {
+            return std::nullopt;
+        }
+        for (auto const& signature_member : *server_signatures_object)
+        {
+            auto signature_text = extract_string(*signature_member.value);
+            if (!signature_text.has_value())
+            {
+                continue;
+            }
+            record.server_signatures.emplace_back(signature_member.key, std::move(*signature_text));
+        }
+        if (record.server_signatures.empty())
+        {
+            return std::nullopt;
+        }
+
+        record.old_verify_keys = parse_old_verify_keys(*root, record.verify_keys);
+        record.canonical_payload = canonicaljson::Value{strip_signatures(*root)};
+        return record;
+    }
+
+    [[nodiscard]] auto verify_one_signature(std::string_view payload, std::string_view signature_base64,
+                                            std::string_view public_key_base64) -> bool
+    {
+        auto const signature_bytes = events::matrix_bytes_from_base64(signature_base64);
+        auto const public_key_bytes = events::matrix_bytes_from_base64(public_key_base64);
+        auto const result = crypto::ed25519_verify(crypto::Ed25519PublicKey{std::string{public_key_bytes}}, payload,
+                                                   crypto::Ed25519Signature{std::string{signature_bytes}});
+        return result.valid;
+    }
+
+    // Builds the outbound GET /_matrix/key/v2/server request from a resolved
+    // discovery result, performs it, and self-verifies the response. Shared by
+    // the raw-network and cached-discovery overloads of fetch_remote_server_keys
+    // so the cache wraps both discovery cascades (the resolver's own lookup and
+    // the fetch's internal lookup).
+    [[nodiscard]] auto fetch_with_discovery(http::OutboundClient& client, std::string_view server_name,
+                                            std::uint32_t timeout_seconds, ServerDiscoveryResult const& discovery)
+        -> RemoteKeyFetchResult
+    {
+        if (!discovery.discovery_allowed)
+        {
+            return {false, {}, discovery.reason.empty() ? "discovery failed" : discovery.reason};
+        }
+        auto url = std::string{"https://"};
+        // M-02: use the TLS identity as the URL host, not the resolved target.
+        // For an SRV-discovered destination those differ, and the key endpoint is
+        // exactly where it matters most: this response is the root of trust for
+        // every signature that server ever makes, so validating the certificate
+        // against an SRV target chosen by unsigned DNS would let a DNS attacker
+        // substitute the server's signing keys wholesale. pinned_addresses still
+        // routes the connection to the discovered target.
+        auto const& url_host = discovery.tls_server_name.empty() ? discovery.resolved_host : discovery.tls_server_name;
+        auto const needs_brackets = url_host.find(':') != std::string::npos && url_host.front() != '[';
+        if (needs_brackets)
+        {
+            url += '[';
+        }
+        url += url_host;
+        if (needs_brackets)
+        {
+            url += ']';
+        }
+        url += ':';
+        url += std::to_string(discovery.resolved_port);
+        url += key_endpoint;
+
+        auto request = http::OutboundRequest{};
+        request.method = "GET";
+        request.url = std::move(url);
+        request.pinned_addresses = discovery.pinned_addresses;
+        request.connect_timeout_seconds = timeout_seconds;
+        request.total_timeout_seconds = timeout_seconds;
+        request.max_response_body_bytes = 64U * 1024U;
+
+        auto const result = client.perform(request);
+        if (!result.ok)
+        {
+            return {false, {}, result.error_detail.empty() ? "outbound key fetch failed" : result.error_detail};
+        }
+        if (result.response.status != 200U)
+        {
+            return {false, {}, "remote key endpoint returned status " + std::to_string(result.response.status)};
+        }
+        return parse_and_verify_remote_key_response(result.response.body, server_name);
+    }
+
+} // namespace
+
+auto parse_and_verify_remote_key_response(std::string_view body, std::string_view expected_server_name)
+    -> RemoteKeyFetchResult
+{
+    auto parsed = parse_response(body);
+    if (!parsed.has_value())
+    {
+        return {false, {}, "response is not a canonical Matrix server-key object"};
+    }
+    if (parsed->server_name != expected_server_name)
+    {
+        return {false, {}, "response server_name does not match expected server"};
+    }
+    if (!server_name_is_valid(parsed->server_name))
+    {
+        return {false, {}, "response server_name is malformed"};
+    }
+    if (parsed->valid_until_ts == 0U)
+    {
+        return {false, {}, "response valid_until_ts is zero"};
+    }
+
+    auto const canonical = canonicaljson::serialize_canonical(parsed->canonical_payload);
+    if (canonical.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return {false, {}, "response cannot be re-serialized canonically"};
+    }
+
+    // Every verify_keys entry must have its own valid self-signature. A single
+    // valid signature proves the payload shape, but not provenance for an
+    // additional key listed without a matching signature.
+    for (auto const& verify_key : parsed->verify_keys)
+    {
+        auto const signature_iterator =
+            std::ranges::find_if(parsed->server_signatures, [&verify_key](auto const& signature) {
+                return signature.first == verify_key.key_id;
+            });
+        if (signature_iterator == parsed->server_signatures.end())
+        {
+            return {false, {}, "response included unsigned verify key " + verify_key.key_id};
+        }
+        if (!verify_one_signature(canonical.output, signature_iterator->second, verify_key.public_key_base64))
+        {
+            return {false, {}, "response signature failed verification for key " + verify_key.key_id};
+        }
+    }
+
+    auto response = RemoteKeyResponse{};
+    response.server_name = std::move(parsed->server_name);
+    response.valid_until_ts = parsed->valid_until_ts;
+    response.verify_keys = std::move(parsed->verify_keys);
+    response.old_verify_keys = std::move(parsed->old_verify_keys);
+    return {true, std::move(response), {}};
+}
+
+auto fetch_remote_server_keys(http::OutboundClient& client, ServerDiscoveryNetwork& network,
+                              std::string_view server_name, std::uint32_t timeout_seconds) -> RemoteKeyFetchResult
+{
+    auto const discovery = discover_server(server_name, network, timeout_seconds);
+    return fetch_with_discovery(client, server_name, timeout_seconds, discovery);
+}
+
+auto fetch_remote_server_keys(http::OutboundClient& client, CachedServerDiscovery& discovery,
+                              std::string_view server_name, std::uint32_t timeout_seconds) -> RemoteKeyFetchResult
+{
+    // Reuse the cached discovery result so a key fetch does not re-run the
+    // .well-known + SRV + DNS cascade. The cache was populated by the
+    // resolver's own discovery call one step earlier, so this is a hot hit.
+    auto const result = discovery.discover(server_name, timeout_seconds);
+    return fetch_with_discovery(client, server_name, timeout_seconds, result);
+}
+
+auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts) noexcept -> bool
+{
+    if (valid_until_ts == 0U)
+    {
+        return true;
+    }
+    if (now_ts >= valid_until_ts)
+    {
+        return true;
+    }
+    return (valid_until_ts - now_ts) <= refresh_slack_ms;
+}
+
+auto cached_remote_key_usable(FederationKeyRecord const& key, std::uint64_t now_ts) noexcept -> bool
+{
+    // A retired key's valid_until_ts (its expiry) is in the past, so remote_key_needs_refresh is true for it
+    // for ever; refetching would never change it. It is judged per event against expired_ts instead.
+    return key.retired || !remote_key_needs_refresh(key.valid_until_ts, now_ts);
+}
+
+auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
+                              std::uint64_t fetched_at_ms) -> bool
+{
+    if (response.server_name.empty() || response.valid_until_ts == 0U)
+    {
+        return false;
+    }
+    auto const valid_until_ts = trusted_until(response.valid_until_ts, fetched_at_ms);
+    auto all_ok = true;
+    for (auto const& verify_key : response.verify_keys)
+    {
+        auto persistent = database::PersistentServerSigningKey{
+            response.server_name,
+            verify_key.key_id,
+            verify_key.public_key_base64,
+            valid_until_ts,
+        };
+        if (!database::store_server_signing_key(store, std::move(persistent)))
+        {
+            all_ok = false;
+        }
+    }
+    // old_verify_keys: a retired row per entry. A server cannot have stopped using a key in the future, so the
+    // expiry is capped at the fetch time, as in fetched_old_key_record. The store keeps retirement one way and
+    // the earliest expiry (ADR-0425), and refuses an expiry on a row holding a secret.
+    for (auto const& old_key : response.old_verify_keys)
+    {
+        auto const expired_ts = std::min(old_key.expired_ts, fetched_at_ms);
+        if (expired_ts == 0U)
+        {
+            continue;
+        }
+        auto persistent = database::PersistentServerSigningKey{
+            response.server_name,
+            old_key.key_id,
+            old_key.public_key_base64,
+            expired_ts,
+        };
+        persistent.expired_ts = expired_ts;
+        if (!database::store_server_signing_key(store, std::move(persistent)))
+        {
+            all_ok = false;
+        }
+    }
+    return all_ok;
+}
+
+auto find_cached_remote_key(database::PersistentStore const& store, std::string_view server_name,
+                            std::string_view key_id) -> std::optional<FederationKeyRecord>
+{
+    auto const persistent = database::find_server_signing_key(store, server_name, key_id);
+    if (!persistent.has_value())
+    {
+        return std::nullopt;
+    }
+    auto record = FederationKeyRecord{};
+    record.server_name = persistent->server_name;
+    record.key_id = persistent->key_id;
+    record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
+    record.valid_until_ts = persistent->valid_until_ts;
+    record.retired = persistent->expired_ts != 0U;
+    record.expired_ts = persistent->expired_ts;
+    auto constexpr expected_public_bytes = crypto::ed25519_public_key_bytes;
+    if (record.public_key_bytes.size() != expected_public_bytes)
+    {
+        return std::nullopt;
+    }
+    return record;
+}
+
+auto find_own_server_signing_key(database::PersistentStore const& store, std::string_view own_server_name,
+                                 std::string_view key_id) -> std::optional<FederationKeyRecord>
+{
+    if (own_server_name.empty())
+    {
+        return std::nullopt;
+    }
+    auto const persistent = database::find_server_signing_key(store, own_server_name, key_id);
+    // Only a row holding a secret is a key this server generated.
+    if (!persistent.has_value() || persistent->secret_key.empty())
+    {
+        return std::nullopt;
+    }
+    auto record = FederationKeyRecord{};
+    record.server_name = persistent->server_name;
+    record.key_id = persistent->key_id;
+    record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
+    record.valid_until_ts = persistent->valid_until_ts;
+    if (record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+    {
+        return std::nullopt;
+    }
+    return record;
+}
+
+auto find_any_cached_remote_key(database::PersistentStore const& store, std::string_view server_name)
+    -> std::optional<FederationKeyRecord>
+{
+    for (auto const& persistent : database::snapshot_server_signing_keys(store))
+    {
+        // A retired key is only valid for events; this lookup serves callers that want a key to authenticate
+        // with, so it never returns one.
+        if (persistent.server_name != server_name || persistent.expired_ts != 0U)
+        {
+            continue;
+        }
+        auto record = FederationKeyRecord{};
+        record.server_name = persistent.server_name;
+        record.key_id = persistent.key_id;
+        record.public_key_bytes = events::matrix_bytes_from_base64(persistent.public_key);
+        record.valid_until_ts = persistent.valid_until_ts;
+        auto constexpr expected_public_bytes = crypto::ed25519_public_key_bytes;
+        if (record.public_key_bytes.size() == expected_public_bytes)
+        {
+            return record;
+        }
+    }
+    return std::nullopt;
+}
+
+namespace
+{
+
+    // Emits a redaction-aware debug line so operators can see why a remote
+    // failed to resolve. Resolution failures are otherwise invisible: the
+    // resolver only ever returns std::nullopt, which the inbound handler
+    // surfaces as a flat "remote is unknown" 403.
+    auto log_resolver(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                      observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("remote_key_resolver", event, fields, severity);
+    }
+
+    [[nodiscard]] auto default_wall_clock_ms() -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    }
+
+    [[nodiscard]] auto build_remote_runtime(std::string_view server_name, FederationKeyRecord signing_key,
+                                            ServerDiscoveryResult discovery) -> FederationRemoteRuntime
+    {
+        auto runtime = FederationRemoteRuntime{};
+        runtime.server_name = std::string{server_name};
+        runtime.signing_key = std::move(signing_key);
+        runtime.discovery.server_name = std::string{server_name};
+        runtime.discovery.resolved_host = std::move(discovery.resolved_host);
+        runtime.discovery.well_known_host =
+            discovery.well_known_host.empty() ? runtime.discovery.resolved_host : std::move(discovery.well_known_host);
+        runtime.discovery.resolved_addresses = std::move(discovery.pinned_addresses);
+        runtime.discovery.tls_required = discovery.tls_required;
+        runtime.trust.reputation_score = 100U;
+        return runtime;
+    }
+
+    // The record for a key the response lists under old_verify_keys: marked
+    // retired, so it can verify an event sent before `expired_ts` and nothing
+    // else. A server cannot have stopped using a key in the future, so the
+    // expiry is capped at the moment of the fetch. Never written to the cache.
+    [[nodiscard]] auto fetched_old_key_record(RemoteKeyResponse const& response, std::string_view key_id,
+                                              std::uint64_t fetched_at_ms) -> std::optional<FederationKeyRecord>
+    {
+        auto const entry = std::ranges::find_if(response.old_verify_keys, [key_id](RemoteOldVerifyKey const& key) {
+            return key.key_id == key_id;
+        });
+        if (entry == response.old_verify_keys.end() || entry->expired_ts == 0U)
+        {
+            return std::nullopt;
+        }
+        auto record = FederationKeyRecord{};
+        record.server_name = response.server_name;
+        record.key_id = entry->key_id;
+        record.retired = true;
+        record.expired_ts = std::min(entry->expired_ts, fetched_at_ms);
+        record.valid_until_ts = record.expired_ts;
+        record.public_key_bytes = events::matrix_bytes_from_base64(entry->public_key_base64);
+        if (record.expired_ts == 0U || record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+        {
+            return std::nullopt;
+        }
+        return record;
+    }
+
+    // The record for `key_id` in a fetched, self-verified key response, trusted
+    // for exactly as long as cache_remote_server_keys would trust it.
+    [[nodiscard]] auto fetched_key_record(RemoteKeyResponse const& response, std::string_view key_id,
+                                          std::uint64_t fetched_at_ms) -> std::optional<FederationKeyRecord>
+    {
+        if (response.valid_until_ts == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const entry = std::ranges::find_if(response.verify_keys, [key_id](RemoteVerifyKey const& key) {
+            return key.key_id == key_id;
+        });
+        if (entry == response.verify_keys.end())
+        {
+            return fetched_old_key_record(response, key_id, fetched_at_ms);
+        }
+        auto record = FederationKeyRecord{};
+        record.server_name = response.server_name;
+        record.key_id = entry->key_id;
+        record.valid_until_ts = trusted_until(response.valid_until_ts, fetched_at_ms);
+        record.public_key_bytes = events::matrix_bytes_from_base64(entry->public_key_base64);
+        if (record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+        {
+            return std::nullopt;
+        }
+        return record;
+    }
+
+    // Shared body of the remote-key resolver. `discover` resolves a server
+    // name to a destination (raw `discover_server` or a TTL cache) and
+    // `fetch_keys` performs the outbound GET /_matrix/key/v2/server using the
+    // same discovery strategy. Both callables are copied into the returned
+    // resolver; they capture the underlying network/cache by pointer, which
+    // must outlive the resolver (the runtime owns both).
+    [[nodiscard]] auto make_resolver_impl(database::PersistentStore& store, http::OutboundClient& client,
+                                          std::uint32_t timeout_seconds, RemoteKeyClock clock,
+                                          RemoteKeyDiscoverFn discover, RemoteKeyFetchFn fetch_keys,
+                                          std::string own_server_name, KeyMirrorRefresh mirror_refresh)
+        -> RemoteKeyResolver
+    {
+        return [&store, &client, timeout_seconds, clock = std::move(clock), discover = std::move(discover),
+                fetch_keys = std::move(fetch_keys), own_server_name = std::move(own_server_name), mirror_refresh](
+                   std::string_view server_name, std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+            // FED-1 (ADR-0083): our own keys come from our own secret-holding
+            // rows only. A fetch for our own name would go through DNS and
+            // .well-known, and caching its answer would overwrite the public
+            // keys our own signatures are verified against.
+            if (!own_server_name.empty() && server_name == own_server_name)
+            {
+                auto own_key = find_own_server_signing_key(store, own_server_name, key_id);
+                if (!own_key.has_value())
+                {
+                    log_resolver("own_key_unknown", {
+                                                        {"server_name", std::string{server_name}, false},
+                                                        {"key_id",      std::string{key_id},      false},
+                    });
+                    return std::nullopt;
+                }
+                return build_remote_runtime(server_name, std::move(*own_key), ServerDiscoveryResult{});
+            }
+            auto const now = clock();
+            auto cached_key = find_cached_remote_key(store, server_name, key_id);
+            // A worker's mirror is a snapshot from its start: a key main verified
+            // and cached since is in the database but not here. Read that one
+            // server's public rows before paying a fetch (discovery, a fresh
+            // connection and a TLS handshake) for a key main already holds. The
+            // row carries main's seven-day cap, so it is trusted no longer than
+            // main trusts it. An absent or lapsed row still falls through to a
+            // verified fetch.
+            if (mirror_refresh == KeyMirrorRefresh::on_miss &&
+                (!cached_key.has_value() || !cached_remote_key_usable(*cached_key, now)))
+            {
+                if (database::refresh_remote_signing_keys(store, server_name))
+                {
+                    cached_key = find_cached_remote_key(store, server_name, key_id);
+                }
+                else
+                {
+                    log_resolver("mirror_refresh_failed", {
+                                                              {"server_name", std::string{server_name}, false},
+                    });
+                }
+            }
+            auto const discovery = discover(server_name, timeout_seconds);
+            if (!discovery.discovery_allowed)
+            {
+                log_resolver("discovery_failed", {
+                                                     {"server_name", std::string{server_name}, false},
+                                                     {"reason",      discovery.reason,         false},
+                });
+            }
+            if (cached_key.has_value() && cached_remote_key_usable(*cached_key, now) && discovery.discovery_allowed)
+            {
+                log_resolver("cache.hit", {
+                                              {"server_name", std::string{server_name},                   false},
+                                              {"key_id",      std::string{key_id},                        false},
+                                              {"valid_until", std::to_string(cached_key->valid_until_ts), false}
+                });
+                return build_remote_runtime(server_name, std::move(*cached_key), discovery);
+            }
+            auto const fetched = fetch_keys(client, server_name, timeout_seconds);
+            if (!fetched.ok)
+            {
+                log_resolver("key_fetch_failed", {
+                                                     {"server_name", std::string{server_name}, false},
+                                                     {"reason",      fetched.reason,           false},
+                });
+            }
+            if (fetched.ok)
+            {
+                log_resolver("key_fetch_accepted",
+                             {
+                                 {"server_name", std::string{server_name},                            false},
+                                 {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
+                                 {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
+                });
+                // ADR-0238: the key just fetched and self-verified is the answer;
+                // caching it is best-effort. A federation worker cannot write the
+                // cache (read-only SQLite, a SELECT-only PostgreSQL role), so a
+                // read-back after its failed write would find nothing.
+                if (!cache_remote_server_keys(store, fetched.response, now))
+                {
+                    log_resolver("key_cache_write_failed", {
+                                                               {"server_name", std::string{server_name}, false},
+                    });
+                }
+                auto fetched_key = fetched_key_record(fetched.response, key_id, now);
+                if (fetched_key.has_value() && discovery.discovery_allowed)
+                {
+                    return build_remote_runtime(server_name, std::move(*fetched_key), discovery);
+                }
+                if (!fetched_key.has_value())
+                {
+                    // The fetch and self-verification succeeded, but the key_id the
+                    // request was signed with is absent from the published set.
+                    log_resolver("request_key_id_not_published", {
+                                                                     {"server_name", std::string{server_name}, false},
+                                                                     {"key_id",      std::string{key_id},      false},
+                    });
+                }
+            }
+            // Fall back to the (possibly expired) cached entry — a stale key still
+            // lets the caller distinguish "we have history with this server" from
+            // "we have never heard of it". Discovery must still succeed: a remote
+            // we cannot reach SSRF-safely should not be admitted.
+            if (cached_key.has_value() && discovery.discovery_allowed)
+            {
+                log_resolver("cache.stale_fallback",
+                             {
+                                 {"server_name", std::string{server_name},                   false},
+                                 {"key_id",      std::string{key_id},                        false},
+                                 {"valid_until", std::to_string(cached_key->valid_until_ts), false}
+                });
+                return build_remote_runtime(server_name, std::move(*cached_key), discovery);
+            }
+            log_resolver("unresolved", {
+                                           {"server_name", std::string{server_name}, false},
+                                           {"key_id",      std::string{key_id},      false},
+            });
+            return std::nullopt;
+        };
+    }
+
+} // namespace
+
+auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                                         ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
+                                         RemoteKeyClock now_ms, std::string_view own_server_name,
+                                         KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
+{
+    // Fall back to the real wall clock when the caller passes an empty
+    // callback. Returning 0 from a missing clock made every cached key look
+    // fresh and prevented refresh-on-expiry from ever firing.
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    return make_resolver_impl(
+        store, client, timeout_seconds, std::move(clock),
+        [&network](std::string_view sn, std::uint32_t ts) {
+            return discover_server(sn, network, ts);
+        },
+        [&network](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
+            return fetch_remote_server_keys(c, network, sn, ts);
+        },
+        std::string{own_server_name}, mirror_refresh);
+}
+
+auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                                         CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
+                                         RemoteKeyClock now_ms, std::string_view own_server_name,
+                                         KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
+{
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    // Both the resolver's own discovery lookup and the fetch's internal lookup
+    // go through the cache, so a cache hit skips the .well-known + SRV + DNS
+    // cascade entirely and a miss pays it once for both.
+    return make_resolver_impl(
+        store, client, timeout_seconds, std::move(clock),
+        [&discovery](std::string_view sn, std::uint32_t ts) {
+            return discovery.discover(sn, ts);
+        },
+        [&discovery](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
+            return fetch_remote_server_keys(c, discovery, sn, ts);
+        },
+        std::string{own_server_name}, mirror_refresh);
+}
+
+auto make_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                              std::uint32_t timeout_seconds, RemoteKeyClock now_ms, RemoteKeyDiscoverFn discover,
+                              RemoteKeyFetchFn fetch_keys, std::string_view own_server_name,
+                              KeyMirrorRefresh mirror_refresh) -> RemoteKeyResolver
+{
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    return make_resolver_impl(store, client, timeout_seconds, std::move(clock), std::move(discover),
+                              std::move(fetch_keys), std::string{own_server_name}, mirror_refresh);
+}
+
+} // namespace merovingian::federation

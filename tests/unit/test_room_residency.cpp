@@ -8,7 +8,7 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/room_residency.hpp"
+#include "merovingian/homeserver/RoomResidency.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

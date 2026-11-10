@@ -4,7 +4,7 @@
 // tests/password_cost/ proves the production cost in a binary without this override.
 
 #include "../support/RealPasswordHashCost.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Password.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

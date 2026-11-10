@@ -4,11 +4,11 @@
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/homeserver/stored_push_rules.hpp"
-#include "merovingian/homeserver/stored_room_version.hpp"
-#include "merovingian/push/push_rules.hpp"
-#include "merovingian/trust_safety/ignore_list.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/homeserver/StoredPushRules.hpp"
+#include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/push/PushRules.hpp"
+#include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <algorithm>
 #include <unordered_map>

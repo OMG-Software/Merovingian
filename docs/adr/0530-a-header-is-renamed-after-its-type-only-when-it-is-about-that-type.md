@@ -1,6 +1,6 @@
 # A header is renamed after its type only when it is about that type
 
-* Status: accepted
+* Status: accepted, amended by [ADR-0596](0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md)
 * Deciders: James Chapman
 * Date: 2026-11-07
 

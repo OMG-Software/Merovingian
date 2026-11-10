@@ -5,7 +5,7 @@
 // F-32, ADR-0344). Every writer keeps it in step with the rows, hydration and reload_room rebuild
 // it, and a vector edited behind the store's back is answered by a scan, never wrongly.
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"

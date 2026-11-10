@@ -23,10 +23,10 @@
 // |      "pdus": [...], "edus": [...optional] }                             |
 // +-------------------------------------------------------------------------+
 
-#include "federation_signing_test_support.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
@@ -36,8 +36,8 @@
 #include "merovingian/crypto/SigningKeyRecord.hpp"
 #include "merovingian/crypto/SigningKeyStore.hpp"
 #include "merovingian/crypto/VerificationResult.hpp"
-#include "merovingian/events/event_id.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventId.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
@@ -47,7 +47,7 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

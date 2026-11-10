@@ -2,7 +2,7 @@
 
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/FederationTransaction.hpp"
-#include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/Transactions.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -5,9 +5,9 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
@@ -71,12 +71,12 @@
 #include "merovingian/database/RedactionState.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
-#include "merovingian/database/migration.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/database/Migration.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/bounded_text.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 
 #include <algorithm>
 #include <cerrno>

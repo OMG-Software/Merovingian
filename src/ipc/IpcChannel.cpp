@@ -4,9 +4,9 @@
 #include "merovingian/ipc/IpcChannel.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/crypto/IpcStreamCipher.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
 #include <arpa/inet.h>

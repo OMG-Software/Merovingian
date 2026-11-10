@@ -375,11 +375,11 @@ The following endpoints are **not part of the stable v1.18 spec**. They are serv
 - **Advertised via**: `unstable_features["org.matrix.msc4186"] = true` and
   `unstable_features["org.matrix.simplified_msc3575"] = true` in `/_matrix/client/versions`
 - **Implementation files**:
-  - `include/merovingian/sync/sliding_sync.hpp` — request/response types
-  - `include/merovingian/sync/sliding_sync_parser.hpp` + `src/sync/sliding_sync_parser.cpp` — request parser
-  - `include/merovingian/sync/sliding_sync_room_list.hpp` + `src/sync/sliding_sync_room_list.cpp` — room-list windowing and ops
-  - `include/merovingian/sync/sliding_sync_room_builder.hpp` + `src/sync/sliding_sync_room_builder.cpp` — per-room response builder
-  - `include/merovingian/sync/sliding_sync_extensions.hpp` + `src/sync/sliding_sync_extensions.cpp` — five extensions
+  - `include/merovingian/sync/SlidingSync.hpp` — request/response types
+  - `include/merovingian/sync/SlidingSyncParser.hpp` + `src/sync/SlidingSyncParser.cpp` — request parser
+  - `include/merovingian/sync/SlidingSyncRoomList.hpp` + `src/sync/SlidingSyncRoomList.cpp` — room-list windowing and ops
+  - `include/merovingian/sync/SlidingSyncRoomBuilder.hpp` + `src/sync/SlidingSyncRoomBuilder.cpp` — per-room response builder
+  - `include/merovingian/sync/SlidingSyncExtensions.hpp` + `src/sync/SlidingSyncExtensions.cpp` — five extensions
   - `src/homeserver/client_server.cpp` — HTTP handler (`sliding_sync_json`)
 
 | Method | Path | Auth | Request body | Responses |
@@ -437,7 +437,7 @@ The `receipts` and `typing` extensions (and the room-scoped part of `account_dat
 only for rooms the caller has joined; any other room named in an extension's `rooms` array is
 dropped silently. The classification is `sync::room_access_for()` (`include/merovingian/sync/room_access.hpp`).
 
-Bounds on one request (`include/merovingian/sync/sliding_sync.hpp`):
+Bounds on one request (`include/merovingian/sync/SlidingSync.hpp`):
 
 | Limit | Value | Behaviour |
 | --- | --- | --- |

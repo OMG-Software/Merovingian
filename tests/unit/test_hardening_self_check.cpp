@@ -2,7 +2,7 @@
 
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
-#include "merovingian/platform/elf_probe.hpp"
+#include "merovingian/platform/ElfProbe.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

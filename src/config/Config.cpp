@@ -3,7 +3,7 @@
 
 #include "merovingian/config/Config.hpp"
 
-#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/Identity.hpp"
 #include "merovingian/config/AppserviceConfig.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
@@ -20,12 +20,12 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/SizeLimitParseResult.hpp"
-#include "merovingian/config/config_parser.hpp"
-#include "merovingian/config/special_use_ip_ranges.hpp"
+#include "merovingian/config/ConfigParser.hpp"
+#include "merovingian/config/SpecialUseIpRanges.hpp"
 #include "merovingian/email/SmtpEndpoint.hpp"
-#include "merovingian/email/mailbox_address.hpp"
-#include "merovingian/http/keep_alive.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/email/MailboxAddress.hpp"
+#include "merovingian/http/KeepAlive.hpp"
+#include "merovingian/http/RateLimit.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -524,7 +524,7 @@ namespace
 
     // An IPv4 or IPv6 literal, optionally followed by `/` and a decimal prefix no
     // longer than the address. The federation boundary refuses every address
-    // when an entry fails this (federation/security.cpp range_denies), so an
+    // when an entry fails this (federation/Security.cpp range_denies), so an
     // entry that would do that is refused here instead (PR #509 review).
     [[nodiscard]] auto ip_range_is_well_formed(std::string_view range) noexcept -> bool
     {
@@ -1885,7 +1885,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // strictly positive. Empty targets are also rejected so an operator
     // typo (a stray blank line) does not silently insert a catch-all
     // entry that shadows the configured `default_per_ip`.
-    // The upper bound mirrors http::rate_limit_policy_is_valid() (rate_limit.hpp):
+    // The upper bound mirrors http::rate_limit_policy_is_valid() (RateLimit.hpp):
     // a policy Config.cpp accepts but the engine later rejects as invalid resolves
     // to nullopt at runtime, and an unresolvable policy must never be silently
     // treated as "no limit" (see RateLimitEngine::check() fail-closed behaviour).

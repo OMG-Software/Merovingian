@@ -7,7 +7,7 @@
 // covers the wiring through the audit-append layer.
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/observability/bounded_text.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

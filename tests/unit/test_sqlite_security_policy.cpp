@@ -17,7 +17,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/platform/LandlockHardeningOps.hpp"
-#include "merovingian/platform/landlock_hardening.hpp"
+#include "merovingian/platform/LandlockHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

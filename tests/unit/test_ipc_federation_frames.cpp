@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -372,7 +372,7 @@ SCENARIO("IPC JSON escaping covers control characters", "[ipc][federation][json]
 SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][federation][frame]")
 {
     // The "body" field is base64 (see base64_encode_body/base64_decode_body
-    // in federation_ipc_frames.cpp), so hand-crafted frames below carry the
+    // in FederationIpcFrames.cpp), so hand-crafted frames below carry the
     // base64 form of the intended body: "{}" -> "e30=", "error" -> "ZXJyb3I=",
     // "teapot" -> "dGVhcG90".
     GIVEN("a response JSON with status 0")

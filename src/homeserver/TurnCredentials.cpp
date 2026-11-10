@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/homeserver/TurnCredentials.hpp"
 
-#include "merovingian/crypto/encoding.hpp"
-#include "merovingian/crypto/hmac_sha1.hpp"
+#include "merovingian/crypto/Encoding.hpp"
+#include "merovingian/crypto/HmacSha1.hpp"
 
 #include <span>
 #include <string>

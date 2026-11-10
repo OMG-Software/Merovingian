@@ -1,6 +1,6 @@
 # Type filenames match the type name exactly
 
-* Status: accepted
+* Status: accepted, amended by [ADR-0596](0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md)
 * Date: 2026-11-05
 
 ## Context and Problem Statement

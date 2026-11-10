@@ -4,10 +4,10 @@
 // GET /sync rooms.leave: the rooms a user has left or been banned from, each with the timeline
 // "up to the point when the user left". Complement TestArchivedRoomsHistory,
 // TestOlderLeftRoomsNotInLeaveSection and TestUnbanViaInvite read these.
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

@@ -8,12 +8,12 @@
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/worker_relay_binding.hpp"
-#include "merovingian/federation_worker/worker_relay_frame.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/WorkerRelayBinding.hpp"
+#include "merovingian/federation_worker/WorkerRelayFrame.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

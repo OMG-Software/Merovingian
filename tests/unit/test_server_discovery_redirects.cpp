@@ -9,7 +9,7 @@
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownHopResponse.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

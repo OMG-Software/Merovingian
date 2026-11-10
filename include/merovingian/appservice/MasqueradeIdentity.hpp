@@ -11,7 +11,7 @@ namespace merovingian::appservice
 // authenticates client-server requests with its `as_token` and optionally
 // asserts a virtual `user_id` (and `device_id`) to act as, via the
 // `user_id`/`device_id` query-string parameters. The rest of the
-// client-server dispatcher (auth_service.cpp's authenticated_user/
+// client-server dispatcher (AuthService.cpp's authenticated_user/
 // authenticated_session/authenticated_admin_user, and every deeper handler
 // that re-derives identity from a bare `access_token` string) has no access
 // to the request's query string, only to `access_token` — so the resolved

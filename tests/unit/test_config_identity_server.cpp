@@ -10,7 +10,7 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

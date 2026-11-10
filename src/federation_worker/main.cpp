@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "WorkerEventLoop.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
-#include "merovingian/homeserver/library_versions.hpp"
+#include "merovingian/homeserver/LibraryVersions.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/platform/landlock_hardening.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
-#include "merovingian/platform/signal_hardening.hpp"
+#include "merovingian/platform/LandlockHardening.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
+#include "merovingian/platform/SignalHardening.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>

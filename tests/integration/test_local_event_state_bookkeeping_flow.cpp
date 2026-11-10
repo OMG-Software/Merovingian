@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // ADR-0064 phase B1 (continued): proves locally created events participate
 // in the same state-group / forward-extremity bookkeeping as inbound PDUs.
@@ -14,11 +14,11 @@
 // less than or equal to 20 events"; server-server-api.md, "Checks
 // performed on receipt of a PDU".
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
@@ -30,15 +30,15 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

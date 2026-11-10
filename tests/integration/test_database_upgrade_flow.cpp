@@ -9,13 +9,13 @@
 // compatibility is promised from 1.0.0; when a v2 migration exists, the
 // "any older schema version" scenario starts to cover it, and when 1.1 starts
 // a fixture written by the last 1.0.x release joins them.
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "ScratchPostgresqlDatabase.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/SchemaState.hpp"
-#include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/database/schema.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/database/Schema.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>

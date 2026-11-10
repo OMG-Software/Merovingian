@@ -8,11 +8,11 @@
 #include "merovingian/config/ListenerConfig.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/database/RuntimeDatabaseConfig.hpp"
 #include "merovingian/email/SmtpEndpoint.hpp"
-#include "merovingian/email/smtp_client.hpp"
+#include "merovingian/email/SmtpClient.hpp"
 #include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -27,20 +27,20 @@
 #include "merovingian/homeserver/PeriodicJob.hpp"
 #include "merovingian/homeserver/PushRetryJob.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
-#include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_txn_prune.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/library_versions.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/retention_sweep.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/stream_token_epoch.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/ClientTxnPrune.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/LibraryVersions.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RetentionSweep.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/StreamTokenEpoch.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/RuntimeMediaConfig.hpp"
 #include "merovingian/media/ThumbnailerConfig.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
 #include "merovingian/net/ListenerRole.hpp"
 #include "merovingian/net/RuntimeListeners.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
@@ -50,10 +50,10 @@
 #include "merovingian/platform/FileKind.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
-#include "merovingian/platform/file_metadata.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
-#include "merovingian/platform/signal_hardening.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
+#include "merovingian/platform/SignalHardening.hpp"
 
 #include <poll.h>
 #include <sys/stat.h>
@@ -81,7 +81,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.88"};
+constexpr auto version = std::string_view{"0.12.89"};
 
 struct BootstrapConfigResult final
 {
@@ -843,7 +843,7 @@ struct ListenerBinding final
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
     // #420: the audit sink's active-database pointer is thread_local (see
-    // homeserver/local_services.cpp), installed by default only on the
+    // homeserver/LocalServices.cpp), installed by default only on the
     // thread that constructs HomeserverRuntime (main). HTTP handlers run on
     // these pool worker threads, where it would otherwise stay nullptr
     // forever and the audit sink would silently no-op, dropping e.g. every

@@ -5,7 +5,7 @@
 // JSON parser it defers to. A registration is operator-authored, but bridges ship their own files.
 
 #include "fuzz_input.hpp"
-#include "merovingian/appservice/registration.hpp"
+#include "merovingian/appservice/Registration.hpp"
 
 #include <cstddef>
 #include <cstdint>

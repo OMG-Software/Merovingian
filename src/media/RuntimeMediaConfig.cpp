@@ -3,7 +3,7 @@
 
 #include "merovingian/media/RuntimeMediaConfig.hpp"
 
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/Security.hpp"
 
 #include <string>
 #include <vector>

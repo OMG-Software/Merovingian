@@ -3,7 +3,7 @@
 #pragma once
 
 #include "merovingian/core/SecretBuffer.hpp"
-#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
 
 #include <algorithm>
 #include <cstddef>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/sync/sliding_sync.hpp"
-#include "merovingian/sync/sliding_sync_parser.hpp"
+#include "merovingian/sync/SlidingSync.hpp"
+#include "merovingian/sync/SlidingSyncParser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

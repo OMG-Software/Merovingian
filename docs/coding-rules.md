@@ -56,14 +56,18 @@ requirements are met.
 - The filename stem must exactly match the class, struct, or enum name,
   including case. For example, `RoomState` belongs in `RoomState.hpp` and, when
   needed, `RoomState.cpp`; `enum class OutboundError` belongs in
-  `OutboundError.hpp`. Do not convert the name to `snake_case`. A header that
-  defines no type, only free functions and constants, keeps a `snake_case`
-  name. See
-  [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md).
+  `OutboundError.hpp`. Do not convert the name to `snake_case`. A header or
+  source that defines no type, only free functions and constants, is named in
+  PascalCase after its concept (`PolicyEngine.hpp`, `SqliteStore.cpp`); when
+  that name is already a type's file in the directory, add `Support`
+  (`FileMetadataSupport.hpp`). Executable entry points, `test_*.cpp` and
+  `fuzz_*.cpp` keep their lower-case names. See
+  [ADR-0467](adr/0467-type-filenames-match-the-type-name-exactly.md) and
+  [ADR-0596](adr/0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md).
 - Put module headers in `include/merovingian/<module>/<name>.hpp` and their
   implementations in `src/<module>/<name>.cpp`. Keep the paths aligned when
   both files exist. Header-only types, executable entry points, and documented
-  source-only files such as `src/database/sqlite_store.cpp` do not need an
+  source-only files such as `src/database/SqliteStore.cpp` do not need an
   artificial counterpart. See the implementation guidance for layout exceptions.
 - Use the `m_` prefix for member variables. Mark non-mutating member functions `const`.
 - Add a brief function comment that explains its purpose. Document ownership,

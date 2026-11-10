@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/JoiningThreads.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/BoundValue.hpp"
 #include "merovingian/database/DatabaseExecutor.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
@@ -28,11 +28,11 @@
 #include "merovingian/database/QueryResult.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/connection.hpp"
-#include "merovingian/database/migration.hpp"
-#include "merovingian/database/migration_files.hpp"
-#include "merovingian/database/postgresql_store.hpp"
-#include "merovingian/database/schema.hpp"
+#include "merovingian/database/Connection.hpp"
+#include "merovingian/database/Migration.hpp"
+#include "merovingian/database/MigrationFiles.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/database/Schema.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>
@@ -2196,7 +2196,7 @@ SCENARIO("PostgreSQL connection policy rejects unsafe or ambiguous libpq inputs"
     }
 }
 
-// Regression test for #442: unlike sqlite_store.cpp's
+// Regression test for #442: unlike SqliteStore.cpp's
 // create_table_if_missing_sql (covered by "create_table_sql generates DDL
 // for core tables..." in test_database_schema.cpp), the PostgreSQL path
 // previously concatenated table.name and columns_sql directly into DDL with
