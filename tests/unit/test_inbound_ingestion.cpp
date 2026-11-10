@@ -2,10 +2,10 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/federation/EduType.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

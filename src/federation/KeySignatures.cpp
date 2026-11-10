@@ -1,0 +1,266 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/KeySignatures.hpp"
+
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/federation/DeviceDisplayNames.hpp"
+
+#include <algorithm>
+#include <array>
+#include <variant>
+#include <vector>
+
+namespace merovingian::federation
+{
+namespace
+{
+
+    [[nodiscard]] auto member_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key && member.value != nullptr)
+            {
+                return std::get_if<canonicaljson::Object>(&member.value->storage());
+            }
+        }
+        return nullptr;
+    }
+
+    // Replaces `key`'s value in `object`, or appends it when absent.
+    auto set_member(canonicaljson::Object& object, std::string_view key, canonicaljson::Value value) -> void
+    {
+        for (auto& member : object)
+        {
+            if (member.key == key)
+            {
+                member = canonicaljson::make_member(std::string{key}, std::move(value));
+                return;
+            }
+        }
+        object.push_back(canonicaljson::make_member(std::string{key}, std::move(value)));
+    }
+
+    [[nodiscard]] auto parsed_object(std::string_view json) -> std::optional<canonicaljson::Object>
+    {
+        auto parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        return std::move(*object);
+    }
+
+    // Puts the device's display name as it is now into `unsigned.device_display_name`.
+    // The name stored with the uploaded keys is the name at upload time, and a rename
+    // (`PUT /devices/{deviceId}`) does not rewrite it, so publishing the stored value
+    // told other servers the old name. `unsigned` is not part of what the device
+    // signs. A device the store holds no row for keeps whatever was stored.
+    auto apply_current_display_name(canonicaljson::Object& key_object, DeviceDisplayNames const& names,
+                                    database::PersistentDeviceKey const& device_key) -> void
+    {
+        auto const display_name = names.find(device_key.user_id, device_key.device_id);
+        if (!display_name.has_value())
+        {
+            return;
+        }
+        auto unsigned_data = canonicaljson::Object{};
+        if (auto const* stored = member_object(key_object, "unsigned"); stored != nullptr)
+        {
+            unsigned_data = *stored;
+        }
+        std::erase_if(unsigned_data, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "device_display_name";
+        });
+        if (!display_name->empty())
+        {
+            unsigned_data.push_back(
+                canonicaljson::make_member("device_display_name", canonicaljson::Value{std::string{*display_name}}));
+        }
+        if (unsigned_data.empty())
+        {
+            std::erase_if(key_object, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "unsigned";
+            });
+            return;
+        }
+        set_member(key_object, "unsigned", canonicaljson::Value{std::move(unsigned_data)});
+    }
+
+    // The visibility rule (ADR-0060): the owner's own uploads are public;
+    // anyone else's upload is shown only to the user who made it.
+    [[nodiscard]] auto upload_is_visible(database::PersistentKeySignature const& upload,
+                                         std::string_view target_user_id,
+                                         std::optional<std::string_view> viewer_user_id) noexcept -> bool
+    {
+        return upload.signer_user_id == target_user_id ||
+               (viewer_user_id.has_value() && upload.signer_user_id == *viewer_user_id);
+    }
+
+} // namespace
+
+auto cross_signing_key_id(canonicaljson::Object const& key_object) -> std::optional<std::string>
+{
+    auto const* keys = member_object(key_object, "keys");
+    if (keys == nullptr || keys->size() != 1U)
+    {
+        return std::nullopt;
+    }
+    auto const& name = keys->front().key;
+    auto const colon = name.find(':');
+    if (colon == std::string::npos || colon == 0U || colon + 1U == name.size())
+    {
+        return std::nullopt;
+    }
+    return name.substr(colon + 1U);
+}
+
+auto cross_signing_key_ids(canonicaljson::Object const& key_object) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    auto const* keys = member_object(key_object, "keys");
+    if (keys == nullptr)
+    {
+        return ids;
+    }
+    for (auto const& member : *keys)
+    {
+        auto const colon = member.key.find(':');
+        if (colon == std::string::npos || colon == 0U || colon + 1U == member.key.size())
+        {
+            continue;
+        }
+        ids.push_back(member.key.substr(colon + 1U));
+    }
+    return ids;
+}
+
+auto device_id_names_cross_signing_key(database::PersistentStore const& store, std::string_view user_id,
+                                       std::string_view device_id) -> bool
+{
+    for (auto const& key : store.cross_signing_keys)
+    {
+        if (key.user_id != user_id)
+        {
+            continue;
+        }
+        auto const object = parsed_object(key.json);
+        if (!object.has_value())
+        {
+            continue;
+        }
+        auto const ids = cross_signing_key_ids(*object);
+        if (std::ranges::find(ids, device_id) != ids.end())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::PersistentStore const& store,
+                                  std::string_view target_user_id, std::string_view target_key_id,
+                                  std::optional<std::string_view> viewer_user_id) -> void
+{
+    auto signatures = canonicaljson::Object{};
+    if (auto const* existing = member_object(key_object, "signatures"); existing != nullptr)
+    {
+        signatures = *existing;
+    }
+    auto merged_any = false;
+    for (auto const& upload_ref : database::key_signatures_for_target(store, target_user_id))
+    {
+        auto const& upload = upload_ref.get();
+        if (upload.target_device_id != target_key_id || !upload_is_visible(upload, target_user_id, viewer_user_id))
+        {
+            continue;
+        }
+        auto const uploaded = parsed_object(upload.json);
+        if (!uploaded.has_value())
+        {
+            continue;
+        }
+        // Only the uploader's own signer entry: an upload that also carries
+        // an entry under someone else's user ID is not their signature.
+        auto const* uploaded_signatures = member_object(*uploaded, "signatures");
+        auto const* by_uploader =
+            uploaded_signatures == nullptr ? nullptr : member_object(*uploaded_signatures, upload.signer_user_id);
+        if (by_uploader == nullptr)
+        {
+            continue;
+        }
+        auto signer_signatures = canonicaljson::Object{};
+        if (auto const* existing_signer = member_object(signatures, upload.signer_user_id); existing_signer != nullptr)
+        {
+            signer_signatures = *existing_signer;
+        }
+        for (auto const& signature : *by_uploader)
+        {
+            if (signature.value != nullptr && std::holds_alternative<std::string>(signature.value->storage()))
+            {
+                set_member(signer_signatures, signature.key, *signature.value);
+            }
+        }
+        set_member(signatures, upload.signer_user_id, canonicaljson::Value{std::move(signer_signatures)});
+        merged_any = true;
+    }
+    if (merged_any)
+    {
+        set_member(key_object, "signatures", canonicaljson::Value{std::move(signatures)});
+    }
+}
+
+auto published_device_keys(database::PersistentStore const& store, database::PersistentDeviceKey const& device_key,
+                           std::optional<std::string_view> viewer_user_id) -> std::optional<canonicaljson::Object>
+{
+    auto const users = std::array<std::string_view, 1U>{device_key.user_id};
+    return published_device_keys(store, device_key, viewer_user_id, DeviceDisplayNames{store, users});
+}
+
+auto published_device_keys(database::PersistentStore const& store, database::PersistentDeviceKey const& device_key,
+                           std::optional<std::string_view> viewer_user_id, DeviceDisplayNames const& names)
+    -> std::optional<canonicaljson::Object>
+{
+    auto object = parsed_object(device_key.json);
+    if (!object.has_value())
+    {
+        return std::nullopt;
+    }
+    merge_visible_key_signatures(*object, store, device_key.user_id, device_key.device_id, viewer_user_id);
+    apply_current_display_name(*object, names, device_key);
+    return object;
+}
+
+auto published_cross_signing_key(database::PersistentStore const& store, std::string_view user_id,
+                                 std::string_view key_type, std::optional<std::string_view> viewer_user_id)
+    -> std::optional<canonicaljson::Object>
+{
+    for (auto const& key : store.cross_signing_keys)
+    {
+        if (key.user_id != user_id || key.key_type != key_type)
+        {
+            continue;
+        }
+        auto object = parsed_object(key.json);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        if (auto const key_id = cross_signing_key_id(*object); key_id.has_value())
+        {
+            merge_visible_key_signatures(*object, store, user_id, *key_id, viewer_user_id);
+        }
+        return object;
+    }
+    return std::nullopt;
+}
+
+} // namespace merovingian::federation

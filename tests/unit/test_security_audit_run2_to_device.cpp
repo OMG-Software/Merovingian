@@ -16,7 +16,7 @@
 // devices" for `*`. The spec states no size or delivery limit; the limits are ADR-0335 and
 // ADR-0336 decisions.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"

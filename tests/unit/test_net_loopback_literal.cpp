@@ -4,7 +4,7 @@
 // is_loopback_ip_literal: the one definition of "loopback" shared by the SMTP relay check (ADR-0220) and
 // the appservice cleartext rule (ADR-0515). Only an IP literal counts; a name such as `localhost` never does.
 
-#include "merovingian/net/loopback_literal.hpp"
+#include "merovingian/net/LoopbackLiteral.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -12,10 +12,10 @@
 #include "merovingian/federation/KeyResolutionBucket.hpp"
 #include "merovingian/federation/KeyResolutionFailure.hpp"
 #include "merovingian/federation/RuntimeFederationConfig.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request_providers.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/third_party_invite.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequestProviders.hpp"
+#include "merovingian/federation/MembershipEndpoints.hpp"
+#include "merovingian/federation/ThirdPartyInvite.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 
 #include <cstddef>
@@ -38,7 +38,7 @@ struct FederationRuntimeState final
     core::CopyableMutex mutex{};
     std::vector<FederationRemoteRuntime> remotes{};
     // Replay-dedup ring (see #416): capped at kMaxAcceptedTransactions
-    // (inbound_request.cpp) so a sustained stream of distinct transaction ids
+    // (InboundRequest.cpp) so a sustained stream of distinct transaction ids
     // cannot grow the main process's memory without bound. Entries are always
     // appended in acceptance order under federation_guard(), so the oldest
     // entry is always at the front — a plain FIFO pop_front() eviction (O(1)
@@ -49,7 +49,7 @@ struct FederationRuntimeState final
     std::size_t accepted_transaction_bytes{0U};
     std::vector<FederationRateLimitBucket> rate_limit_buckets{};
     // Bounded audit ring (#423): capped at kMaxAuditEvents
-    // (inbound_request.cpp) with FIFO eviction, mirroring
+    // (InboundRequest.cpp) with FIFO eviction, mirroring
     // accepted_transactions above. unsafe_audit_events counts retained
     // entries whose reason_code carries signature/token material so
     // federation_audit_is_safe stays O(1).
@@ -66,13 +66,13 @@ struct FederationRuntimeState final
     // the number of real federating peers -- these are reachable before any
     // identity is established, so both containers are explicitly capped with
     // FIFO eviction (kMaxKeyResolutionBuckets / kMaxKeyResolutionFailures in
-    // inbound_request.cpp). An unbounded pre-auth map is the very DoS this
+    // InboundRequest.cpp). An unbounded pre-auth map is the very DoS this
     // budget exists to prevent.
     std::list<KeyResolutionBucket> key_resolution_buckets{};
     std::list<KeyResolutionFailure> key_resolution_failures{};
     // Failed-signature budget per source address. Pre-authentication like the
     // containers above, so capped with FIFO eviction (kMaxBadSignatureBuckets
-    // in inbound_request.cpp).
+    // in InboundRequest.cpp).
     std::list<BadSignatureBucket> bad_signature_buckets{};
     // Resolutions currently in flight process-wide. Guarded by `mutex`; the
     // resolver call itself runs unlocked, so this is incremented before the

@@ -26,7 +26,7 @@
 #include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomPreset.hpp"
-#include "merovingian/rooms/encryption_policy.hpp"
+#include "merovingian/rooms/EncryptionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

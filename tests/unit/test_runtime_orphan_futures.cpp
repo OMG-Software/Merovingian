@@ -3,7 +3,7 @@
 //
 // Coverage: the reap-before-park / fixed-cap policy that bounds
 // HomeserverRuntime::orphan_futures_ background task pool (used by both
-// join_room's make_join race losers and room_service.cpp's
+// join_room's make_join race losers and RoomService.cpp's
 // dispatch_push_deliveries). Exercises reap_completed_futures and
 // at_background_task_capacity directly, deterministically — via
 // std::promise instead of real background threads — so the policy is

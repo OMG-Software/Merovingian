@@ -6,10 +6,10 @@
 // file identity and material came from two opens) and the TLS private key
 // (checked at startup, then loaded by OpenSSL from the path).
 
-#include "../support/temp_directory.hpp"
-#include "../support/tls_mock_server.hpp"
-#include "merovingian/crypto/master_key.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "../support/TempDirectory.hpp"
+#include "../support/TlsMockServer.hpp"
+#include "merovingian/crypto/MasterKey.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

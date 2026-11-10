@@ -9,9 +9,9 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/events/unsigned_data.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/events/UnsignedData.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

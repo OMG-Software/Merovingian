@@ -4,14 +4,14 @@
 // Run 10 (Complement): the validation an inbound PUT /_matrix/federation/v2/invite applies to
 // `invite_room_state`. Since spec v1.16 the list holds full signed PDUs, not stripped events.
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationResponse.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/InviteAcceptResult.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

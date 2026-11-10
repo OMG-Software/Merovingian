@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY AUDIT M-01 — FEDERATION MEMBERSHIP AUTHORIZATION BYPASS        |
 // |                                                                         |
 // |  runtime.federation.membership_acceptor (wired in                       |
-// |  wire_federation_callbacks_impl, src/homeserver/local_http_router.cpp)  |
+// |  wire_federation_callbacks_impl, src/homeserver/LocalHttpRouter.cpp)  |
 // |  handles inbound send_join / send_leave / send_knock. It checks only    |
 // |  that the target room exists, then persists the event and membership   |
 // |  unconditionally. It never runs Matrix event authorization rules, so a  |
@@ -28,12 +28,12 @@
 // |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
-#include "../support/membership_fixture_support.hpp"
-#include "../support/registration_token.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/MembershipFixtureSupport.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -44,18 +44,18 @@
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -285,7 +285,7 @@ SCENARIO("send_join is rejected for an uninvited remote user in an invite-only r
         auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
         // Default CreateRoomOptions preset is "private_chat" -> m.room.join_rules
-        // content.join_rule == "invite" (src/homeserver/room_service.cpp).
+        // content.join_rule == "invite" (src/homeserver/RoomService.cpp).
         auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room_result.ok);
         auto const room_id = room_result.value;
@@ -405,7 +405,7 @@ SCENARIO("send_join is accepted for an uninvited remote user in a public room", 
         REQUIRE(login.ok);
 
         // preset "public_chat" -> m.room.join_rules content.join_rule == "public"
-        // (src/homeserver/room_service.cpp).
+        // (src/homeserver/RoomService.cpp).
         auto options = merovingian::homeserver::CreateRoomOptions{};
         options.preset = "public_chat";
         auto const room_result = merovingian::homeserver::create_room(runtime, login.value, options);

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/tls_mock_server.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "../support/TlsMockServer.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/http/SlowlorisPolicy.hpp"
-#include "merovingian/http/connection_guard.hpp"
+#include "merovingian/http/ConnectionGuard.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <openssl/ssl.h>
@@ -82,7 +82,7 @@ SCENARIO("TLS server context excludes non-forward-secret cipher suites", "[http]
     // plain-RSA key exchange (no forward secrecy) and CBC/HMAC suites. This
     // only governs SSL_CTX_set_cipher_list, which configures TLS 1.2-and-below
     // suites; TLS 1.3 ciphersuites are selected separately (OpenSSL's
-    // compiled-in defaults, never touched by tls.cpp) and must stay available.
+    // compiled-in defaults, never touched by Tls.cpp) and must stay available.
     GIVEN("a TLS server context built with the hardened cipher list")
     {
         auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate();

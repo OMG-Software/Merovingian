@@ -10,13 +10,13 @@
 // state subgraph"), "State resolution" modifications 1-3.
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateGroup.hpp"
 #include "merovingian/events/StateKey.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/events/StateResolutionResult.hpp"
-#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/StateResolution.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
@@ -662,7 +662,7 @@ namespace
 
 // EventJsonIndex is a view (reference_wrapper) into the event_json members
 // of a StateGroup's state vector, so the backing group must outlive the
-// index (see state_resolution.hpp's own comment on EventJsonIndex).
+// index (see StateResolution.hpp's own comment on EventJsonIndex).
 // Bundling the groups vector and the index together, rather than returning
 // the index alone, keeps that storage alive for as long as the caller keeps
 // this struct -- returning just the index from a function-local StateGroup

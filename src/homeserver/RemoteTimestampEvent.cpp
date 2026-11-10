@@ -3,18 +3,18 @@
 
 #include "merovingian/homeserver/RemoteTimestampEvent.hpp"
 
-#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
-#include "merovingian/core/query_params.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/core/QueryParams.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>

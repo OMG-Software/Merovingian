@@ -14,12 +14,12 @@
 // Tags: [store_read_guard][f27].
 
 #include "../support/JoiningThreads.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
-#include "merovingian/federation/server_acl.hpp"
+#include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
 
 #include <catch2/catch_test_macros.hpp>

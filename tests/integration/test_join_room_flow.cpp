@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         LIVE FEDERATED join_room INTEGRATION TEST                       |
@@ -11,12 +11,12 @@
 // |  send_join round trip against a local TLS server, exercising send_join |
 // |  signature verification and persistence of the whole returned state   |
 // |  (ADR-0241) end to end. This closes the                                |
-// |  codecov/patch coverage gap left by PR #341 (room_service.cpp's        |
+// |  codecov/patch coverage gap left by PR #341 (RoomService.cpp's        |
 // |  post-send_join-success path had no integration coverage).             |
 // |                                                                         |
 // |  join_room always resolves its destination through                     |
 // |  federation::discover_server(), which unconditionally rejects loopback |
-// |  and private-range addresses (src/federation/security.cpp              |
+// |  and private-range addresses (src/federation/Security.cpp              |
 // |  ip_address_is_private_or_loopback) with no override, and production   |
 // |  outbound calls never populate an in-memory CA bundle. This test uses  |
 // |  HomeserverRuntime::test_forced_outbound_resolution (see HomeserverRuntime.hpp)  |
@@ -25,18 +25,18 @@
 // |  production construction path.                                        |
 // +-------------------------------------------------------------------------+
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/JoiningThreads.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -44,18 +44,18 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/SocketHandle.hpp"
-#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentProfile.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_id.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventId.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
@@ -65,10 +65,10 @@
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"

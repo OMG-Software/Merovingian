@@ -10,7 +10,7 @@
 
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/trust_safety/ignore_list.hpp"
+#include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

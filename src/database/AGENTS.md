@@ -7,20 +7,23 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | File | Responsibility |
 |---|---|
 | `PersistentStore.cpp` | Abstract store interface — all other modules use this, never the backend directly |
-| `sqlite_store.cpp` | SQLite backend — used for development and single-node deployments |
-| `postgresql_store.cpp` | PostgreSQL backend — used for production |
-| `migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
-| `migration_files.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
-| `connection.cpp` | Connection lifecycle and pool management |
+| `SqliteStore.cpp` | SQLite backend — used for development and single-node deployments |
+| `PostgresqlStore.cpp` | PostgreSQL backend — used for production |
+| `Migration.cpp` | Runs numbered SQL migrations in order; idempotent on re-run |
+| `MigrationFiles.cpp` | Parses `migrations/*.sql` for `merovingian-db-migrate --migrations` and the tests; the server runs the C++ catalog |
+| `Connection.cpp` | Connection lifecycle and pool management |
 | `PreparedStatement.cpp` | Prepared statement wrapper; parameters are always bound, never interpolated |
-| `schema.cpp` | The frozen v1 schema: `core_tables` and `core_indexes`, the `SchemaTableDefinition`/`SchemaIndexDefinition` lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0224: a schema change is a new numbered migration, never an edit to v1) |
+| `Schema.cpp` | The frozen v1 schema: `core_tables` and `core_indexes`, the `SchemaTableDefinition`/`SchemaIndexDefinition` lists built from them, the `CREATE TABLE`/`CREATE INDEX` SQL, and `current_schema_version()` (ADR-0224: a schema change is a new numbered migration, never an edit to v1) |
 | `EventTable.cpp` | `EventTable`, the in-memory mirror of the `events` table with its indexes by event ID, stream order, room and stream order, room and time, and relation target (ADR-0215, ADR-0300, ADR-0430, ADR-0435) |
-| `redaction_view.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
+| `RedactionView.cpp` | Client-facing redaction presentation: adds `redacts` to `m.room.redaction` events and `redacted_because` under `unsigned` of redacted events (CSAZ-11) |
 | `PersistentServerSigningKey.cpp` | A stored server signing-key row; wipes the secret on destruction and on overwrite |
+| `PostgresqlConnection.cpp` | `PostgresqlConnection`: runs one prepared statement (binary `bytea` parameters) or a `BEGIN`/`COMMIT` transaction on its libpq connection, and judges whether an idle connection may be reused |
+| `PostgresqlExecution.cpp` | Module-internal (`detail`, `PostgresqlExecution.hpp`): the libpq result helpers `PostgresqlStore.cpp` and `PostgresqlConnection.cpp` share: redacted connection errors, result status, `load_result_rows` (decodes `bytea` columns), `execute_raw_command` |
+| `PostgresqlResultDeleter.cpp` | The `PQclear` deleter for `PostgresqlResultPtr` |
 | `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
-| `library_versions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
+| `LibraryVersions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
-| `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `state_group_table_support.hpp` |
+| `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
 ## Security rules — non-negotiable
@@ -132,7 +135,7 @@ All higher-level modules receive a `PersistentStore&` — they must not downcast
 ## Migration rules
 
 See `migrations/AGENTS.md` for the migration file format.
-Migrations run automatically at startup via `migration.hpp`; the runner is idempotent. The whole schema is one
+Migrations run automatically at startup via `Migration.hpp`; the runner is idempotent. The whole schema is one
 v1 step (ADR-0224), frozen from 1.0.0. Both stores refuse a ledger that names a migration this build does not have
 (`schema_ledger_is_known`) before migrating or hydrating anything, and the PostgreSQL bootstrap, like every migration,
 runs as `database.migration_role` when one is configured.

@@ -24,14 +24,14 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateGroup.hpp"
 #include "merovingian/events/StateKey.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/events/StateResolutionResult.hpp"
-#include "merovingian/events/event_id.hpp"
-#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/EventId.hpp"
+#include "merovingian/events/StateResolution.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
@@ -1246,7 +1246,7 @@ SCENARIO("Reverse topological power ordering reads string power levels only wher
                                                {"$pl_prev:example.org"}, power_levels_content);
         auto const conflicted = std::vector<StateEventReference>{low, high};
         // EventJsonIndex is a view into the state group's event_json members
-        // (see state_resolution.hpp), so the backing vector must be a named
+        // (see StateResolution.hpp), so the backing vector must be a named
         // local that outlives every use of known_index below. It also must
         // be the actual std::vector<StateGroup> passed BY REFERENCE to
         // build_event_json_index, not a braced `{known_group}` argument --
@@ -1562,7 +1562,7 @@ SCENARIO("State resolution v2: a join cannot evade a concurrently tightened join
 // rejected) m.room.create event, with the sigil `!` instead of `$`, reject."
 // The room ID IS the create event's own reference hash under the `!` sigil
 // instead of `$`. State resolution v2.1's iterative auth checks need the
-// create event's content to authorise anything (authorization.cpp Step 2:
+// create event's content to authorise anything (Authorization.cpp Step 2:
 // "room has no create event" denies every candidate otherwise) — since a
 // v12 event's own `auth_events` never names create (rule 3.2), resolve_state_v2
 // must derive it from room_id per rule 2, not rely on a submitted state

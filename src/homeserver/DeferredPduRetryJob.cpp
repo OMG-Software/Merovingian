@@ -4,7 +4,7 @@
 #include "merovingian/homeserver/DeferredPduRetryJob.hpp"
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/deferred_pdu_retry.hpp"
+#include "merovingian/homeserver/DeferredPduRetry.hpp"
 
 #include <chrono>
 #include <mutex>

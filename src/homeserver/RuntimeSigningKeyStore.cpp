@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 
-#include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/crypto/SigningService.hpp"
+#include "merovingian/events/EventSigner.hpp"
 
 #include <algorithm>
 #include <string>

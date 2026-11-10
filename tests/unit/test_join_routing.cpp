@@ -14,7 +14,7 @@
 // |  pin that behaviour across all three stable room versions.              |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -29,7 +29,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/auth/KeyApiEndpoint.hpp"
-#include "merovingian/auth/key_api.hpp"
+#include "merovingian/auth/KeyApi.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 
 #include <catch2/catch_test_macros.hpp>

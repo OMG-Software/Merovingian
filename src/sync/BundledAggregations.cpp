@@ -4,8 +4,8 @@
 #include "merovingian/sync/BundledAggregations.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/trust_safety/ignore_list.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <algorithm>
 #include <cstdint>

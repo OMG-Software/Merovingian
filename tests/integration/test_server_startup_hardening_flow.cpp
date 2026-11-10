@@ -26,9 +26,9 @@
 // spawned the way a service manager spawns it, answers real client traffic
 // and stops cleanly on the shutdown signal.
 
-#include "../support/master_key.hpp"
-#include "../support/temp_directory.hpp"
-#include "bounded_connect.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/TempDirectory.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 
 #include <arpa/inet.h>

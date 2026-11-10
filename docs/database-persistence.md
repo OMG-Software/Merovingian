@@ -9,7 +9,7 @@ PostgreSQL startup fails when its URI file is missing, unreadable, or empty; it
 never substitutes a process-local store. `DatabaseBackend::memory` is an
 explicit programmatic backend for tests only and is not a valid config-file
 value. Test fixtures that do not exercise persistence select it through
-`tests/support/in_memory_database_config.hpp`.
+`tests/support/InMemoryDatabaseConfig.hpp`.
 
 ## Included now
 
@@ -42,7 +42,7 @@ value. Test fixtures that do not exercise persistence select it through
   `stream_ordering` is deliberately unindexed) Nothing is seeded or backfilled: the old
   state-transition backfill and state-group seeding only ever mattered for
   upgrading existing databases and no longer exist. The compiled catalog in
-  `src/database/migration.cpp` has exactly one upgrade step (version `1`,
+  `src/database/Migration.cpp` has exactly one upgrade step (version `1`,
   `initial_schema`) and one downgrade step (to version `0`,
   `drop_initial_schema`, which drops every table).
   `migrations/001_initial_schema.sql` is the frozen record of v1; a unit test
@@ -144,7 +144,7 @@ value. Test fixtures that do not exercise persistence select it through
   column reads are length-based (`sqlite3_column_bytes`), so payloads
   containing NUL or invalid UTF-8 round-trip byte-exactly. `SchemaTableDefinition::columns_sql`
   is shared, backend-agnostic DDL text written in SQLite's dialect; PostgreSQL
-  has no `BLOB` type, so `postgresql_store.cpp`'s `translate_ddl_types_for_postgresql()`
+  has no `BLOB` type, so `PostgresqlStore.cpp`'s `translate_ddl_types_for_postgresql()`
   rewrites `BLOB` to `BYTEA` (whole-word, so it cannot mangle an identifier)
   wherever a `SchemaTableDefinition` becomes DDL for that backend — both the
   bootstrap path and any later migration step.
@@ -258,7 +258,7 @@ value. Test fixtures that do not exercise persistence select it through
   `delete_account_threepid` store functions
   ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist, look up, and remove bound 3PIDs. Implemented for both SQLite
-  (`sqlite_store.cpp`) and PostgreSQL (`postgresql_store.cpp`); rows are
+  (`SqliteStore.cpp`) and PostgreSQL (`PostgresqlStore.cpp`); rows are
   hydrated into the in-memory store on backend open so existing bindings are
   visible immediately after restart.
 - `pushers` table records the push notification pushers a user has registered via
@@ -284,7 +284,7 @@ value. Test fixtures that do not exercise persistence select it through
   (`PushGatewayClient.hpp`) forwards a device's `data_extra` members
   verbatim into the notify request body, and — since the PR #479 follow-up —
   `ClientServerRuntime.cpp`'s `parse_pusher_set_body()` captures every `data`
-  member beyond `url`/`format` at registration time and `room_service.cpp`'s
+  member beyond `url`/`format` at registration time and `RoomService.cpp`'s
   pusher-to-`PushGatewayDevice` conversion threads it through to a live
   delivery, so the gap noted above is closed end to end; see
   `docs/todos/capability-gaps.md`.
@@ -296,8 +296,8 @@ value. Test fixtures that do not exercise persistence select it through
   like `events.stream_ordering` already does for `GET /messages`), `ts` (the
   event's `origin_server_ts`, milliseconds), `actions` (the canonical-JSON
   actions array reconstructed from the matched push rule's resolved outcome —
-  `push_rules.hpp`'s `PushEvaluationResult` does not keep the rule's raw
-  actions array, so `room_service.cpp`'s `push_notification_actions_json`
+  `PushRules.hpp`'s `PushEvaluationResult` does not keep the rule's raw
+  actions array, so `RoomService.cpp`'s `push_notification_actions_json`
   rebuilds the conventional `["notify", {"set_tweak": ...}, ...]` shape),
   `profile_tag` (left empty: this recording happens once per `(user, event)`
   rather than once per pusher, so it cannot name one pusher's configured
@@ -310,7 +310,7 @@ value. Test fixtures that do not exercise persistence select it through
   ([PersistentStore.hpp](../include/merovingian/database/PersistentStore.hpp))
   persist and list rows, following the same pattern as `PersistentPusher`
   above; implemented for both SQLite and PostgreSQL, hydrated on backend
-  open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
+  open. `RoomService.cpp`'s `build_pending_push_deliveries()` calls
   `store_notifications` once per event, with a row for every local recipient whose push rule evaluation
   resolves `notify: true` — in one transaction, **unconditionally**, regardless of
   `server.push.enabled` or whether that recipient has a registered pusher:
@@ -350,7 +350,7 @@ value. Test fixtures that do not exercise persistence select it through
   persist rows, following the same hashed-token pattern as
   `PersistentAccessToken`; implemented for both SQLite and PostgreSQL,
   hydrated on backend open. `homeserver::request_openid_token` (`src/
-  homeserver/auth_service.cpp`) mints and hashes the token — reusing the same
+  homeserver/AuthService.cpp`) mints and hashes the token — reusing the same
   keyed-hash machinery (`issue_token_hash`, preferring the master-key-derived
   v4 HMAC) access tokens use, since the hash *algorithm* is not the security
   boundary here — and `homeserver::federation_openid_userinfo` is the only
@@ -609,8 +609,8 @@ value. Test fixtures that do not exercise persistence select it through
 - **Phase B1 of spec-conformant PDU ingestion (0.12.13, ADR-0064): the phase
   A tables are now written and read on the live ingest path**, not just
   declared in the schema. New module
-  [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
-  (`src/homeserver/state_bookkeeping.cpp`):
+  [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/StateBookkeeping.hpp)
+  (`src/homeserver/StateBookkeeping.cpp`):
   - `compute_state_before(store, room_id, policy, prev_event_ids)` — refuses a
     `prev_event` held under another room or mapped to another room's state group
     (`find_event_in_other_room`, ADR-0583), then gives the
@@ -639,7 +639,7 @@ value. Test fixtures that do not exercise persistence select it through
     "state diff" plumbing. `current_state` is a cache of this result, never
     an independent write target, from this path onward.
 
-  Wired into `ingest_pdu_event` (`src/homeserver/local_http_router.cpp`):
+  Wired into `ingest_pdu_event` (`src/homeserver/LocalHttpRouter.cpp`):
   state-before is computed before the event is persisted (a missing
   prev-state fails the PDU closed with the new
   `federation::PduIngestionStatus::missing_prev_state` — not a rejection;
@@ -657,7 +657,7 @@ value. Test fixtures that do not exercise persistence select it through
   **Phase B1 completion (same 0.12.13 branch, follow-up commits):** every
   local and inbound-accepted event path now goes through this bookkeeping,
   not just `ingest_pdu_event`.
-  - `homeserver::store_local_event` (`state_bookkeeping.hpp`/`.cpp`) is the
+  - `homeserver::store_local_event` (`StateBookkeeping.hpp`/`.cpp`) is the
     choke point every locally created event must go through — runs the same
     compute-state-before / store / record-after-state / recompute sequence
     as `ingest_pdu_event`, but every failure is a hard failure (the request
@@ -666,7 +666,7 @@ value. Test fixtures that do not exercise persistence select it through
     `prev_events` from the room's real forward extremities (capped at the
     spec's 20 per event, `events::max_prev_events_per_event`, highest depth
     kept) instead of the previous, DAG-unaware "last event pushed into
-    `store.events`" heuristic. `persist_composed_event` (`room_service.cpp`
+    `store.events`" heuristic. `persist_composed_event` (`RoomService.cpp`
     — used by `create_room`'s initial-state chain, invite/join composition,
     and every ordinary send/state-send/redaction) calls it instead of
     `database::store_event_with_state` directly. Since 0.12.48 the state
@@ -675,7 +675,7 @@ value. Test fixtures that do not exercise persistence select it through
     as a `NewEventBasis`; when the extremities' states do not resolve, the
     basis cites only the newest extremity whose state reads alone, and its `retired_extremities`
     leave the `forward_extremities` table with the event (ADR-0225).
-  - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
+  - `LocalHttpRouter.cpp`'s `membership_acceptor` (a remote user's
     `send_join`/`send_leave`/`send_knock` into a room we are resident in —
     the same trust boundary as `ingest_pdu_event`) gets the identical
     state-before check and after-state/current-state bookkeeping.
@@ -697,7 +697,7 @@ value. Test fixtures that do not exercise persistence select it through
     so a 500 could leave the event stored and the room's tip moved, or a user
     joined with no state group. Inbound PDUs keep their separate commits.
   - The federated-join flow (`join_room`/`perform_federated_join`,
-    `room_service.cpp`) seeds the room's state from the
+    `RoomService.cpp`) seeds the room's state from the
     `send_join` response's state (stored as `status = "outlier"` events by
     `ingest_send_join_state`, which returns the full state map alongside
     the joined-members list): the join event's after-state, that state plus
@@ -853,7 +853,7 @@ value. Test fixtures that do not exercise persistence select it through
   denied DDL.
 - PostgreSQL role helpers (`set_postgresql_role`, `reset_postgresql_role`,
   `current_postgresql_user`) in
-  [postgresql_store.hpp](../include/merovingian/database/postgresql_store.hpp)
+  [PostgresqlStore.hpp](../include/merovingian/database/PostgresqlStore.hpp)
   let runtime callers switch identities inside a single connection. Role
   names are validated against PostgreSQL identifier shape (alphanumeric
   plus underscore, ≤ 63 chars) before being interpolated into the
@@ -862,7 +862,7 @@ value. Test fixtures that do not exercise persistence select it through
 - **Bootstrap table-identifier validation (issue #442):** PostgreSQL's
   `create_table_if_missing_sql` previously concatenated `table.name` directly
   into `CREATE TABLE IF NOT EXISTS <name> (...)` DDL with no validation or
-  quoting, unlike the SQLite path. It now mirrors `sqlite_store.cpp` exactly:
+  quoting, unlike the SQLite path. It now mirrors `SqliteStore.cpp` exactly:
   `schema_table_is_core()` gates the name to the compiled core-table set, and
   `quote_sqlite_identifier()` (generic ANSI double-quote identifier quoting,
   despite the name — valid for PostgreSQL too) wraps it. Current callers only
@@ -1012,7 +1012,7 @@ The boundary provides these guarantees:
   [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md)).
 - Binary (`BLOB`) columns round-trip byte-exactly on both backends. The columns
   are `media_blobs.bytes` and `server_signing_keys.secret_key` — every `BLOB`
-  in `migrations/*.sql` and `schema.cpp`; a new one must follow this
+  in `migrations/*.sql` and `Schema.cpp`; a new one must follow this
   mechanism. `BoundValue` carries a `binary` flag, and a write must set it for
   every `BLOB` parameter. SQLite binds every parameter by explicit length and
   reads columns by `sqlite3_column_bytes`, so it ignores the flag and is
@@ -1154,11 +1154,11 @@ Two independent mechanisms close this, together:
    `server_signing_keys` needs a genuine caveat: the worker's remote-key
    cache legitimately reads and writes this table (caching *other* servers'
    public keys — `federation::find_cached_remote_key` /
-   `store_server_signing_key`, `src/homeserver/local_http_router.cpp:1857-
+   `store_server_signing_key`, `src/homeserver/LocalHttpRouter.cpp:1857-
    1871`), so excluding the whole table would break that. What must never be
    exposed is this server's *own* `secret_key` column. The fix is
    column-level, in two independent places: `load_persistent_rows`
-   (`src/database/postgresql_store.cpp`) uses a worker-specific 4-column
+   (`src/database/PostgresqlStore.cpp`) uses a worker-specific 4-column
    `SELECT` that never names `secret_key` at all, leaving
    `PersistentServerSigningKey::secret_key` empty for every worker-loaded
    row; and `provision-federation-worker-role.sql` grants
@@ -1246,19 +1246,19 @@ migration's table cannot go unclassified:
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
-  `receipts`, `appservice_directory`, `media_pending_uploads`, plus six tables `schema.cpp`
+  `receipts`, `appservice_directory`, `media_pending_uploads`, plus six tables `Schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
   earlier schema iterations, confirmed by grep to appear nowhere outside
-  `schema.cpp`'s own DDL declarations. `state_group_edges` remains
+  `Schema.cpp`'s own DDL declarations. `state_group_edges` remains
   vestigial after ADR-0064 phase A: the design uses parent links on
   `state_groups` itself for the delta chain, not a separate edges table, so
   phase A deliberately left it alone. Whether to drop it is an open
   question for a later phase, not decided here.
   `federation_destinations`/`federation_transactions` specifically are read
   only by `federation::DispatchWorker`, which never starts in the worker
-  process: its construction (`local_http_router.cpp`, guarded inside the
+  process: its construction (`LocalHttpRouter.cpp`, guarded inside the
   same lazily-wired callback block) requires
   `runtime.database.signing_secret_key` to hold a real 32-byte secret, and
   the worker's runtime never loads one (`crypto_provider_overridden = true`,

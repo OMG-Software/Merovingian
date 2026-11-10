@@ -1,13 +1,13 @@
 media_sources = files(
   'ClamdScanner.cpp',
-  'decoder_hardening.cpp',
+  'DecoderHardening.cpp',
   'DecoderHardeningOps.cpp',
   'LocalMediaRepository.cpp',
   'RuntimeMediaConfig.cpp',
-  'security.cpp',
+  'Security.cpp',
   'ThumbnailCache.cpp',
-  'thumbnailer.cpp',
-  'url_preview.cpp',
+  'Thumbnailer.cpp',
+  'UrlPreview.cpp',
   'UrlPreviewCache.cpp',
 )
 

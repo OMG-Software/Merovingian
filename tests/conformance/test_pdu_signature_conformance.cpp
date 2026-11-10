@@ -11,12 +11,12 @@
 // Every REQUIRE encodes a MUST from the spec. If one fails, fix the
 // implementation; do not weaken the assertion.
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
@@ -24,8 +24,8 @@
 #include "merovingian/federation/FederationPdu.hpp"
 #include "merovingian/federation/RemoteKeyResponse.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

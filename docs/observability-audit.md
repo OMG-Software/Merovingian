@@ -199,14 +199,14 @@ persistent `audit_log` and `GET /_merovingian/admin/audit`. Its actor is the ori
 target the event ID and its reason which limit was hit. Expiry also logs a warning with
 the room ID and attempt count.
 
-`audit_federation()` (`src/federation/inbound_request.cpp`) appends every
+`audit_federation()` (`src/federation/InboundRequest.cpp`) appends every
 `federation.*` audit event — `federation.accepted`, `federation.rejected`,
 `federation.rate_limited` (also emitted when a source address exhausts its bad-X-Matrix-signature budget, ADR-0081), `federation.duplicate`,
 `federation.membership_rejected`, `federation.pdu_rejected`,
 `federation.acl_rejected`, and the rest of that family — to
 `FederationRuntimeState::audit_events`, a bounded in-memory list. It never
 calls `database::append_audit_event`. This is a different code path from
-`append_local_audit()` (`src/homeserver/local_services.cpp`), which is what
+`append_local_audit()` (`src/homeserver/LocalServices.cpp`), which is what
 auth, room, media, and trust-and-safety call sites use, and which does write
 through to the persistent `audit_log` table.
 
@@ -251,11 +251,11 @@ per 60 seconds, the rest counted): see "Audit volume bounds" below.
 
 Everything above goes through `log_diagnostic_audit`, which only routes
 `warning`-or-above diagnostics to the audit log. Most durable audit rows are
-appended directly via `append_local_audit` (`src/homeserver/local_services.cpp`)
+appended directly via `append_local_audit` (`src/homeserver/LocalServices.cpp`)
 from success and failure paths alike, independent of diagnostic severity.
 Grepping for `append_local_audit` call sites finds these event-name families:
 
-- `auth.*` (`src/auth/AGENTS.md`-covered flows, via `src/homeserver/auth_service.cpp`):
+- `auth.*` (`src/auth/AGENTS.md`-covered flows, via `src/homeserver/AuthService.cpp`):
   `auth.user_registered`, `auth.login`, `auth.refresh`, `auth.refresh.issue`,
   `auth.refresh.rejected`, `auth.logout`, `auth.logout_all`,
   `auth.account_deactivated`, `auth.password_changed`,
@@ -264,15 +264,15 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `auth.login_token.redeemed` (tokens from `POST /login/get_token`),
   `auth.refresh.reuse_detected`, `auth.refresh.predecessor_revoke`,
   `auth.password_reset`.
-- `device.*` (`src/homeserver/auth_service.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
+- `device.*` (`src/homeserver/AuthService.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
   `device.deleted`, `device.updated`.
 - `account.locked` / `account.suspended` (`src/homeserver/ClientServerRuntime.cpp`,
   admin category) — see "Account-moderation audit rows" above.
-- `room.*` (`src/homeserver/room_service.cpp`, admin category): `room.created`,
+- `room.*` (`src/homeserver/RoomService.cpp`, admin category): `room.created`,
   `room.joined`, `room.joined_remote`, `room.left`, `room.left_remote`,
   `room.invited`, `room.third_party_invited`, `room.banned`, `room.kicked`,
   `room.unbanned`, `room.forgotten`, `room.knocked`, `room.event_sent`.
-- `media.*` (`src/homeserver/media_service.cpp`, moderation category):
+- `media.*` (`src/homeserver/MediaService.cpp`, moderation category):
   `media.upload_rejected`, `media.upload_quarantined`, `media.upload_accepted`,
   `media.quarantined`, `media.released`, `media.removed`,
   `media.remote_fetch_accepted`, `media.remote_fetch_rejected`, `media.scan_infected` and `media.scan_failed` (a clamd scan, ADR-0565; the target is the media ID, `upload`, or `origin/media_id`, the reason the signature name or failure), `media.create_reserved`
@@ -283,7 +283,7 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   plus the dynamic event types trust-and-safety policy matches emit via
   `append_policy_audit`.
 - `runtime.started` (`src/homeserver/HomeserverRuntime.cpp`, admin category).
-- `appservice.outbox.full` (`src/homeserver/appservice_delivery.cpp`, policy category, written through
+- `appservice.outbox.full` (`src/homeserver/AppserviceDelivery.cpp`, policy category, written through
   `log_diagnostic_audit` at warning level): an event was not queued for an appservice because its queue
   is at `appservice.max_queued_events`. Actor and target are the appservice `id`; the reason carries the
   cap and the number of events refused so far. Emitted for the first refusal and every thousandth after it,
@@ -308,7 +308,7 @@ audit row are emitted from the same call site to keep them in lockstep.
 
 **Audit sink installation on worker threads (issue #420):** the active
 `LocalDatabase*` the sink writes through is a `thread_local`
-(`homeserver/local_services.cpp`), installed by `LocalDatabaseScope` only on
+(`homeserver/LocalServices.cpp`), installed by `LocalDatabaseScope` only on
 the thread that constructs `HomeserverRuntime` (main). Every call site above
 that routes through the sink-based `observability::log_diagnostic_audit`
 overload (rather than the explicit-database overload) previously silently
@@ -470,7 +470,7 @@ so a sensitive field at the end of a line keeps the record terminator.
 **Structured field values are length-capped (AUTH-9).** A client can also put a
 very long value into a logged field, which would inflate every line that
 mentions it. Every structured field value is rendered by
-`render_log_field_value` (`src/observability/observability.cpp`), the single
+`render_log_field_value` (`src/observability/Observability.cpp`), the single
 function `diagnostic_message` (the `log_diagnostic*` family, and so every
 console and file line built from fields) and `structured_log_summary` use. It
 redacts first (`redact_log_value`), then caps (`cap_log_field_value`), so a

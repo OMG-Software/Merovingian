@@ -7,7 +7,7 @@ Parses and validates the server configuration and plans (but does not yet apply)
 | File | Responsibility |
 |---|---|
 | `Config.cpp` | `Config` class (its section structs, such as `ServerConfig`, `ListenersConfig`, `DatabaseConfig` and `SecurityConfig`, each have their own `<TypeName>.hpp`) — typed representation of every config option; `validate_config()`, `parse_size_limit()` |
-| `config_parser.cpp` | Parses the key-value `.conf` file into `Config`; validates ranges and required fields |
+| `ConfigParser.cpp` | Parses the key-value `.conf` file into `Config`; validates ranges and required fields |
 | `RuntimeConfigSnapshot.cpp` | `RuntimeConfigSnapshot`: holds a `Config` and can swap it for a reload-only candidate. Only the unit tests construct it today; the server does not |
 | `ReloadPlan.cpp` | Diffs old vs new config and classifies each change; used by `--plan-config-reload`. No live reload path (SIGHUP/admin socket) exists yet |
 | `ReloadPolicy.cpp` | `reload_policy_for_key()`: which keys need a restart. Keys are reloadable by default. Restart is required for `server.name`, the `database.*` URI and role keys, listener TLS certificate/key and `reverse_proxy` keys, `security.registration.token_file`, `database.pool_size`, `security.media.thumbnail_cache_size`, `security.media.thumbnail_max_concurrent_per_user`, `security.secrets.master_key_file`, `security.federation.key_resolution_*`, `security.federation.join_response_max_size`, `client_rate_limits.*`, `log_modules.*`, `federation.worker.*`, `server.cors.*`, `server.http.*`, `server.identity_server.*`, `server.push.*`, `appservice.*` and `presence.*`. The rate-limit engine and per-module log map are built once at start-up, so they are not hot-reloadable. |
@@ -18,7 +18,7 @@ Parses and validates the server configuration and plans (but does not yet apply)
   All config access goes through `RuntimeConfigSnapshot.hpp` — it provides a snapshot that is safe to
   read under concurrent requests.
 - **Validate at parse time, not at use time.** If a value is out of range or missing, reject it
-  in `config_parser.cpp` and return an error — do not let bad config reach the runtime.
+  in `ConfigParser.cpp` and return an error — do not let bad config reach the runtime.
 - **Log the effective config at startup** (INFO level) excluding secrets. Never log TLS private
   key paths or secret values.
 - **Reload planning** is handled by `ReloadPlan.cpp`; nothing applies a reload at runtime yet, so

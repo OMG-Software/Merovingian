@@ -1,8 +1,8 @@
 observability_sources = files(
   'AuditRateGate.cpp',
-  'bounded_text.cpp',
+  'BoundedText.cpp',
   'CorrelationScope.cpp',
-  'observability.cpp',
+  'Observability.cpp',
 )
 
 observability_lib = static_library(

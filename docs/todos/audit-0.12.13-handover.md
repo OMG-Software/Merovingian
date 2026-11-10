@@ -122,7 +122,7 @@ The agent that wrote it was asked to present options and not implement it. It
 implemented it anyway. On review the direction matches what conformant servers
 do, and the relaxation is correctly scoped: `allow_auth_events_only` is `true`
 only at the two `/event_auth` call sites
-(`src/homeserver/local_http_router.cpp:3248` and `:3255`), so every other path
+(`src/homeserver/LocalHttpRouter.cpp:3248` and `:3255`), so every other path
 keeps the state-before check.
 
 **Regardless of the decision, ADR-0069 is factually wrong and must be

@@ -3,21 +3,21 @@
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 
-#include "merovingian/appservice/registration.hpp"
+#include "merovingian/appservice/Registration.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Password.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/crypto/RefusingEd25519Provider.hpp"
 #include "merovingian/crypto/RuntimeEd25519Provider.hpp"
 #include "merovingian/crypto/RuntimeMultiKeyEd25519Provider.hpp"
-#include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 #include "merovingian/federation/RuntimeFederationConfig.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
@@ -30,13 +30,13 @@
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
-#include "merovingian/homeserver/appservice_ephemeral.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/redaction_service.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/stream_token_epoch.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/RedactionService.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/StreamTokenEpoch.hpp"
 #include "merovingian/media/LocalMediaBlob.hpp"
 #include "merovingian/media/LocalMediaRecord.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
@@ -53,12 +53,12 @@
 #include "merovingian/observability/MetricType.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/platform/HardeningPlanDecision.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
-#include "merovingian/platform/file_metadata.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
+#include "merovingian/trust_safety/PolicyEngine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -382,7 +382,7 @@ namespace
 
 // Rebuilds crypto_provider_owned from all currently-active persisted signing
 // keys. Called after startup, after every key rotation, and after any other
-// change that adds or removes an active key. Exposed to room_service.cpp for
+// change that adds or removes an active key. Exposed to RoomService.cpp for
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {

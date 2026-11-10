@@ -10,8 +10,8 @@
 // A local SingleLog is used rather than SingleLog::instance(), so each scenario
 // observes a logger that has genuinely never started.
 
-#include "../support/process_tasks.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/ProcessTasks.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 

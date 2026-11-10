@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/homeserver/LocalDatabaseScope.hpp"
-#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/observability/AdminOperation.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/AuditSinkFields.hpp"
@@ -11,7 +11,7 @@
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
 
@@ -126,7 +126,7 @@ SCENARIO("The audit sink stays fail-closed while its database is unavailable and
 {
     // L-10 (security-audit-report-2026-09.md): the audit sink no-ops
     // (drops the event) while the thread-local LocalDatabase is null or
-    // closed. The fix (src/homeserver/local_services.cpp's
+    // closed. The fix (src/homeserver/LocalServices.cpp's
     // local_audit_sink) adds a warn-once-per-episode diagnostic, but must
     // not change the fail-closed *behaviour*: no audit row is fabricated
     // while the database is unavailable, no crash, and no duplicate row

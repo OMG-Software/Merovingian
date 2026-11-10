@@ -4,7 +4,7 @@
 #include "merovingian/database/PersistentAdminAction.hpp"
 #include "merovingian/database/PersistentAuditEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

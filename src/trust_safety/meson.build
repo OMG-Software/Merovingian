@@ -1,6 +1,6 @@
 trust_safety_sources = files(
-  'ignore_list.cpp',
-  'policy_engine.cpp',
+  'IgnoreList.cpp',
+  'PolicyEngine.cpp',
 )
 
 trust_safety_lib = static_library(

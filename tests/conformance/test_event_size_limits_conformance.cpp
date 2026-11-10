@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // Conformance tests for CSAZ-9: events this server composes for its own clients are held to the
 // spec's size limits, so a client cannot make this server sign a PDU every other server rejects.
@@ -17,9 +17,9 @@
 // TestEvent, sytest "Event size limits") that it is 413 with errcode M_TOO_LARGE, the status the
 // spec itself uses for M_TOO_LARGE on the content repository; this supersedes the earlier 400.
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

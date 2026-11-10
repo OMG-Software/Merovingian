@@ -11,9 +11,9 @@
 #include "merovingian/media/ThumbnailWorkerResponse.hpp"
 #include "merovingian/media/ThumbnailWorkerStatus.hpp"
 #include "merovingian/media/ThumbnailerConfig.hpp"
-#include "merovingian/media/decoder_hardening.hpp"
-#include "merovingian/media/thumbnailer.hpp"
-#include "support/temp_directory.hpp"
+#include "merovingian/media/DecoderHardening.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
+#include "support/TempDirectory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>

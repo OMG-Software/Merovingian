@@ -16,9 +16,9 @@
 // the corresponding user or device is missing") and "POST /keys/upload" (a one-time or fallback
 // key is `string|KeyObject`; a KeyObject is `{key, signatures, fallback?}`).
 
-#include "../support/e2ee_caps_support.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/federation/key_query.hpp"
+#include "../support/E2eeCapsSupport.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

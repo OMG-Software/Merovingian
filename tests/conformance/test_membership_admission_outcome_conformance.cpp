@@ -12,14 +12,14 @@
 //
 // Tags: [f10], [f12].
 
-#include "../support/MembershipGenesis.hpp"
-#include "../support/membership_acceptor_fixture.hpp"
+#include "../support/Genesis.hpp"
+#include "../support/MembershipAcceptorFixture.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

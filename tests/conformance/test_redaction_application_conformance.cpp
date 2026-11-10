@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // Conformance tests for CSAZ-11: redactions are applied, served in their redacted form on every
 // client read path, and `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` exists.
@@ -14,11 +14,11 @@
 // requests it." and "Servers should include a copy of the `m.room.redaction` event under
 // `unsigned` as `redacted_because` when serving the redacted event to clients."
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"

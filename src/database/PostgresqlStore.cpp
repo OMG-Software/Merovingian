@@ -1,0 +1,2704 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/database/PostgresqlStore.hpp"
+
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/PostgresqlConnection.hpp"
+#include "merovingian/database/PostgresqlConnectionDeleter.hpp"
+#include "merovingian/database/PostgresqlConnectionHandle.hpp"
+#include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
+#include "merovingian/database/PostgresqlExecution.hpp"
+#include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
+#include "merovingian/database/PostgresqlWritePool.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/Migration.hpp"
+#include "merovingian/database/Schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <arpa/inet.h>
+#include <libpq-fe.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+namespace merovingian::database
+{
+
+auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::optional<std::string>
+{
+    // Anything that isn't the `\x` hex form of bytea_output = hex (which every
+    // connection pins at open) fails closed with no value rather than guessing
+    // at a different encoding. An empty string is a legitimate, empty bytea,
+    // so failure must not be spelled as one.
+    if (hex_text.size() < 2U || hex_text[0] != '\\' || hex_text[1] != 'x')
+    {
+        return std::nullopt;
+    }
+
+    auto const nibble = [](char character) -> int {
+        if (character >= '0' && character <= '9')
+        {
+            return character - '0';
+        }
+        if (character >= 'a' && character <= 'f')
+        {
+            return character - 'a' + 10;
+        }
+        if (character >= 'A' && character <= 'F')
+        {
+            return character - 'A' + 10;
+        }
+        return -1;
+    };
+
+    if ((hex_text.size() - 2U) % 2U != 0U)
+    {
+        return std::nullopt; // An odd number of hex digits cannot represent whole bytes.
+    }
+
+    auto decoded = std::string{};
+    decoded.reserve((hex_text.size() - 2U) / 2U);
+    for (auto index = std::size_t{2U}; index < hex_text.size(); index += 2U)
+    {
+        auto const high = nibble(hex_text[index]);
+        auto const low = nibble(hex_text[index + 1U]);
+        if (high < 0 || low < 0)
+        {
+            return std::nullopt; // Malformed hex digit; fail closed rather than return garbage bytes.
+        }
+        decoded.push_back(static_cast<char>((high << 4) | low));
+    }
+    return decoded;
+}
+
+namespace
+{
+
+    [[nodiscard]] auto parse_invite_state_events_json(std::string_view json) -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* events = std::get_if<canonicaljson::Array>(&parsed.value.storage());
+        if (events == nullptr)
+        {
+            return {};
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(events->size());
+        for (auto const& event : *events)
+        {
+            auto serialized = canonicaljson::serialize_canonical(event);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return {};
+            }
+            result.push_back(std::move(serialized.output));
+        }
+        return result;
+    }
+
+    using detail::connection_error;
+    using detail::execute_raw_command;
+    using detail::load_result_rows;
+
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto has_control_character(std::string_view value) noexcept -> bool
+    {
+        return std::ranges::any_of(value, [](char character) {
+            auto const byte = static_cast<unsigned char>(character);
+            return byte < 0x20U || byte == 0x7FU;
+        });
+    }
+
+    [[nodiscard]] auto looks_like_key_value_conninfo(std::string_view conninfo) noexcept -> bool
+    {
+        auto const equals = conninfo.find('=');
+        return equals != std::string_view::npos && equals > 0U;
+    }
+
+    [[nodiscard]] auto looks_like_postgresql_uri(std::string_view conninfo) noexcept -> bool
+    {
+        return starts_with(conninfo, "postgresql://") || starts_with(conninfo, "postgres://");
+    }
+
+    struct ConninfoDeleter final
+    {
+        auto operator()(PQconninfoOption* options) const noexcept -> void
+        {
+            PQconninfoFree(options);
+        }
+    };
+    using ConninfoOptions = std::unique_ptr<PQconninfoOption, ConninfoDeleter>;
+
+    [[nodiscard]] auto option_value(PQconninfoOption const* options, std::string_view keyword) -> std::string_view
+    {
+        if (options == nullptr)
+        {
+            return {};
+        }
+        for (auto const* option = options; option->keyword != nullptr; ++option)
+        {
+            if (keyword == option->keyword && option->val != nullptr)
+            {
+                return option->val;
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto parse_conninfo(std::string_view conninfo) -> ConninfoOptions
+    {
+        auto const input = std::string{conninfo};
+        auto* error = static_cast<char*>(nullptr);
+        auto options = ConninfoOptions{PQconninfoParse(input.c_str(), &error)};
+        // libpq parser diagnostics can contain arbitrary option values. Never emit them.
+        PQfreemem(error);
+        return options;
+    }
+
+    [[nodiscard]] auto local_destination(std::string_view destination, bool address_only) -> bool
+    {
+        if (destination.empty())
+        {
+            return true; // libpq's default Unix socket / matching host entry.
+        }
+        if (!address_only && (destination.front() == '/' || destination.front() == '@' || destination == "localhost"))
+        {
+            return true;
+        }
+        auto const text = std::string{destination};
+        auto ipv4 = in_addr{};
+        if (::inet_pton(AF_INET, text.c_str(), &ipv4) == 1)
+        {
+            return (ntohl(ipv4.s_addr) >> 24U) == 127U;
+        }
+        auto ipv6 = in6_addr{};
+        return ::inet_pton(AF_INET6, text.c_str(), &ipv6) == 1 && IN6_IS_ADDR_LOOPBACK(&ipv6);
+    }
+
+    [[nodiscard]] auto local_destination_list(std::string_view destinations, bool address_only) -> bool
+    {
+        while (true)
+        {
+            auto const comma = destinations.find(',');
+            if (!local_destination(destinations.substr(0U, comma), address_only))
+            {
+                return false;
+            }
+            if (comma == std::string_view::npos)
+            {
+                return true;
+            }
+            destinations.remove_prefix(comma + 1U);
+        }
+    }
+
+    // Schema.cpp's SchemaTableDefinition::columns_sql is shared, backend-agnostic
+    // DDL text written in SQLite's dialect (per-column types like TEXT/BLOB,
+    // which SQLite accepts as a loose affinity hint regardless of spelling).
+    // PostgreSQL is strictly typed and has no "BLOB" type at all — its binary
+    // column type is BYTEA (#448 introduced the first BLOB columns and broke
+    // postgres-integration CI: "type "blob" does not exist"). Rather than
+    // forking columns_sql per backend, translate the handful of SQLite-only
+    // type spellings to their PostgreSQL equivalents at the point each
+    // backend turns a SchemaTableDefinition into DDL. Whole-word replacement
+    // (not a bare substring swap) so this can never mangle an identifier that
+    // happens to contain "BLOB" as a substring.
+    [[nodiscard]] auto translate_ddl_types_for_postgresql(std::string sql) -> std::string
+    {
+        auto const is_word_byte = [](char character) noexcept {
+            return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                   (character >= '0' && character <= '9') || character == '_';
+        };
+        constexpr auto from = std::string_view{"BLOB"};
+        constexpr auto to = std::string_view{"BYTEA"};
+        auto position = std::size_t{0U};
+        while ((position = sql.find(from, position)) != std::string::npos)
+        {
+            auto const before_ok = position == 0U || !is_word_byte(sql[position - 1U]);
+            auto const after_index = position + from.size();
+            auto const after_ok = after_index >= sql.size() || !is_word_byte(sql[after_index]);
+            if (before_ok && after_ok)
+            {
+                sql.replace(position, from.size(), to);
+                position += to.size();
+            }
+            else
+            {
+                position += from.size();
+            }
+        }
+        return sql;
+    }
+
+    // #442: unlike SqliteStore.cpp's equivalent, this previously concatenated
+    // table.name directly into DDL with no identifier validation or quoting.
+    // Mirrors SqliteStore.cpp's create_table_if_missing_sql exactly: only
+    // core tables (schema_table_is_core) may be materialised, and the name is
+    // quoted via quote_sqlite_identifier — which despite the name is generic
+    // ANSI double-quote identifier quoting, valid for PostgreSQL too. Current
+    // callers pass only hardcoded core table names, so this is
+    // defense-in-depth against a future caller passing an attacker-influenced
+    // or non-core name.
+    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::optional<std::string>
+    {
+        if (!schema_table_is_core(table.name))
+        {
+            return std::nullopt;
+        }
+        auto quoted = quote_sqlite_identifier(table.name);
+        if (!quoted.has_value())
+        {
+            return std::nullopt;
+        }
+        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" +
+               translate_ddl_types_for_postgresql(std::string{table.columns_sql}) + ")";
+    }
+
+    [[nodiscard]] auto migration_record_statement(std::uint32_t version, std::string name) -> PreparedStatement
+    {
+        return {
+            "postgresql_record_migration_" + std::to_string(version),
+            "INSERT INTO schema_migrations VALUES ($1, $2, $3) ON CONFLICT (version) DO NOTHING",
+            {{std::to_string(version), false}, {std::move(name), false}, {"upgrade", false}}
+        };
+    }
+
+    [[nodiscard]] auto query_rows(PostgresqlConnection& connection, std::string name, std::string sql) -> QueryResult
+    {
+        return connection.execute({std::move(name), std::move(sql), {}});
+    }
+
+    // Returns whether the Merovingian schema specifically has been bootstrapped,
+    // detected by the presence of the `schema_migrations` ledger. Looking only
+    // at "any table in public" misclassifies shared databases that hold
+    // unrelated tables and would skip bootstrap, then fail downstream when
+    // `schema_migrations` turns out to be missing.
+    [[nodiscard]] auto merovingian_schema_is_initialized(PostgresqlConnection& connection) -> std::optional<bool>
+    {
+        auto tables = query_rows(
+            connection, "postgresql_detect_merovingian_schema",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = "
+            "'schema_migrations' LIMIT 1");
+        if (!tables.ok)
+        {
+            return std::nullopt;
+        }
+        return !tables.rows.empty();
+    }
+
+    [[nodiscard]] auto text_is_true(std::string_view value) noexcept -> bool
+    {
+        return value == "true";
+    }
+
+    [[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::uint64_t
+    {
+        auto result = std::uint64_t{0U};
+        for (auto const character : value)
+        {
+            if (character < '0' || character > '9')
+            {
+                return 0U;
+            }
+            result = (result * 10U) + static_cast<std::uint64_t>(character - '0');
+        }
+        return result;
+    }
+
+    auto load_persistent_rows(PostgresqlConnection& connection, PersistentStore& store,
+                              TableLoadProfile profile = TableLoadProfile::full) -> bool
+    {
+        if (table_load_profile_includes("users", profile))
+        {
+            auto users = query_rows(connection, "postgresql_load_users",
+                                    "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users "
+                                    "ORDER BY user_id");
+            if (!users.ok)
+            {
+                return false;
+            }
+            for (auto const& row : users.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    store.users.push_back({row[0], row[1], text_is_true(row[2]), text_is_true(row[3]),
+                                           text_is_true(row[4]), text_is_true(row[5])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("devices", profile))
+        {
+            auto devices =
+                query_rows(connection, "postgresql_load_devices",
+                           "SELECT user_id, device_id, display_name FROM devices ORDER BY user_id, device_id");
+            if (!devices.ok)
+            {
+                return false;
+            }
+            for (auto const& row : devices.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.devices.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("access_tokens", profile))
+        {
+            auto tokens =
+                query_rows(connection, "postgresql_load_access_tokens",
+                           "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_refresh_hash "
+                           "FROM access_tokens ORDER BY token_hash");
+            if (!tokens.ok)
+            {
+                return false;
+            }
+            for (auto const& row : tokens.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    std::ignore =
+                        store.access_tokens.insert({row[0], row[1], row[2], text_is_true(row[3]),
+                                                    row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
+                                                    row.size() >= 6U ? row[5] : std::string{}});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("refresh_tokens", profile))
+        {
+            auto refresh_tokens =
+                query_rows(connection, "postgresql_load_refresh_tokens",
+                           "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash, issued_at_ms "
+                           "FROM refresh_tokens ORDER BY token_hash");
+            if (!refresh_tokens.ok)
+            {
+                return false;
+            }
+            for (auto const& row : refresh_tokens.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    std::ignore = store.refresh_tokens.insert(
+                        {row[0], row[1], row[2], text_is_true(row[3]),
+                         row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt,
+                         row.size() >= 6U ? row[5] : std::string{},
+                         row.size() >= 7U ? static_cast<std::int64_t>(parse_u64(row[6])) : std::int64_t{0}});
+                }
+            }
+        }
+
+        // server_signing_keys is the one allowlisted table with a column
+        // restriction: the federation worker profile omits `secret_key`
+        // entirely from the SELECT list (never just filters it client-side),
+        // so a worker connecting with the least-privilege role in
+        // packaging/postgresql/provision-federation-worker-role.sql — which
+        // grants SELECT on exactly server_name/key_id/public_key/
+        // valid_until_ts, never secret_key — can still read this table for
+        // its own legitimate purpose (caching OTHER servers' public keys via
+        // federation::remote_key_cache_probe/remote_key_resolver;
+        // src/homeserver/LocalHttpRouter.cpp:1857-1871) without ever being
+        // able to select this server's own signing secret, even under a bug
+        // that widened `full`-style access elsewhere. See
+        // docs/database-persistence.md, "Federation worker least-privilege
+        // role".
+        if (profile == TableLoadProfile::full)
+        {
+            auto server_signing_keys =
+                query_rows(connection, "postgresql_load_server_signing_keys",
+                           "SELECT server_name, key_id, public_key, valid_until_ts, secret_key, expired_ts FROM "
+                           "server_signing_keys ORDER BY server_name, key_id");
+            if (!server_signing_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : server_signing_keys.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), row[4]};
+                    key.expired_ts = parse_u64(row[5]);
+                    store.server_signing_keys.push_back(std::move(key));
+                }
+            }
+        }
+        else if (table_load_profile_includes("server_signing_keys", profile))
+        {
+            auto server_signing_keys =
+                query_rows(connection, "postgresql_load_server_signing_keys_no_secret",
+                           "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM "
+                           "server_signing_keys ORDER BY server_name, key_id");
+            if (!server_signing_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : server_signing_keys.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), {}};
+                    key.expired_ts = parse_u64(row[4]);
+                    store.server_signing_keys.push_back(std::move(key));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("federation_destinations", profile))
+        {
+            auto federation_destinations =
+                query_rows(connection, "postgresql_load_federation_destinations",
+                           "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
+                           "federation_destinations ORDER BY server_name");
+            if (!federation_destinations.ok)
+            {
+                return false;
+            }
+            for (auto const& row : federation_destinations.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.federation_destinations.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3]),
+                                                             static_cast<std::uint32_t>(parse_u64(row[4]))});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("federation_transactions", profile))
+        {
+            auto federation_transactions =
+                query_rows(connection, "postgresql_load_federation_transactions",
+                           "SELECT transaction_id, server_name, method, target, origin, origin_server_ts, body, "
+                           "retry_count, next_retry_ts FROM federation_transactions ORDER BY transaction_id");
+            if (!federation_transactions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : federation_transactions.rows)
+            {
+                if (row.size() >= 9U)
+                {
+                    store.federation_transactions.push_back({row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                                                             static_cast<std::uint32_t>(parse_u64(row[7])),
+                                                             parse_u64(row[8])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("rooms", profile))
+        {
+            auto rooms = query_rows(connection, "postgresql_load_rooms",
+                                    "SELECT room_id, creator_user_id, directory_public FROM rooms ORDER BY room_id");
+            if (!rooms.ok)
+            {
+                return false;
+            }
+            for (auto const& row : rooms.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.rooms.push_back({row[0], row[1], text_is_true(row[2])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("membership", profile))
+        {
+            auto memberships = query_rows(
+                connection, "postgresql_load_membership",
+                "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
+            if (!memberships.ok)
+            {
+                return false;
+            }
+            for (auto const& row : memberships.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("invites", profile))
+        {
+            auto invites =
+                query_rows(connection, "postgresql_load_invites",
+                           "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
+                           "stream_ordering, resident_server FROM invites ORDER BY room_id, user_id");
+            if (!invites.ok)
+            {
+                return false;
+            }
+            for (auto const& row : invites.rows)
+            {
+                if (row.size() >= 8U)
+                {
+                    store.invites.push_back({row[0], row[1], row[2], row[3], row[4],
+                                             parse_invite_state_events_json(row[5]), parse_u64(row[6]), row[7]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("events", profile))
+        {
+            auto events = query_rows(connection, "postgresql_load_events",
+                                     "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
+                                     "FROM events ORDER BY event_id");
+            if (!events.ok)
+            {
+                return false;
+            }
+            // Indexed in one pass once loaded (ADR-0215): rows come back in event-ID order, not
+            // stream order, so adding them one at a time could shift the stream-order index per row.
+            auto hydrated_events = std::vector<PersistentEvent>{};
+            hydrated_events.reserve(events.rows.size());
+            for (auto const& row : events.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    auto event = PersistentEvent{row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])};
+                    event.status = row[6];
+                    hydrated_events.push_back(std::move(event));
+                }
+            }
+            std::ignore = store.events.insert_all(std::move(hydrated_events));
+        }
+
+        if (table_load_profile_includes("state_groups", profile))
+        {
+            auto state_groups =
+                query_rows(connection, "postgresql_load_state_groups",
+                           "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups "
+                           "ORDER BY state_group_id");
+            if (!state_groups.ok)
+            {
+                return false;
+            }
+            for (auto const& row : state_groups.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentStateGroup{};
+                    entry.state_group_id = row[0];
+                    entry.room_id = row[1];
+                    entry.parent_state_group_id = row[2].empty() ? std::nullopt : std::optional<std::string>{row[2]};
+                    entry.delta_depth = static_cast<std::uint32_t>(parse_u64(row[3]));
+                    std::ignore = store.state_groups.insert(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("state_group_state", profile))
+        {
+            auto state_group_state =
+                query_rows(connection, "postgresql_load_state_group_state",
+                           "SELECT state_group_id, event_type, state_key, event_id FROM state_group_state ORDER BY "
+                           "state_group_id, event_type, state_key");
+            if (!state_group_state.ok)
+            {
+                return false;
+            }
+            for (auto const& row : state_group_state.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.state_group_state.insert({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_state_groups", profile))
+        {
+            auto event_state_groups =
+                query_rows(connection, "postgresql_load_event_state_groups",
+                           "SELECT event_id, state_group_id FROM event_state_groups ORDER BY event_id");
+            if (!event_state_groups.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_state_groups.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_state_groups.assign(row[0], row[1]);
+                }
+            }
+        }
+
+        if (table_load_profile_includes("forward_extremities", profile))
+        {
+            auto forward_extremities =
+                query_rows(connection, "postgresql_load_forward_extremities",
+                           "SELECT room_id, event_id FROM forward_extremities ORDER BY room_id, event_id");
+            if (!forward_extremities.ok)
+            {
+                return false;
+            }
+            for (auto const& row : forward_extremities.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.forward_extremities.push_back({row[0], row[1]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_edges", profile))
+        {
+            auto event_edges = query_rows(connection, "postgresql_load_event_edges",
+                                          "SELECT event_id, prev_event_id FROM event_edges ORDER BY event_id");
+            if (!event_edges.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_edges.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_edges.push_back({row[0], row[1]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_auth", profile))
+        {
+            auto event_auth = query_rows(connection, "postgresql_load_event_auth",
+                                         "SELECT event_id, auth_event_id FROM event_auth ORDER BY event_id");
+            if (!event_auth.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_auth.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_auth.push_back({row[0], row[1]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_signatures", profile))
+        {
+            auto event_signatures = query_rows(connection, "postgresql_load_event_signatures",
+                                               "SELECT event_id, server_name, key_id, signature FROM "
+                                               "event_signatures ORDER BY event_id, server_name");
+            if (!event_signatures.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_signatures.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.event_signatures.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("current_state", profile))
+        {
+            auto state = query_rows(connection, "postgresql_load_current_state",
+                                    "SELECT room_id, event_type, state_key, event_id FROM current_state ORDER BY "
+                                    "room_id, event_type, state_key");
+            if (!state.ok)
+            {
+                return false;
+            }
+            for (auto const& row : state.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.state.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("state_transitions", profile))
+        {
+            auto transitions = query_rows(connection, "postgresql_load_state_transitions",
+                                          "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM "
+                                          "state_transitions ORDER BY room_id, event_type, state_key, event_id");
+            if (!transitions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : transitions.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.state_transitions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("device_keys", profile))
+        {
+            auto device_keys =
+                query_rows(connection, "postgresql_load_device_keys",
+                           "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
+            if (!device_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : device_keys.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.device_keys.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("one_time_keys", profile))
+        {
+            auto one_time_keys = query_rows(
+                connection, "postgresql_load_one_time_keys",
+                "SELECT user_id, device_id, key_id, json FROM one_time_keys ORDER BY user_id, device_id, key_id");
+            if (!one_time_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : one_time_keys.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.one_time_keys.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("fallback_keys", profile))
+        {
+            auto fallback_keys = query_rows(
+                connection, "postgresql_load_fallback_keys",
+                "SELECT user_id, device_id, key_id, json FROM fallback_keys ORDER BY user_id, device_id, key_id");
+            if (!fallback_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : fallback_keys.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.fallback_keys.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("cross_signing_keys", profile))
+        {
+            auto cross_signing_keys =
+                query_rows(connection, "postgresql_load_cross_signing_keys",
+                           "SELECT user_id, key_type, json FROM cross_signing_keys ORDER BY user_id, key_type");
+            if (!cross_signing_keys.ok)
+            {
+                return false;
+            }
+            for (auto const& row : cross_signing_keys.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.cross_signing_keys.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("key_signatures", profile))
+        {
+            auto key_signatures =
+                query_rows(connection, "postgresql_load_key_signatures",
+                           "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures "
+                           "ORDER BY signer_user_id, target_user_id, target_device_id");
+            if (!key_signatures.ok)
+            {
+                return false;
+            }
+            for (auto const& row : key_signatures.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.key_signatures.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("key_backup_versions", profile))
+        {
+            auto key_backup_versions =
+                query_rows(connection, "postgresql_load_key_backup_versions",
+                           "SELECT user_id, version, json FROM key_backup_versions ORDER BY user_id, version");
+            if (!key_backup_versions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : key_backup_versions.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.key_backup_versions.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("key_backup_version_counters", profile))
+        {
+            auto counters = query_rows(connection, "postgresql_load_key_backup_version_counters",
+                                       "SELECT user_id, last_version FROM key_backup_version_counters");
+            if (!counters.ok)
+            {
+                return false;
+            }
+            for (auto const& row : counters.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.key_backup_version_high_water[row[0]] = parse_u64(row[1]);
+                }
+            }
+        }
+
+        if (table_load_profile_includes("key_backup_sessions", profile))
+        {
+            auto key_backup_sessions =
+                query_rows(connection, "postgresql_load_key_backup_sessions",
+                           "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions ORDER BY "
+                           "user_id, version, room_id, session_id");
+            if (!key_backup_sessions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : key_backup_sessions.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.key_backup_sessions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("media", profile))
+        {
+            auto media = query_rows(connection, "postgresql_load_media",
+                                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
+                                    "digest, quarantined, removed, legacy_endpoint_visible, upload_name "
+                                    "FROM media ORDER BY media_id");
+            if (!media.ok)
+            {
+                return false;
+            }
+            for (auto const& row : media.rows)
+            {
+                if (row.size() >= 10U)
+                {
+                    store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
+                                                 text_is_true(row[6]), text_is_true(row[7]), text_is_true(row[8]),
+                                                 row[9]});
+                }
+            }
+        }
+
+        // Migration 026 (ADR-0212): reserved mxc:// URIs awaiting content.
+        if (table_load_profile_includes("media_pending_uploads", profile))
+        {
+            auto pending = query_rows(connection, "postgresql_load_media_pending_uploads",
+                                      "SELECT media_id, owner_user_id, created_at_ms, expires_at_ms FROM "
+                                      "media_pending_uploads ORDER BY media_id");
+            if (!pending.ok)
+            {
+                return false;
+            }
+            for (auto const& row : pending.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.pending_media_uploads.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("media_blobs", profile))
+        {
+            auto media_blobs =
+                query_rows(connection, "postgresql_load_media_blobs",
+                           "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs "
+                           "ORDER BY storage_id");
+            if (!media_blobs.ok)
+            {
+                return false;
+            }
+            for (auto const& row : media_blobs.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    // ADR-0119: metadata only; the bytes are read per request.
+                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}, parse_u64(row[4])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("remote_media", profile))
+        {
+            auto remote_media = query_rows(connection, "postgresql_load_remote_media",
+                                           "SELECT server_name, media_id, content_type, size_bytes, quarantined, "
+                                           "local_media_id, fetched_at_ms FROM remote_media ORDER BY server_name, "
+                                           "media_id");
+            if (!remote_media.ok)
+            {
+                return false;
+            }
+            for (auto const& row : remote_media.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    store.remote_media.push_back(
+                        {row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4]), row[5], parse_u64(row[6])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("audit_log", profile))
+        {
+            // audit_log has no key; its rows are ordered by the time they were appended and, within one
+            // millisecond, by ctid (ADR-0489: retention deletes rows, so ctid alone no longer orders them).
+            // Fetch only the newest window, then replay it oldest-first so the in-memory window matches
+            // SQLite's: the newest rows, in insertion order.
+            auto audit_log = query_rows(connection, "postgresql_load_audit_log",
+                                        "SELECT category, event_type, actor, target, reason, created_at_ms FROM "
+                                        "audit_log ORDER BY CAST(created_at_ms AS BIGINT) DESC, ctid DESC LIMIT " +
+                                            std::to_string(max_in_memory_audit_events));
+            if (!audit_log.ok)
+            {
+                return false;
+            }
+            for (auto const& row : std::views::reverse(audit_log.rows))
+            {
+                if (row.size() >= 6U)
+                {
+                    // AUTH-1: hydrate only the bounded in-memory window; the table stays complete.
+                    remember_audit_event(store, {row[0], row[1], row[2], row[3], row[4], parse_u64(row[5])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("admin_actions", profile))
+        {
+            auto admin_actions =
+                query_rows(connection, "postgresql_load_admin_actions",
+                           "SELECT admin_user_id, action, target FROM admin_actions ORDER BY admin_user_id, action");
+            if (!admin_actions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : admin_actions.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.admin_actions.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("policy_rules", profile))
+        {
+            auto policy_rules = query_rows(connection, "postgresql_load_policy_rules",
+                                           "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER "
+                                           "BY rule_id");
+            if (!policy_rules.ok)
+            {
+                return false;
+            }
+            for (auto const& row : policy_rules.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.policy_rules.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("account_data", profile))
+        {
+            auto account_data = query_rows(connection, "postgresql_load_account_data",
+                                           "SELECT user_id, event_type, json, stream_id FROM account_data ORDER "
+                                           "BY stream_id");
+            if (!account_data.ok)
+            {
+                return false;
+            }
+            for (auto const& row : account_data.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentAccountData{};
+                    entry.user_id = row[0];
+                    entry.event_type = row[1];
+                    entry.content_json = row[2];
+                    entry.stream_id = parse_u64(row[3]);
+                    store.account_data.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("room_account_data", profile))
+        {
+            auto room_account_data = query_rows(connection, "postgresql_load_room_account_data",
+                                                "SELECT user_id, room_id, event_type, stream_id, json FROM "
+                                                "room_account_data ORDER BY stream_id");
+            if (!room_account_data.ok)
+            {
+                return false;
+            }
+            for (auto const& row : room_account_data.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    auto entry = PersistentAccountData{};
+                    entry.user_id = row[0];
+                    entry.room_id = row[1];
+                    entry.event_type = row[2];
+                    entry.stream_id = parse_u64(row[3]);
+                    entry.content_json = row[4];
+                    store.account_data.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("to_device_messages", profile))
+        {
+            auto to_device =
+                query_rows(connection, "postgresql_load_to_device_messages",
+                           "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
+                           "message_type, content, created_at_ms FROM to_device_messages ORDER BY stream_id");
+            if (!to_device.ok)
+            {
+                return false;
+            }
+            for (auto const& row : to_device.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    auto entry = PersistentToDeviceMessage{};
+                    entry.stream_id = parse_u64(row[0]);
+                    entry.sender_user_id = row[1];
+                    entry.target_user_id = row[2];
+                    entry.target_device_id = row[3];
+                    entry.message_type = row[4];
+                    entry.content_json = row[5];
+                    entry.created_at_ms = parse_u64(row[6]);
+                    store.to_device_messages.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("device_list_changes", profile))
+        {
+            auto device_list_changes =
+                query_rows(connection, "postgresql_load_device_list_changes",
+                           "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                           "device_list_changes ORDER BY stream_id");
+            if (!device_list_changes.ok)
+            {
+                return false;
+            }
+            for (auto const& row : device_list_changes.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentDeviceListChange{};
+                    entry.stream_id = parse_u64(row[0]);
+                    entry.observer_user_id = row[1];
+                    entry.subject_user_id = row[2];
+                    entry.change_type = row[3];
+                    store.device_list_changes.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("presence_state", profile))
+        {
+            auto presence = query_rows(connection, "postgresql_load_presence_state",
+                                       "SELECT user_id, stream_id, presence, status_msg, last_active_ago, "
+                                       "currently_active FROM presence_state ORDER BY stream_id");
+            if (!presence.ok)
+            {
+                return false;
+            }
+            for (auto const& row : presence.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    auto entry = PersistentPresence{};
+                    entry.user_id = row[0];
+                    entry.stream_id = parse_u64(row[1]);
+                    entry.presence = row[2];
+                    entry.status_msg = row[3];
+                    entry.last_active_ago = static_cast<std::int64_t>(parse_u64(row[4]));
+                    entry.currently_active = text_is_true(row[5]);
+                    store.presence_states.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("filters", profile))
+        {
+            auto filters = query_rows(connection, "postgresql_load_filters",
+                                      "SELECT user_id, filter_id, json FROM filters ORDER BY user_id, filter_id");
+            if (!filters.ok)
+            {
+                return false;
+            }
+            for (auto const& row : filters.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.filters.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        // Written by store_profile and the displayname/avatar updates, but never
+        // read back until 0.12.42: every profile vanished at each restart.
+        if (table_load_profile_includes("profiles", profile))
+        {
+            auto profiles =
+                query_rows(connection, "postgresql_load_profiles",
+                           "SELECT user_id, displayname, avatar_url, fields_json FROM profiles ORDER BY user_id");
+            if (!profiles.ok)
+            {
+                return false;
+            }
+            for (auto const& row : profiles.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.profiles.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("room_aliases", profile))
+        {
+            auto room_aliases =
+                query_rows(connection, "postgresql_load_room_aliases",
+                           "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias");
+            if (!room_aliases.ok)
+            {
+                return false;
+            }
+            for (auto const& row : room_aliases.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.room_aliases.insert({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("client_txn_ids", profile))
+        {
+            auto client_txns =
+                query_rows(connection, "postgresql_load_client_txn_ids",
+                           "SELECT user_id, room_id, event_type, txn_id, event_id, device_id, created_at_ms FROM "
+                           "client_txn_ids");
+            if (!client_txns.ok)
+            {
+                return false;
+            }
+            for (auto const& row : client_txns.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4], row[5], parse_u64(row[6])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("account_threepids", profile))
+        {
+            auto account_threepids = query_rows(connection, "postgresql_load_account_threepids",
+                                                "SELECT user_id, medium, address, country, id_server, "
+                                                "added_at_ms, validated_at_ms, bound, client_secret, sid "
+                                                "FROM account_threepids ORDER BY user_id, medium, address");
+            if (!account_threepids.ok)
+            {
+                return false;
+            }
+            for (auto const& row : account_threepids.rows)
+            {
+                if (row.size() >= 8U)
+                {
+                    PersistentThreePidBinding entry{};
+                    entry.user_id = row[0];
+                    entry.medium = row[1];
+                    entry.address = row[2];
+                    entry.country = row[3].empty() ? std::nullopt : std::optional<std::string>{row[3]};
+                    entry.id_server = row[4].empty() ? std::nullopt : std::optional<std::string>{row[4]};
+                    entry.added_at_ms = parse_u64(row[5]);
+                    entry.validated_at_ms = parse_u64(row[6]);
+                    entry.bound = text_is_true(row[7]);
+                    if (row.size() >= 10U)
+                    {
+                        entry.client_secret = row[8].empty() ? std::nullopt : std::optional<std::string>{row[8]};
+                        entry.sid = row[9].empty() ? std::nullopt : std::optional<std::string>{row[9]};
+                    }
+                    store.account_threepids.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("pushers", profile))
+        {
+            auto pushers =
+                query_rows(connection, "postgresql_load_pushers",
+                           "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                           "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers "
+                           "ORDER BY user_id, app_id, pushkey");
+            if (!pushers.ok)
+            {
+                return false;
+            }
+            for (auto const& row : pushers.rows)
+            {
+                if (row.size() >= 10U)
+                {
+                    PersistentPusher entry{};
+                    entry.user_id = row[0];
+                    entry.app_id = row[1];
+                    entry.pushkey = row[2];
+                    entry.kind = row[3];
+                    entry.app_display_name = row[4];
+                    entry.device_display_name = row[5];
+                    entry.profile_tag = row[6];
+                    entry.lang = row[7];
+                    entry.data_url = row[8];
+                    entry.data_format = row[9];
+                    if (row.size() >= 11U)
+                    {
+                        entry.data_extra_json = row[10];
+                    }
+                    if (row.size() >= 12U)
+                    {
+                        entry.device_id = row[11];
+                    }
+                    store.pushers.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("notifications", profile))
+        {
+            auto notifications_result = query_rows(connection, "postgresql_load_notifications",
+                                                   "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, "
+                                                   "profile_tag, highlight FROM notifications "
+                                                   "ORDER BY user_id, stream_ordering");
+            if (!notifications_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : notifications_result.rows)
+            {
+                if (row.size() >= 8U)
+                {
+                    PersistentNotification entry{};
+                    entry.user_id = row[0];
+                    entry.room_id = row[1];
+                    entry.event_id = row[2];
+                    entry.stream_ordering = parse_u64(row[3]);
+                    entry.ts = parse_u64(row[4]);
+                    entry.actions = row[5];
+                    entry.profile_tag = row[6];
+                    entry.highlight = text_is_true(row[7]);
+                    store.notifications.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("openid_tokens", profile))
+        {
+            auto openid_tokens_result = query_rows(connection, "postgresql_load_openid_tokens",
+                                                   "SELECT user_id, token_hash, expires_at FROM openid_tokens "
+                                                   "ORDER BY user_id");
+            if (!openid_tokens_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : openid_tokens_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    PersistentOpenidToken entry{};
+                    entry.user_id = row[0];
+                    entry.token_hash = row[1];
+                    entry.expires_at =
+                        std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                    store.openid_tokens.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("login_tokens", profile))
+        {
+            auto login_tokens_result = query_rows(connection, "postgresql_load_login_tokens",
+                                                  "SELECT user_id, token_hash, expires_at, used FROM login_tokens "
+                                                  "ORDER BY user_id");
+            if (!login_tokens_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : login_tokens_result.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    PersistentLoginToken entry{};
+                    entry.user_id = row[0];
+                    entry.token_hash = row[1];
+                    entry.expires_at =
+                        std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                    entry.used = text_is_true(row[3]);
+                    store.login_tokens.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("appservice_txn_cursor", profile))
+        {
+            auto appservice_txn_cursor_result =
+                query_rows(connection, "postgresql_load_appservice_txn_cursor",
+                           "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+                           "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id");
+            if (!appservice_txn_cursor_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : appservice_txn_cursor_result.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    PersistentAppserviceTxnCursor entry{};
+                    entry.appservice_id = row[0];
+                    entry.next_txn_id = parse_u64(row[1]);
+                    entry.delivered_stream_ordering = parse_u64(row[2]);
+                    entry.pending_txn_id = parse_u64(row[3]);
+                    entry.pending_stream_ordering = parse_u64(row[4]);
+                    store.appservice_txn_cursors.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("appservice_outbox", profile))
+        {
+            auto appservice_outbox_result = query_rows(connection, "postgresql_load_appservice_outbox",
+                                                       "SELECT appservice_id, stream_ordering, event_id FROM "
+                                                       "appservice_outbox ORDER BY appservice_id");
+            if (!appservice_outbox_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : appservice_outbox_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.appservice_outbox.push_back({row[0], parse_u64(row[1]), row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("deferred_pdus", profile))
+        {
+            auto deferred_pdus_result =
+                query_rows(connection, "postgresql_load_deferred_pdus",
+                           "SELECT event_id, room_id, origin, pdu_json, received_at_ms, attempts FROM deferred_pdus "
+                           "ORDER BY received_at_ms, event_id");
+            if (!deferred_pdus_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : deferred_pdus_result.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    PersistentDeferredPdu entry{};
+                    entry.event_id = row[0];
+                    entry.room_id = row[1];
+                    entry.origin = row[2];
+                    entry.pdu_json = row[3];
+                    entry.received_at_ms = static_cast<std::int64_t>(parse_u64(row[4]));
+                    entry.attempts = static_cast<std::uint32_t>(parse_u64(row[5]));
+                    store.deferred_pdus.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("receipts", profile))
+        {
+            auto receipts_result =
+                query_rows(connection, "postgresql_load_receipts",
+                           "SELECT room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id FROM receipts");
+            if (!receipts_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : receipts_result.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    PersistentReceipt entry{};
+                    entry.room_id = row[0];
+                    entry.receipt_type = row[1];
+                    entry.user_id = row[2];
+                    entry.thread_id = row[3];
+                    entry.event_id = row[4];
+                    entry.ts = parse_u64(row[5]);
+                    entry.stream_id = parse_u64(row[6]);
+                    store.receipts.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("appservice_directory", profile))
+        {
+            auto directory_result = query_rows(connection, "postgresql_load_appservice_directory",
+                                               "SELECT appservice_id, network_id, room_id FROM appservice_directory");
+            if (!directory_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : directory_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.appservice_directory.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("sync_stream_watermark", profile))
+        {
+            auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
+                                              "SELECT watermark FROM sync_stream_watermark");
+            if (!watermark.ok)
+            {
+                return false;
+            }
+            for (auto const& row : watermark.rows)
+            {
+                if (!row.empty())
+                {
+                    store.next_sync_stream_id = parse_u64(row[0]);
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_stream_watermark", profile))
+        {
+            auto const event_watermark = query_rows(connection, "postgresql_load_event_stream_watermark",
+                                                    "SELECT watermark FROM event_stream_watermark");
+            if (!event_watermark.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_watermark.rows)
+            {
+                if (!row.empty())
+                {
+                    store.event_stream_watermark = parse_u64(row[0]);
+                }
+            }
+        }
+
+        // ADR-0592: the epoch every sync token is issued in. Not on the federation worker's allowlist.
+        if (table_load_profile_includes("stream_token_epoch", profile))
+        {
+            auto const epoch =
+                query_rows(connection, "postgresql_load_stream_token_epoch", "SELECT epoch FROM stream_token_epoch");
+            if (!epoch.ok)
+            {
+                return false;
+            }
+            for (auto const& row : epoch.rows)
+            {
+                if (!row.empty())
+                {
+                    store.stream_token_epoch = parse_u64(row[0]);
+                }
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto load_schema_state(PostgresqlConnection& connection) -> std::optional<SchemaState>
+    {
+        auto state = SchemaState{};
+        auto tables = query_rows(
+            connection, "postgresql_load_table_names",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name");
+        if (!tables.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : tables.rows)
+        {
+            if (!row.empty())
+            {
+                state.tables.push_back(row.front());
+            }
+        }
+
+        // `version` is TEXT: ORDER BY it alone puts '10' before '9'.
+        auto migrations =
+            query_rows(connection, "postgresql_load_schema_migrations",
+                       "SELECT version, name, direction FROM schema_migrations ORDER BY CAST(version AS INTEGER)");
+        if (!migrations.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : migrations.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                auto const version = static_cast<std::uint32_t>(parse_u64(row[0]));
+                state.applied_migrations.push_back(
+                    {version, row[1],
+                     row[2] == "downgrade" ? MigrationDirection::downgrade : MigrationDirection::upgrade});
+                if (version > state.version)
+                {
+                    state.version = version;
+                }
+            }
+        }
+        return state;
+    }
+
+    // M-10: a session-scoped advisory lock held for the whole migration plan.
+    //
+    // Each step commits in its own transaction, so without a lease spanning the
+    // plan two server processes starting against the same database interleave
+    // their DDL: duplicate ledger inserts, a step applied twice, or a chain that
+    // fails half-way and leaves the schema at an intermediate version. A
+    // transaction-scoped lock would not help, because the window that needs
+    // protecting is *between* the transactions.
+    //
+    // RAII rather than a paired call: every early return in the plan loop below
+    // must release the lock, and there are several. pg_advisory_unlock is also
+    // best-effort by nature — the session ending releases it anyway, which is
+    // what makes a crashed migrator recoverable without operator action.
+    class PostgresqlMigrationLease final
+    {
+    public:
+        explicit PostgresqlMigrationLease(PostgresqlConnection& connection)
+            : connection_{connection}
+        {
+            // Blocks until the lock is free, which is the intent: the second
+            // process waits for the first to finish rather than racing it.
+            held_ = connection_
+                        .execute(PreparedStatement{"postgresql_migration_lock",
+                                                   "SELECT pg_advisory_lock($1)",
+                                                   {BoundValue{std::to_string(migration_lock_key), false}}})
+                        .ok;
+        }
+
+        PostgresqlMigrationLease(PostgresqlMigrationLease const&) = delete;
+        auto operator=(PostgresqlMigrationLease const&) -> PostgresqlMigrationLease& = delete;
+        PostgresqlMigrationLease(PostgresqlMigrationLease&&) = delete;
+        auto operator=(PostgresqlMigrationLease&&) -> PostgresqlMigrationLease& = delete;
+
+        ~PostgresqlMigrationLease()
+        {
+            if (!held_)
+            {
+                return;
+            }
+            std::ignore =
+                connection_.execute(PreparedStatement{"postgresql_migration_unlock",
+                                                      "SELECT pg_advisory_unlock($1)",
+                                                      {BoundValue{std::to_string(migration_lock_key), false}}});
+        }
+
+        [[nodiscard]] auto held() const noexcept -> bool
+        {
+            return held_;
+        }
+
+    private:
+        static constexpr auto migration_lock_key = postgresql_migration_lock_key;
+
+        PostgresqlConnection& connection_;
+        bool held_{false};
+    };
+
+    // Migrates forward to `target_version`: current_schema_version() on open,
+    // an older version for migrate_postgresql_schema_to.
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state,
+                                                std::uint32_t target_version) -> std::optional<SchemaState>
+    {
+        // Taken before the plan is computed and released only after it is
+        // complete (this object outlives every return path below).
+        auto const lease = PostgresqlMigrationLease{connection};
+
+        // The plan MUST be computed from a ledger read taken while holding the
+        // lease, never from the caller's earlier snapshot. Waiting for the lock
+        // is precisely the window in which another process finishes the same
+        // plan: a plan computed before the wait sends the loser of the race
+        // back through DDL the winner already applied, which fails and strands
+        // the schema part-way. Re-reading here is what turns "we both migrated"
+        // into "one migrated, the other found nothing to do".
+        auto const current = lease.held() ? load_schema_state(connection) : std::optional<SchemaState>{state};
+        if (!current.has_value())
+        {
+            return std::nullopt;
+        }
+        state = *current;
+        // Another process may have migrated past the target while this one
+        // waited for the lease. Never let that turn into a downgrade plan.
+        if (state.version > target_version)
+        {
+            return std::nullopt;
+        }
+        auto const plan = migration_plan_between(state.version, target_version);
+        auto const validation = migration_plan_is_valid(plan);
+        if (!validation.valid)
+        {
+            return std::nullopt;
+        }
+        if (!lease.held() && !plan.steps.empty())
+        {
+            // Fail closed: running an unserialised plan is the defect this
+            // lease exists to prevent, so refuse rather than proceed alone. The
+            // caller reports "unable to migrate PostgreSQL schema"; there is no
+            // log_diagnostic in scope here (it is defined below this helper).
+            return std::nullopt;
+        }
+        for (auto const& step : plan.steps)
+        {
+            auto statements = step.statements;
+            // Migration step SQL (from Schema.cpp's shared, backend-agnostic
+            // definitions, or from an offline-loaded migrations/*.sql file)
+            // is written in SQLite's dialect — translate SQLite-only type
+            // spellings (BLOB) before executing against PostgreSQL (#448).
+            for (auto& statement : statements)
+            {
+                statement.sql = translate_ddl_types_for_postgresql(std::move(statement.sql));
+            }
+            statements.push_back(migration_record_statement(step.version, step.name));
+            if (!connection.execute_transaction(statements))
+            {
+                return std::nullopt;
+            }
+        }
+        auto applied = apply_migration_plan(std::move(state), plan);
+        if (!applied.ok)
+        {
+            return std::nullopt;
+        }
+        return std::move(applied.state);
+    }
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("postgresql_store", event, fields, severity);
+    }
+
+} // namespace
+
+namespace detail
+{
+
+    auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void
+    {
+        pool.pool.set_limit(limit);
+    }
+
+    auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t
+    {
+        return pool.pool.opened_total();
+    }
+
+} // namespace detail
+
+auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnectionPolicyResult
+{
+    if (conninfo.empty())
+    {
+        return {false, "PostgreSQL connection info must not be empty"};
+    }
+    if (has_control_character(conninfo))
+    {
+        return {false, "PostgreSQL connection info must not contain control characters"};
+    }
+    if (!looks_like_postgresql_uri(conninfo) && !looks_like_key_value_conninfo(conninfo))
+    {
+        return {false, "PostgreSQL connection info must use a PostgreSQL URI or key/value form"};
+    }
+    auto options = parse_conninfo(conninfo);
+    auto defaults = ConninfoOptions{PQconndefaults()};
+    if (!options || !defaults)
+    {
+        return {false, "invalid PostgreSQL connection options (details redacted)"};
+    }
+    auto const effective = [&](std::string_view keyword) {
+        auto const explicit_value = option_value(options.get(), keyword);
+        return explicit_value.empty() ? option_value(defaults.get(), keyword) : explicit_value;
+    };
+    // Service files can override hosts after parsing. Reject indirection rather
+    // than validate one destination and let libpq connect to a different one.
+    if (!effective("service").empty())
+    {
+        return {false, "PostgreSQL service indirection is not supported; specify connection options directly"};
+    }
+    auto const local =
+        local_destination_list(effective("host"), false) && local_destination_list(effective("hostaddr"), true);
+    // Carry the remote TLS policy in the connection options themselves: the
+    // minimal worker environment intentionally does not inherit libpq defaults.
+    if (!local && option_value(options.get(), "sslmode") != "verify-full")
+    {
+        return {false, "remote PostgreSQL connections require explicit sslmode=verify-full"};
+    }
+    return {true, {}};
+}
+
+auto redact_postgresql_conninfo(std::string_view /*conninfo*/) -> std::string
+{
+    // Keep the compatibility API but do not try to redact arbitrary libpq syntax.
+    return "PostgreSQL [connection details redacted]";
+}
+
+auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
+{
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto const& table : initial_schema_definitions())
+    {
+        // #442: fail closed rather than emitting unvalidated DDL — every
+        // entry in initial_schema_definitions() is a hardcoded core table,
+        // so this should never actually be nullopt in practice.
+        auto sql = create_table_if_missing_sql(table);
+        if (!sql.has_value())
+        {
+            continue;
+        }
+        statements.push_back({"postgresql_create_" + std::string{table.name}, std::move(*sql), {}});
+    }
+    for (auto const& index : initial_schema_indexes())
+    {
+        auto sql = create_index_if_missing_sql(index);
+        if (!sql.has_value())
+        {
+            continue;
+        }
+        statements.push_back({"postgresql_create_" + std::string{index.name}, std::move(*sql), {}});
+    }
+    // Bootstrap builds exactly what the v1 migration builds and records only
+    // its row. Runtime startup then applies any later numbered migration on
+    // top, as it would for a database a previous release left at v1.
+    statements.push_back(migration_record_statement(1U, "initial_schema"));
+    return statements;
+}
+
+auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult
+{
+    auto const policy = validate_postgresql_conninfo(conninfo);
+    auto const redacted = redact_postgresql_conninfo(conninfo);
+    log_diagnostic("connection.opening", {
+                                             {"conninfo", redacted, false}
+    });
+    if (!policy.allowed)
+    {
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted,      false},
+                                                  {"reason",   policy.reason, false}
+        });
+        return {false, policy.reason, redacted, {}};
+    }
+
+    auto conninfo_string = std::string{conninfo};
+    // Force TLS rather than libpq's preferential GSS encryption path when TLS
+    // verification is required. No service expansion, and no dbname expansion.
+    auto options = parse_conninfo(conninfo_string);
+    auto keywords = std::vector<char const*>{};
+    auto values = std::vector<char const*>{};
+    for (auto const* option = options.get(); option->keyword != nullptr; ++option)
+    {
+        if (option->val != nullptr && std::string_view{option->keyword} != "gssencmode")
+        {
+            keywords.push_back(option->keyword);
+            values.push_back(option->val);
+        }
+    }
+    keywords.push_back("gssencmode");
+    values.push_back("disable");
+    keywords.push_back(nullptr);
+    values.push_back(nullptr);
+    auto connection = PostgresqlConnectionPtr{PQconnectdbParams(keywords.data(), values.data(), 0)};
+    if (connection == nullptr)
+    {
+        log_diagnostic("connection.rejected",
+                       {
+                           {"conninfo", redacted,                       false},
+                           {"reason",   "connection allocation failed", false}
+        });
+        return {false, "PostgreSQL connection allocation failed", redacted, {}};
+    }
+    if (PQstatus(connection.get()) != CONNECTION_OK)
+    {
+        auto reason = connection_error(*connection);
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted, false},
+                                                  {"reason",   reason,   false}
+        });
+        return {false, reason, redacted, {}};
+    }
+
+    // Pin the bytea text output form: load_result_rows decodes bytea columns
+    // from the `\x` hex form, and a role or database default of `escape` would
+    // otherwise change what the server sends. Refuse the connection rather than
+    // run with a form the decoder would reject.
+    if (!execute_raw_command(*connection, "SET bytea_output = 'hex'"))
+    {
+        auto reason = std::string{"unable to pin PostgreSQL bytea_output to hex"};
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted, false},
+                                                  {"reason",   reason,   false}
+        });
+        return {false, std::move(reason), redacted, {}};
+    }
+
+    log_diagnostic("connection.ready", {
+                                           {"conninfo", redacted, false}
+    });
+    auto handle = std::make_unique<PostgresqlConnectionHandle>();
+    handle->connection = std::move(connection);
+    return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
+}
+
+auto migrate_postgresql_schema_to(std::string_view conninfo, std::uint32_t target_version) -> MigrationApplyResult
+{
+    // Checked before connecting, so a refused call touches nothing.
+    if (target_version == 0U || target_version > current_schema_version())
+    {
+        return {false, "target schema version is not one this build knows", {}};
+    }
+    auto opened = open_postgresql_connection(conninfo);
+    if (!opened.ok)
+    {
+        return {false, opened.reason, {}};
+    }
+    auto& connection = opened.connection;
+    auto const has_schema = merovingian_schema_is_initialized(connection);
+    if (!has_schema.has_value())
+    {
+        return {false, "unable to inspect PostgreSQL schema", {}};
+    }
+    if (!*has_schema && !connection.execute_transaction(postgresql_schema_bootstrap_statements()))
+    {
+        return {false, "unable to initialize PostgreSQL schema", {}};
+    }
+    auto schema = load_schema_state(connection);
+    if (!schema.has_value())
+    {
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+    if (auto const known = schema_ledger_is_known(*schema); !known.valid)
+    {
+        return {false, known.reason, std::move(*schema)};
+    }
+    if (schema->version > target_version)
+    {
+        return {false, "schema is newer than the target version; migrations never move a schema backwards",
+                std::move(*schema)};
+    }
+    if (!apply_pending_migrations(connection, *schema, target_version).has_value())
+    {
+        return {false, "unable to migrate PostgreSQL schema", std::move(*schema)};
+    }
+    // The ledger and tables as PostgreSQL now has them, not as the plan predicted.
+    auto migrated = load_schema_state(connection);
+    if (!migrated.has_value())
+    {
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+    return {true, {}, std::move(*migrated)};
+}
+
+auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
+                                      std::string_view migration_role, TableLoadProfile profile)
+    -> PersistentStoreOpenResult
+{
+    log_diagnostic("store.opening", {
+                                        {"backend", "postgresql", false}
+    });
+    auto opened = open_postgresql_connection(conninfo);
+    if (!opened.ok)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", opened.reason, false}
+        });
+        return {false, opened.reason, {}};
+    }
+
+    auto& connection = opened.connection;
+    auto const has_schema = merovingian_schema_is_initialized(connection);
+    if (!has_schema.has_value())
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to inspect schema", false}
+        });
+        return {false, "unable to inspect PostgreSQL schema", {}};
+    }
+    if (!*has_schema)
+    {
+        log_diagnostic("store.schema_bootstrapping", {
+                                                         {"role", std::string{migration_role}, false}
+        });
+        // The bootstrap is the v1 migration, so it runs as the migration role
+        // like every other migration (0.12.5 audit, finding 18): that role then
+        // owns every table, and the next migration may ALTER them. Fail closed
+        // if it cannot be assumed, exactly as a pending migration does.
+        if (!migration_role.empty() && !set_postgresql_role(connection, migration_role))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to assume migration role", false}
+            });
+            return {false, "unable to assume PostgreSQL migration role", {}};
+        }
+        auto const bootstrap = postgresql_schema_bootstrap_statements();
+        if (!connection.execute_transaction(bootstrap))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "schema bootstrap failed", false}
+            });
+            return {false, "unable to initialize PostgreSQL schema", {}};
+        }
+        if (!migration_role.empty() && !reset_postgresql_role(connection))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to reset role after bootstrap", false}
+            });
+            return {false, "unable to reset PostgreSQL role after bootstrap", {}};
+        }
+        log_diagnostic("store.schema_bootstrapped", {});
+    }
+
+    auto schema = load_schema_state(connection);
+    if (!schema.has_value())
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to hydrate schema state", false}
+        });
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+    log_diagnostic("store.schema_loaded", {
+                                              {"version", std::to_string(schema->version), false}
+    });
+
+    auto store = PersistentStore{};
+    store.open = true;
+    store.backend = PersistentStoreBackend::postgresql;
+    store.postgresql_conninfo = std::string{conninfo};
+    store.postgresql_write_pool = std::make_shared<detail::PostgresqlWritePool>(store.write_connection_limit);
+    store.schema = std::move(*schema);
+    // Before migrating or hydrating anything: a ledger this build does not
+    // recognise describes tables it must not read or alter (ADR-0224).
+    if (auto const known = schema_ledger_is_known(store.schema); !known.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", known.reason, false}
+        });
+        return {false, known.reason, {}};
+    }
+    // 0.12.5 audit, finding 18: DDL runs as migration_role, not as the login
+    // role. Until then the login role -- which carries every privilege both
+    // sibling roles have -- was what executed CREATE TABLE and ALTER TABLE,
+    // so the privilege separation the two roles exist for did not apply to the
+    // one operation that actually needs DDL.
+    //
+    // The reason it used to run as the login role was ownership: ALTER TABLE is
+    // permitted only to a table's owner, and migration_role owned nothing.
+    // provision-roles.sql now creates the schema objects under migration_role,
+    // ends with a scoped transfer of the objects an existing database still
+    // has owned by the login role.
+    if (store.schema.version < current_schema_version())
+    {
+        log_diagnostic("store.migrating", {
+                                              {"from", std::to_string(store.schema.version),     false},
+                                              {"to",   std::to_string(current_schema_version()), false},
+                                              {"role", std::string{migration_role},              false}
+        });
+        if (!migration_role.empty() && !set_postgresql_role(connection, migration_role))
+        {
+            // Fail closed. Continuing as the login role would silently restore
+            // the privilege level this separation removes, on the one code path
+            // where it matters most.
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to assume migration role", false}
+            });
+            return {false, "unable to assume PostgreSQL migration role", {}};
+        }
+        auto migrated = apply_pending_migrations(connection, store.schema, current_schema_version());
+        if (!migrated.has_value())
+        {
+            log_diagnostic(
+                "store.rejected",
+                {
+                    {"reason",
+                     migration_role.empty() ? std::string{"migration failed"}
+                                            : std::string{"migration failed as the configured migration role; if "
+                                                          "this is an upgrade, the schema objects may still be owned "
+                                                          "by the login role -- see the ownership transfer step in "
+                                                          "packaging/postgresql/provision-roles.sql"},
+                     false}
+            });
+            return {false, "unable to migrate PostgreSQL schema", {}};
+        }
+        log_diagnostic("store.migrated", {
+                                             {"version", std::to_string(migrated->version), false}
+        });
+        store.schema = std::move(*migrated);
+        // Drop back to the login role so the SET ROLE below can reach the
+        // runtime role: PostgreSQL will not let a session that has already
+        // SET ROLE to one role switch to a sibling.
+        if (!migration_role.empty() && !reset_postgresql_role(connection))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to reset role after migration", false}
+            });
+            return {false, "unable to reset PostgreSQL role after migration", {}};
+        }
+    }
+    // Serve as the DML-only runtime role. Applied whether or not a migration
+    // ran, so a steady-state restart is just as constrained as a fresh upgrade.
+    store.postgresql_runtime_role = std::string{runtime_role};
+    if (!runtime_role.empty() && !set_postgresql_role(connection, runtime_role))
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to assume runtime role", false}
+        });
+        return {false, "unable to assume PostgreSQL runtime role", {}};
+    }
+    if (!load_persistent_rows(connection, store, profile))
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to hydrate rows", false}
+        });
+        return {false, "unable to hydrate PostgreSQL persistent rows", {}};
+    }
+    sort_appservice_outbox(store);
+    sort_to_device_messages(store);
+    reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
+    rebuild_state_index(store);
+    rebuild_membership_index(store);
+    rebuild_client_txn_index(store);
+    rebuild_account_data_index(store);
+    rebuild_notification_index(store);
+    rebuild_federation_transaction_index(store);
+    rebuild_redaction_state(store);
+    rebuild_deferred_pdu_awaits(store);
+    rebuild_key_signature_index(store);
+    restore_sync_stream_id(store);
+
+    auto compatibility = validate_persistent_store(store);
+    if (!compatibility.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", compatibility.reason, false}
+        });
+        return {false, compatibility.reason, {}};
+    }
+    log_diagnostic("store.ready",
+                   {
+                       {"backend", "postgresql",                         false},
+                       {"version", std::to_string(store.schema.version), false}
+    });
+    return {true, {}, std::move(store)};
+}
+
+namespace
+{
+
+    [[nodiscard]] auto identifier_is_safe(std::string_view name) noexcept -> bool
+    {
+        if (name.empty() || name.size() > 63U)
+        {
+            return false;
+        }
+        if (!((name.front() >= 'a' && name.front() <= 'z') || (name.front() >= 'A' && name.front() <= 'Z') ||
+              name.front() == '_'))
+        {
+            return false;
+        }
+        for (auto const character : name)
+        {
+            auto const allowed = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+                                 (character >= '0' && character <= '9') || character == '_';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace
+
+auto set_postgresql_role(PostgresqlConnection& connection, std::string_view role_name) -> bool
+{
+    if (!connection.open() || !identifier_is_safe(role_name))
+    {
+        return false;
+    }
+    // Identifier safety is enforced above, so quoting with double quotes is
+    // sufficient. We deliberately do NOT pass role through a $1 parameter:
+    // SET ROLE does not accept a parameter form in PostgreSQL, only an
+    // inline identifier or NONE.
+    auto const sql = "SET ROLE \"" + std::string{role_name} + "\"";
+    auto const result = connection.execute({"set_postgresql_role", sql, {}});
+    return result.ok;
+}
+
+auto reset_postgresql_role(PostgresqlConnection& connection) -> bool
+{
+    if (!connection.open())
+    {
+        return false;
+    }
+    // SET ROLE NONE restores the authenticated session_user. `RESET ROLE`
+    // would instead reapply the connection-time role configuration,
+    // including any `ALTER ROLE ... SET ROLE` defaults, which keeps an
+    // elevated role active when callers expect to drop back to the
+    // login identity.
+    auto const result = connection.execute({"reset_postgresql_role", "SET ROLE NONE", {}});
+    return result.ok;
+}
+
+auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
+{
+    if (!connection.open())
+    {
+        return {};
+    }
+    auto const result = connection.execute({"postgresql_current_user", "SELECT CURRENT_USER::text", {}});
+    if (!result.ok || result.rows.empty() || result.rows.front().empty())
+    {
+        return {};
+    }
+    return result.rows.front().front();
+}
+
+namespace
+{
+
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id,
+                                               detail::RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        auto const notify_read = [&after_table](std::string_view table) {
+            if (after_table)
+            {
+                after_table(table);
+            }
+        };
+        auto const room_id_str = std::string{room_id};
+        auto snapshot = RoomReloadSnapshot{};
+
+        auto room = connection.execute({"postgresql_reload_room",
+                                        "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE "
+                                        "room_id = $1",
+                                        {{room_id_str, false}}});
+        if (!room.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("rooms");
+        if (!room.rows.empty() && room.rows.front().size() >= 3U)
+        {
+            snapshot.room =
+                PersistentRoom{room.rows.front()[0], room.rows.front()[1], text_is_true(room.rows.front()[2])};
+        }
+
+        auto memberships = connection.execute(
+            {"postgresql_reload_membership",
+             "SELECT room_id, user_id, membership, stream_ordering FROM membership WHERE room_id = $1",
+             {{room_id_str, false}}});
+        if (!memberships.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("membership");
+        for (auto const& row : memberships.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+            }
+        }
+
+        auto invites =
+            connection.execute({"postgresql_reload_invites",
+                                "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                                "invite_state_json, stream_ordering, resident_server FROM invites WHERE room_id = $1",
+                                {{room_id_str, false}}});
+        if (!invites.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("invites");
+        for (auto const& row : invites.rows)
+        {
+            if (row.size() >= 8U)
+            {
+                snapshot.invites.push_back({row[0], row[1], row[2], row[3], row[4],
+                                            parse_invite_state_events_json(row[5]), parse_u64(row[6]), row[7]});
+            }
+        }
+
+        auto events = connection.execute(
+            {"postgresql_reload_events",
+             "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events WHERE "
+             "room_id = $1",
+             {{room_id_str, false}}});
+        if (!events.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("events");
+        for (auto const& row : events.rows)
+        {
+            if (row.size() >= 7U)
+            {
+                auto event = PersistentEvent{row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])};
+                event.status = row[6];
+                snapshot.events.push_back(std::move(event));
+            }
+        }
+
+        auto state =
+            connection.execute({"postgresql_reload_current_state",
+                                "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE room_id = $1",
+                                {{room_id_str, false}}});
+        if (!state.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("current_state");
+        for (auto const& row : state.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.state.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        // The room's state groups, their own entries and its events' group mappings (ADR-0064), from
+        // the same snapshot. Federation reads judge an event on the group recorded for it and treat one
+        // without a group as invisible, so these must travel with the events.
+        auto state_groups = connection.execute(
+            {"postgresql_reload_state_groups",
+             "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups WHERE room_id = $1",
+             {{room_id_str, false}}});
+        if (!state_groups.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("state_groups");
+        for (auto const& row : state_groups.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                auto group = PersistentStateGroup{};
+                group.state_group_id = row[0];
+                group.room_id = row[1];
+                group.parent_state_group_id = row[2].empty() ? std::nullopt : std::optional<std::string>{row[2]};
+                group.delta_depth = static_cast<std::uint32_t>(parse_u64(row[3]));
+                snapshot.state_groups.push_back(std::move(group));
+            }
+        }
+
+        auto group_entries = connection.execute(
+            {"postgresql_reload_state_group_state",
+             "SELECT s.state_group_id, s.event_type, s.state_key, s.event_id FROM state_group_state s "
+             "JOIN state_groups g ON g.state_group_id = s.state_group_id WHERE g.room_id = $1",
+             {{room_id_str, false}}});
+        if (!group_entries.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("state_group_state");
+        for (auto const& row : group_entries.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.state_group_state.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto mappings = connection.execute({"postgresql_reload_event_state_groups",
+                                            "SELECT m.event_id, m.state_group_id FROM event_state_groups m "
+                                            "JOIN events e ON e.event_id = m.event_id WHERE e.room_id = $1",
+                                            {{room_id_str, false}}});
+        if (!mappings.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("event_state_groups");
+        for (auto const& row : mappings.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                snapshot.event_state_groups.push_back({row[0], row[1]});
+            }
+        }
+
+        if (snapshot.events.empty())
+        {
+            return snapshot;
+        }
+
+        // Bind the room once, rather than one parameter per event: rooms can
+        // exceed PreparedStatement's parameter cap. Joins keep each relation
+        // query scoped to this room without reading unrelated event graphs.
+        auto relations = PersistentStore{};
+        std::ignore = relations.events.insert_all(std::move(snapshot.events));
+
+        auto edges = connection.execute({"postgresql_reload_event_edges",
+                                         "SELECT r.event_id, r.prev_event_id FROM event_edges r "
+                                         "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                         {{room_id_str, false}}});
+        if (!edges.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("event_edges");
+        for (auto const& row : edges.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                relations.event_edges.push_back({row[0], row[1]});
+            }
+        }
+
+        auto auth = connection.execute({"postgresql_reload_event_auth",
+                                        "SELECT r.event_id, r.auth_event_id FROM event_auth r "
+                                        "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                        {{room_id_str, false}}});
+        if (!auth.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("event_auth");
+        for (auto const& row : auth.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                relations.event_auth.push_back({row[0], row[1]});
+            }
+        }
+
+        auto signatures =
+            connection.execute({"postgresql_reload_event_signatures",
+                                "SELECT r.event_id, r.server_name, r.key_id, r.signature FROM event_signatures r "
+                                "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                {{room_id_str, false}}});
+        if (!signatures.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("event_signatures");
+        for (auto const& row : signatures.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                relations.event_signatures.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        reconstruct_event_relations(relations);
+        snapshot.events = relations.events.extract();
+        return snapshot;
+    }
+
+} // namespace
+
+namespace detail
+{
+
+    auto persist_transaction_to_postgresql(PersistentStore const& store,
+                                           std::vector<PreparedStatement> const& statements) -> bool
+    {
+        if (store.postgresql_conninfo.empty())
+        {
+            return false;
+        }
+        // Every connection assumes the runtime role before its first statement,
+        // not just the bootstrap one. A failure refuses the write rather than
+        // performing it with the login role's wider privileges.
+        auto const open_writer = [&store]() -> std::optional<PostgresqlConnection> {
+            auto opened = open_postgresql_connection(store.postgresql_conninfo);
+            if (!opened.ok || (!store.postgresql_runtime_role.empty() &&
+                               !set_postgresql_role(opened.connection, store.postgresql_runtime_role)))
+            {
+                return std::nullopt;
+            }
+            return std::move(opened.connection);
+        };
+        if (store.postgresql_write_pool == nullptr)
+        {
+            auto connection = open_writer();
+            return connection.has_value() && connection->execute_transaction(statements);
+        }
+        // DB-7, ADR-0154: reuse a pooled connection. One the server has closed
+        // (restart, idle reaper) is detected before use and replaced, and one
+        // left unusable by a failed transaction is closed rather than returned.
+        auto lease = store.postgresql_write_pool->pool.acquire(open_writer, [](PostgresqlConnection& connection) {
+            return connection.reusable();
+        });
+        if (!lease.has_value())
+        {
+            return false;
+        }
+        auto const committed = lease->get().execute_transaction(statements);
+        if (!committed && !lease->get().reusable())
+        {
+            lease->discard();
+        }
+        return committed;
+    }
+
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // One room's rows from one snapshot (ADR-0161): under READ COMMITTED
+        // each statement would see every commit made before it started.
+        if (!opened.connection
+                 .execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
+                 .ok)
+        {
+            return std::nullopt;
+        }
+        auto snapshot = load_room_snapshot_impl(opened.connection, room_id, after_table);
+        // A read-only transaction has nothing to commit; ending it either way
+        // releases its snapshot before the connection closes.
+        std::ignore = opened.connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
+        return snapshot;
+    }
+
+    auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                         std::string_view storage_id) -> std::optional<std::string>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // bytes is a bytea column; the result loader decodes it byte-exactly.
+        auto result = opened.connection.execute({"postgresql_read_media_blob",
+                                                 "SELECT bytes FROM media_blobs WHERE storage_id = $1 AND "
+                                                 "ref_count <> '0'",
+                                                 {{std::string{storage_id}, false}}});
+        if (!result.ok || result.rows.empty() || result.rows.front().empty())
+        {
+            return std::nullopt;
+        }
+        return result.rows.front().front();
+    }
+
+    auto read_media_blob_chunk_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                               std::string_view storage_id, std::uint64_t expected_size,
+                                               std::uint64_t offset, std::size_t length) -> std::optional<std::string>
+    {
+        if (conninfo.empty() || length == 0U || offset > expected_size || length > expected_size - offset)
+        {
+            return std::nullopt;
+        }
+        // A fresh connection per chunk, closed before the caller writes the chunk to its client: a client that
+        // stops reading holds no PostgreSQL backend between chunks (ADR-0574).
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // One statement, so the length check and the slice come from the same row version. substring() on bytea
+        // is 1-based; the offset, the length and the storage id are bound parameters, never SQL text.
+        auto result = opened.connection.execute({
+            "postgresql_read_media_blob_chunk",
+            "SELECT substring(bytes from ($2::bigint + 1) for $3::bigint), octet_length(bytes) FROM media_blobs "
+            "WHERE storage_id = $1 AND ref_count <> '0'",
+            {{std::string{storage_id}, false}, {std::to_string(offset), false}, {std::to_string(length), false}}
+        });
+        if (!result.ok || result.rows.empty() || result.rows.front().size() < 2U ||
+            result.rows.front()[1] != std::to_string(expected_size) || result.rows.front()[0].size() != length)
+        {
+            return std::nullopt;
+        }
+        return std::move(result.rows.front()[0]);
+    }
+
+    auto load_remote_signing_keys_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                  std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The same four columns the worker role is granted and the start-up load
+        // selects: secret_key is never named, and the role could not read it.
+        auto result = opened.connection.execute(
+            {"postgresql_load_remote_signing_keys",
+             "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "
+             "server_name = $1",
+             {{std::string{server_name}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                auto key = PersistentServerSigningKey{row[0], row[1], row[2], parse_u64(row[3]), {}};
+                key.expired_ts = parse_u64(row[4]);
+                keys.push_back(std::move(key));
+            }
+        }
+        return keys;
+    }
+
+    auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                           std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The prefix is a bound parameter compared with left(), not LIKE, so `%` and
+        // `_` stay literal. audit_log has no key: rows are ordered by the time they were appended and, within
+        // one millisecond, by ctid (ADR-0489).
+        // `limit` is a size_t the caller has already clamped.
+        auto result = opened.connection.execute(
+            {"postgresql_query_audit_log_by_prefix",
+             "SELECT category, event_type, actor, target, reason FROM audit_log "
+             "WHERE left(event_type, char_length($1::text)) = $1::text ORDER BY CAST(created_at_ms AS BIGINT) "
+             "DESC, ctid DESC LIMIT " +
+                 std::to_string(limit),
+             {{std::string{prefix}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto rows = std::vector<PersistentAuditEvent>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                rows.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+        return rows;
+    }
+
+    auto audit_rows_older_than_exist_in_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                   std::uint64_t cutoff_ms) -> std::optional<bool>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        auto result = opened.connection.execute(
+            {"postgresql_audit_rows_older_than_exist",
+             "SELECT 1 FROM audit_log WHERE CAST(created_at_ms AS BIGINT) > 0 AND CAST(created_at_ms AS BIGINT) < "
+             "CAST($1 AS BIGINT) LIMIT 1",
+             {{std::to_string(cutoff_ms), false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        return !result.rows.empty();
+    }
+
+} // namespace detail
+
+} // namespace merovingian::database

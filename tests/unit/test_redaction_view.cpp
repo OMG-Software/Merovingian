@@ -10,11 +10,11 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/redaction_view.hpp"
+#include "merovingian/database/RedactionView.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

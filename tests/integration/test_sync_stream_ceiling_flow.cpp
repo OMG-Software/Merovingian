@@ -5,9 +5,9 @@
 // and a watermark write that fails (ADR-0540). Request-level, so in integration (issue 552). The counter's own
 // boundary, without a runtime, is in tests/unit/test_sync_stream_ceiling.cpp.
 #include "../support/ConsoleLogCapture.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

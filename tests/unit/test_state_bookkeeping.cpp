@@ -8,7 +8,7 @@
 //
 // These tests exercise merovingian::homeserver::compute_state_before /
 // compute_state_after / record_event_state / recompute_current_state
-// directly — the same functions src/homeserver/local_http_router.cpp's
+// directly — the same functions src/homeserver/LocalHttpRouter.cpp's
 // ingest_pdu_event wires into the inbound PDU path. See
 // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md and
 // tests/integration/test_pdu_ingestion_state_groups_flow.cpp for the end-to-end proof
@@ -23,10 +23,10 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
-#include "merovingian/events/state_resolution.hpp"
+#include "merovingian/events/StateResolution.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
 #include "merovingian/homeserver/EventBookkeeping.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

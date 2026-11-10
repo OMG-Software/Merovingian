@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // Conformance tests for the server behaviour of POST /rooms/{roomId}/upgrade that the other upgrade tests
 // do not cover: moving the old room's local aliases and lowering its power levels.
@@ -14,9 +14,9 @@
 //   - "If possible, the power levels in the old room should also be modified ... setting events_default and
 //     invite to the greater of 50 and users_default + 1": a SHOULD, and only where it is possible.
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

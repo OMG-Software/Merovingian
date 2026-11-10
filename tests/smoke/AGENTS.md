@@ -15,7 +15,7 @@ They do **not** exercise a live HTTP listener — that end-to-end path (real TCP
 listener, `/_matrix/client/versions`) is covered by
 `tests/integration/test_http_server_listener_flow.cpp`, and the full
 vertical-slice startup flow (`run_local_smoke_flow` /
-`local_smoke_flow.cpp` in `src/homeserver/`) is exercised from
+`LocalSmokeFlow.cpp` in `src/homeserver/`) is exercised from
 `tests/integration/test_homeserver_vertical_slice_flow.cpp`, not from this
 directory. Smoke tests here do **not** test correctness — that is covered by
 unit and conformance tests.

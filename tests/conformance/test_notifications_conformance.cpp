@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            GET /_matrix/client/v3/notifications — CONFORMANCE           |
@@ -19,9 +19,9 @@
 // |  list + push-rule-evaluation pipeline together).                        |
 // +-------------------------------------------------------------------------+
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -119,7 +119,7 @@ using namespace merovingian::tests;
 // PUT .../send/m.room.message/{txnId} whose content names `mentioned_user`
 // in `m.mentions.user_ids` — fires the default `.m.rule.is_user_mention`
 // override rule, which sets the highlight tweak (see
-// src/homeserver/default_push_ruleset.cpp).
+// src/homeserver/DefaultPushRuleset.cpp).
 [[nodiscard]] auto send_mention_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                                         std::string const& room_id, std::string const& txn_id,
                                         std::string const& mentioned_user) -> std::string

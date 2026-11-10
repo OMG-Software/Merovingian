@@ -12,7 +12,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/homeserver/UserDirectorySearchStats.hpp"
-#include "merovingian/homeserver/user_directory_search.hpp"
+#include "merovingian/homeserver/UserDirectorySearch.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -5,10 +5,10 @@
 #include "TlsTestCertificate.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
-#include "tls_mock_server.hpp"
+#include "TlsMockServer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

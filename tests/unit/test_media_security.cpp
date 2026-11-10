@@ -12,7 +12,7 @@
 #include "merovingian/media/RemoteMediaFetchRequest.hpp"
 #include "merovingian/media/RuntimeMediaConfig.hpp"
 #include "merovingian/media/SandboxedMediaWorkerPlan.hpp"
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/Security.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

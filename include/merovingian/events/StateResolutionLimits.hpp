@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Limits.hpp"
 
 #include <cstddef>
 

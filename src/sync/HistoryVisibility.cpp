@@ -5,11 +5,11 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
 #include "merovingian/sync/HistoryVisibilityValue.hpp"
-#include "merovingian/sync/state_group_lookup.hpp"
+#include "merovingian/sync/StateGroupLookup.hpp"
 
 #include <algorithm>
 #include <string>

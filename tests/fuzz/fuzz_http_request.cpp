@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/Request.hpp"
 
 #include <cstddef>
 #include <cstdint>

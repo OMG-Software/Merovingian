@@ -3,7 +3,7 @@
 
 #include "merovingian/observability/CorrelationScope.hpp"
 
-#include "merovingian/observability/observability_internal.hpp"
+#include "merovingian/observability/ObservabilityInternal.hpp"
 
 #include <optional>
 #include <utility>

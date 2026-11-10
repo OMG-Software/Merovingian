@@ -11,10 +11,10 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
-#include "merovingian/homeserver/send_join_answer_authorization.hpp"
+#include "merovingian/homeserver/SendJoinAnswerAuthorization.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

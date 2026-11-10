@@ -8,7 +8,7 @@
 // spec states no count or row limit; those are ADR-0339 decisions, enforced for rows the server
 // writes itself as well as for a client's account-data PUT.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

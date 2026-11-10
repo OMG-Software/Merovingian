@@ -8,7 +8,7 @@
 #include "merovingian/federation/DispatchWorkerSummary.hpp"
 #include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/OutboundTransactionResult.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"

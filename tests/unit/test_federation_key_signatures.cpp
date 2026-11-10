@@ -16,10 +16,10 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/key_signatures.hpp"
+#include "merovingian/federation/KeySignatures.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

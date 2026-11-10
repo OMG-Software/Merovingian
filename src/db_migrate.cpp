@@ -5,8 +5,8 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
 #include "merovingian/config/DatabaseRole.hpp"
-#include "merovingian/database/migration_files.hpp"
-#include "merovingian/platform/signal_hardening.hpp"
+#include "merovingian/database/MigrationFiles.hpp"
+#include "merovingian/platform/SignalHardening.hpp"
 
 #include <sys/stat.h>
 

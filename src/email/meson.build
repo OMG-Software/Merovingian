@@ -1,7 +1,7 @@
 email_sources = files(
-  'mailbox_address.cpp',
-  'notification_email.cpp',
-  'smtp_client.cpp',
+  'MailboxAddress.cpp',
+  'NotificationEmail.cpp',
+  'SmtpClient.cpp',
   'SmtpEndpoint.cpp',
 )
 

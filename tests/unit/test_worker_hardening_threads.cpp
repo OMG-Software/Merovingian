@@ -22,8 +22,8 @@
 #include "merovingian/platform/LandlockAccess.hpp"
 #include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/LandlockPathRule.hpp"
-#include "merovingian/platform/runtime_hardening.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
+#include "merovingian/platform/RuntimeHardening.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -31,9 +31,9 @@
 #include <string_view>
 
 #ifdef __linux__
-#include "../support/process_tasks.hpp"
-#include "../support/temp_directory.hpp"
-#include "merovingian/platform/landlock_hardening.hpp"
+#include "../support/ProcessTasks.hpp"
+#include "../support/TempDirectory.hpp"
+#include "merovingian/platform/LandlockHardening.hpp"
 
 #include <fcntl.h>
 #include <linux/seccomp.h>

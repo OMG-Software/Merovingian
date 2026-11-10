@@ -6,7 +6,7 @@
 // Spec: docs/matrix-v1.19-spec/server-server-api.md "Backfilling and retrieving missing events" (a
 // server that lacks a PDU's prev_events fetches them and then places the PDU).
 
-#include "../support/master_key.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -20,7 +20,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/deferred_pdu_retry.hpp"
+#include "merovingian/homeserver/DeferredPduRetry.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

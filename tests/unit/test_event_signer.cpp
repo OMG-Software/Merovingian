@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Unit tests for events/event_signer.cpp: signing_key_id_is_valid, base64
+// Unit tests for events/EventSigner.cpp: signing_key_id_is_valid, base64
 // helpers, make_event_signing_payload, attach_event_signature,
 // sign_event_for_server, verify_event_signature_presence,
 // verify_event_signature.
@@ -9,7 +9,7 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
@@ -21,7 +21,7 @@
 #include "merovingian/crypto/VerificationResult.hpp"
 #include "merovingian/events/EventSigningDiagnosticField.hpp"
 #include "merovingian/events/SigningKeyId.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

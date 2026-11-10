@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |              MATRIX /SYNC HANDLER CONFORMANCE TESTS                     |
@@ -23,15 +23,15 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/EduRelayContext.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/room_history_fixture.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/RoomHistoryFixture.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -42,18 +42,18 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/DispatchResult.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1453,7 +1453,7 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
         // Simulate the local join event being stored by the fixed remote join path.
         // store_event_with_state stores the event AND updates current_state to point
         // to the join event, so joined_membership_changed_since detects the transition.
-        // This is the critical step the fix adds to room_service.cpp::join_room.
+        // This is the critical step the fix adds to RoomService.cpp::join_room.
         auto const join_stream = rt.homeserver.database.next_stream_ordering++;
         auto const join_pe = merovingian::database::PersistentEvent{
             join_event_id,

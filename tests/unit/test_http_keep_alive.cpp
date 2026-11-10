@@ -7,9 +7,9 @@
 #include "merovingian/http/KeepAlivePolicy.hpp"
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/http/SlowlorisPolicy.hpp"
-#include "merovingian/http/connection_guard.hpp"
-#include "merovingian/http/keep_alive.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/ConnectionGuard.hpp"
+#include "merovingian/http/KeepAlive.hpp"
+#include "merovingian/http/Request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

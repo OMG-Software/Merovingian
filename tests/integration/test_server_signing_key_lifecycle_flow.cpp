@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         SERVER SIGNING KEY LIFECYCLE TESTS                              |
@@ -16,8 +16,8 @@
 // |  not weaken the assertions.                                             |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -28,9 +28,9 @@
 #include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
 #include "merovingian/crypto/RuntimeMultiKeyEd25519Provider.hpp"
-#include "merovingian/crypto/master_key.hpp"
-#include "merovingian/crypto/secret_box.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/crypto/MasterKey.hpp"
+#include "merovingian/crypto/SecretBox.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -38,8 +38,8 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -5,10 +5,10 @@
 // answered by the connection handler before the request reaches the dispatcher, so it takes no lock a slow request
 // can hold, and it reveals nothing but its fixed body. A choice of this server, so an integration flow.
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "bounded_connect.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -20,7 +20,7 @@
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"

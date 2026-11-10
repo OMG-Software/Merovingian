@@ -2680,7 +2680,7 @@ Set it to `false` to run a non-federating server.
 Other servers find yours from the server name in your user IDs (`server.name`),
 by the steps of the Matrix specification's "Resolving server names"
 ([server-server API](matrix-v1.19-spec/server-server-api.md#resolving-server-names)).
-This server resolves other servers the same way (`src/federation/server_discovery.cpp`),
+This server resolves other servers the same way (`src/federation/ServerDiscovery.cpp`),
 and a peer that follows the specification resolves yours as follows:
 
 1. If the server name is an IP literal or has an explicit port, the peer connects
@@ -3191,7 +3191,7 @@ The server generates its Ed25519 federation signing key on first start and
 stores it encrypted under the master key. Operators have no way to rotate it
 today: the code can retire the active key and publish it under `old_verify_keys`
 on `GET /_matrix/key/v2/server` (`rotate_server_signing_key` in
-`src/homeserver/room_service.cpp`), but nothing reachable by an operator calls
+`src/homeserver/RoomService.cpp`), but nothing reachable by an operator calls
 it. It has no admin route, command-line flag, signal or configuration key, and
 only the test suite calls it. The server never regenerates a lost key silently
 (ADR-0017), and a missing key with a missing or wrong master key makes start-up

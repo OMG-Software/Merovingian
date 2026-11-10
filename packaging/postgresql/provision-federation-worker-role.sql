@@ -103,7 +103,7 @@ GRANT SELECT ON forward_extremities TO :fed_worker_role;
 -- remote_key_cache_probe / remote_key_resolver) legitimately needs this
 -- table to cache OTHER servers' public keys, but must never be able to
 -- select this server's OWN encrypted signing secret. The worker's loader
--- (src/database/postgresql_store.cpp load_persistent_rows) never includes
+-- (src/database/PostgresqlStore.cpp load_persistent_rows) never includes
 -- secret_key in its SELECT list for this profile; this GRANT is the
 -- database-level backstop that makes that true even if a future bug widened
 -- the C++ query -- PostgreSQL itself refuses a query naming a column this

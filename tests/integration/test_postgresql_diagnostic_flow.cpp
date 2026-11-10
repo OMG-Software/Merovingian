@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 

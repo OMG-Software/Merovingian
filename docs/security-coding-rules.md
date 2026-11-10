@@ -123,7 +123,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   thumbnail worker via `fork()`) while client connections and other sockets may still be
   open. A socket without the close-on-exec flag is inherited by the child, handing a
   compromised or buggy worker process an unaudited handle onto connections it should never
-  see — this was a real, fixed vulnerability (accepted client sockets in `http_server.cpp`
+  see — this was a real, fixed vulnerability (accepted client sockets in `HttpServer.cpp`
   were missing `SOCK_CLOEXEC` until the fix landed; see `docs/threat-model.md`).
   Source: `src/net/AGENTS.md`.
 
@@ -242,7 +242,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`, `src/core/AGENTS.md`.
 
 - **Always use constant-time comparison for secrets.** Call `constant_time_equal()` from
-  `crypto/constant_time.hpp`; never use `==`, `memcmp`, or `std::equal` on secret bytes —
+  `crypto/ConstantTime.hpp`; never use `==`, `memcmp`, or `std::equal` on secret bytes —
   this includes access tokens, password hashes, and any other comparison against
   attacker-influenced input where the *comparison itself* is security-relevant.
   Why: an early-exit comparison (`==`/`memcmp` both are, in practice, on every common
@@ -281,7 +281,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **Never sign or hash a string that was not produced by the canonical JSON serializer.**
   Any other JSON library, or ad-hoc string building, can produce non-canonical output that
   changes the hash of semantically identical content. Strip `signatures` and `unsigned`
-  *before* serializing (via `signable.hpp`), not after.
+  *before* serializing (via `Signable.hpp`), not after.
   Why: Matrix event IDs, content hashes, and signatures are only meaningful if every party
   computes byte-identical canonical JSON for the same logical event — a non-canonical
   serializer breaks that equivalence, which is both a correctness bug and, if exploitable,
@@ -290,8 +290,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/canonicaljson/AGENTS.md`, `src/events/AGENTS.md`.
 
 - **The canonical JSON serializer must reject floats on the signing/hashing path.**
-  `serialize_canonical_strict()` (used by `event_signer.cpp`, `event_id.cpp`,
-  `signable.cpp`) fails closed with `CanonicalJsonError::float_not_allowed` on a `Value` tree
+  `serialize_canonical_strict()` (used by `EventSigner.cpp`, `EventId.cpp`,
+  `Signable.cpp`) fails closed with `CanonicalJsonError::float_not_allowed` on a `Value` tree
   containing any double, rather than serializing one.
   Why: the Matrix canonical JSON spec forbids floats in signed/hashed data — integers only,
   within the JS-safe range. The general-purpose `serialize_canonical()` still accepts floats
@@ -310,7 +310,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/canonicaljson/AGENTS.md`.
 
 - **Always hash tokens before storing** (`crypto_generichash(token)`); **tokens come from
-  `crypto/random.hpp`**; **tokens are never stored or logged in plaintext.**
+  `crypto/Random.hpp`**; **tokens are never stored or logged in plaintext.**
   Why: storing a raw token means a database read (backup leak, SQL injection, insider access)
   directly yields a usable credential; storing only a hash means the same breach yields
   nothing usable without also breaking the hash. Tokens must additionally have adequate
@@ -371,7 +371,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   it by admitting garbage membership content under the guise of a valid transition.
   Source: `src/events/AGENTS.md`.
 
-- **Never construct an event ID manually — always use `event_id.hpp`.** Event ID format is
+- **Never construct an event ID manually — always use `EventId.hpp`.** Event ID format is
   room-version-dependent (legacy `$localpart:server` for v1–v2, which this server does not support
   (ADR-0076); reference-hash-derived for v3+).
   Why: a hand-constructed event ID that doesn't match the room version's actual derivation
@@ -380,7 +380,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   isn't the actual reference hash defeats the purpose of using a hash as the ID at all.
   Source: `src/events/AGENTS.md`.
 
-- **Never inline state resolution logic — always delegate to `state_resolution.hpp`'s v2
+- **Never inline state resolution logic — always delegate to `StateResolution.hpp`'s v2
   algorithm implementation.**
   Why: state resolution is what keeps divergent copies of room state (e.g. after a network
   partition) converging to the same answer on every server; a divergent or partial
@@ -388,7 +388,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   opening a state-forking attack.
   Source: `src/events/AGENTS.md`.
 
-- **Never trim event fields manually for redaction — always use `redaction.hpp`'s
+- **Never trim event fields manually for redaction — always use `Redaction.hpp`'s
   room-version-specific algorithm.**
   Why: the redaction algorithm determines exactly which fields survive a redaction and is
   itself part of what gets hashed and verified; a manual/incorrect redaction can either
@@ -396,7 +396,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   on the redacted form being exactly reproducible.
   Source: `src/events/AGENTS.md`.
 
-- **`encryption_policy.hpp` is consulted before accepting a plaintext `m.room.message` event
+- **`EncryptionPolicy.hpp` is consulted before accepting a plaintext `m.room.message` event
   in a room with `m.room.encryption` state.**
   Why: this is the enforcement point that keeps an encrypted room actually encrypted — a
   path that skips this check would let a plaintext message slip into a room whose members
@@ -557,7 +557,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (CWE-345 Insufficient Verification of Data Authenticity; conformance audit R06).
   Source: `src/federation/AGENTS.md`.
 
-- **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
+- **Fetch remote server keys via `RemoteKeyCache.hpp` — never trust a key the remote
   server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
   at most 7 days after the fetch. From room v5 an event's signing key must be valid at the
   event's own `origin_server_ts`, not the current time; v1-v4 ignore `valid_until_ts`
@@ -629,7 +629,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   X-Matrix-verified `origin` (never a value from the request) and answer `403 M_FORBIDDEN`
   with no room data unless `federation::origin_may_read_room` holds: the room's CURRENT
   state has a `join` member on that server, or its current `m.room.history_visibility` is
-  `world_readable`. The check is in the provider (`src/federation/event_query.cpp`), so it
+  `world_readable`. The check is in the provider (`src/federation/EventQuery.cpp`), so it
   runs in whichever process serves the endpoint (the federation worker from its room
   snapshot, main for `/event`). It runs before the event or the request body is looked at,
   and an unknown room answers 403 rather than 404 so room existence is not disclosed. A new
@@ -1009,7 +1009,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/federation/AGENTS.md`.
 
 - **A URL a client names is fetched only through the URL preview gate
-  (`gated_fetch` in `src/homeserver/url_preview_service.cpp`).** It resolves and checks every
+  (`gated_fetch` in `src/homeserver/UrlPreviewService.cpp`).** It resolves and checks every
   hop, redirects and images included, pins the connection to the checked addresses, and follows
   redirects itself. Its use of `allow_cleartext_http` is the second, and last, sanctioned one: the
   request carries no credential and the address pin applies to cleartext too. Every failure to
@@ -1081,7 +1081,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `homeserver::admit_client_outbound_proxy` (key: `rate_limit_client_key`), answer `429
   M_LIMIT_EXCEEDED` with `retry_after_ms` when it is refused, hold the slot until the call has
   ended, and draw discovery and every request from one `OutboundDeadline`
-  (`homeserver/client_outbound_proxy.hpp`). Remote media is the exception: it runs on
+  (`homeserver/ClientOutboundProxy.hpp`). Remote media is the exception: it runs on
   the media fetch pool under `media_fetch_budget` (ADR-0121). On the main pool the fetch
   runs in `RemoteMediaFetchMode::defer` and is handed to the pool, whose `admitted` run
   takes no ADR-0079 slot; it still checks `security.media.remote_fetch_enabled` and
@@ -1704,7 +1704,7 @@ media-fetch-pool task.
   correctness assertion but do trip a sanitizer.
   Source: `tests/integration/AGENTS.md`, `security/coding-rules.md`.
 
-- **`tests/support/master_key.hpp` is for test binaries only and must never be included
+- **`tests/support/MasterKey.hpp` is for test binaries only and must never be included
   from a non-test binary.** `master_key_file()` writes a fresh random 256-bit master key to a
   file in the system temporary directory (mode 0400) and returns its path. This is a
   convention: no `static_assert` or build flag in the header prevents it from being linked

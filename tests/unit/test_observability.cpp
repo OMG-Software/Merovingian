@@ -17,8 +17,8 @@
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/BoundedText.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
 

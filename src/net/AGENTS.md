@@ -11,7 +11,7 @@ No Matrix-specific logic lives here.
 | `RuntimeListeners.cpp` | Builds `ListenerPlan` / `RuntimeListeners` from config (client and federation bind addresses, TLS settings); makes no socket calls |
 | `ThreadPool.cpp` | Fixed-size thread pool; tasks submitted via `submit()`; `worker_count()` sizes the dispatcher's caps |
 | `ConnectionParker.cpp` | `ConnectionParker`: one `poll(2)` thread holding connections that wait for input; hands a connection out only once readable, under a global and a per-client cap with an RAII `ActiveShare` (ADR-0077) |
-| `loopback_literal.cpp` | `is_loopback_ip_literal`: a 127.0.0.0/8 dotted quad or `::1` (bracketed or bare), never a name; shared by SMTP and the appservice cleartext rule |
+| `LoopbackLiteral.cpp` | `is_loopback_ip_literal`: a 127.0.0.0/8 dotted quad or `::1` (bracketed or bare), never a name; shared by SMTP and the appservice cleartext rule |
 | `ShutdownSignal.cpp` | Catches `SIGTERM` / `SIGINT` and initiates graceful shutdown |
 
 ## Rules

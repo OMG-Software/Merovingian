@@ -4,7 +4,7 @@
 // its budget: a blocking connect() that never returned on OpenBSD 7.9 CI held
 // the whole integration binary until meson killed it.
 
-#include "bounded_connect.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 

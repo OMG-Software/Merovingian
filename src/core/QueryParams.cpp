@@ -1,0 +1,256 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/core/QueryParams.hpp"
+
+#include "merovingian/core/SyncRequest.hpp"
+
+#include <cctype>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+
+namespace merovingian::core
+{
+
+namespace
+{
+
+    // RFC 3986 requires '%' to be followed by exactly two HEXDIG. Returning
+    // nullopt (instead of silently mapping bad input to 0) lets the decoders
+    // keep malformed sequences literal rather than injecting NUL bytes (#440).
+    [[nodiscard]] auto from_hex(char ch) noexcept -> std::optional<std::uint8_t>
+    {
+        if (ch >= '0' && ch <= '9')
+        {
+            return static_cast<std::uint8_t>(ch - '0');
+        }
+        if (ch >= 'a' && ch <= 'f')
+        {
+            return static_cast<std::uint8_t>(static_cast<std::uint8_t>(ch - 'a') + 10U);
+        }
+        if (ch >= 'A' && ch <= 'F')
+        {
+            return static_cast<std::uint8_t>(static_cast<std::uint8_t>(ch - 'A') + 10U);
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto is_unreserved_path_byte(unsigned char byte) noexcept -> bool
+    {
+        return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') ||
+               byte == '-' || byte == '.' || byte == '_' || byte == '~';
+    }
+
+    [[nodiscard]] auto hex_digit(unsigned char nibble) noexcept -> char
+    {
+        return static_cast<char>(nibble < 10U ? ('0' + nibble) : ('A' + (nibble - 10U)));
+    }
+
+} // namespace
+
+auto query_parameter(std::string_view target, std::string_view name) -> std::string
+{
+    auto const query_start = target.find('?');
+    if (query_start == std::string_view::npos)
+    {
+        return {};
+    }
+    auto remaining = target.substr(query_start + 1U);
+    while (!remaining.empty())
+    {
+        auto const amp = remaining.find('&');
+        auto const pair = remaining.substr(0U, amp);
+        auto const eq = pair.find('=');
+        if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
+        {
+            return percent_decode(pair.substr(eq + 1U));
+        }
+        if (amp == std::string_view::npos)
+        {
+            break;
+        }
+        remaining = remaining.substr(amp + 1U);
+    }
+    return {};
+}
+
+auto percent_decode(std::string_view encoded) -> std::string
+{
+    auto result = std::string{};
+    result.reserve(encoded.size());
+    auto i = std::size_t{0U};
+    while (i < encoded.size())
+    {
+        if (encoded[i] == '%' && i + 2U < encoded.size())
+        {
+            auto const high = from_hex(encoded[i + 1U]);
+            auto const low = from_hex(encoded[i + 2U]);
+            if (high.has_value() && low.has_value())
+            {
+                result.push_back(static_cast<char>((*high << 4U) | *low));
+                i += 3U;
+                continue;
+            }
+            // Malformed escape (e.g. "%ZZ"): keep it literal instead of
+            // decoding to NUL (#440).
+            result.push_back(encoded[i]);
+            ++i;
+        }
+        else if (encoded[i] == '+')
+        {
+            result.push_back(' ');
+            ++i;
+        }
+        else
+        {
+            result.push_back(encoded[i]);
+            ++i;
+        }
+    }
+    return result;
+}
+
+auto path_component_contains_nul(std::string_view encoded) noexcept -> bool
+{
+    return encoded.find('\0') != std::string_view::npos || encoded.find("%00") != std::string_view::npos;
+}
+
+auto percent_decode_path_component(std::string_view encoded) -> std::string
+{
+    if (path_component_contains_nul(encoded))
+    {
+        throw std::invalid_argument{"path component contains NUL"};
+    }
+    auto result = std::string{};
+    result.reserve(encoded.size());
+    auto i = std::size_t{0U};
+    while (i < encoded.size())
+    {
+        if (encoded[i] == '%' && i + 2U < encoded.size())
+        {
+            auto const high = from_hex(encoded[i + 1U]);
+            auto const low = from_hex(encoded[i + 2U]);
+            if (high.has_value() && low.has_value())
+            {
+                result.push_back(static_cast<char>((*high << 4U) | *low));
+                i += 3U;
+                continue;
+            }
+            // Malformed escape: keep it literal instead of decoding to NUL (#440).
+            result.push_back(encoded[i]);
+            ++i;
+        }
+        else
+        {
+            result.push_back(encoded[i]);
+            ++i;
+        }
+    }
+    if (result.find('\0') != std::string::npos)
+    {
+        throw std::invalid_argument{"path component contains NUL"};
+    }
+    return result;
+}
+
+auto percent_encode_path_component(std::string_view decoded) -> std::string
+{
+    auto result = std::string{};
+    result.reserve(decoded.size() * 3U);
+    for (auto const ch : decoded)
+    {
+        auto const byte = static_cast<unsigned char>(ch);
+        if (is_unreserved_path_byte(byte))
+        {
+            result.push_back(static_cast<char>(byte));
+            continue;
+        }
+        result.push_back('%');
+        result.push_back(hex_digit(static_cast<unsigned char>(byte >> 4U)));
+        result.push_back(hex_digit(static_cast<unsigned char>(byte & 0x0FU)));
+    }
+    return result;
+}
+
+auto parse_query_params(std::string_view target) -> SyncRequest
+{
+    auto request = SyncRequest{};
+    auto const query_start = target.find('?');
+    if (query_start == std::string_view::npos)
+    {
+        return request;
+    }
+    auto const query = target.substr(query_start + 1U);
+    auto pos = std::size_t{0U};
+    while (pos < query.size())
+    {
+        auto const amp_pos = query.find('&', pos);
+        auto const param = amp_pos == std::string_view::npos ? query.substr(pos) : query.substr(pos, amp_pos - pos);
+        if (amp_pos == std::string_view::npos)
+        {
+            pos = query.size();
+        }
+        else
+        {
+            pos = amp_pos + 1U;
+        }
+        auto const eq_pos = param.find('=');
+        if (eq_pos == std::string_view::npos)
+        {
+            continue;
+        }
+        auto const key = param.substr(0U, eq_pos);
+        auto const value = percent_decode(param.substr(eq_pos + 1U));
+
+        if (key == "since")
+        {
+            request.since = std::string{value};
+        }
+        else if (key == "timeout")
+        {
+            auto result = std::uint64_t{0U};
+            auto parsed = true;
+            for (auto const ch : value)
+            {
+                if (ch >= '0' && ch <= '9')
+                {
+                    auto const digit = static_cast<std::uint64_t>(ch - '0');
+                    // Overflow-checked accumulate (#426): an overlong decimal
+                    // would otherwise wrap modulo 2^64 and let a client pick
+                    // an arbitrary (possibly enormous) effective timeout.
+                    if (result > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+                    {
+                        parsed = false;
+                        break;
+                    }
+                    result = result * 10U + digit;
+                }
+                else
+                {
+                    parsed = false;
+                    break;
+                }
+            }
+            if (parsed && !value.empty())
+            {
+                request.timeout = result;
+            }
+        }
+        else if (key == "full_state")
+        {
+            request.full_state = (value == "true");
+        }
+        else if (key == "filter")
+        {
+            request.filter = std::string{value};
+        }
+        else if (key == "set_presence")
+        {
+            request.set_presence = std::string{value};
+        }
+    }
+    return request;
+}
+
+} // namespace merovingian::core

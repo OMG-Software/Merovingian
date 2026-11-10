@@ -5,7 +5,7 @@
 // `expanded_timeline`. Element X's room list asks for `timeline_limit: 1`, so a room built without
 // these looks to the client like a conversation of one message (0.12.45).
 
-#include "../support/room_history_fixture.hpp"
+#include "../support/RoomHistoryFixture.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
@@ -13,7 +13,7 @@
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
-#include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

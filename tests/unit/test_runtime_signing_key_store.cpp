@@ -11,11 +11,11 @@
 #include "merovingian/crypto/RuntimeMultiKeyEd25519Provider.hpp"
 #include "merovingian/crypto/SignatureResult.hpp"
 #include "merovingian/crypto/VerificationResult.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/SigningService.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentServerSigningKey.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>

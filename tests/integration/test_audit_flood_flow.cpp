@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // AUTH-1 (security-audit-report-2026-09-29.md): an unauthenticated client must
 // not be able to grow the audit trail without bound or force one synchronous
 // durable audit commit per request. These scenarios drive the real client-server
 // dispatcher with hostile traffic and assert on the resulting audit state.
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -20,12 +20,12 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/AuditRateGate.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/observability/bounded_text.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

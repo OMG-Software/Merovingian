@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
-#include "bounded_connect.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -17,9 +17,9 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"
@@ -448,7 +448,7 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
 // /proc/self/fd, which is Linux-specific: none of the project's supported
 // BSDs guarantee it (OpenBSD removed procfs outright; FreeBSD/NetBSD don't
 // mount it by default in CI). The production behaviour being verified
-// (accept4(..., SOCK_CLOEXEC) in http_server.cpp) is itself fully portable
+// (accept4(..., SOCK_CLOEXEC) in HttpServer.cpp) is itself fully portable
 // across all four platforms — only this test's verification mechanism is
 // Linux-only.
 SCENARIO("merovingian-server marks accepted client sockets close-on-exec",

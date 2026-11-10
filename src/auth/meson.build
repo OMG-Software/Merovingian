@@ -2,12 +2,12 @@ auth_sources = files(
   'Argon2idAdmission.cpp',
   'Argon2idSlot.cpp',
   'FailureWindowTable.cpp',
-  'identity.cpp',
-  'key_api.cpp',
-  'oidc_discovery.cpp',
-  'password.cpp',
-  'session.cpp',
-  'token.cpp',
+  'Identity.cpp',
+  'KeyApi.cpp',
+  'OidcDiscovery.cpp',
+  'Password.cpp',
+  'Session.cpp',
+  'Token.cpp',
 )
 
 auth_lib = static_library(

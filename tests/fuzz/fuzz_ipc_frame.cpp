@@ -8,7 +8,7 @@
 // the key exchange and is not reached from here.
 
 #include "fuzz_input.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 
 #include <cstddef>
 #include <cstdint>

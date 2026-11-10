@@ -20,6 +20,23 @@ No release had an SBOM. `sbom.yml` attached it on a `release: published` event, 
 Both `release.yml` and `packages.yml` generate it before signing, so it ships with a detached `.asc` signature and is listed in `latest`'s `SHA256SUMS`. The generator fails closed (exit 2) on a licence row, licence section or wrap it cannot map, and on a wrap with no SHA-256. `release.yml` now also signs the licence summary. `sbom.yml` is removed. `check-release-readiness.sh` requires the generator, checks that both workflows call it, and runs it.
 
 Tests: `tests/tooling/test_generate_sbom.py` (new) checks every shipped licence row against its licence and wrap pin, determinism, and refusal of an unmapped row, wrap or section and of a hashless wrap. `tests/tooling/test_stage_release_tarball.py` (new) stages a fake `meson install` and refuses builds without either worker. `tests/tooling/test_release_workflow.py` runs the `check-tag` step's shell against matching, mismatched, suffixed and 1.0 tags. `tests/tooling/test_security_workflows.py` requires both workflows to generate the SBOM before signing.
+## 0.12.89
+
+Names every module header and source after its type or, for a file of functions, after the PascalCase form of its concept (ADR-0596). No behaviour changes.
+
+### Function-only files are named in PascalCase
+
+ADR-0467 let a header with no type keep a `snake_case` name, which left 148 function-only headers and their sources beside 766 PascalCase type headers. All 306 such files under `include/`, `src/` and `tests/` are renamed to the PascalCase form of their stem (`policy_engine.hpp` → `PolicyEngine.hpp`, `sqlite_store.cpp` → `SqliteStore.cpp`, `tests/support/tls_mock_server.hpp` → `TlsMockServer.hpp`), and every include, build list, script, workflow and living document follows. `outbound_transaction` and `file_metadata` became `OutboundTransactionSupport` and `FileMetadataSupport`, because `OutboundTransaction.hpp` and `FileMetadata.hpp` are the structs they declare. Executable entry points, `test_*.cpp`, `fuzz_*.cpp`, `not_null.hpp` and the C pair `yyjson_adapter.c`/`.h` keep their names. Logger names such as `http_server` and `sqlite_store` are runtime strings and are unchanged. ADRs and the changelogs keep the names that were true when written; only their links were updated.
+
+### Every type's members are in a file named after it
+
+- `tests/federation_signing_test_support.hpp` defined three types. They are now `tests/SigningKeypair.hpp` (with the keypair functions), `tests/TestSigningKeyStore.hpp` and `tests/TestEd25519Provider.hpp`, and the signing functions stay in `tests/FederationSigningTestSupport.hpp`, which includes all three.
+- `tests/support/MembershipGenesis.hpp` defined `Genesis`; it is now `tests/support/Genesis.hpp`.
+- `LandlockHardeningOps`'s constructor and its syscall wrappers moved from `LandlockHardening.cpp` to `LandlockHardeningOps.cpp`.
+- `PostgresqlConnection`'s members moved from `PostgresqlStore.cpp` to `PostgresqlConnection.cpp`; the libpq helpers both files use are in the module-internal `PostgresqlExecution.hpp`/`.cpp`, and `PostgresqlResultDeleter` has its own header and source.
+- `HttpConnectionDispatcher` and its `Impl` moved from `HttpServer.cpp` to `HttpConnectionDispatcher.cpp`, with `Impl` defined in `HttpConnectionDispatcher.hpp`. `ParkingReservation`, `HttpConnection`, `ConnectionContext`, `ConnectionAdmission` and `RoundOutcome` each have their own header (`HttpConnection` its own source), and `serve_request_round`, `resume_parked_poll` and the receive timeout are declared in the module-internal `HttpServerInternal.hpp`.
+
+Tests: no test changes behaviour; test sources include the renamed headers.
 
 ## 0.12.88
 

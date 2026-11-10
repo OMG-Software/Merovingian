@@ -7,11 +7,11 @@
 //  - a device ID is never the same as one of the account's cross-signing key IDs, at login
 //    (403 M_FORBIDDEN) or when such a key is uploaded (403).
 
-#include "../support/cross_signing_fixture.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/CrossSigningFixture.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

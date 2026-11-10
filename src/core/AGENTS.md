@@ -8,7 +8,7 @@ Low-level utilities used across all other modules. No module-specific logic live
 |---|---|
 | `FileDescriptor.cpp` | RAII wrapper for OS file descriptors; closes on destruction, not moveable after close |
 | `SecretBuffer.cpp` | Zeroing buffer for sensitive data (tokens, keys); calls `sodium_memzero` on destruction |
-| `query_params.cpp` | Percent-decode and parse `?key=value&...` query strings from request URIs |
+| `QueryParams.cpp` | Percent-decode and parse `?key=value&...` query strings from request URIs |
 | `PortableSemaphore.cpp` | `PortableSemaphore` (counting semaphore; NetBSD's libc++ has no `std::counting_semaphore`) and `SemaphorePermit`, the RAII owner of one acquired slot |
 | `FoldedSubstringMatcher.cpp` | `FoldedSubstringMatcher`: ASCII-case-insensitive substring search in time linear in the text (KMP over folded bytes) with a `steps()` count, and `max_search_term_bytes`, the one cap on a client search term (ADR-0330). Use it for any search of a client's term in text a client chose; never `std::search` or `find` there |
 | `LibraryVersion.cpp` | `LibraryVersion`, `describe_library` (static or dynamic, from `dladdr(3)` on an address inside the library, ADR-0222) and the startup log line. Each module reports its own library; core never calls a third-party library's version function |
@@ -20,7 +20,7 @@ Low-level utilities used across all other modules. No module-specific logic live
 | `Error.hpp` | `Error` type used with `std::expected<T, Error>` — code + human message |
 | `not_null.hpp` | `NotNull<T>` — asserts non-null at construction; avoids raw pointer dereference |
 | `SocketHandle.hpp` | RAII socket handle (OS-specific); used by `net/` |
-| `bounded_parallel.hpp` | `run_bounded_parallel(count, parallelism, task)`: runs `task(i)` on `std::async` threads, at most `parallelism` at once, joins all, then rethrows the first failure (ADR-0267) |
+| `BoundedParallel.hpp` | `run_bounded_parallel(count, parallelism, task)`: runs `task(i)` on `std::async` threads, at most `parallelism` at once, joins all, then rethrows the first failure (ADR-0267) |
 | `CopyableMutex.hpp` | `CopyableMutex`: a `std::mutex` for a copyable or movable type that guards members. Copy and move make a fresh unlocked mutex; `acquire()` returns the `unique_lock` (ADR-0517) |
 | `CopyableConditionVariable.hpp` | `CopyableConditionVariable`: the matching `std::condition_variable` wrapper (`notify_one`, `notify_all`, `wait_until`); not `condition_variable_any`, whose constructor allocates (ADR-0517) |
 

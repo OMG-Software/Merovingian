@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Presence end to end: the switch that turns it off, the m.presence EDU this server sends, and the
 // m.presence EDU it accepts.
@@ -12,9 +12,9 @@
 //   only send presence updates for users that the receiving server would be interested in. Such as
 //   the receiving server sharing a room with a given user."
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -32,8 +32,8 @@
 #include "merovingian/federation/InboundEduEnvelope.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/presence_service.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/PresenceService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

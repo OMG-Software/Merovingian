@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/http/RequestErrorCode.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/Request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

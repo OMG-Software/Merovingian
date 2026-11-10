@@ -4,7 +4,7 @@
 #include "merovingian/auth/FailureWindowTable.hpp"
 
 #include "merovingian/auth/FailureKey.hpp"
-#include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
 
 #include <algorithm>
 #include <cstring>

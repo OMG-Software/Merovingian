@@ -3,9 +3,9 @@
 
 #include "merovingian/media/LocalMediaRepository.hpp"
 
-#include "merovingian/crypto/encoding.hpp"
-#include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/Encoding.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
+#include "merovingian/crypto/Random.hpp"
 #include "merovingian/media/DecoderSafetyPolicy.hpp"
 #include "merovingian/media/DecoderSafetyRequest.hpp"
 #include "merovingian/media/FederationMediaDownloadBody.hpp"
@@ -25,7 +25,7 @@
 #include "merovingian/media/RemoteMediaDownloadRequest.hpp"
 #include "merovingian/media/RemoteMediaDownloadResult.hpp"
 #include "merovingian/media/SandboxedMediaWorkerPlan.hpp"
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/Security.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/SingleLog.hpp"
@@ -442,7 +442,7 @@ namespace
         }
         // Registers the media as thumbnailable. Dimensions are intentionally left
         // 0×0: thumbnails are not produced at ingest. They are generated on demand
-        // by the sandboxed out-of-process worker (see media/thumbnailer.hpp and
+        // by the sandboxed out-of-process worker (see media/Thumbnailer.hpp and
         // download_local_media_thumbnail), which decodes the original blob and
         // resamples to the requested geometry. This entry simply records that the
         // source is a resamplable image type.

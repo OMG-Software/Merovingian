@@ -11,14 +11,14 @@
 // (to-device messages are delivered once, and the `next_batch` of /sync
 // acknowledges only what the response carried) and MSC4186 to_device pagination.
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/sync/sliding_sync_extensions.hpp"
+#include "merovingian/sync/SlidingSyncExtensions.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

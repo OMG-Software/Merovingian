@@ -11,7 +11,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/observability/AuditCategory.hpp"
-#include "merovingian/observability/observability.hpp"
+#include "merovingian/observability/Observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  MATRIX END-TO-END ENCRYPTION OTK SIGNATURE VALIDATION (REGRESSION)     |
@@ -21,9 +21,9 @@
 // |    -> Do NOT weaken, comment out, or remove assertions to make CI pass. |
 // +-------------------------------------------------------------------------+
 
-#include "../federation_signing_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -32,7 +32,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/PersistentFallbackKey.hpp"
 #include "merovingian/database/PersistentOneTimeKey.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

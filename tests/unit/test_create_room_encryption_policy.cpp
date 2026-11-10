@@ -9,10 +9,10 @@
 // Spec: CS API v1.19, POST /createRoom. `initial_state` events are sent "in the order that they
 // are listed" (so the last entry for a state key is the room's state), and 400 M_INVALID_ROOM_STATE
 // is "The initial state implied by the parameters to the createRoom request is invalid".
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/EncryptionSecurityConfig.hpp"
@@ -25,7 +25,7 @@
 #include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomPreset.hpp"
-#include "merovingian/rooms/encryption_policy.hpp"
+#include "merovingian/rooms/EncryptionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

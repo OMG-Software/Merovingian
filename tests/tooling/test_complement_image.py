@@ -33,7 +33,7 @@ TEMPLATE = COMPLEMENT_DIR / "merovingian.conf.template"
 NGINX_CONF = COMPLEMENT_DIR / "nginx.conf"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "merovingian.conf.example"
-RATE_LIMIT_SOURCE = REPO_ROOT / "src" / "http" / "rate_limit.cpp"
+RATE_LIMIT_SOURCE = REPO_ROOT / "src" / "http" / "RateLimit.cpp"
 PACKAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "packages.yml"
 
 # Meson passes the built merovingian-server as argv[1]. Read it here, before

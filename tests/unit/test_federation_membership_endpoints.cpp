@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "federation_signing_test_support.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/federation/BackfillRequest.hpp"
 #include "merovingian/federation/BackfillResult.hpp"
 #include "merovingian/federation/FederationQueryPolicy.hpp"
@@ -13,9 +13,9 @@
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/outbound_membership.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/MembershipEndpoints.hpp"
+#include "merovingian/federation/OutboundMembership.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

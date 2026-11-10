@@ -37,9 +37,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 1. Plaintext server signing-secret fallback when master key is absent
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/homeserver/room_service.cpp`
+- **File:** `src/homeserver/RoomService.cpp`
 - **Line range:** `2008â€“2024`
-- **Related files:** `src/homeserver/room_service.cpp:310â€“330`, `src/homeserver/room_service.cpp:1813â€“1858`, `include/merovingian/database/persistent_store.hpp:78`, `src/crypto/master_key.cpp`
+- **Related files:** `src/homeserver/RoomService.cpp:310â€“330`, `src/homeserver/RoomService.cpp:1813â€“1858`, `include/merovingian/database/persistent_store.hpp:78`, `src/crypto/MasterKey.cpp`
 - **Description:** `encrypt_signing_secret()` returns `std::nullopt` when no master key is configured. The caller then stores the Ed25519 seed as base64 plaintext in `server_signing_keys.secret_key` with `encrypted='false'`.
 - **Root cause:** Missing fail-closed guard at the point of key generation/persistence.
 - **Impact:** A database exfiltration attacker obtains a server signing secret capable of forging federation PDUs and server-server requests.
@@ -55,9 +55,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 2. Master-key mlock failure is warn-only, not fail-closed
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/crypto/master_key.cpp`
+- **File:** `src/crypto/MasterKey.cpp`
 - **Line range:** `80â€“93`
-- **Related files:** `include/merovingian/core/secret_buffer.hpp`, `src/platform/runtime_hardening.cpp`
+- **Related files:** `include/merovingian/core/secret_buffer.hpp`, `src/platform/RuntimeHardening.cpp`
 - **Description:** `load_master_key_material()` tolerates a failed `sodium_mlock()` and returns the root secret in ordinary swappable memory after logging a one-time warning.
 - **Root cause:** `mlock` failure is treated as non-fatal.
 - **Impact:** `RLIMIT_MEMLOCK` exhaustion silently downgrades the master key store, allowing the root secret to be swapped or present in core dumps.
@@ -73,9 +73,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 3. Signing-secret encryption/decryption re-reads the master key per call
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/homeserver/room_service.cpp`
+- **File:** `src/homeserver/RoomService.cpp`
 - **Line range:** `310â€“330`, `1813â€“1858`
-- **Related files:** `src/crypto/master_key.cpp`, `src/crypto/secret_box.cpp`, `src/homeserver/runtime.cpp`
+- **Related files:** `src/crypto/MasterKey.cpp`, `src/crypto/SecretBox.cpp`, `src/homeserver/runtime.cpp`
 - **Description:** `encrypt_signing_secret()` and `decrypt_stored_signing_secret()` load the master key file and re-derive the secret-box key on every call. The token-HMAC cache avoids this for access tokens, but the signing-secret path does not.
 - **Root cause:** No derived-key cache for the signing-secret path.
 - **Impact:** Re-materialises the root secret and re-exhausts `RLIMIT_MEMLOCK`, increasing exposure window and risk of mlock failure.
@@ -145,9 +145,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 7. `generate_ed25519_keypair` returns the secret key in a plain `std::array`
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/crypto/ed25519.cpp`
+- **File:** `src/crypto/Ed25519.cpp`
 - **Line range:** `53â€“66`
-- **Related files:** `include/merovingian/crypto/ed25519.hpp`, `src/homeserver/room_service.cpp:2008â€“2024`
+- **Related files:** `include/merovingian/crypto/Ed25519.hpp`, `src/homeserver/RoomService.cpp:2008â€“2024`
 - **Description:** `Ed25519Keypair.secret_key` is declared as `std::array<std::uint8_t, 64U>`, and `generate_ed25519_keypair` returns the struct by value. Callers keep the generated signing secret in this transient plain array while encoding it for storage.
 - **Root cause:** Key generation API returns secrets in a non-secure container.
 - **Impact:** Generated signing secret exists in unzeroised ordinary memory from generation through storage encoding.
@@ -183,7 +183,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 - **Priority:** P0
 - **File:** `src/media/thumbnail_worker_main.cpp`
 - **Line range:** `91â€“122`
-- **Related files:** `src/platform/runtime_hardening.cpp`, `src/platform/hardening_self_check.cpp`, `docs/hardening.md`
+- **Related files:** `src/platform/RuntimeHardening.cpp`, `src/platform/hardening_self_check.cpp`, `docs/hardening.md`
 - **Description:** `harden()` applies seccomp-bpf only on `__linux__`; on FreeBSD and NetBSD the worker relies solely on `setrlimit`. `sandboxed_worker_plan_is_hardened()` only validates boolean plan flags, not that restrictions succeeded.
 - **Root cause:** Platform-specific sandbox code not implemented for BSDs; plan check is declarative, not runtime-probed.
 - **Impact:** Thumbnail worker on documented Tier 1 BSD support has minimal sandboxing, increasing blast radius from image-decoder bugs.
@@ -201,7 +201,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 - **Priority:** P0
 - **File:** `src/platform/hardening_self_check.cpp`
 - **Line range:** `247â€“249`
-- **Related files:** `src/main.cpp`, `src/platform/runtime_hardening.cpp`, `tests/unit/test_hardening_self_check.cpp`
+- **Related files:** `src/main.cpp`, `src/platform/RuntimeHardening.cpp`, `tests/unit/test_hardening_self_check.cpp`
 - **Description:** On non-Linux platforms the self-check reports core-dump policy, `no_new_privs`, and capability bounding as `HardeningStatus::unknown`. `is_ready()` returns false when any check is not enabled, and `src/main.cpp` aborts startup.
 - **Root cause:** Linux-only controls are treated as unknown rather than not-applicable or implemented via BSD equivalents.
 - **Impact:** Production startup fails on FreeBSD/OpenBSD despite documented Tier 1 support.
@@ -235,7 +235,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 12. Unbounded in-memory `typing_users` vector from federation typing EDUs
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/homeserver/local_http_router.cpp`
+- **File:** `src/homeserver/LocalHttpRouter.cpp`
 - **Line range:** `986`
 - **Related files:** `include/merovingian/homeserver/runtime.hpp`, `src/homeserver/runtime.cpp`
 - **Description:** `HomeserverRuntime::typing_users` only shrinks when a previously-seen user sends `typing=false`. A malicious federated server can send `typing=true` EDUs for arbitrarily many distinct `user_id`/`room_id` pairs.
@@ -253,7 +253,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 13. Unbounded in-memory `receipts` vector from federation receipt EDUs
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/homeserver/local_http_router.cpp`
+- **File:** `src/homeserver/LocalHttpRouter.cpp`
 - **Line range:** `1069`
 - **Related files:** `include/merovingian/homeserver/runtime.hpp`, `src/homeserver/runtime.cpp`
 - **Description:** `HomeserverRuntime::receipts` is upserted but never reaped. A malicious federated server can create unbounded distinct receipts by varying `room_id`s and synthetic `user_id`s.
@@ -273,7 +273,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 - **Priority:** P0
 - **File:** `src/homeserver/client_server.cpp`
 - **Line range:** `11003â€“11204`
-- **Related files:** `src/homeserver/local_http_router.cpp` (for `NetworkIoUnlock`/`ScopedGuardRelease` helpers), `include/merovingian/homeserver/runtime.hpp`
+- **Related files:** `src/homeserver/LocalHttpRouter.cpp` (for `NetworkIoUnlock`/`ScopedGuardRelease` helpers), `include/merovingian/homeserver/runtime.hpp`
 - **Description:** Multiple endpoints perform `guard.unlock()` before a blocking outbound call and `guard.lock()` after it. If the outbound call throws between unlock and lock, the mutex is left unlocked, serialising every client request and inbound federation transaction.
 - **Root cause:** Manual lock/unlock instead of RAII scope guard.
 - **Impact:** A thrown exception can leave the global runtime mutex unlocked, causing global serialization or deadlock.
@@ -289,7 +289,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 15. SSO `redirectUrl` allowlist prefix match bypasses subdomains
 - **Severity:** High
 - **Priority:** P0
-- **File:** `src/homeserver/auth_service.cpp`
+- **File:** `src/homeserver/AuthService.cpp`
 - **Line range:** `384â€“393`
 - **Related files:** `src/homeserver/client_server.cpp` (SSO endpoints), `docs/auth-identity.md`
 - **Description:** `redirect_url_is_allowed()` returns true when `redirect_url.starts_with(allowed)` without enforcing a path or origin boundary. An allowlist entry such as `https://example.com` matches `https://example.com.evil.com/callback`.
@@ -307,9 +307,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 16. Decrypted signing secret passes through unprotected `std::vector`
 - **Severity:** Medium
 - **Priority:** P0
-- **File:** `src/crypto/secret_box.cpp`
+- **File:** `src/crypto/SecretBox.cpp`
 - **Line range:** `108â€“129`
-- **Related files:** `include/merovingian/core/secret_buffer.hpp`, `src/homeserver/room_service.cpp:1813â€“1858`
+- **Related files:** `include/merovingian/core/secret_buffer.hpp`, `src/homeserver/RoomService.cpp:1813â€“1858`
 - **Description:** `secret_box_decrypt()` returns decrypted plaintext as `std::optional<std::vector<std::uint8_t>>` rather than `SecretBuffer`. Callers copy the result into `SecretBuffer`, but the intermediate vector is freed without zeroisation.
 - **Root cause:** Decryption API returns a plain container.
 - **Impact:** Decrypted signing secret briefly exists in unprotected heap memory.
@@ -327,7 +327,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 - **Priority:** P0
 - **File:** `include/merovingian/database/persistent_store.hpp`
 - **Line range:** `78`
-- **Related files:** `src/database/persistent_store.cpp`, `src/homeserver/room_service.cpp:2008â€“2024`
+- **Related files:** `src/database/persistent_store.cpp`, `src/homeserver/RoomService.cpp:2008â€“2024`
 - **Description:** `PersistentServerSigningKey.secret_key` is a `std::string`. The in-memory persistent store therefore holds encrypted (and, for legacy rows, plaintext) signing-secret material in unpinned, unzeroised heap memory.
 - **Root cause:** Persistent store struct uses `std::string` for secret material.
 - **Impact:** Signing-secret material (encrypted or legacy plaintext) is not protected by `SecretBuffer` guarantees.
@@ -343,7 +343,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 18. PostgreSQL migrations run as login role
 - **Severity:** Medium
 - **Priority:** P1
-- **File:** `src/database/postgresql_store.cpp`
+- **File:** `src/database/PostgresqlStore.cpp`
 - **Line range:** `1426â€“1455`
 - **Related files:** `docs/database-persistence.md`, `migrations/AGENTS.md`
 - **Description:** `open_postgresql_persistent_store()` applies pending migrations as the PostgreSQL login role, not the configured migration role, before switching to the runtime role. The comment states this is required because `ALTER TABLE` needs table ownership.
@@ -379,7 +379,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 20. Master key loader retains plaintext bytes in `std::ifstream` buffer
 - **Severity:** Medium
 - **Priority:** P1
-- **File:** `src/crypto/master_key.cpp`
+- **File:** `src/crypto/MasterKey.cpp`
 - **Line range:** `28`
 - **Related files:** `include/merovingian/core/secret_buffer.hpp`
 - **Description:** `load_master_key_material()` reads the master-key file through `std::ifstream`. The stream's internal `std::filebuf` buffer holds plaintext master-key bytes and is freed without zeroisation.
@@ -397,9 +397,9 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 21. Core-dump policy ignores `prctl(PR_SET_DUMPABLE, 0)` failure
 - **Severity:** Medium
 - **Priority:** P1
-- **File:** `src/platform/runtime_hardening.cpp`
+- **File:** `src/platform/RuntimeHardening.cpp`
 - **Line range:** `381`
-- **Related files:** `src/platform/hardening_self_check.cpp`, `src/platform/runtime_hardening.cpp`
+- **Related files:** `src/platform/hardening_self_check.cpp`, `src/platform/RuntimeHardening.cpp`
 - **Description:** `apply_linux_core_dump_policy()` returns success whenever `setrlimit(RLIMIT_CORE)` succeeds, regardless of whether `prctl(PR_SET_DUMPABLE, 0, ...)` succeeded. The matching self-check only verifies `RLIMIT_CORE` limits, not `PR_GET_DUMPABLE`.
 - **Root cause:** Function does not check `prctl` return value; self-check does not probe dumpable flag.
 - **Impact:** Core dumps may still be produced even when the policy reports success.
@@ -415,7 +415,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ### 22. `is_secure_secret_file()` permits owner-write
 - **Severity:** Medium
 - **Priority:** P1
-- **File:** `src/platform/file_metadata.cpp`
+- **File:** `src/platform/FileMetadataSupport.cpp`
 - **Line range:** `81â€“86`
 - **Related files:** `tests/unit/test_file_metadata.cpp`, `docs/security-coding-rules.md`
 - **Description:** `is_secure_secret_file()` validates regular files, no group/other permissions, and no execute bits, but does not reject `owner_write`.
@@ -469,7 +469,7 @@ The highest-risk cluster is the **server signing-secret lifecycle** (findings 1â
 ## Refuted findings
 
 ### R1. Manual parsing of `to_device` extension sync token
-- **File:** `src/sync/sliding_sync_extensions.cpp:90`
+- **File:** `src/sync/SlidingSyncExtensions.cpp:90`
 - **Ruling:** Not a server-wide security issue.
 - **Reason:** The `extensions.to_device.since` field is an extension-specific position token, not a top-level `/sync` `next_batch` token. The top-level sliding-sync `pos` token is correctly decoded via `sync::decode_stream_token`, and the top-level `next_batch` is encoded via `sync::encode_stream_token`. The malformed-input risk is self-targeting.
 - **Action:** No code change required. Do not add a finding for this location.

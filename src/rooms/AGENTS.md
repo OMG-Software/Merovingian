@@ -8,16 +8,16 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#rooms
 | File | Responsibility |
 |---|---|
 | `RoomVersionPolicy.cpp` | Maps room version strings to their policy (auth rules, event format, state resolution algorithm) |
-| `encryption_policy.cpp` | Enforces `m.room.encryption` state; tracks per-room encryption requirement |
+| `EncryptionPolicy.cpp` | Enforces `m.room.encryption` state; tracks per-room encryption requirement |
 
 ## Room version policy
 
 `RoomVersionPolicy` is the authoritative source of which rules apply to a given room.
 Always obtain a `RoomVersionPolicy` from `RoomVersionPolicy.hpp` before:
-- Evaluating authorization rules (`events/authorization.hpp`)
-- Running state resolution (`events/state_resolution.hpp`)
-- Constructing event IDs (`events/event_id.hpp`)
-- Applying redaction (`events/redaction.hpp`)
+- Evaluating authorization rules (`events/Authorization.hpp`)
+- Running state resolution (`events/StateResolution.hpp`)
+- Constructing event IDs (`events/EventId.hpp`)
+- Applying redaction (`events/Redaction.hpp`)
 
 Do not hard-code version-specific logic outside this module.
 
@@ -31,7 +31,7 @@ See `docs/matrix-v1.19-spec/rooms/index.md` for the feature matrix.
 
 ## Encryption policy
 
-`encryption_policy.cpp` decides whether a new room is created encrypted and whether a request
+`EncryptionPolicy.cpp` decides whether a new room is created encrypted and whether a request
 for an unencrypted one is refused. `room_creation_encryption_policy` is the ONLY place that
 decides: it takes the preset, DM flag, whether the room can federate, the request and the five
 `security.encryption.*` settings (ADR-0445), and `create_room` must not re-derive any of it.

@@ -49,7 +49,7 @@ signing-secret allocations do not all enforce lock success. Derived
 
 ## Links
 
-* [Master-key implementation](../../src/crypto/master_key.cpp)
+* [Master-key implementation](../../src/crypto/MasterKey.cpp)
 * [Cryptographic boundary](../crypto-boundary.md)
 
 <!-- Recorded in 0.12.29; the implementation predates this record (0.12.5). -->

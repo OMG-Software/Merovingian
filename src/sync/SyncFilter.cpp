@@ -5,13 +5,13 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
-#include "merovingian/sync/type_pattern.hpp"
+#include "merovingian/sync/TypePattern.hpp"
 
 #include <algorithm>
 #include <cstddef>

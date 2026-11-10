@@ -15,34 +15,34 @@
 #include "merovingian/appservice/ThirdPartyLocation.hpp"
 #include "merovingian/appservice/ThirdPartyProtocol.hpp"
 #include "merovingian/appservice/ThirdPartyUser.hpp"
-#include "merovingian/appservice/masquerade_token.hpp"
-#include "merovingian/appservice/registration.hpp"
+#include "merovingian/appservice/MasqueradeToken.hpp"
+#include "merovingian/appservice/Registration.hpp"
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/auth/KeyApiEndpoint.hpp"
 #include "merovingian/auth/KeyApiRoute.hpp"
-#include "merovingian/auth/identity.hpp"
-#include "merovingian/auth/key_api.hpp"
-#include "merovingian/auth/oidc_discovery.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Identity.hpp"
+#include "merovingian/auth/KeyApi.hpp"
+#include "merovingian/auth/OidcDiscovery.hpp"
+#include "merovingian/auth/Password.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/canonicaljson/signable.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Signable.hpp"
 #include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/SyncRequest.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519Signature.hpp"
-#include "merovingian/crypto/constant_time.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/encoding.hpp"
-#include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/Encoding.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
+#include "merovingian/crypto/Random.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAuditEvent.hpp"
@@ -63,19 +63,19 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
-#include "merovingian/events/event_id.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventId.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/DeviceDisplayNames.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/PublicRoomsFilter.hpp"
 #include "merovingian/federation/PublicRoomsRefusal.hpp"
-#include "merovingian/federation/event_query.hpp"
-#include "merovingian/federation/key_query.hpp"
-#include "merovingian/federation/key_signatures.hpp"
-#include "merovingian/federation/outbound_membership.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/public_rooms.hpp"
-#include "merovingian/federation/security.hpp"
+#include "merovingian/federation/EventQuery.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
+#include "merovingian/federation/KeySignatures.hpp"
+#include "merovingian/federation/OutboundMembership.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/federation/PublicRooms.hpp"
+#include "merovingian/federation/Security.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
@@ -107,43 +107,43 @@
 #include "merovingian/homeserver/TurnCredentials.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/homeserver/UserDirectorySearchStats.hpp"
-#include "merovingian/homeserver/appservice_delivery.hpp"
-#include "merovingian/homeserver/appservice_ephemeral.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/email_push.hpp"
-#include "merovingian/homeserver/invite_permission.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/operator_admin.hpp"
-#include "merovingian/homeserver/password_reset.hpp"
-#include "merovingian/homeserver/presence_service.hpp"
-#include "merovingian/homeserver/public_rooms.hpp"
-#include "merovingian/homeserver/remote_device_list_scope.hpp"
-#include "merovingian/homeserver/room_power.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/space_hierarchy.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/homeserver/stored_push_rules.hpp"
-#include "merovingian/homeserver/stored_room_version.hpp"
-#include "merovingian/homeserver/url_preview_service.hpp"
-#include "merovingian/homeserver/user_directory_search.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
+#include "merovingian/homeserver/InvitePermission.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/OperatorAdmin.hpp"
+#include "merovingian/homeserver/PasswordReset.hpp"
+#include "merovingian/homeserver/PresenceService.hpp"
+#include "merovingian/homeserver/PublicRooms.hpp"
+#include "merovingian/homeserver/RemoteDeviceListScope.hpp"
+#include "merovingian/homeserver/RoomPower.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/SpaceHierarchy.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/homeserver/StoredPushRules.hpp"
+#include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/homeserver/UrlPreviewService.hpp"
+#include "merovingian/homeserver/UserDirectorySearch.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/http/RateLimitConfig.hpp"
 #include "merovingian/http/RateLimitDecision.hpp"
 #include "merovingian/http/RateLimitEngine.hpp"
 #include "merovingian/http/RequestErrorCode.hpp"
-#include "merovingian/http/rate_limit.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/RateLimit.hpp"
+#include "merovingian/http/Request.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
-#include "merovingian/media/security.hpp"
+#include "merovingian/media/Security.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/bounded_text.hpp"
-#include "merovingian/observability/observability.hpp"
-#include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/observability/BoundedText.hpp"
+#include "merovingian/observability/Observability.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/push/PushRuleEditOutcome.hpp"
 #include "merovingian/push/PushRulePlacement.hpp"
 #include "merovingian/push/UserPushRules.hpp"
@@ -173,17 +173,17 @@
 #include "merovingian/sync/SyncNotifier.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
 #include "merovingian/sync/ViewerEventUnsigned.hpp"
-#include "merovingian/sync/receipt_visibility.hpp"
-#include "merovingian/sync/sliding_sync.hpp"
-#include "merovingian/sync/sliding_sync_extensions.hpp"
-#include "merovingian/sync/sliding_sync_parser.hpp"
-#include "merovingian/sync/sliding_sync_room_builder.hpp"
-#include "merovingian/sync/sliding_sync_room_list.hpp"
-#include "merovingian/sync/state_group_lookup.hpp"
+#include "merovingian/sync/ReceiptVisibility.hpp"
+#include "merovingian/sync/SlidingSync.hpp"
+#include "merovingian/sync/SlidingSyncExtensions.hpp"
+#include "merovingian/sync/SlidingSyncParser.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
+#include "merovingian/sync/SlidingSyncRoomList.hpp"
+#include "merovingian/sync/StateGroupLookup.hpp"
 #include "merovingian/trust_safety/ReviewTarget.hpp"
 #include "merovingian/trust_safety/SafetyAuditEvent.hpp"
-#include "merovingian/trust_safety/ignore_list.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/IgnoreList.hpp"
+#include "merovingian/trust_safety/PolicyEngine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2613,7 +2613,7 @@ namespace
     // configured trusted identity-server base URLs by host+port, returning the
     // trusted base URL to use as the IS call target (preserving any configured path
     // prefix). Returns nullopt when the IS is not trusted. Mirrors the matcher in
-    // room_service.cpp::invite_user_by_threepid so every IS-delegated client-server
+    // RoomService.cpp::invite_user_by_threepid so every IS-delegated client-server
     // handler applies the same trust gate.
     [[nodiscard]] auto resolve_trusted_identity_base_url(config::IdentityServerConfig const& identity_config,
                                                          std::string_view id_server) -> std::optional<std::string>
@@ -4214,7 +4214,7 @@ namespace
         // each downstream client rather than collapsing all traffic
         // through the proxy into a single bucket.
         // Single implementation shared with the federation key-resolution budget
-        // (see local_http_router.hpp): both need trusted-proxy resolution and
+        // (see LocalHttpRouter.hpp): both need trusted-proxy resolution and
         // IPv6-prefix grouping for the same reason, and two copies would be
         // free to drift apart.
         auto const effective_ip = rate_limit_client_key(req, rt.homeserver.config.server());
@@ -7265,7 +7265,7 @@ namespace
         // fresh ones, which this project has already seen once — grows this map
         // until the process is OOM-killed. Each entry holds rooms_seen,
         // lazy_members_sent (a member-ID set per room) and possibly a full pending
-        // timeline snapshot. sliding_sync.hpp documented a one-hour idle eviction;
+        // timeline snapshot. SlidingSync.hpp documented a one-hour idle eviction;
         // nothing implemented it, and last_used was written and never read.
         //
         // Pruned before taking the reference below, so the reference cannot be to
@@ -8931,7 +8931,7 @@ namespace
             }
 
             // Every key is published with the signatures the requesting user
-            // is allowed to see (federation/key_signatures.hpp, ADR-0060).
+            // is allowed to see (federation/KeySignatures.hpp, ADR-0060).
             auto devices = canonicaljson::Object{};
             if (requested_devices->empty())
             {
@@ -11235,7 +11235,7 @@ namespace
         };
 
         // Ignoring Users: resolved once for the whole request, not per event
-        // (trust_safety/ignore_list.hpp's documented contract).
+        // (trust_safety/IgnoreList.hpp's documented contract).
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
 
         // Room History Visibility (CSAZ-3): a search matches only events the user may see,
@@ -13929,7 +13929,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // `req` shadows the parameter with a mutable local copy for the rest of
     // this function. Application Service API (Matrix v1.19) as_token bearer
     // auth + `?user_id=`/`?device_id=` identity-assertion masquerade (see
-    // appservice/masquerade_token.hpp) is resolved exactly once, here, by
+    // appservice/MasqueradeToken.hpp) is resolved exactly once, here, by
     // rewriting `req.access_token` before any route below sees it — every
     // downstream call that re-derives identity from a bare access_token
     // string (auth(), authenticated_user/session/admin_user, and every
@@ -17250,7 +17250,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
     // Paginates through events the user "has been, or would have been,
     // notified about". Notification history is recorded independently of
-    // pushers/push.enabled -- see room_service.cpp's build_pending_push_
+    // pushers/push.enabled -- see RoomService.cpp's build_pending_push_
     // deliveries doc comment -- so this works the same whether or not the
     // user has push notifications configured.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/notifications")
@@ -17426,7 +17426,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && starts_with(request_path, "/_matrix/client/v3/thirdparty/"))
     {
         // AppserviceRegistry is immutable after boot (see its class doc
-        // comment in registration.hpp) — these references into it stay
+        // comment in Registration.hpp) — these references into it stay
         // valid across the RuntimeLockRelease scopes below, which
         // release runtime.mutex for the actual outbound network calls per
         // homeserver/AGENTS.md's "never make a blocking network call while
@@ -17734,7 +17734,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     // Push Rules API (R19, ADR-0204). Spec: client-server-api.md, "Push Rules: API". A user's
     // rules are the server defaults with their own `m.push_rules` account data applied
-    // (stored_push_rules.hpp); every edit rewrites that account data, so the change reaches the
+    // (StoredPushRules.hpp); every edit rewrites that account data, so the change reaches the
     // user's clients in the account_data section of their next /sync ("Push Rules: Events").
     auto const max_push_rules = static_cast<std::size_t>(rt.limits.max_push_rules_per_user);
     if (req.method == "GET" && request_path == "/_matrix/client/v3/pushrules/")
@@ -18097,12 +18097,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         // Sniff the actual bytes rather than trusting the client-declared
         // Content-Type — a declared_mime|declared_mime pipe body (the previous
-        // behaviour) made the quarantine mismatch check in media/security.cpp
+        // behaviour) made the quarantine mismatch check in media/Security.cpp
         // compare a value against itself and thus a permanent no-op.
         auto const sniffed_mime = media::sniff_mime_type(req.body);
         // #418: thread the actual scanner verdict through rather than
         // hardcoding "clean" — a hardcoded verdict made the quarantine
-        // branch in media/security.cpp structurally unreachable even with
+        // branch in media/Security.cpp structurally unreachable even with
         // security.media.enable_av_scanner=true. See
         // content_matches_eicar_test_signature() for what "actual" means
         // here: Merovingian does not integrate a real AV engine, so this is
@@ -18637,7 +18637,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
 
         // create_room takes its own lock on rt.homeserver.mutex (it must
-        // remain independently callable — see room_service.cpp), so calling
+        // remain independently callable — see RoomService.cpp), so calling
         // it while this handler's own guard is still held would recursively
         // double-lock the mutex: RuntimeLockRelease inside
         // resolve_policy_server_hook would then release only this outer

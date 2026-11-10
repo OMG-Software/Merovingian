@@ -11,7 +11,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/homeserver/worker_ipc_limits.hpp"
+#include "merovingian/homeserver/WorkerIpcLimits.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
 
 #include <catch2/catch_test_macros.hpp>

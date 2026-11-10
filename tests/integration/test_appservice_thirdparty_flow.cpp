@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |          THIRD-PARTY LOOKUPS — END-TO-END APPSERVICE INTEGRATION        |
@@ -12,7 +12,7 @@
 // |  Drives GET /_matrix/client/v3/thirdparty/* against a real local mock  |
 // |  appservice (plain HTTP — appservice traffic is cleartext by design,   |
 // |  see AppserviceClient.hpp's allow_cleartext_http doc comment, so no   |
-// |  TLS handshake is needed here unlike tests/support/tls_mock_server.hpp |
+// |  TLS handshake is needed here unlike tests/support/TlsMockServer.hpp |
 // |  push/identity-server mocks; accept_loopback/json_http_response/       |
 // |  ScopedThreadJoin are reused from there since they are not actually    |
 // |  TLS-specific). Proves: instance_id minting on /protocol and           |
@@ -25,11 +25,11 @@
 
 #include "../support/MockAppservice.hpp"
 #include "../support/ScopedThreadJoin.hpp"
-#include "../support/appservice_test_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/AppserviceTestConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -38,7 +38,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>

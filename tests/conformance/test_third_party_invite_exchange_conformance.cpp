@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |      THIRD-PARTY INVITE EXCHANGE CONFORMANCE TESTS                      |
@@ -16,10 +16,10 @@
 // |  invite.                                                                |
 // +-------------------------------------------------------------------------+
 
-#include "../support/third_party_invite_fixture.hpp"
+#include "../support/ThirdPartyInviteFixture.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

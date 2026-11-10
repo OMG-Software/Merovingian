@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // ADR-0569 (finding P15a): a /sync long-poll with nothing to return parks in the notifier's registry and gives up its
 // sync-pool thread. Every scenario runs a real listener on loopback with a sync pool of TWO threads, so more
@@ -8,9 +8,9 @@
 //
 // Tags: [p15a] [sync] [homeserver] [http] [integration].
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "bounded_connect.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -21,8 +21,8 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"

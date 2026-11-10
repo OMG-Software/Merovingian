@@ -16,13 +16,13 @@
 #include "merovingian/appservice/ThirdPartyProtocol.hpp"
 #include "merovingian/appservice/ThirdPartyProtocolInstance.hpp"
 #include "merovingian/appservice/ThirdPartyUser.hpp"
-#include "merovingian/appservice/cleartext_policy.hpp"
+#include "merovingian/appservice/CleartextPolicy.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/core/QueryParams.hpp"
 
 #include <algorithm>
 #include <chrono>

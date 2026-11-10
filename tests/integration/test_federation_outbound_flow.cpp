@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/tls_mock_server.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"

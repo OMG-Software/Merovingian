@@ -6,10 +6,10 @@ Structured logging and audit trail for the server.
 
 | File | Responsibility |
 |---|---|
-| `observability.cpp` | Audit event types and category enum, admin route table and matching (`admin_routes`/`match_admin_route`/`match_admin_path`: the one list of operator routes, ADR-0504; there is no shutdown route, ADR-0505), health and Prometheus metrics snapshots, the thread's correlation context slot (`current_correlation_context`; it holds the context by value, never a pointer, ADR-0526; the scope that fills it is `CorrelationScope.cpp`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
+| `Observability.cpp` | Audit event types and category enum, admin route table and matching (`admin_routes`/`match_admin_route`/`match_admin_path`: the one list of operator routes, ADR-0504; there is no shutdown route, ADR-0505), health and Prometheus metrics snapshots, the thread's correlation context slot (`current_correlation_context`; it holds the context by value, never a pointer, ADR-0526; the scope that fills it is `CorrelationScope.cpp`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `CorrelationScope.cpp` | `CorrelationScope` — RAII scope that sets the thread's correlation context and restores the previous one on exit (ADR-0526) |
 | `AuditRateGate.cpp` | `AuditRateGate` — caps durable audit rows per event kind per window for the kinds an unauthenticated client can trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`, `login.rejected`, `login.throttled`); suppressed counts ride on the next row written (AUTH-1, ADR-0080) |
-| `bounded_text.cpp` | Bounds attacker-controlled audit and log text to well-formed UTF-8 of at most a byte limit: invalid bytes become U+FFFD and the cut never splits a character (AUTH-1) |
+| `BoundedText.cpp` | Bounds attacker-controlled audit and log text to well-formed UTF-8 of at most a byte limit: invalid bytes become U+FFFD and the cut never splits a character (AUTH-1) |
 | `SingleLog.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
 | `LogFileSink.hpp` (header-only) | The `--log-file` descriptor: opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, made 0600 (ISO-6, ADR-0146). Never open the log file any other way |
 
@@ -49,12 +49,12 @@ Security-relevant events must be emitted as structured audit log entries (not pl
 Two persistence tiers exist — see `docs/observability-audit.md` for the full catalogue and the
 durability distinction:
 
-- **Durable** (via `append_local_audit`, `src/homeserver/local_services.cpp` — written to the
+- **Durable** (via `append_local_audit`, `src/homeserver/LocalServices.cpp` — written to the
   `audit_log` table): login success/failure (`auth.login`, `login.rejected`), token
   invalidation/rejection (`auth.logout`, `access_token.rejected`), client-server rate-limit
   rejections (`rate_limit.exceeded`, appended from `src/homeserver/ClientServerRuntime.cpp`), and media
   quarantine (`media.quarantined`, `media.upload_quarantined`).
-- **In-memory only, not durable** (via `audit_federation`, `src/federation/inbound_request.cpp` —
+- **In-memory only, not durable** (via `audit_federation`, `src/federation/InboundRequest.cpp` —
   appended to `FederationRuntimeState::audit_events`, a bounded list, never to the database):
   federation request authenticated/rejected (`federation.accepted`, `federation.rejected`,
   `federation.acl_rejected`, etc.). These do not survive a restart and are not returned by

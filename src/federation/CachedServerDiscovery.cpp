@@ -4,8 +4,8 @@
 #include "merovingian/federation/CachedServerDiscovery.hpp"
 
 #include "merovingian/federation/DiscoveryCachePolicy.hpp"
-#include "merovingian/federation/security.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/Security.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 
 #include <algorithm>
 #include <mutex>

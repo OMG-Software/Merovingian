@@ -12,16 +12,16 @@
 // opens it. Only the HTTP fetch is replaced: it returns a key response
 // genuinely self-signed by the key that signs the X-Matrix header, so the
 // request is verified with the key the worker fetched.
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>

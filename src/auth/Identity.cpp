@@ -1,0 +1,480 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/auth/Identity.hpp"
+
+#include "merovingian/auth/AccountState.hpp"
+#include "merovingian/auth/LoginPolicyDecision.hpp"
+#include "merovingian/auth/PasswordPolicy.hpp"
+#include "merovingian/auth/UserIdentity.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace merovingian::auth
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("identity", event, fields, severity);
+    }
+
+    [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool
+    {
+        return value >= '0' && value <= '9';
+    }
+
+    [[nodiscard]] auto is_ascii_lower(char value) noexcept -> bool
+    {
+        return value >= 'a' && value <= 'z';
+    }
+
+    [[nodiscard]] auto is_ascii_upper(char value) noexcept -> bool
+    {
+        return value >= 'A' && value <= 'Z';
+    }
+
+    [[nodiscard]] auto is_ascii_alnum(char value) noexcept -> bool
+    {
+        return is_ascii_lower(value) || is_ascii_upper(value) || is_ascii_digit(value);
+    }
+
+    [[nodiscard]] auto is_printable_ascii_without_space(char value) noexcept -> bool
+    {
+        auto const byte = static_cast<unsigned char>(value);
+        return byte > 0x20U && byte < 0x7FU;
+    }
+
+    // Spec: Matrix v1.19 § Identifier Grammar — new user ID localpart character set.
+    // Only lowercase ASCII, digits, and the listed punctuation are permitted for
+    // new user IDs. Uppercase is NOT allowed; it was removed from the spec to
+    // allow future case-folding without ambiguity.
+    [[nodiscard]] auto is_new_localpart_character(char value) noexcept -> bool
+    {
+        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' || value == '-' ||
+               value == '=' || value == '/' || value == '+';
+    }
+
+    // Validates a byte sequence as a federated localpart.
+    //
+    // Spec: Matrix v1.19 § User Identifiers (historical note)
+    // URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
+    //
+    // Historical deployments issued user IDs with characters outside the normative
+    // set (uppercase, punctuation such as '#', Unicode). Servers SHOULD accept these
+    // over federation. The only hard constraints in all eras are:
+    //   - ':' is forbidden — it is the separator between localpart and server_name
+    //   - NUL is forbidden — it truncates C strings and corrupts storage
+    //   - Code units must form valid UTF-8 (no overlong sequences, no surrogates,
+    //     no code points above U+10FFFF)
+    //
+    // Empty localparts are technically non-conformant but accepted for maximum
+    // compatibility with unusual historical deployments.
+    [[nodiscard]] auto is_valid_federated_localpart_bytes(std::string_view bytes) noexcept -> bool
+    {
+        auto i = std::size_t{0};
+        while (i < bytes.size())
+        {
+            auto const byte = static_cast<unsigned char>(bytes[i]);
+
+            // Reject NUL (corrupts C-string handling) and ':' (breaks user ID parsing).
+            if (byte == 0x00U || byte == 0x3AU)
+            {
+                return false;
+            }
+
+            // Determine UTF-8 sequence length and extract the leading code-point bits.
+            std::size_t seq_len = 0;
+            std::uint32_t code_point = 0;
+
+            if (byte < 0x80U) // ASCII (single byte)
+            {
+                seq_len = 1;
+                code_point = byte;
+            }
+            else if ((byte & 0xE0U) == 0xC0U) // 2-byte sequence
+            {
+                seq_len = 2;
+                code_point = byte & 0x1FU;
+            }
+            else if ((byte & 0xF0U) == 0xE0U) // 3-byte sequence
+            {
+                seq_len = 3;
+                code_point = byte & 0x0FU;
+            }
+            else if ((byte & 0xF8U) == 0xF0U) // 4-byte sequence
+            {
+                seq_len = 4;
+                code_point = byte & 0x07U;
+            }
+            else
+            {
+                // 0x80–0xBF (lone continuation), 0xF8–0xFF (invalid in UTF-8)
+                return false;
+            }
+
+            // Validate and accumulate continuation bytes.
+            for (std::size_t j = 1; j < seq_len; ++j)
+            {
+                if (i + j >= bytes.size())
+                {
+                    return false; // Truncated sequence at end of input
+                }
+                auto const cont = static_cast<unsigned char>(bytes[i + j]);
+                if ((cont & 0xC0U) != 0x80U)
+                {
+                    return false; // Expected continuation byte, got something else
+                }
+                code_point = (code_point << 6U) | (cont & 0x3FU);
+            }
+
+            // Reject overlong encodings (e.g. 2-byte encoding of an ASCII character).
+            if (seq_len == 2U && code_point < 0x80U)
+            {
+                return false;
+            }
+            if (seq_len == 3U && code_point < 0x800U)
+            {
+                return false;
+            }
+            if (seq_len == 4U && code_point < 0x10000U)
+            {
+                return false;
+            }
+
+            // Reject surrogate code points U+D800–U+DFFF.
+            // These are permanently reserved and cannot appear in valid UTF-8.
+            if (code_point >= 0xD800U && code_point <= 0xDFFFU)
+            {
+                return false;
+            }
+
+            // Reject code points above U+10FFFF (outside Unicode range).
+            if (code_point > 0x10FFFFU)
+            {
+                return false;
+            }
+
+            i += seq_len;
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto port_is_valid(std::string_view port) noexcept -> bool
+    {
+        if (port.empty() || port.size() > 5U || !std::ranges::all_of(port, is_ascii_digit))
+        {
+            return false;
+        }
+
+        auto parsed_port = std::uint32_t{0};
+        for (auto const digit : port)
+        {
+            parsed_port = (parsed_port * 10U) + static_cast<std::uint32_t>(digit - '0');
+        }
+
+        return parsed_port <= 65535U;
+    }
+
+    [[nodiscard]] auto hostname_is_valid(std::string_view hostname) noexcept -> bool
+    {
+        if (hostname.empty() || hostname.front() == '.' || hostname.back() == '.')
+        {
+            return false;
+        }
+
+        auto label_start = std::size_t{0};
+        while (label_start < hostname.size())
+        {
+            auto const label_end = hostname.find('.', label_start);
+            auto const end = label_end == std::string_view::npos ? hostname.size() : label_end;
+            auto const label = hostname.substr(label_start, end - label_start);
+            if (label.empty() || label.size() > 63U || label.front() == '-' || label.back() == '-')
+            {
+                return false;
+            }
+            if (!std::ranges::all_of(label, [](char const value) {
+                    return is_ascii_alnum(value) || value == '-';
+                }))
+            {
+                return false;
+            }
+
+            if (label_end == std::string_view::npos)
+            {
+                break;
+            }
+            label_start = label_end + 1U;
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] auto bracketed_ipv6_literal_is_valid(std::string_view literal) noexcept -> bool
+    {
+        if (literal.size() < 4U || literal.front() != '[')
+        {
+            return false;
+        }
+
+        auto const close = literal.find(']');
+        if (close == std::string_view::npos || close == 1U)
+        {
+            return false;
+        }
+
+        auto const address = literal.substr(1U, close - 1U);
+        auto const suffix = literal.substr(close + 1U);
+        if (address.find(':') == std::string_view::npos)
+        {
+            return false;
+        }
+        if (!std::ranges::all_of(address, [](char const value) {
+                return is_ascii_digit(value) || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F') ||
+                       value == ':' || value == '.';
+            }))
+        {
+            return false;
+        }
+        if (suffix.empty())
+        {
+            return true;
+        }
+
+        return suffix.front() == ':' && port_is_valid(suffix.substr(1U));
+    }
+
+} // namespace
+
+auto room_alias_is_valid(std::string_view room_alias) noexcept -> bool
+{
+    if (room_alias.size() < 2U || room_alias.size() > 255U || room_alias.front() != '#')
+    {
+        return false;
+    }
+    // The localpart cannot contain ':', so the first one ends it.
+    auto const colon = room_alias.find(':');
+    if (colon == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const localpart = room_alias.substr(1U, colon - 1U);
+    return localpart.find('\0') == std::string_view::npos && canonicaljson::utf8_is_valid(localpart) &&
+           server_name_is_valid(room_alias.substr(colon + 1U));
+}
+
+auto server_name_is_valid(std::string_view server_name) noexcept -> bool
+{
+    if (server_name.empty() || server_name.size() > 255U)
+    {
+        return false;
+    }
+
+    if (server_name.front() == '[')
+    {
+        return bracketed_ipv6_literal_is_valid(server_name);
+    }
+
+    auto const colon = server_name.find(':');
+    if (colon == std::string_view::npos)
+    {
+        return hostname_is_valid(server_name);
+    }
+    if (server_name.find(':', colon + 1U) != std::string_view::npos)
+    {
+        return false;
+    }
+
+    auto const hostname = server_name.substr(0U, colon);
+    auto const port = server_name.substr(colon + 1U);
+    return hostname_is_valid(hostname) && port_is_valid(port);
+}
+
+// Spec: Matrix v1.19 § Identifier Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
+//
+// New localparts MUST use only: a-z, 0-9, '.', '_', '-', '=', '/', '+'.
+// Uppercase is not permitted for new user IDs.
+// Use this for registration and all local auth paths.
+auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool
+{
+    return !localpart.empty() && localpart.size() <= 255U && std::ranges::all_of(localpart, is_new_localpart_character);
+}
+
+// Spec: Matrix v1.19 § User Identifiers (historical compatibility)
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
+//
+// Historical user IDs may contain characters outside the normative set.
+// Servers SHOULD accept them when received over federation.
+// Any valid UTF-8 code point is accepted except ':' and NUL.
+// Empty localparts are accepted for maximum compatibility.
+auto localpart_is_valid_federated(std::string_view localpart) noexcept -> bool
+{
+    return is_valid_federated_localpart_bytes(localpart);
+}
+
+// Strict validator for local/registration paths.
+// Uses localpart_is_valid_new(); rejects uppercase and non-normative characters.
+auto user_id_is_valid(std::string_view user_id) noexcept -> bool
+{
+    if (user_id.size() < 4U || user_id.size() > 255U || user_id.front() != '@')
+    {
+        return false;
+    }
+
+    auto const separator = user_id.find(':');
+    if (separator == std::string_view::npos || separator <= 1U || separator + 1U >= user_id.size())
+    {
+        return false;
+    }
+
+    auto const localpart = user_id.substr(1U, separator - 1U);
+    auto const server_name = user_id.substr(separator + 1U);
+    return localpart_is_valid_new(localpart) && server_name_is_valid(server_name);
+}
+
+// Permissive validator for inbound federation paths.
+// Uses localpart_is_valid_federated(); accepts historical characters and empty localparts.
+auto user_id_is_valid_federated(std::string_view user_id) noexcept -> bool
+{
+    if (user_id.empty() || user_id.size() > 255U || user_id.front() != '@')
+    {
+        return false;
+    }
+
+    auto const separator = user_id.find(':');
+    // Must have a colon with at least one server-name character after it.
+    // Empty localpart (separator == 1) is allowed for historical compatibility.
+    if (separator == std::string_view::npos || separator + 1U >= user_id.size())
+    {
+        return false;
+    }
+
+    auto const localpart = user_id.substr(1U, separator - 1U);
+    auto const server_name = user_id.substr(separator + 1U);
+    return localpart_is_valid_federated(localpart) && server_name_is_valid(server_name);
+}
+
+auto localpart_is_reserved(std::string_view localpart) noexcept -> bool
+{
+    return localpart == "remote-media";
+}
+
+auto user_id_server_name(std::string_view user_id) noexcept -> std::string_view
+{
+    return user_id.starts_with('@') ? identifier_server_name(user_id) : std::string_view{};
+}
+
+auto identifier_server_name(std::string_view identifier) noexcept -> std::string_view
+{
+    if (identifier.size() < 2U || std::string_view{"@!#"}.find(identifier.front()) == std::string_view::npos)
+    {
+        return {};
+    }
+    // The localpart cannot contain ':', so the server name — which may itself
+    // be host:port — is everything after the FIRST colon.
+    auto const separator = identifier.find(':');
+    if (separator == std::string_view::npos || separator + 1U >= identifier.size())
+    {
+        return {};
+    }
+    return identifier.substr(separator + 1U);
+}
+
+auto device_id_is_valid(std::string_view device_id) noexcept -> bool
+{
+    // L-03 (security audit 2026-09). Printable-and-not-space is not enough,
+    // because a device ID is not only a name — it is a *component of other
+    // identifiers*, and two of those give it structural characters it must not
+    // contain:
+    //
+    //   - Key IDs are `<algorithm>:<device_id>` (spec §End-to-end encryption,
+    //     e.g. `ed25519:<device_id>`). A device ID containing ':' produces
+    //     `ed25519:foo:bar`, which no longer parses to a single algorithm and
+    //     device, and which a federation partner may split differently than
+    //     this server does.
+    //   - Device IDs appear as a path segment in `/devices/{deviceId}`. '/',
+    //     '?' and '#' terminate or redirect that segment once the path is
+    //     decoded, so such an ID is unaddressable through its own endpoints.
+    //
+    // Rejecting them at the validator is the only place that covers every
+    // entry point (login, appservice-supplied IDs, refresh, key upload) at
+    // once.
+    auto constexpr is_reserved = [](char value) noexcept {
+        return value == ':' || value == '/' || value == '?' || value == '#';
+    };
+    return !device_id.empty() && device_id.size() <= 255U &&
+           std::ranges::all_of(device_id, [&is_reserved](char value) noexcept {
+               return is_printable_ascii_without_space(value) && !is_reserved(value);
+           });
+}
+
+auto password_is_acceptable(std::string_view password, PasswordPolicy const& policy) noexcept -> bool
+{
+    // An empty password never passes, whatever min_length says (config
+    // validation refuses 0, but this rule does not depend on it).
+    if (password.empty() || password.size() < policy.min_length)
+    {
+        return false;
+    }
+    if (!policy.require_character_classes)
+    {
+        return true;
+    }
+
+    auto has_lower = false;
+    auto has_upper = false;
+    auto has_digit = false;
+    auto has_symbol = false;
+
+    for (auto const value : password)
+    {
+        auto const byte = static_cast<unsigned char>(value);
+        has_lower = has_lower || is_ascii_lower(value);
+        has_upper = has_upper || is_ascii_upper(value);
+        has_digit = has_digit || is_ascii_digit(value);
+        has_symbol = has_symbol || (byte >= 0x21U && byte <= 0x7EU && !is_ascii_alnum(value));
+    }
+
+    return has_lower && has_upper && has_digit && has_symbol;
+}
+
+auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
+{
+    auto result = [&]() -> LoginPolicyDecision {
+        if (!user_id_is_valid(user.user_id))
+        {
+            return {false, "invalid user_id"};
+        }
+        if (!user.password_login_enabled)
+        {
+            return {false, "password login disabled"};
+        }
+        if (user.state == AccountState::locked)
+        {
+            return {false, "account locked"};
+        }
+        // Suspended accounts MAY still log in and create additional sessions per
+        // spec v1.19 §"Account suspension"; the new session is itself suspended
+        // and enforced by the request-path M_USER_SUSPENDED gate. Only locked
+        // accounts are denied a new login.
+        return {true, {}};
+    }();
+    log_diagnostic(result.allowed ? "login_policy.allowed" : "login_policy.denied",
+                   {
+                       {"user_id", user.user_id,  false},
+                       {"reason",  result.reason, false}
+    });
+    return result;
+}
+
+} // namespace merovingian::auth

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/federation/FederationEndpoint.hpp"
-#include "merovingian/federation/transactions.hpp"
-#include "merovingian/homeserver/federation_request_routing.hpp"
+#include "merovingian/federation/Transactions.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -363,7 +363,7 @@ SCENARIO("Room ID is percent-decoded for correct shard routing", "[federation][r
     GIVEN("a room ID containing '!' as sent percent-encoded in a real federation path")
     {
         // Real clients (Synapse included) percent-encode '!' as a path segment.
-        // notify_room_changed() always uses the plain decoded form (room_service.cpp
+        // notify_room_changed() always uses the plain decoded form (RoomService.cpp
         // never touches a URL) — every endpoint below must resolve to the same
         // string or its shard-routing hash disagrees with the notification's,
         // reproducing the make_join 404 this scenario guards against.

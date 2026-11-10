@@ -4,7 +4,7 @@
 // Exercises both the query-string parser (parse_query_params) and the
 // percent-decoder (percent_decode) against arbitrary byte sequences.
 
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 
 #include <cstddef>
 #include <cstdint>

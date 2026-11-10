@@ -14,12 +14,12 @@
 // rooms"; docs/matrix-v1.19-spec/rooms/v11.md `prev_events` ("Must contain less than or equal to 20
 // events").
 
-#include "../support/master_key.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -30,8 +30,8 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/authorization.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/DispatchWorker.hpp"
 #include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
@@ -40,11 +40,11 @@
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/restricted_join.hpp"
-#include "merovingian/homeserver/send_join_answer.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RestrictedJoin.hpp"
+#include "merovingian/homeserver/SendJoinAnswer.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

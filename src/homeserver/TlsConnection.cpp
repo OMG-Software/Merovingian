@@ -3,7 +3,7 @@
 
 #include "merovingian/homeserver/TlsConnection.hpp"
 
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 
 #include <openssl/ssl.h>
 

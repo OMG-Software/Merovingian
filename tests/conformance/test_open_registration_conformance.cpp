@@ -5,10 +5,10 @@
 // security.registration.allow_open_registration=true, ADR-0232) still goes
 // through User-Interactive Authentication, with the single stage m.login.dummy.
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "merovingian/auth/identity.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "merovingian/auth/Identity.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

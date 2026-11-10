@@ -8,10 +8,10 @@
 // represented as strings within this room version".
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/homeserver/PushRoomFacts.hpp"
 #include "merovingian/push/PushRuleset.hpp"
-#include "merovingian/push/push_rules.hpp"
+#include "merovingian/push/PushRules.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

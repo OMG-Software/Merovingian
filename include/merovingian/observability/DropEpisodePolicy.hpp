@@ -14,7 +14,7 @@ namespace merovingian::observability
 // during an incident must not itself become the flood. Shared by
 // `SingleLog::console_log`/`file_log` (a bounded queue silently discarding
 // entries once full) and `local_audit_sink` in
-// `src/homeserver/local_services.cpp` (silently no-opping while the
+// `src/homeserver/LocalServices.cpp` (silently no-opping while the
 // thread-local database is unset/closed): both are "keep working, but tell
 // the operator once" backpressure signals.
 class DropEpisodePolicy final

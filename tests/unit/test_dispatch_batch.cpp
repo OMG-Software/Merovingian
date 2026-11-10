@@ -5,7 +5,7 @@
 // batch committed in one transaction: durable before anything can be sent, all or none, and still bounded by the
 // queue depth and each destination's share of it (ADR-0177).
 
-#include "federation_signing_test_support.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/database/PersistentFederationTransaction.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"

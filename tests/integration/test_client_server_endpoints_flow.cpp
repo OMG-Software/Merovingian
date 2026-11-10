@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/cross_signing_fixture.hpp"
-#include "../support/in_memory_database_config.hpp"
+#include "../support/CrossSigningFixture.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
@@ -22,12 +22,12 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/MockIdentityServer.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -39,15 +39,15 @@
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/sync/StreamToken.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyEngine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -303,7 +303,7 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
                 .response.status == 200U);
 }
 
-// make_signed_otk_json is provided by federation_signing_test_support.hpp
+// make_signed_otk_json is provided by FederationSigningTestSupport.hpp
 // (merovingian::federation::test::make_signed_otk_json).
 // The local alias below keeps existing call sites concise.
 [[nodiscard]] auto make_signed_otk_json(std::string_view user_id, std::string_view device_id,
@@ -5050,7 +5050,7 @@ SCENARIO("POST /pushers/set persists custom data members and GET /pushers return
 // live. Forces that failure via the same seam
 // test_database_backend_config.cpp-style tests use: flipping the store to
 // PersistentStoreBackend::sqlite with an empty sqlite_path makes
-// persist_transaction_to_backend (src/database/sqlite_store.cpp) fail
+// persist_transaction_to_backend (src/database/SqliteStore.cpp) fail
 // closed without touching disk. No finer-grained "fail just this one call"
 // seam exists at the handler level.
 SCENARIO("POST /pushers/set with kind:null reports a backend delete failure instead of 200",
@@ -5926,7 +5926,7 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
 
         // Regression test for #418: the internal media pipe body previously
         // hardcoded scanner_clean to "clean" regardless of any scan result,
-        // so the quarantine-on-infection path in media/security.cpp was
+        // so the quarantine-on-infection path in media/Security.cpp was
         // structurally unreachable from the real client-facing upload
         // endpoint even with security.media.enable_av_scanner=true (the
         // default). The fix threads a real (if minimal) scan result through:

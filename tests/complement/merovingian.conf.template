@@ -69,7 +69,7 @@ security.encryption.block_unencrypted_federated_private_rooms=false
 # Rate limits cannot be switched off, so each one is raised out of reach:
 # every Complement client arrives from one address. A tier override outranks
 # the built-in per-IP refinements (keys, devices, search, thumbnails); the
-# built-in per-user limits need entries of their own (src/http/rate_limit.cpp).
+# built-in per-user limits need entries of their own (src/http/RateLimit.cpp).
 client_rate_limits.default_per_ip=1000000000/1s
 client_rate_limits.tier.auth_sensitive=1000000000/1s
 client_rate_limits.tier.media=1000000000/1s

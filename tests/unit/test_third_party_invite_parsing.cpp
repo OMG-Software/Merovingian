@@ -6,10 +6,10 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/federation/third_party_invite.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/federation/ThirdPartyInvite.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/federation_request_routing.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

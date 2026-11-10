@@ -5,7 +5,7 @@
 // room's current state, judged as the authorization rules judge it.
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/room_power.hpp"
+#include "merovingian/homeserver/RoomPower.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

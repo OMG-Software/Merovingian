@@ -14,8 +14,8 @@
 //                                 valid minimal PDU
 
 #include "merovingian/federation/RemoteServerRecord.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/security.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/Security.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

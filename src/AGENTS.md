@@ -1,6 +1,6 @@
 # src/ — Implementations
 
-A `.cpp` file here normally mirrors the header of the same name at the same relative path in `include/merovingian/`. Five do not: `appservice/registration_yaml.cpp`, `database/sqlite_store.cpp`, `federation_worker/main.cpp` and `media/thumbnail_worker_main.cpp` have no header, and `federation_worker/WorkerEventLoop.cpp` has its header, `WorkerEventLoop.hpp`, beside it in `src/`. The top-level `main.cpp` and `db_migrate.cpp` are executable entry points. Some headers have no `.cpp`.
+A `.cpp` file here normally mirrors the header of the same name at the same relative path in `include/merovingian/`. Five do not: `appservice/RegistrationYaml.cpp`, `database/SqliteStore.cpp`, `federation_worker/main.cpp` and `media/thumbnail_worker_main.cpp` have no header, and `federation_worker/WorkerEventLoop.cpp` has its header, `WorkerEventLoop.hpp`, beside it in `src/`. The top-level `main.cpp` and `db_migrate.cpp` are executable entry points. Some headers have no `.cpp`.
 Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 
 ## File conventions

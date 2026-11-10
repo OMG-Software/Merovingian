@@ -9,7 +9,7 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/stat.h>

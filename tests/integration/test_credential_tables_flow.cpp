@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // F-08 part 1 (security audit run 4): every token lookup and revocation scanned the whole access_tokens and
 // refresh_tokens vectors under runtime.mutex, so the cost of a refresh grew with every other user's rows. The two
@@ -12,9 +12,9 @@
 // MUST stop authenticating; the old refresh token is revoked once the new pair is used). The tests pin that the
 // answers did not change when the lookups became indexed. ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -32,7 +32,7 @@
 #include "merovingian/homeserver/LocalSession.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/SessionTable.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

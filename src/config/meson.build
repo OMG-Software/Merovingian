@@ -1,6 +1,6 @@
 config_sources = files(
   'Config.cpp',
-  'config_parser.cpp',
+  'ConfigParser.cpp',
   'ReloadPlan.cpp',
   'ReloadPolicy.cpp',
   'RuntimeConfigSnapshot.cpp',

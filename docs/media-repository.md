@@ -42,11 +42,11 @@ current in-process runtime path.
   response regardless (see `docs/http-transport.md`), which independently
   stops a browser from executing it as markup.
 - `media_id` validation is unified across every gate (issues #443/#444):
-  `security.cpp`'s `media_id_is_valid()` (used for remote-fetch requests) now
+  `Security.cpp`'s `media_id_is_valid()` (used for remote-fetch requests) now
   rejects embedded spaces exactly like `LocalMediaRepository.cpp`'s stricter
   `media_id_is_safe()` (used at the storage boundary), and the download/
   thumbnail route parser (`local_media_download_parts()` in
-  `local_http_router.cpp`) rejects `..` and embedded spaces in the
+  `LocalHttpRouter.cpp`) rejects `..` and embedded spaces in the
   `media_id` path segment before it ever reaches the repository layer,
   matching the check the admin media routes already applied.
 - `GET /_matrix/media/v3/config` reports `m.upload.size` from
@@ -96,7 +96,7 @@ current in-process runtime path.
   during the read is not served.
 - A download of a file larger than one chunk (256 KiB, `database::media_blob_chunk_bytes`) on SQLite is
   streamed (ADR-0574): the response carries a `MediaBodyStream` instead of body bytes, `Content-Length` is the stored
-  size, and `http_server.cpp` reads one chunk at a time on a short-lived connection and writes it before reading the
+  size, and `HttpServer.cpp` reads one chunk at a time on a short-lived connection and writes it before reading the
   next, with no lock held. A removal during the transfer fails the next chunk and closes the connection. Thumbnails,
   uploads, the federation media download and every PostgreSQL download are still buffered: `substring()` of a
   compressed TOASTed `bytea` decompresses the whole value for each chunk.
@@ -400,7 +400,7 @@ their `Content-Disposition` names the file from the path, as the spec requires (
 the file name requested in the path"). The deprecated named route is frozen like the unnamed
 one: media uploaded after the freeze is 404 there (ADR-0068).
 
-`media::media_content_disposition()` (`src/media/security.cpp`) writes the header. A name that
+`media::media_content_disposition()` (`src/media/Security.cpp`) writes the header. A name that
 `media::media_filename_is_valid()` accepts (at most 255 bytes of well-formed UTF-8, no control
 characters, no `/` or `\`) is written as `filename="..."` (with `"` and `\` escaped) when it is
 printable ASCII, and as RFC 5987 `filename*=utf-8''<percent-encoded>` otherwise. Any other

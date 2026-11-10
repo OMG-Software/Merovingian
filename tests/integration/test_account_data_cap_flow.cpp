@@ -6,7 +6,7 @@
 // (ADR-0118): refuse a new type over the per-user cap with M_TOO_LARGE, store nothing, never
 // evict; updating a type the user already holds is always allowed.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

@@ -1,5 +1,5 @@
 rooms_sources = files(
-  'encryption_policy.cpp',
+  'EncryptionPolicy.cpp',
   'RoomVersionPolicy.cpp',
 )
 

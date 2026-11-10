@@ -7,9 +7,9 @@ Spec authority: ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 
 | File | Responsibility |
 |---|---|
-| `parser.cpp` | Parse JSON bytes into `Value` tree; validates structure and rejects non-canonical input |
-| `serializer.cpp` | Serialize `Value` tree to canonical JSON bytes (sorted keys, no insignificant whitespace) |
-| `signable.cpp` | Wraps a JSON object for signing — removes `signatures` and `unsigned` before hashing |
+| `Parser.cpp` | Parse JSON bytes into `Value` tree; validates structure and rejects non-canonical input |
+| `Serializer.cpp` | Serialize `Value` tree to canonical JSON bytes (sorted keys, no insignificant whitespace) |
+| `Signable.cpp` | Wraps a JSON object for signing — removes `signatures` and `unsigned` before hashing |
 | `Value.cpp` | `Value` variant type: null, bool, integer, float, string, array, object |
 | `yyjson_adapter.c` | Thin C adapter over yyjson for raw parse speed |
 
@@ -22,10 +22,10 @@ Spec authority: ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 
 ## Critical constraints
 
-- **Never sign or hash a string that was not produced by `serializer.hpp`.** Any other
+- **Never sign or hash a string that was not produced by `Serializer.hpp`.** Any other
   JSON library can produce non-canonical output that silently changes the hash.
 - **Do not call the serializer on event objects before stripping `signatures` and `unsigned`.**
-  Use `signable.hpp` which handles this correctly.
+  Use `Signable.hpp` which handles this correctly.
 - The parser intentionally rejects duplicate keys — Matrix spec forbids them.
 
 ## Key spec sections

@@ -12,7 +12,7 @@
 #include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/LocalRedactionCheck.hpp"
-#include "merovingian/homeserver/redaction_service.hpp"
+#include "merovingian/homeserver/RedactionService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

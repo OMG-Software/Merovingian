@@ -2,7 +2,7 @@
 
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/sync/LongPollStep.hpp"
 #include "merovingian/sync/SyncNotifier.hpp"
 

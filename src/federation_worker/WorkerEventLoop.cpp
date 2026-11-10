@@ -5,7 +5,7 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
@@ -21,24 +21,24 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
-#include "merovingian/federation_worker/db_uri_fd.hpp"
-#include "merovingian/federation_worker/ipc_key_fd.hpp"
-#include "merovingian/federation_worker/worker_relay_frame.hpp"
+#include "merovingian/federation_worker/DbUriFd.hpp"
+#include "merovingian/federation_worker/IpcKeyFd.hpp"
+#include "merovingian/federation_worker/WorkerRelayFrame.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/worker_ipc_limits.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/WorkerIpcLimits.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/MembershipTemplateIngest.hpp"
-#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -174,7 +174,7 @@ namespace
     }
 
     // FederationEndpoint values that reach membership_acceptor (send_join,
-    // send_leave, send_knock only — see inbound_request.cpp's route dispatch).
+    // send_leave, send_knock only — see InboundRequest.cpp's route dispatch).
     [[nodiscard]] auto membership_endpoint_to_string(federation::FederationEndpoint endpoint) -> std::string_view
     {
         switch (endpoint)
@@ -772,7 +772,7 @@ auto WorkerEventLoop::run() -> void
     };
 
     // Override invite_handler the same way as membership_acceptor above: the
-    // default implementation (local_http_router.cpp) persists the invite's
+    // default implementation (LocalHttpRouter.cpp) persists the invite's
     // membership row, invite metadata, and event straight into this
     // process's own PersistentStore. PUT /_matrix/federation/{v1,v2}/invite
     // is room-scoped, so with federation.worker.shards >= 1 (the shipped
@@ -803,7 +803,7 @@ auto WorkerEventLoop::run() -> void
     // landed on this worker shard was left permanently unable to decrypt any
     // message encrypted with that session, with no trace anywhere in main's
     // logs (the transaction was still ack'd 200 to the sending server, and
-    // inbound_request.cpp counts an EDU with no edu_sink installed as
+    // InboundRequest.cpp counts an EDU with no edu_sink installed as
     // "dispatched" rather than "dropped"). Typing/receipt/presence really
     // are ephemeral, but relaying everything through one uniform path avoids
     // special-casing by EDU type. See docs/architecture.md, "Federation
@@ -827,7 +827,7 @@ auto WorkerEventLoop::run() -> void
     // Override one_time_keys_claim_provider: relay the raw claim request body
     // to main via IPC instead of deciding it against this process's own
     // PersistentStore::one_time_keys. The default implementation
-    // (local_http_router.cpp) decides key availability from an in-memory
+    // (LocalHttpRouter.cpp) decides key availability from an in-memory
     // vector hydrated once at worker startup, then issues a DELETE. Two
     // processes each running this locally can both believe the same
     // one-time key is still available — main's copy is never invalidated by

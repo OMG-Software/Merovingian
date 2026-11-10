@@ -16,8 +16,8 @@ not have, such as the rows 2 to 26 every build up to 0.12.46 wrote, is refused a
 (`schema_ledger_is_known`) and must be recreated.
 
 The file is the frozen record of what the build runs. The server never reads it; the
-C++ step `initial_schema_migration()` in `src/database/migration.cpp`, generated from
-`core_tables` and `core_indexes` in `src/database/schema.cpp`, is what runs. The unit
+C++ step `initial_schema_migration()` in `src/database/Migration.cpp`, generated from
+`core_tables` and `core_indexes` in `src/database/Schema.cpp`, is what runs. The unit
 test "Checked-in migrations hold exactly the v1 step this build runs" requires the two
 to match statement for statement.
 

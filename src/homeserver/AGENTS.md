@@ -8,57 +8,59 @@ This is the largest and most complex module — read this file carefully before 
 | File | Responsibility |
 |---|---|
 | `ClientServerRuntime.cpp` | `handle_client_server_request()` — main dispatch for all `/_matrix/client/...` and `/_matrix/media/...` endpoints |
-| `http_server.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers |
-| `local_http_router.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
-| `local_services.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
+| `HttpServer.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers; serves one request round on a connection (`detail::serve_request_round`, declared with the receive timeout and `resume_parked_poll` in the module-internal `HttpServerInternal.hpp`) |
+| `HttpConnectionDispatcher.cpp` | `HttpConnectionDispatcher` and its `Impl` (defined in `HttpConnectionDispatcher.hpp`): parks connections between requests and hands a readable one to the main pool (ADR-0077) |
+| `HttpConnection.cpp` | `HttpConnection`: one client connection and what travels with it (socket, TLS state, per-IP slot, parking reservation); `ParkingReservation`, `ConnectionContext`, `ConnectionAdmission` and `RoundOutcome` each have their own header |
+| `LocalHttpRouter.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
+| `LocalServices.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
 | `HomeserverRuntime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
 | `RuntimeMutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
 | `RequestLockScope.cpp` | `RequestLockScope`: publishes the mutex of the request's runtime lock on its thread (see below) |
 | `RuntimeLockRelease.cpp` | `RuntimeLockRelease`: releases the runtime lock around blocking calls (see below) |
-| `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
-| `clamd_media_scan.cpp` | `clamd_media_cleared` (G15, ADR-0565): the one place media is sent to clamd. Returns nullopt when no scan applies, else true only for a clean verdict; releases `runtime.mutex` for the scan, logs and audits `media.scan_infected` / `media.scan_failed`. Callers hold no runtime state across it |
-| `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
-| `streamed_body.cpp` | `write_streamed_body`: sends a response body of known length as chunks, one read then one write at a time, stopping at the first failure. Used by `http_server.cpp` for `MediaBodyStream` downloads (ADR-0574). No download holds a lock or a database connection while a chunk is written |
+| `AuthService.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
+| `ClamdMediaScan.cpp` | `clamd_media_cleared` (G15, ADR-0565): the one place media is sent to clamd. Returns nullopt when no scan applies, else true only for a clean verdict; releases `runtime.mutex` for the scan, logs and audits `media.scan_infected` / `media.scan_failed`. Callers hold no runtime state across it |
+| `MediaService.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
+| `StreamedBody.cpp` | `write_streamed_body`: sends a response body of known length as chunks, one read then one write at a time, stopping at the first failure. Used by `HttpServer.cpp` for `MediaBodyStream` downloads (ADR-0574). No download holds a lock or a database connection while a chunk is written |
 | `MediaUploadNotifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
-| `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
-| `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
-| `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
-| `client_txn_prune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
-| `retention_sweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `UrlPreviewService.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
+| `RoomService.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
+| `AppserviceDelivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
+| `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
+| `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
 | `LoginTokenStore.cpp` | `LoginTokenStore`: the in-memory, bounded, single-use login tokens `POST /login/get_token` mints (CS8, ADR-0548). Hash only, constant-time scan, never evicts; guarded by `runtime.mutex` |
 | `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488), and an index by (user ID, device ID) behind `erase_device` (F-08), which a login on a held device and a refresh call after their database commit (ADR-0590); `rows_examined()` counts the sessions it visits |
-| `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
-| `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
-| `remote_device_list_scope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
-| `state_content_check.cpp` | `state_content_refusal`: the `m.room.canonical_alias` and `m.room.encryption` content checks (F-19, ADR-0588). Called by `send_event_as_user` (so `PUT /state`, `PUT /send` and `POST /send` with a `state_key`) after the power check, and by `create_room` for `m.room.canonical_alias` entries of `initial_state`; never copy the checks into a route |
-| `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `DeferredPduRetry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
+| `RedactionService.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
+| `RemoteDeviceListScope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
+| `StateContentCheck.cpp` | `state_content_refusal`: the `m.room.canonical_alias` and `m.room.encryption` content checks (F-19, ADR-0588). Called by `send_event_as_user` (so `PUT /state`, `PUT /send` and `POST /send` with a `state_key`) after the power check, and by `create_room` for `m.room.canonical_alias` entries of `initial_state`; never copy the checks into a route |
+| `RoomPower.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
-| `user_directory_search.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
-| `public_rooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
-| `room_residency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
-| `invite_permission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
-| `send_join_answer_authorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
-| `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
-| `RemoteTimestampEvent.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `local_http_router.cpp`) |
-| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`; a room held locally is answered from local state, one not held is asked for from the `via` servers over federation `GET /hierarchy`, ADR-0556; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
-| `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
-| `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
+| `UserDirectorySearch.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
+| `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
+| `RoomResidency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
+| `InvitePermission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
+| `SendJoinAnswerAuthorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
+| `RestrictedJoin.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
+| `RemoteTimestampEvent.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `LocalHttpRouter.cpp`) |
+| `SpaceHierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` (a child room this server holds no state for is asked for over federation, see "Client requests that call another server") and the answer to `GET /_matrix/federation/v1/hierarchy/{roomId}`, judged for the authenticated requesting server; also `handle_client_room_summary` (`GET /_matrix/client/v1/room_summary/{roomIdOrAlias}`; a room held locally is answered from local state, one not held is asked for from the `via` servers over federation `GET /hierarchy`, ADR-0556; a request with no token is answered before the auth gate in `ClientServerRuntime.cpp` and may see only a public, knock or world-readable room) |
+| `DefaultPushRuleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
+| `StoredPushRules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `PushRoomFacts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
 | `PushBadgeCount.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
 | `PushRuleUnreadClassifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
-| `presence_service.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `ClientServerRuntime.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
-| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
-| `password_reset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `auth_service.cpp` |
+| `PresenceService.cpp` | Presence (CS API "Presence", SS API `m.presence`): `read_presence` (GET), `apply_sync_presence` (the `/sync` `set_presence` parameter), `build_sync_presence_events` (`presence.events`), `accept_inbound_presence` (the EDU sink's presence case) and `record_presence`, the one place a presence row is stored. `expire_idle_presence` (the idle sweep, ADR-0492). `presence.enabled=false` turns every entry point into a no-op. Sending the EDU stays in `ClientServerRuntime.cpp` (`broadcast_presence_edu`), beside the other outbound EDUs |
+| `PushRetry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
+| `PasswordReset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `AuthService.cpp` |
 | `TurnCredentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
-| `email_push.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
+| `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
 | `RuntimeSigningKeyStore.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
-| `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
+| `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
 | `WorkerSupervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `MinimalWorkerEnv.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
-| `tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
-| `local_smoke_flow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
+| `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
+| `LocalSmokeFlow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
 
 ## Architecture boundaries
 
@@ -67,7 +69,7 @@ Real HTTP client
     ↓ (raw bytes + headers)
 handle_client_server_request()   ← ClientServerRuntime.cpp
     ↓ (internal pipe format: declared_mime|sniffed_mime|scanner_clean|bytes for media)
-handle_local_http_request()      ← local_http_router.cpp
+handle_local_http_request()      ← LocalHttpRouter.cpp
     ↓
 Media / Auth / Sync / Room services
 ```
@@ -127,7 +129,7 @@ and no access token are answered before the authentication gate. Rules for chang
 
 ## The health probe (ADR-0479)
 
-`GET /_merovingian/health` is answered in `http_server.cpp` before `route_request`, from `ctx.dispatcher->running()`. It
+`GET /_merovingian/health` is answered in `HttpServer.cpp` before `route_request`, from `ctx.dispatcher->running()`. It
 must never take `runtime.mutex` or any other lock, never read the database and never put anything in the body.
 ## Adding an operator route (`/_merovingian/admin/...`, ADR-0504)
 
@@ -145,7 +147,7 @@ The table `observability::admin_routes()` is the only list of operator routes. A
    every declared route as an administrator and fails if one is answered as a route that does not exist.
 
 The operator surface answers errors with a plain-text line and results with JSON (`OperatorReply`, no Matrix `errcode`).
-Put the logic in `operator_admin.cpp`, taking `HomeserverRuntime&`: it runs under `runtime.mutex` and must not make a
+Put the logic in `OperatorAdmin.cpp`, taking `HomeserverRuntime&`: it runs under `runtime.mutex` and must not make a
 blocking network call. The account actions share their writes with the client API (`set_local_user_moderation`,
 `deactivate_user_account`), and the review route shares `apply_admin_review` with the client route. There is no route that
 stops the server (ADR-0505); do not add one.
@@ -240,7 +242,7 @@ without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so
 the main pool's threads for the round trip. Every such call therefore:
 
 1. takes a slot first: `admit_client_outbound_proxy(runtime, rate_limit_client_key(...))`
-   (`client_outbound_proxy.hpp`). No slot means `429 M_LIMIT_EXCEEDED` with
+   (`ClientOutboundProxy.hpp`). No slot means `429 M_LIMIT_EXCEEDED` with
    `policy.retry_after_ms`, at once, before any discovery or outbound call. The slot is an RAII
    `http::InFlightBudget::Slot`; keep it until the call has ended and take it before the
    `RuntimeLockRelease` scope opens;
@@ -282,7 +284,7 @@ own stored `origin_server_ts`, never the number the remote server sent.
 
 The space hierarchy (`handle_client_space_hierarchy`) is the same kind of request: a child room not held locally is asked
 for from the `via` servers of its link, so the walk takes one slot at its first such call (`RemoteHierarchy` in
-`space_hierarchy.cpp`, held until the walk ends), draws every call from one `OutboundDeadline`, makes at most 16 calls and
+`SpaceHierarchy.cpp`, held until the walk ends), draws every call from one `OutboundDeadline`, makes at most 16 calls and
 asks at most 3 servers per room, and answers `429 M_LIMIT_EXCEEDED` when the slot is refused. A remote answer is untrusted:
 only spec fields are copied, only rooms the requested space's `children_state` names are cached from `children`, local
 state beats the remote answer, and a room is shown to the user only if the user may see it by the remote summary's own
@@ -316,7 +318,7 @@ admitted before it starts (`await_pending_upload`): under `pending_upload_waits`
 `media_fetch_threads - 1` at once (none with a single worker), and on a request thread with an ADR-0079 slot as well; a wait
 that is not admitted answers `504 M_NOT_YET_UPLOADED` at once. Anything else that would wait on
 the media fetch pool needs the same kind of cap, or it can fill the pool. A URL preview fetches a URL a
-client names: it goes through `gated_fetch` in `url_preview_service.cpp`, which resolves and
+client names: it goes through `gated_fetch` in `UrlPreviewService.cpp`, which resolves and
 checks every hop (redirects included) and pins the connection, and never through
 `resolve_media_redirect_url` or a client that follows redirects itself.
 
@@ -373,7 +375,7 @@ on that record, each by the inviter's server, which the spec calls a resident se
   `runtime.mutex` is back (`composed_event_is_still_authorised`, ADR-0536): an inviter banned or demoted during the
   exchange is `403` with nothing stored or sent. Membership alone is not rechecked in its place.
 - The invite handler judges an invite against held room state only while a user of this server is joined to the
-  room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`room_residency.hpp`) is the
+  room (ADR-0301); after a federated leave the state is stale. `room_state_is_current` (`RoomResidency.hpp`) is the
   one test; the invite handler and `rescind_invite_from_inviter` use it and must agree. For a room this server is in, it stores no event (the
   transaction's copy places it) and `/sync` and sliding sync hide the invite until the state has it
   (`InviteRoomStateIndex`, built once per request: never scan the store's state per invite).
@@ -381,7 +383,7 @@ on that record, each by the inviter's server, which the spec calls a resident se
 - The leave that rejects an invite is stored as an outlier (ADR-0294), or `/sync` has no leave event to report.
   Always, whatever the room's residency: the resident's fan-out of an accepted `send_leave` excludes the server
   that sent it, so no transaction brings it back. Never make keeping it depend on `room_state_is_current`.
-- `rescind_invite_from_inviter` (`local_http_router.cpp`) turns a `leave` PDU for the invitee, sent by a user
+- `rescind_invite_from_inviter` (`LocalHttpRouter.cpp`) turns a `leave` PDU for the invitee, sent by a user
   of the inviter's own server, into a `leave` for rooms whose state is not held. Nobody else can withdraw an
   invite this way.
 
@@ -390,13 +392,13 @@ a PDU about that user: `concerns_local_member_with_row` admits an `m.room.member
 has any row for the room, to the ordinary receipt checks. Do not narrow it back to joined users, or the ban
 stays for ever and the invite an unban makes valid is refused.
 
-`stripped_state_pdus` (`room_service.cpp`) is the one place that builds `invite_room_state` and
+`stripped_state_pdus` (`RoomService.cpp`) is the one place that builds `invite_room_state` and
 `knock_room_state`: the stored signed PDUs of the stripped-state types, without `unsigned`. The client's
 `invite_state` / `knock_state` are stripped from whatever the record holds (`build_invite_state_events_array`).
 
 ## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
 
-`decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
+`decide_restricted_join` (`RestrictedJoin.cpp`) is the only place that decides whether a
 non-member may join a restricted room through an allow condition, and which local user
 authorises it. Three callers use it and must stay in step: the `make_join` template provider
 (names `join_authorised_via_users_server` and adds that user's member event to `auth_events`,
@@ -466,7 +468,7 @@ default. The size limit does not count the `hashes` and `signatures` added after
 
 ## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
 
-`send_join_answer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
+`SendJoinAnswer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
 `plan_send_join_answer` (event IDs and JSON sizes, from the room's own state entries and one walk of its auth DAG) after
 it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
 `send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
@@ -488,7 +490,7 @@ fixed small list), so they have no size to plan.
 ## The resident sends accepted membership events on
 
 As the resident, the `membership_acceptor` stores an accepted `send_join`, `send_leave` or `send_knock` and then
-calls `federate_accepted_membership_event` (`room_service.cpp`) with the stored copy, so every other server
+calls `federate_accepted_membership_event` (`RoomService.cpp`) with the stored copy, so every other server
 with a joined member learns of it (spec, "Joining Rooms" and "Leaving Rooms"). The requesting server is
 excluded, and so is this one. It runs only for an accepted event, never a rejected or soft-failed one, with
 `runtime.mutex` held, and it only enqueues. It must stay in main: a federation worker has no dispatch
@@ -542,7 +544,7 @@ itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
 
 ## Recovering a PDU whose history is missing (A8)
 
-`backfill_missing_pdu_references` (`local_http_router.cpp`) asks the sending server for what a PDU lacks, using
+`backfill_missing_pdu_references` (`LocalHttpRouter.cpp`) asks the sending server for what a PDU lacks, using
 only endpoints the spec requires and the origin may be asked for:
 
 - `POST /get_missing_events`: `latest_events` is the PDU itself (the spec: the events to retrieve the previous events
@@ -588,7 +590,7 @@ add another.
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function
 - **Media uploads**: bypass the default cap; use `config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size)`
-- The transport (`http_server.cpp`) reads a media upload body larger than its 1 MiB cap only after
+- The transport (`HttpServer.cpp`) reads a media upload body larger than its 1 MiB cap only after
   `media_upload_authentication_refusal` has accepted the head's access token (HTTP-1, HTTP-6,
   ADR-0077); an unauthenticated one gets its 401 before a byte of the body is read. A new route that
   accepts large bodies must get the same pre-body authentication, not just a larger cap.
@@ -596,7 +598,7 @@ add another.
 
 ## Connections and worker threads (ADR-0077)
 
-`http_server.cpp` never lets a worker wait on a quiet connection: `HttpConnectionDispatcher` holds
+`HttpServer.cpp` never lets a worker wait on a quiet connection: `HttpConnectionDispatcher` holds
 every connection that is not being served and hands it to the main pool only once it is readable,
 at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
 the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
@@ -775,7 +777,7 @@ an event body: the queue holds a user ID and a position, and the job sends throu
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
 Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`
-(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand
+(`StoredRoomVersion.hpp`), or `declared_room_version` for a create event in hand
 (`stored_create_room_version` when what is in hand is the stored create event's JSON). A create event
 without `room_version` is version 1, which has no policy: refuse the room on `nullptr`, never
 substitute a default. The accessor never returns an empty string (an unusable declaration is version
@@ -797,7 +799,7 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 3. Building `declared_mime|sniffed_mime|scanner_verdict|<body>` before calling `call_local()` —
    `sniffed_mime` from `media::sniff_mime_type()`, `scanner_verdict` from
    `media::content_matches_eicar_test_signature()` (see `src/media/AGENTS.md`)
-3a. The clamd scan is not done here: it runs in `media_service.cpp` once the user is authenticated, with the lock released (ADR-0565)
+3a. The clamd scan is not done here: it runs in `MediaService.cpp` once the user is authenticated, with the lock released (ADR-0565)
 4. Mapping internal `202` (quarantined) responses to `200` toward the client with `content_uri`
 
 ## Key docs
@@ -933,7 +935,7 @@ primary key is the only dedupe. A transaction's ID and event are written to the 
 rebuild a transaction from anything but its stored event. Clear the wake hook under `runtime.mutex` before stopping
 the job.
 
-- **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (room_service.cpp)
+- **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (RoomService.cpp)
   wraps `enqueue_appservice_delivery` and passes the `state_key` of a membership event as `member_event_target` (R07).
   Send, each membership transition, the third-party invite made on join, federation PDUs, the `membership_acceptor`
   (an accepted remote `send_join`, `send_leave` or `send_knock`, never a rejected or soft-failed one, F-51) and
@@ -947,7 +949,7 @@ the job.
 - **A queue is capped** (`appservice.max_queued_events`, ADR-0191): the newest event is refused, counted in
   `appservice_outbox_dropped`, and the first refusal and every thousandth is logged at warning level and audited
   (`appservice.outbox.full`). Do not evict the oldest row; it may be the transaction on the cursor.
-- **Ephemeral data** (`appservice_ephemeral.cpp`, ADR-0190) is in memory only: `queue_appservice_typing` (called from
+- **Ephemeral data** (`AppserviceEphemeral.cpp`, ADR-0190) is in memory only: `queue_appservice_typing` (called from
   `update_room_typing_stream_id_if_changed`), `queue_appservice_receipt` and `queue_appservice_presence` (called after
   the store write, local and federated) coalesce by key into `HomeserverRuntime::appservice_ephemeral`, bounded per
   appservice. The drainer attaches up to 100 items to the next transaction and keeps them in
@@ -963,4 +965,4 @@ the job.
 
 ## Room rosters and the room list (ADR-0496)
 
-`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `room_service.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is a `RoomPositionIndex` (`LocalDatabase::room_positions`) with its own mutex, so a lookup is safe without `runtime.mutex`; a copy or move of the database starts it empty (ADR-0521).
+`LocalRoom::members` is a `RoomMembers`: write it only with `add` / `remove` / `clear` (the `push_back` and `emplace_back` forms call `add`), and ask `contains`, never a scan. `find_local_room` (and `find_room` in `RoomService.cpp`, which calls it) answers from a position index over `LocalDatabase::rooms` that it verifies, and settles a miss by a scan, so code and tests may still edit `rooms` directly. The index is a `RoomPositionIndex` (`LocalDatabase::room_positions`) with its own mutex, so a lookup is safe without `runtime.mutex`; a copy or move of the database starts it empty (ADR-0521).

@@ -114,7 +114,7 @@ its scenarios, and there is no fixture until the 1.1 series starts.
 
 ### The v1 schema is frozen from 1.0.0
 
-From 1.0.0, the v1 migration (the `initial_schema` step in `src/database/migration.cpp`)
+From 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
 and `migrations/001_initial_schema.sql` never change. A schema change is a new numbered
 migration (v2 onwards) that keeps deployed databases compatible. A unit test requires the
 SQL file to match the build's v1 step statement for statement.

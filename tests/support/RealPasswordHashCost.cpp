@@ -5,7 +5,7 @@
 //
 // The hash stays a real Argon2id hash of the password, and crypto_pwhash_str_verify takes its cost from the stored
 // string, so verifying is cheap too and every check of a password still means what it means in production. Only the
-// cost differs. A caller asking for any cost but production's is refused, so a downgrade in src/auth/password.cpp
+// cost differs. A caller asking for any cost but production's is refused, so a downgrade in src/auth/Password.cpp
 // cannot hide behind this: every registration and login in these binaries fails.
 
 #include "RealPasswordHashCost.hpp"

@@ -34,7 +34,7 @@
 #include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
-#include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
@@ -137,7 +137,7 @@ constexpr auto federation_typing_timeout = std::chrono::milliseconds{60'000};
 // RAII scope guard that wires the active `LocalDatabase` into the
 // audit sink on construction and *clears* the install on destruction
 // (if the install still belongs to this scope). The full definition
-// lives in `merovingian/homeserver/local_services.hpp`; the
+// lives in `merovingian/homeserver/LocalServices.hpp`; the
 // forward-declaration here lets `HomeserverRuntime` own one as a
 // pimpl-typed member without dragging the audit-sink functions into
 // this header. See the class definition for the full contract.
@@ -409,7 +409,7 @@ struct HomeserverRuntime final
     // runtime.mutex is no longer held across database commits.
     std::array<std::mutex, room_mutex_stripe_count> room_stripe_mutexes{};
     // Loser futures from the parallel make_join race (see race_make_join_candidates
-    // in room_service.cpp). When the race finds a winner it returns immediately;
+    // in RoomService.cpp). When the race finds a winner it returns immediately;
     // the still-running loser tasks (in-flight outbound make_join calls that
     // cannot be cancelled) are moved here so the caller does not block on them.
     // They are drained (removed once ready) at the start of the next race and
@@ -421,7 +421,7 @@ struct HomeserverRuntime final
     std::mutex orphan_futures_mutex_{};
     std::vector<std::future<void>> orphan_futures_{};
     // Count of push-delivery background tasks (dispatch_push_deliveries in
-    // room_service.cpp) currently running. Tracked separately from
+    // RoomService.cpp) currently running. Tracked separately from
     // orphan_futures_.size() because that vector is shared with the
     // make_join race's loser futures (join_room) — sizing the push cap off
     // the shared vector would let a large join race starve push delivery, or
@@ -439,7 +439,7 @@ struct HomeserverRuntime final
     // waiter that held it for the wait itself. std::atomic sidesteps the
     // question entirely: the task never needs the mutex to complete. See
     // at_background_task_capacity() and k_max_in_flight_push_deliveries in
-    // room_service.cpp.
+    // RoomService.cpp.
     std::atomic<std::size_t> push_delivery_in_flight_{0U};
     // Password-reset emails being sent (send_password_reset_email, ADR-0481), counted apart from
     // orphan_futures_ so unrelated background tasks (make_join race losers, push deliveries) cannot use up the
