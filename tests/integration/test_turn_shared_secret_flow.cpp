@@ -40,6 +40,8 @@
 namespace
 {
 
+using namespace merovingian::tests;
+
 [[nodiscard]] auto bytes_of(std::string_view text) -> std::vector<std::uint8_t>
 {
     return {text.begin(), text.end()};

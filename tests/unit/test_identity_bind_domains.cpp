@@ -26,6 +26,13 @@
 #include <utility>
 #include <vector>
 
+namespace
+{
+
+using namespace merovingian::tests;
+
+} // namespace
+
 SCENARIO("Bind domain matching compares the email domain exactly and ignores letter case", "[identity][config][3pid]")
 {
     GIVEN("an allow list of example.org")

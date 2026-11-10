@@ -38,6 +38,8 @@
 
 namespace
 {
+
+using namespace merovingian::tests;
 namespace rooms = merovingian::rooms;
 namespace config = merovingian::config;
 

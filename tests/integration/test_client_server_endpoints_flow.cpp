@@ -310,6 +310,8 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
 {
     return merovingian::federation::test::make_signed_otk_json(user_id, device_id, key_value, secret_key_bytes);
 }
+
+using namespace merovingian::tests;
 using merovingian::tests::tls_mock::MockIdentityServer;
 
 [[nodiscard]] auto event_json_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,

@@ -81,6 +81,8 @@ namespace
     };
 }
 
+using namespace merovingian::tests;
+
 } // namespace
 
 // --- Matrix error shape -------------------------------------------------------

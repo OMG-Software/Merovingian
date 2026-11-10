@@ -43,6 +43,8 @@
 namespace
 {
 
+using namespace merovingian::tests;
+
 constexpr auto owner = "@alice:example.org";
 
 } // namespace

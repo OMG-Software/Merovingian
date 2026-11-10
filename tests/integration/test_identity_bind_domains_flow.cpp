@@ -29,6 +29,8 @@
 namespace
 {
 
+using namespace merovingian::tests;
+
 [[nodiscard]] auto bind_domain_config(std::vector<std::string> allowed) -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};

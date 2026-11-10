@@ -42,6 +42,8 @@
 
 namespace
 {
+
+using namespace merovingian::tests;
 namespace hs = merovingian::homeserver;
 
 constexpr auto owner = "@alice:example.org";
