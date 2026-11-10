@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.85
+Version:        0.12.86
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Nov 10 2026 James Chapman <claude@ping.me.uk> - 0.12.86-1
+- Close issues 550, 551 and 552: restore epoch in sync tokens, test placement.
+
 * Mon Nov 09 2026 James Chapman <claude@ping.me.uk> - 0.12.85-1
 - Fix the federation and event-auth low findings of security audit run 4.
 

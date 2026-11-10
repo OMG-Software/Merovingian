@@ -1,3 +1,7 @@
+## 0.12.86
+
+Closes issues 550, 551 and 552.
+
 ## 0.12.85
 
 The federation and event-auth low findings of security audit run 4.
