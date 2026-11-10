@@ -1,12 +1,51 @@
-name: alpha-release
+name: release
 
+# Every v* tag publishes a versioned GitHub release (ADR-0597). The tag must be
+# exactly v<meson.build version>; check-tag refuses any other before a package
+# is built. The rolling `latest` release comes from packages.yml, not here.
 on:
   push:
     tags:
-      - 'v*-alpha*'
+      - 'v*'
 
 jobs:
-  linux-alpha-package:
+  check-tag:
+    name: Check the tag names this version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
+
+      - name: Compare the tag with meson.build
+        id: version
+        run: |
+          version=$(sed -n "s/^  version: '\([0-9][0-9.]*\)',$/\1/p" meson.build)
+          if [ -z "$version" ]; then
+            echo "cannot read the project version from meson.build" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not name this commit's version; expected v${version}" >&2
+            exit 1
+          fi
+          # Every 0.x release is a prerelease; 1.0.0 is the production release
+          # (docs/versioning.md), and from then on a tag publishes a full release.
+          case "$version" in
+            0.*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+  linux-release-package:
+    needs: check-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,6 +59,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
@@ -31,6 +73,8 @@ jobs:
         with:
           python-version: '3.x'
 
+      # libpng-dev and libturbojpeg0-dev build merovingian-thumbnail-worker,
+      # which stage-release-tarball.sh requires.
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -40,9 +84,11 @@ jobs:
             clang \
             catch2 \
             flex \
+            libpng-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \
+            libturbojpeg0-dev \
             m4 \
             perl \
             pkg-config
@@ -63,46 +109,22 @@ jobs:
       - name: Check release readiness metadata
         run: sh scripts/check-release-readiness.sh
 
-      - name: Stage Linux alpha package
+      - name: Stage Linux release package
         run: |
-          tag="${GITHUB_REF_NAME}"
-          package_root="merovingian-${tag}-linux-x86_64"
-          mkdir -p "${package_root}/bin" \
-            "${package_root}/config" \
-            "${package_root}/docs" \
-            "${package_root}/packaging/deb" \
-            "${package_root}/packaging/rpm" \
-            "${package_root}/packaging/freebsd" \
-            "${package_root}/packaging/openbsd" \
-            "${package_root}/packaging/netbsd" \
-            "${package_root}/packaging/systemd" \
-            "${package_root}/packaging/openrc" \
-            "${package_root}/packaging/rc.d"
-          cp build-linux-release/src/merovingian-server "${package_root}/bin/"
-          cp build-linux-release/src/merovingian-db-migrate "${package_root}/bin/"
-          cp config/merovingian.conf.example "${package_root}/config/"
-          cp LICENSE README.md "${package_root}/"
-          cp docs/user-manual.md docs/release-process.md docs/security-review-checklist.md "${package_root}/docs/"
-          cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
-          cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
-          cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
-          cp packaging/deb/control "${package_root}/packaging/deb/"
-          cp packaging/rpm/merovingian.spec "${package_root}/packaging/rpm/"
-          cp packaging/freebsd/+MANIFEST "${package_root}/packaging/freebsd/"
-          cp packaging/openbsd/DESCR packaging/openbsd/PLIST "${package_root}/packaging/openbsd/"
-          cp packaging/netbsd/Makefile "${package_root}/packaging/netbsd/"
+          package_root="merovingian-${GITHUB_REF_NAME}-linux-x86_64"
+          sh scripts/stage-release-tarball.sh build-linux-release "${package_root}"
           tar -czf "${package_root}.tar.gz" "${package_root}"
           sha256sum "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
 
-      - name: Attest Linux alpha package
+      - name: Attest Linux release package
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
 
-      - name: Upload Linux alpha package
+      - name: Upload Linux release package
         uses: actions/upload-artifact@v4
         with:
-          name: alpha-release-linux-${{ github.ref_name }}
+          name: release-linux-${{ github.ref_name }}
           path: |
             merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
             merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
@@ -117,7 +139,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  freebsd-alpha-package:
+  freebsd-release-package:
+    needs: check-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,6 +151,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Build hardened FreeBSD package
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
@@ -140,43 +166,20 @@ jobs:
             sh scripts/collect-release-evidence.sh "FreeBSD x86_64" build-freebsd-release release-evidence-freebsd-x86_64.md || true
             sh scripts/check-release-readiness.sh
             package_root="merovingian-${tag}-freebsd-x86_64"
-            mkdir -p "${package_root}/bin" \
-              "${package_root}/config" \
-              "${package_root}/docs" \
-              "${package_root}/packaging/deb" \
-              "${package_root}/packaging/rpm" \
-              "${package_root}/packaging/freebsd" \
-              "${package_root}/packaging/openbsd" \
-              "${package_root}/packaging/netbsd" \
-              "${package_root}/packaging/systemd" \
-              "${package_root}/packaging/openrc" \
-              "${package_root}/packaging/rc.d"
-            cp build-freebsd-release/src/merovingian-server "${package_root}/bin/"
-            cp build-freebsd-release/src/merovingian-db-migrate "${package_root}/bin/"
-            cp config/merovingian.conf.example "${package_root}/config/"
-            cp LICENSE README.md "${package_root}/"
-            cp docs/user-manual.md docs/release-process.md docs/security-review-checklist.md "${package_root}/docs/"
-            cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
-            cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
-            cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
-            cp packaging/deb/control "${package_root}/packaging/deb/"
-            cp packaging/rpm/merovingian.spec "${package_root}/packaging/rpm/"
-            cp packaging/freebsd/+MANIFEST "${package_root}/packaging/freebsd/"
-            cp packaging/openbsd/DESCR packaging/openbsd/PLIST "${package_root}/packaging/openbsd/"
-            cp packaging/netbsd/Makefile "${package_root}/packaging/netbsd/"
+            sh scripts/stage-release-tarball.sh build-freebsd-release "${package_root}"
             tar -czf "${package_root}.tar.gz" "${package_root}"
             digest="$(sha256 -q "${package_root}.tar.gz")"
             printf '%s  %s\n' "${digest}" "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
 
-      - name: Attest FreeBSD alpha package
+      - name: Attest FreeBSD release package
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
 
-      - name: Upload FreeBSD alpha package
+      - name: Upload FreeBSD release package
         uses: actions/upload-artifact@v4
         with:
-          name: alpha-release-freebsd-${{ github.ref_name }}
+          name: release-freebsd-${{ github.ref_name }}
           path: |
             merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
             merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz.sha256
@@ -194,22 +197,37 @@ jobs:
   stage-release-assets:
     name: Stage unsigned release assets
     needs:
-      - linux-alpha-package
-      - freebsd-alpha-package
+      - linux-release-package
+      - freebsd-release-package
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Download Linux alpha package
+      - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
+      - name: Download Linux release package
         uses: actions/download-artifact@v4
         with:
-          name: alpha-release-linux-${{ github.ref_name }}
+          name: release-linux-${{ github.ref_name }}
           path: release-assets/
-      - name: Download FreeBSD alpha package
+      - name: Download FreeBSD release package
         uses: actions/download-artifact@v4
         with:
-          name: alpha-release-freebsd-${{ github.ref_name }}
+          name: release-freebsd-${{ github.ref_name }}
           path: release-assets/
+      # Staged before signing, so the SBOM and the licence summary get detached
+      # signatures like every package (ADR-0598).
+      - name: Generate SBOM
+        run: |
+          python scripts/generate_sbom.py \
+            --spdx release-assets/merovingian.spdx.json \
+            --cyclonedx release-assets/merovingian.cdx.json \
+            --commit "${{ github.sha }}" \
+            --repository "${{ github.repository }}"
+      - name: Generate license summary
+        run: python scripts/generate-license-summary.py release-assets/merovingian.licenses.json
       - name: Upload unsigned release assets
         uses: actions/upload-artifact@v4
         with:
@@ -237,8 +255,10 @@ jobs:
       gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
       gpg_passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-  publish-alpha-release:
-    needs: sign-release-assets
+  publish-release:
+    needs:
+      - check-tag
+      - sign-release-assets
     if: |
       !failure() &&
       !cancelled() &&
@@ -249,6 +269,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Download signed release assets
         uses: actions/download-artifact@v4
@@ -272,18 +295,24 @@ jobs:
       - name: Write release notes
         run: |
           cat > release-notes.md <<'EOF'
-          ## Alpha package assets
+          ## Release assets
 
-          This tag publishes hardened-profile alpha packages built by GitHub Actions.
+          This tag publishes hardened-profile packages built by GitHub Actions.
 
           Included assets:
 
           - Linux x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
           - FreeBSD x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
-          - Machine-readable license summary (`merovingian.licenses.json`)
+          - SBOM in SPDX 2.3 (`merovingian.spdx.json`) and CycloneDX 1.5 (`merovingian.cdx.json`) JSON, each with a detached GPG signature
+          - Machine-readable license summary (`merovingian.licenses.json`) and its detached GPG signature
+
+          Each tarball holds `bin/` and `libexec/merovingian/`. The server and the thumbnail
+          worker look for their helper binaries under the build's install prefix, which the
+          tarball records in `INSTALL-PREFIX`; install both directories there.
 
           Validation performed by this workflow:
 
+          - the tag names the version in `meson.build`
           - hardened Linux and FreeBSD builds
           - full Meson test suites on both platforms
           - phase 1 configuration validation on Linux
@@ -294,7 +323,7 @@ jobs:
           Verification:
 
           - SLSA provenance: `gh attestation verify <tarball> --repo OMG-Software/Merovingian`
-          - GPG signature: `gpg --verify <tarball>.asc <tarball>` (import the maintainer key from `docs/release-process.md`)
+          - GPG signature: `gpg --verify <file>.asc <file>` (import the maintainer key from `docs/release-process.md`)
 
           ## Complement
 
@@ -335,14 +364,11 @@ jobs:
             cat "$evidence_file" >> release-notes.md
           done
 
-      - name: Generate license summary
-        run: python scripts/generate-license-summary.py release-assets/merovingian.licenses.json
-
-      - name: Publish GitHub alpha release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           body_path: release-notes.md
           fail_on_unmatched_files: true
           files: |
             release-assets/*
-          prerelease: true
+          prerelease: ${{ needs.check-tag.outputs.prerelease == 'true' }}

@@ -4,7 +4,7 @@
 # Collect release evidence for one platform's hardened build and append it as
 # a Markdown section to the given output file. Run once per platform build
 # job in .github/workflows/release.yml; the release-notes step in
-# publish-alpha-release then concatenates every platform's evidence file into
+# publish-release then concatenates every platform's evidence file into
 # the published release notes.
 #
 # Captures (docs/todos/production-milestone.md "Record compiler version,

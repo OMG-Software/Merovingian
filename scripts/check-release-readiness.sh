@@ -40,6 +40,8 @@ require_file docs/dependencies/sqlite.md
 require_file docs/dependencies/yyjson.md
 require_file docs/dependencies/licenses.md
 require_file scripts/generate-license-summary.py
+require_file scripts/generate_sbom.py
+require_file scripts/stage-release-tarball.sh
 require_file scripts/verify-wrap-pins.sh
 require_file scripts/build-linux.sh
 require_file scripts/build-static-linux.sh
@@ -50,7 +52,6 @@ require_file scripts/tool-shims/make
 require_file .github/workflows/release.yml
 require_file .github/workflows/secret-scan.yml
 require_file .github/workflows/dependency-vulnerability-triage.yml
-require_file .github/workflows/sbom.yml
 require_file .github/dependency-review-config.yml
 require_file .gitleaks.toml
 require_file subprojects/curl.wrap
@@ -97,7 +98,7 @@ if ! grep -qF "sha256 -q" .github/workflows/release.yml; then
     fail "release.yml does not generate sha256 checksums for FreeBSD release artifacts"
 fi
 
-# GPG release signatures: the alpha release and rolling package workflows
+# GPG release signatures: the release and rolling package workflows
 # must both call the reusable signing workflow.
 if ! grep -qF "./.github/workflows/sign-artifacts.yml" .github/workflows/release.yml; then
     fail "release.yml does not call the GPG signing reusable workflow"
@@ -120,5 +121,20 @@ fi
 if ! [ -s /tmp/merovingian.licenses.json ]; then
     fail "generated license summary is empty"
 fi
+
+# SBOM (ADR-0598): both publishing workflows attach it, and it must generate
+# from licenses.md and the wraps. A fixed commit and creation time keep this
+# check free of git, which the BSD release VMs may not have a history for.
+for workflow in release.yml packages.yml; do
+    if ! grep -qF "scripts/generate_sbom.py" ".github/workflows/${workflow}"; then
+        fail "${workflow} does not generate the SBOM with scripts/generate_sbom.py"
+    fi
+done
+sbom_dir=$(mktemp -d)
+trap 'rm -rf "$sbom_dir"' EXIT
+if ! SOURCE_DATE_EPOCH=0 python3 scripts/generate_sbom.py         --spdx "${sbom_dir}/merovingian.spdx.json"         --cyclonedx "${sbom_dir}/merovingian.cdx.json"         --commit 0000000000000000000000000000000000000000; then
+    fail "SBOM could not be generated from docs/dependencies/licenses.md and subprojects/*.wrap"
+fi
+rm -rf "$sbom_dir"
 
 exit "$status"

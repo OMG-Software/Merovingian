@@ -246,7 +246,7 @@ Retained as the record of what was verified and when.
   confirms link-time hardening flags landed via `scripts/check-elf-hardening.sh`,
   lists pinned dependency versions from `subprojects/*.wrap`, summarizes the
   test log's Ok/Fail/Timeout counts, and lists the mandatory fuzz target
-  names — folded into the published release notes by `publish-alpha-release`
+  names — folded into the published release notes by `publish-alpha-release` (now `publish-release`)
   alongside the existing checksums. Sanitizer logs are cross-referenced to
   the separate `sanitizers.yml` workflow run rather than duplicated (this
   release build does not itself run under a sanitizer).

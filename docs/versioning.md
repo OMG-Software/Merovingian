@@ -98,8 +98,8 @@ than the others.
    see [platform-support.md](platform-support.md) for the artifact matrix.
 6. Merge to `main`. The `publish-latest` CI job replaces the rolling GitHub
    `latest` pre-release with the new artifacts automatically.
-7. For an alpha prerelease, push a `vX.Y.Z-alpha.N` tag. The `alpha-release`
-   workflow (`release.yml`, tags matching `v*-alpha*`) builds the packages and
-   publishes the versioned GitHub prerelease; see
-   [release-process.md](release-process.md). No workflow publishes a release
-   from any other tag pattern.
+7. For a versioned release, push a `vX.Y.Z` tag naming the `meson.build`
+   version. The `release` workflow (`release.yml`, tags matching `v*`) refuses
+   any other tag, builds the packages and publishes the versioned GitHub
+   release, marked as a prerelease while the version is `0.x` (ADR-0597); see
+   [release-process.md](release-process.md).

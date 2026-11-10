@@ -1,3 +1,25 @@
+## 0.12.90
+
+Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.
+
+### Releases are published from `v<version>` tags (ADR-0597)
+
+`release.yml` ran only for `v*-alpha*` tags. It now runs for every `v*` tag, and its first job, `check-tag`, refuses any tag that is not exactly `v` followed by the `meson.build` version, before a package is built. The GitHub release is a prerelease while the version is `0.x` and a full release from 1.0.0, taken from `check-tag` rather than a constant. Jobs, artifacts and release notes no longer say "alpha".
+
+### Release tarballs ship `merovingian-fed-worker` and `merovingian-thumbnail-worker` (ADR-0597)
+
+The Linux and FreeBSD release tarballs copied `merovingian-server` and `merovingian-db-migrate` by name and left out both workers. With the shipped example configuration, the server had no federation worker to start. The Linux job also lacked the image codecs, so it never built the thumbnail worker. `scripts/stage-release-tarball.sh` now stages each tarball from `meson install`, copying everything installed under `bin/` and `libexec/merovingian/`. It refuses a build missing any of the four executables, and records the build's install prefix in `INSTALL-PREFIX`. The Linux release job installs `libpng-dev` and `libturbojpeg0-dev`.
+
+### Every release and `latest` build publishes a signed SBOM (ADR-0598)
+
+No release had an SBOM. `sbom.yml` attached it on a `release: published` event, which a release made with `GITHUB_TOKEN` never sends. Its Syft scan of the source tree also listed only the 50 GitHub Actions the workflows use, none of the shipped libraries. `scripts/generate_sbom.py` now writes `merovingian.spdx.json` (SPDX 2.3) and `merovingian.cdx.json` (CycloneDX 1.5) from `docs/dependencies/licenses.md` and the `subprojects/*.wrap` pins:
+
+* vendored components carry their pinned version and source SHA-256;
+* OS-supplied libraries carry no version, because one SBOM covers every package.
+
+Both `release.yml` and `packages.yml` generate it before signing, so it ships with a detached `.asc` signature and is listed in `latest`'s `SHA256SUMS`. The generator fails closed (exit 2) on a licence row, licence section or wrap it cannot map, and on a wrap with no SHA-256. `release.yml` now also signs the licence summary. `sbom.yml` is removed. `check-release-readiness.sh` requires the generator, checks that both workflows call it, and runs it.
+
+Tests: `tests/tooling/test_generate_sbom.py` (new) checks every shipped licence row against its licence and wrap pin, determinism, and refusal of an unmapped row, wrap or section and of a hashless wrap. `tests/tooling/test_stage_release_tarball.py` (new) stages a fake `meson install` and refuses builds without either worker. `tests/tooling/test_release_workflow.py` runs the `check-tag` step's shell against matching, mismatched, suffixed and 1.0 tags. `tests/tooling/test_security_workflows.py` requires both workflows to generate the SBOM before signing.
 ## 0.12.89
 
 Names every module header and source after its type or, for a file of functions, after the PascalCase form of its concept (ADR-0596). No behaviour changes.

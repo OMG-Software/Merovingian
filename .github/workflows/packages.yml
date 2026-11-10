@@ -803,6 +803,16 @@ jobs:
       - name: Generate license summary
         run: python scripts/generate-license-summary.py packages/merovingian.licenses.json
 
+      # Before the checksums and signing, so SHA256SUMS lists the SBOM and it
+      # gets a detached signature like every package (ADR-0598).
+      - name: Generate SBOM
+        run: |
+          python scripts/generate_sbom.py \
+            --spdx packages/merovingian.spdx.json \
+            --cyclonedx packages/merovingian.cdx.json \
+            --commit "${{ github.sha }}" \
+            --repository "${{ github.repository }}"
+
       - name: Generate checksums
         run: sha256sum packages/* > packages/SHA256SUMS
       - name: Upload unsigned package assets
@@ -868,5 +878,5 @@ jobs:
             --repo "${{ github.repository }}" \
             --prerelease \
             --title "Latest ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
-            --notes "Rolling release from \`main\` — commit \`${{ github.sha }}\`. Built with hardened profile. Replaced on every push to main. Each package is accompanied by a detached GPG signature (\`.asc\`)." \
+            --notes "Rolling release from \`main\` — commit \`${{ github.sha }}\`. Built with hardened profile. Replaced on every push to main. Each package is accompanied by a detached GPG signature (\`.asc\`). The SBOM is \`merovingian.spdx.json\` (SPDX 2.3) and \`merovingian.cdx.json\` (CycloneDX 1.5)." \
             packages/*
