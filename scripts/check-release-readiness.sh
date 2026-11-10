@@ -131,6 +131,7 @@ for workflow in release.yml packages.yml; do
     fi
 done
 sbom_dir=$(mktemp -d)
+trap 'rm -rf "$sbom_dir"' EXIT
 if ! SOURCE_DATE_EPOCH=0 python3 scripts/generate_sbom.py         --spdx "${sbom_dir}/merovingian.spdx.json"         --cyclonedx "${sbom_dir}/merovingian.cdx.json"         --commit 0000000000000000000000000000000000000000; then
     fail "SBOM could not be generated from docs/dependencies/licenses.md and subprojects/*.wrap"
 fi

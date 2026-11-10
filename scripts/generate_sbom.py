@@ -127,7 +127,9 @@ def load_license_tables() -> dict[str, list[dict[str, str | bool]]]:
 
 
 def project_version() -> str:
-    match = re.search(r"^\s*version:\s*'([0-9][0-9.]*)',$", MESON_BUILD.read_text(encoding="utf-8"), re.MULTILINE)
+    # A version argument on its own line, with or without a trailing comma or comment.
+    match = re.search(r"^\s*version:\s*'([0-9]+(?:\.[0-9]+)*)'\s*,?\s*(?:#.*)?$",
+                      MESON_BUILD.read_text(encoding="utf-8"), re.MULTILINE)
     if match is None:
         raise Refused("cannot read the project version from meson.build")
     return match.group(1)

@@ -168,6 +168,24 @@ class GenerateSbomTests(unittest.TestCase):
         self.assertEqual(depends["ref"], cyclonedx["metadata"]["component"]["bom-ref"])
         self.assertEqual(sorted(depends["dependsOn"]), sorted(c["bom-ref"] for c in cyclonedx["components"]))
 
+    def test_the_version_line_may_lose_its_trailing_comma_or_gain_a_comment(self) -> None:
+        # GIVEN meson.build reformatted so the version line has no trailing comma,
+        # and then one with a trailing comment.
+        meson = self.tree.root / "meson.build"
+        original = meson.read_text(encoding="utf-8")
+        version = re.search(r"^  version: '([0-9.]+)',$", original, re.MULTILINE).group(1)
+        for line in (f"  version: '{version}'", f"  version: '{version}',  # bumped per branch"):
+            with self.subTest(line=line):
+                meson.write_text(re.sub(r"^  version: '[0-9.]+',$", line, original, flags=re.MULTILINE),
+                                 encoding="utf-8")
+
+                # WHEN the SBOM is generated.
+                spdx, _ = self.generate()
+
+                # THEN it still reads the project version.
+                root = next(p for p in spdx["packages"] if p["name"] == "merovingian")
+                self.assertEqual(root["versionInfo"], version)
+
     def test_the_same_commit_gives_the_same_files(self) -> None:
         # GIVEN one commit and creation time.
         first, spdx, cyclonedx = self.tree.run()

@@ -19,6 +19,9 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Compare the tag with meson.build
         id: version
@@ -56,6 +59,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
@@ -145,6 +151,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Build hardened FreeBSD package
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
@@ -195,6 +204,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
       - name: Download Linux release package
         uses: actions/download-artifact@v4
         with:
@@ -257,6 +269,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # No job here pushes; the publish step takes its token as an input.
+          persist-credentials: false
 
       - name: Download signed release assets
         uses: actions/download-artifact@v4
