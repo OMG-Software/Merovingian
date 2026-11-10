@@ -82,6 +82,8 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <functional>
@@ -335,16 +337,12 @@ namespace
 
     [[nodiscard]] auto access_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
-        return std::ranges::any_of(store.access_tokens, [token_hash](PersistentAccessToken const& existing) {
-            return crypto::constant_time_equal(existing.token_hash, token_hash);
-        });
+        return store.access_tokens.contains(token_hash);
     }
 
     [[nodiscard]] auto refresh_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
-        return std::ranges::any_of(store.refresh_tokens, [token_hash](PersistentRefreshToken const& existing) {
-            return crypto::constant_time_equal(existing.token_hash, token_hash);
-        });
+        return store.refresh_tokens.contains(token_hash);
     }
 
     [[nodiscard]] auto federation_transaction_is_valid(PersistentFederationTransaction const& transaction) noexcept
@@ -688,21 +686,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    for (auto& token : store.access_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, access_token_hash) ||
-            (token.user_id == user_id && token.device_id == device_id))
-        {
-            token.revoked = true;
-        }
-    }
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id)
-        {
-            token.revoked = true;
-        }
-    }
+    std::ignore = store.access_tokens.revoke_hash(access_token_hash);
+    std::ignore = store.access_tokens.revoke_for_device(user_id, device_id);
+    std::ignore = store.refresh_tokens.revoke_for_device(user_id, device_id);
     return true;
 }
 
@@ -812,7 +798,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    store.access_tokens.push_back(std::move(token));
+    std::ignore = store.access_tokens.insert(std::move(token));
     return true;
 }
 
@@ -822,25 +808,27 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_refresh_token",
-                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6)",
-                                                    {
-                                                        {token.token_hash,                  true },
-                                                        {token.user_id,                     false},
-                                                        {token.device_id,                   false},
-                                                        {token.revoked ? "true" : "false",  false},
-                                                        {expires_at_text(token.expires_at), false},
-                                                        {token.predecessor_hash,            true }
+    if (!record_and_persist(
+            store,
+            record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                             {
+                                 {token.token_hash, true},
+                                 {token.user_id, false},
+                                 {token.device_id, false},
+                                 {token.revoked ? "true" : "false", false},
+                                 {expires_at_text(token.expires_at), false},
+                                 {token.predecessor_hash, true},
+                                 {std::to_string(std::max<std::int64_t>(token.issued_at_ms, 0)), false}
     })))
     {
         return false;
     }
-    store.refresh_tokens.push_back(std::move(token));
+    std::ignore = store.refresh_tokens.insert(std::move(token));
     return true;
 }
 
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
-                                                 PersistentAccessToken token) -> bool
+                                                 PersistentAccessToken token, bool replace_device_credentials) -> bool
 {
     if (!token_is_hash(token.token_hash) || access_token_exists(store, token.token_hash))
     {
@@ -861,6 +849,23 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                                  {device->display_name, false}
         }));
     }
+    if (replace_device_credentials)
+    {
+        // DELETE, not revoke (ADR-0590): a revoked refresh row that is presented counts as reuse and ends the
+        // device's session, so a stale client holding the old refresh token would end the login that replaced it.
+        statements.push_back(record_statement("delete_device_access_tokens",
+                                              "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {token.user_id,   false},
+                                                  {token.device_id, false}
+        }));
+        statements.push_back(record_statement("delete_device_refresh_tokens",
+                                              "DELETE FROM refresh_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {token.user_id,   false},
+                                                  {token.device_id, false}
+        }));
+    }
     statements.push_back(record_statement("insert_access_token",
                                           "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
                                           {
@@ -875,11 +880,89 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
+    // Memory changes only after the commit.
+    if (replace_device_credentials)
+    {
+        std::ignore = store.access_tokens.erase_for_device(token.user_id, token.device_id);
+        std::ignore = store.refresh_tokens.erase_for_device(token.user_id, token.device_id);
+    }
     if (device.has_value())
     {
         store.devices.push_back(std::move(*device));
     }
-    store.access_tokens.push_back(std::move(token));
+    std::ignore = store.access_tokens.insert(std::move(token));
+    return true;
+}
+
+[[nodiscard]] auto rotate_device_credentials(PersistentStore& store, PersistentAccessToken access,
+                                             PersistentRefreshToken refresh,
+                                             std::span<std::string const> evicted_refresh_hashes) -> bool
+{
+    if (!token_is_hash(access.token_hash) || !token_is_hash(refresh.token_hash) || access.user_id != refresh.user_id ||
+        access.device_id != refresh.device_id || store.access_tokens.contains(access.token_hash) ||
+        store.refresh_tokens.contains(refresh.token_hash))
+    {
+        return false;
+    }
+    // Only a retired row may be evicted (ADR-0590): an unrevoked row is a live credential.
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        auto const* row = store.refresh_tokens.find(hash);
+        if (row == nullptr || !row->revoked)
+        {
+            return false;
+        }
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(evicted_refresh_hashes.size() + 3U);
+    statements.push_back(record_statement("delete_device_access_tokens",
+                                          "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
+                                          {
+                                              {access.user_id,   false},
+                                              {access.device_id, false}
+    }));
+    statements.push_back(record_statement("insert_access_token",
+                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
+                                          {
+                                              {access.user_id,                     false},
+                                              {access.device_id,                   false},
+                                              {access.token_hash,                  true },
+                                              {access.revoked ? "true" : "false",  false},
+                                              {expires_at_text(access.expires_at), false},
+                                              {access.predecessor_refresh_hash,    true }
+    }));
+    statements.push_back(
+        record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                         {
+                             {refresh.token_hash, true},
+                             {refresh.user_id, false},
+                             {refresh.device_id, false},
+                             {refresh.revoked ? "true" : "false", false},
+                             {expires_at_text(refresh.expires_at), false},
+                             {refresh.predecessor_hash, true},
+                             {std::to_string(std::max<std::int64_t>(refresh.issued_at_ms, 0)), false}
+    }));
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        // The `revoked` condition is a second guard: the statement can never delete a live row.
+        statements.push_back(record_statement("delete_evicted_refresh_token",
+                                              "DELETE FROM refresh_tokens WHERE token_hash = $1 AND revoked = $2",
+                                              {
+                                                  {hash,   true },
+                                                  {"true", false}
+        }));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    std::ignore = store.access_tokens.erase_for_device(access.user_id, access.device_id);
+    for (auto const& hash : evicted_refresh_hashes)
+    {
+        std::ignore = store.refresh_tokens.erase(hash);
+    }
+    std::ignore = store.access_tokens.insert(std::move(access));
+    std::ignore = store.refresh_tokens.insert(std::move(refresh));
     return true;
 }
 
@@ -894,16 +977,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_hash(token_hash);
 }
 
 [[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t
@@ -917,16 +991,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_hash(token_hash);
 }
 
 [[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
@@ -940,16 +1005,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (token.user_id == user_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_for_user(user_id);
 }
 
 [[nodiscard]] auto revoke_access_tokens_for_device(PersistentStore& store, std::string_view user_id,
@@ -968,16 +1024,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.access_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.access_tokens.revoke_for_device(user_id, device_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
@@ -991,16 +1038,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_for_user(user_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
@@ -1019,16 +1057,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_for_device(user_id, device_id);
 }
 
 [[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
@@ -1048,17 +1077,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return 0U;
     }
-    auto revoked = std::size_t{0U};
-    for (auto& token : store.refresh_tokens)
-    {
-        if (!token.predecessor_hash.empty() && crypto::constant_time_equal(token.predecessor_hash, predecessor_hash) &&
-            !token.revoked)
-        {
-            token.revoked = true;
-            ++revoked;
-        }
-    }
-    return revoked;
+    return store.refresh_tokens.revoke_with_predecessor(predecessor_hash);
 }
 
 // M-05: revokes every access and refresh token belonging to `user_id` EXCEPT
@@ -1089,14 +1108,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                            {std::string{keep_device_id}, false}
     })))
     {
-        for (auto& token : store.access_tokens)
-        {
-            if (token.user_id == user_id && token.device_id != keep_device_id && !token.revoked)
-            {
-                token.revoked = true;
-                ++revoked;
-            }
-        }
+        revoked += store.access_tokens.revoke_for_user_except_device(user_id, keep_device_id);
     }
     if (record_and_persist(
             store, record_statement(
@@ -1109,14 +1121,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
                            {std::string{keep_device_id}, false}
     })))
     {
-        for (auto& token : store.refresh_tokens)
-        {
-            if (token.user_id == user_id && token.device_id != keep_device_id && !token.revoked)
-            {
-                token.revoked = true;
-                ++revoked;
-            }
-        }
+        revoked += store.refresh_tokens.revoke_for_user_except_device(user_id, keep_device_id);
     }
     return revoked;
 }
@@ -4043,6 +4048,27 @@ namespace
         });
     }
 
+    // One DELETE for a run of reservations (F-16): `media_id IN ($1, ..., $n)`. The text carries only parameter
+    // numbers; the IDs are bound. A prepared statement takes at most 128 parameters, so a batch of 256 is two of
+    // these, in the one transaction, never one statement per row.
+    constexpr auto delete_ids_per_statement = std::size_t{128U};
+
+    [[nodiscard]] auto delete_pending_media_uploads_statement(std::span<std::string const> media_ids)
+        -> PreparedStatement
+    {
+        auto sql = std::string{"DELETE FROM media_pending_uploads WHERE media_id IN ("};
+        auto parameters = std::vector<BoundValue>{};
+        parameters.reserve(media_ids.size());
+        for (auto const& media_id : media_ids)
+        {
+            sql += parameters.empty() ? "$" : ", $";
+            sql += std::to_string(parameters.size() + 1U);
+            parameters.push_back({media_id, false});
+        }
+        sql += ")";
+        return record_statement("delete_pending_media_uploads", std::move(sql), std::move(parameters));
+    }
+
     [[nodiscard]] auto insert_pending_media_upload_statement(PersistentPendingMediaUpload const& row)
         -> PreparedStatement
     {
@@ -4204,7 +4230,12 @@ namespace
                                                std::vector<std::string> const& expired_media_ids) -> bool
 {
     if (row.media_id.empty() || row.owner_user_id.empty() || row.expires_at_ms <= row.created_at_ms ||
-        std::ranges::any_of(store.pending_media_uploads,
+        expired_media_ids.size() > max_pending_media_deleted_per_commit)
+    {
+        return false;
+    }
+    store.pending_media_rows_examined.add(store.pending_media_uploads.size());
+    if (std::ranges::any_of(store.pending_media_uploads,
                             [&row](PersistentPendingMediaUpload const& existing) {
                                 return existing.media_id == row.media_id;
                             }) ||
@@ -4215,18 +4246,23 @@ namespace
         return false;
     }
     auto statements = std::vector<PreparedStatement>{};
-    statements.reserve(expired_media_ids.size() + 1U);
-    for (auto const& expired : expired_media_ids)
+    statements.reserve((expired_media_ids.size() / delete_ids_per_statement) + 2U);
+    for (auto first = std::size_t{0U}; first < expired_media_ids.size(); first += delete_ids_per_statement)
     {
-        statements.push_back(delete_pending_media_upload_statement(expired));
+        auto const count = std::min(delete_ids_per_statement, expired_media_ids.size() - first);
+        statements.push_back(delete_pending_media_uploads_statement(
+            std::span<std::string const>{expired_media_ids}.subspan(first, count)));
     }
     statements.push_back(insert_pending_media_upload_statement(row));
     if (!commit_persistent_transaction(store, std::move(statements)))
     {
         return false;
     }
-    std::erase_if(store.pending_media_uploads, [&expired_media_ids](PersistentPendingMediaUpload const& existing) {
-        return std::ranges::find(expired_media_ids, existing.media_id) != expired_media_ids.end();
+    // Hash-set membership: one probe per row held, not one scan of the expired list per row (F-16).
+    auto const expired = std::unordered_set<std::string_view>{expired_media_ids.begin(), expired_media_ids.end()};
+    store.pending_media_rows_examined.add(store.pending_media_uploads.size());
+    std::erase_if(store.pending_media_uploads, [&expired](PersistentPendingMediaUpload const& existing) {
+        return expired.contains(existing.media_id);
     });
     store.pending_media_uploads.push_back(std::move(row));
     return true;
@@ -4617,9 +4653,28 @@ auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff
             unusable.access_token_hashes.push_back(token.token_hash);
         }
     }
+    // One transient set of (user, device) keys per call, built when the first retired row asks (ADR-0590): a retired
+    // refresh row of a device that no longer exists can never be presented usefully, and a login plus a logout on a
+    // fresh device ID leaves one until it expires (for ever when the lifetime is 0). An unrevoked row is never
+    // collected by this rule.
+    auto live_devices = std::optional<std::unordered_set<std::string>>{};
+    auto const device_key = [](std::string_view user_id, std::string_view device_id) {
+        return std::to_string(user_id.size()) + ':' + std::string{user_id} + std::string{device_id};
+    };
+    auto const device_is_live = [&store, &live_devices, &device_key](PersistentRefreshToken const& token) {
+        if (!live_devices.has_value())
+        {
+            live_devices.emplace();
+            for (auto const& device : store.devices)
+            {
+                live_devices->insert(device_key(device.user_id, device.device_id));
+            }
+        }
+        return live_devices->contains(device_key(token.user_id, token.device_id));
+    };
     for (auto const& token : store.refresh_tokens)
     {
-        if (token.expires_at.has_value() && *token.expires_at <= now)
+        if ((token.expires_at.has_value() && *token.expires_at <= now) || (token.revoked && !device_is_live(token)))
         {
             unusable.refresh_token_hashes.push_back(token.token_hash);
         }
@@ -4659,10 +4714,10 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
         std::unordered_set<std::string>{deleted.access_token_hashes.begin(), deleted.access_token_hashes.end()};
     auto const refresh =
         std::unordered_set<std::string>{deleted.refresh_token_hashes.begin(), deleted.refresh_token_hashes.end()};
-    std::erase_if(store.access_tokens, [&access](PersistentAccessToken const& token) {
+    std::ignore = store.access_tokens.erase_if([&access](PersistentAccessToken const& token) {
         return access.contains(token.token_hash);
     });
-    std::erase_if(store.refresh_tokens, [&refresh](PersistentRefreshToken const& token) {
+    std::ignore = store.refresh_tokens.erase_if([&refresh](PersistentRefreshToken const& token) {
         return refresh.contains(token.token_hash);
     });
 }

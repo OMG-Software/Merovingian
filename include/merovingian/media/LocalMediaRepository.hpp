@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/media/FederationMediaDownloadBody.hpp"
 #include "merovingian/media/LocalMediaAdminAction.hpp"
 #include "merovingian/media/LocalMediaAdminResult.hpp"
@@ -63,6 +64,9 @@ struct LocalMediaRepository final
     // ADR-0212: reservations made by POST /_matrix/media/v1/create, keyed by
     // media ID. Bounded by RuntimeMediaConfig::max_pending_uploads.
     std::unordered_map<std::string, PendingMediaUpload> pending_uploads{};
+    // F-16: reservations visited by plan_pending_media_upload and apply_pending_media_upload. A test reads the
+    // difference across a create to prove the work is linear in the reservations held and the sweep is bounded.
+    database::ExaminedRows pending_rows_examined{};
     // F-46, ADR-0340: how many live (not removed) local records each owner
     // holds, so the per-user record share is checked in O(1) under
     // runtime.mutex. Cached remote media is never counted. Kept in step on
@@ -99,6 +103,10 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 // Plans a reservation for `owner_user_id` at `now_ms`: 429 when the user
 // already holds max_pending_uploads_per_user live reservations or the server
 // max_pending_uploads. Changes nothing; see apply_pending_media_upload.
+// Expired reservations count toward neither cap. The plan lists at most
+// max_expired_reservations_swept_per_create of them for deletion; the rest stay
+// until later creates sweep them, and find_pending_media_upload already treats
+// them as absent.
 [[nodiscard]] auto plan_pending_media_upload(LocalMediaRepository& repository, std::string_view owner_user_id,
                                              std::uint64_t now_ms) -> PendingMediaUploadPlan;
 // Applies a plan the database has committed.

@@ -129,7 +129,8 @@ SCENARIO("a user at the device cap cannot create another device, but a device th
             {
                 REQUIRE(accepted.status == 200U);
                 REQUIRE(devices_of(runtime, alice) == hs::device_count_limit);
-                REQUIRE(runtime.homeserver.database.sessions.size() == sessions_before + 1U);
+                // F-08 (ADR-0590): the login on a held device replaces its session, so the count is unchanged.
+                REQUIRE(runtime.homeserver.database.sessions.size() == sessions_before);
             }
         }
 

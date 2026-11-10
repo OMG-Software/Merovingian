@@ -35,11 +35,12 @@ using namespace merovingian::tests;
 using merovingian::homeserver::DispatchResult;
 using merovingian::homeserver::RegistrationValidationSession;
 
-[[nodiscard]] auto conformance_config() -> merovingian::config::Config
+[[nodiscard]] auto conformance_config(bool login_token_enabled = false) -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
+    security.login_token.enabled = login_token_enabled;
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -408,6 +409,86 @@ SCENARIO("POST /account/password with m.login.email.identity does not reset a pa
             {
                 REQUIRE(result.response.status == 400U);
                 REQUIRE(errcode_of(result) == "M_SESSION_EXPIRED");
+            }
+        }
+    }
+}
+
+// F-07 (security audit run 4): a login token comes from a session, so completing a password reset by email that
+// revokes every session erases the account's unredeemed login tokens too.
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword ("logout_devices":
+// the server revokes the access tokens of all the user's devices when true) and "POST /login/get_token".
+SCENARIO("Completing a password reset by email erases the account's unredeemed login tokens",
+         "[conformance][client-server][auth][password-reset][security][f07]")
+{
+    GIVEN("an account with an email address, a login token minted on one of its sessions and a validated reset session")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config(true));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        enable_email(runtime);
+        register_alice_with_email(runtime);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"D"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const login_body = parse_object(login.response.body);
+        auto const* const access_token = string_member(login_body, "access_token");
+        REQUIRE(access_token != nullptr);
+        auto const minted = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v1/login/get_token", *access_token,
+                      R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+        REQUIRE(minted.response.status == 200U);
+        auto const minted_body = parse_object(minted.response.body);
+        auto const* const login_token = string_member(minted_body, "login_token");
+        REQUIRE(login_token != nullptr);
+        auto const token_login_status = [&runtime, login_token] {
+            return merovingian::homeserver::handle_client_server_request(
+                       runtime, {"POST",
+                                 "/_matrix/client/v3/login",
+                                 {},
+                                 R"({"type":"m.login.token","token":")" + *login_token + R"(","device_id":"E"})"})
+                .response.status;
+        };
+
+        auto const sid = sid_of(request_token(runtime, "alice@example.net", "secret_one", 1));
+        auto& session = runtime.registration_validation_sessions.front();
+        session.validated_at_ms = session.updated_at_ms;
+        REQUIRE(session.user_id == std::optional<std::string>{"@alice:example.org"});
+
+        auto const complete = [&](std::string_view logout_member) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/password",
+                          {},
+                          R"({"new_password":"BrandNewPass9!",)" + std::string{logout_member} +
+                              R"("auth":{"type":"m.login.email.identity","threepid_creds":{"sid":")" + sid +
+                              R"(","client_secret":"secret_one"}}})"});
+        };
+
+        WHEN("the reset is completed with logout_devices true")
+        {
+            REQUIRE(complete(R"("logout_devices":true,)").response.status == 200U);
+
+            THEN("the token minted before the reset is refused")
+            {
+                // Spec MUST: logout_devices true revokes every session; a credential derived from one goes too.
+                REQUIRE(token_login_status() == 403U);
+            }
+        }
+
+        WHEN("the reset is completed with logout_devices false")
+        {
+            REQUIRE(complete(R"("logout_devices":false,)").response.status == 200U);
+
+            THEN("the token minted before the reset still logs in")
+            {
+                // Spec: logout_devices false leaves the other sessions, and what came from them, alone.
+                REQUIRE(token_login_status() == 200U);
             }
         }
     }

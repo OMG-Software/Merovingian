@@ -980,12 +980,17 @@ auto plan_pending_media_upload(LocalMediaRepository& repository, std::string_vie
     auto plan = PendingMediaUploadPlan{};
     auto live_total = std::uint64_t{0U};
     auto live_for_owner = std::uint64_t{0U};
-    // Linear in the reservations held, which max_pending_uploads bounds.
+    // One pass, linear in the reservations held. An expired reservation counts toward no quota; at most
+    // max_expired_reservations_swept_per_create of them are listed for deletion (F-16).
+    repository.pending_rows_examined.add(repository.pending_uploads.size());
     for (auto const& [media_id, reservation] : repository.pending_uploads)
     {
         if (reservation.expires_at_ms <= now_ms)
         {
-            plan.expired_media_ids.push_back(media_id);
+            if (plan.expired_media_ids.size() < max_expired_reservations_swept_per_create)
+            {
+                plan.expired_media_ids.push_back(media_id);
+            }
             continue;
         }
         ++live_total;
@@ -1023,6 +1028,7 @@ auto plan_pending_media_upload(LocalMediaRepository& repository, std::string_vie
 
 auto apply_pending_media_upload(LocalMediaRepository& repository, PendingMediaUploadPlan const& plan) -> void
 {
+    repository.pending_rows_examined.add(plan.expired_media_ids.size());
     for (auto const& expired : plan.expired_media_ids)
     {
         repository.pending_uploads.erase(expired);

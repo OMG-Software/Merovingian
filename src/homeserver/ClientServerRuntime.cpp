@@ -148,7 +148,6 @@
 #include "merovingian/push/PushRulePlacement.hpp"
 #include "merovingian/push/UserPushRules.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
-#include "merovingian/rooms/encryption_policy.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/GroupLookup.hpp"
@@ -1822,7 +1821,9 @@ namespace
         {
             return MembershipTargetRefusal{"M_BAD_JSON", std::string{action} + " body must contain user_id"};
         }
-        if (!auth::user_id_is_valid(body->user_id))
+        // F-21: the target may be a user of another server, whose localpart need not meet the rule for a new
+        // local account (uppercase letters, for one), so the federated grammar decides.
+        if (!auth::user_id_is_valid_federated(body->user_id))
         {
             return MembershipTargetRefusal{"M_INVALID_PARAM", "user_id is not a valid Matrix user ID"};
         }
@@ -4394,6 +4395,33 @@ namespace
     {
         auto const pieces = std::array<std::string_view, 1U>{token};
         return crypto::generic_hash(pieces);
+    }
+
+    // F-07: the operator accounts route deactivates through `HomeserverRuntime` alone, which cannot reach the
+    // login tokens. After a successful POST to it, a target that is now deactivated holds none.
+    auto erase_login_tokens_of_deactivated_target(ClientServerRuntime& rt, std::string_view request_path) -> void
+    {
+        constexpr auto accounts_prefix = std::string_view{"/_merovingian/admin/accounts/"};
+        if (!request_path.starts_with(accounts_prefix))
+        {
+            return;
+        }
+        auto target = std::string{};
+        try
+        {
+            target = core::percent_decode_path_component(request_path.substr(accounts_prefix.size()));
+        }
+        catch (std::invalid_argument const&)
+        {
+            return;
+        }
+        auto const deactivated = std::ranges::any_of(rt.homeserver.database.users, [&target](LocalUser const& current) {
+            return current.user_id == target && current.deactivated;
+        });
+        if (deactivated)
+        {
+            rt.login_tokens.erase_user(target);
+        }
     }
 
     // POST /_matrix/client/v1/login/get_token (spec "POST /login/get_token"; CS8, ADR-0548). Runs under
@@ -10253,141 +10281,6 @@ namespace
         return content == nullptr ? std::nullopt : std::optional<canonicaljson::Object>{*content};
     }
 
-    // True when `body` is a JSON object whose `algorithm` is a string the encryption policy accepts.
-    [[nodiscard]] auto encryption_content_has_valid_algorithm(std::string_view body) -> bool
-    {
-        auto const content = parsed_json_object(body);
-        if (!content.has_value())
-        {
-            return false;
-        }
-        auto const* algorithm = object_member(*content, "algorithm");
-        auto const* text = algorithm == nullptr ? nullptr : std::get_if<std::string>(&algorithm->storage());
-        return text != nullptr && rooms::encryption_algorithm_is_valid(*text);
-    }
-
-    struct CanonicalAliasRefusal final
-    {
-        std::string_view errcode{};
-        std::string message{};
-    };
-
-    // Spec (PUT /rooms/{roomId}/state/{eventType}/{stateKey}): "If the event type being sent is
-    // `m.room.canonical_alias` servers SHOULD ensure that any new aliases being listed in the event
-    // are valid per their grammar/syntax and that they point to the room ID where the state event
-    // is to be sent to. Servers do not validate aliases which are being removed or are already
-    // present in the state event." 400 `M_INVALID_PARAM` for syntax, `M_BAD_ALIAS` for an alias that
-    // does not point to the room.
-    //
-    // Only this server's directory can say where an alias points, so an alias on another server is
-    // checked for syntax and accepted: asking its server would be a client-triggered outbound call
-    // (ADR-0079) and the spec only says SHOULD; clients are told not to trust the list either
-    // ("Clients SHOULD NOT treat the aliases as accurate").
-    //
-    // A body that is not a JSON object is left for the state handler's own 400.
-    [[nodiscard]] auto canonical_alias_refusal(database::PersistentStore const& store, std::string_view room_id,
-                                               std::string_view local_server_name, std::string_view body)
-        -> std::optional<CanonicalAliasRefusal>
-    {
-        auto const content = parsed_json_object(body);
-        if (!content.has_value())
-        {
-            return std::nullopt;
-        }
-        // Collects the aliases of a canonical-alias content: `alias` (absent, null or empty means
-        // none) and each entry of `alt_aliases`. False when a field has the wrong type.
-        auto const collect = [](canonicaljson::Object const& object, std::vector<std::string>& out) -> bool {
-            if (auto const* alias = object_member(object, "alias"); alias != nullptr)
-            {
-                if (auto const* text = std::get_if<std::string>(&alias->storage()); text != nullptr)
-                {
-                    if (!text->empty())
-                    {
-                        out.push_back(*text);
-                    }
-                }
-                else if (!std::holds_alternative<std::nullptr_t>(alias->storage()))
-                {
-                    return false;
-                }
-            }
-            if (auto const* alt = object_member(object, "alt_aliases"); alt != nullptr)
-            {
-                if (auto const* array = std::get_if<canonicaljson::Array>(&alt->storage()); array != nullptr)
-                {
-                    for (auto const& entry : *array)
-                    {
-                        auto const* text = std::get_if<std::string>(&entry.storage());
-                        if (text == nullptr)
-                        {
-                            return false;
-                        }
-                        out.push_back(*text);
-                    }
-                }
-                else if (!std::holds_alternative<std::nullptr_t>(alt->storage()))
-                {
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        auto listed = std::vector<std::string>{};
-        if (!collect(*content, listed))
-        {
-            return CanonicalAliasRefusal{"M_INVALID_PARAM", "alias and alt_aliases must be room aliases"};
-        }
-
-        // The aliases the room's current event already lists are not validated again.
-        auto present = std::vector<std::string>{};
-        auto const current = std::ranges::find_if(store.state, [room_id](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.canonical_alias" && state.state_key.empty();
-        });
-        if (current != store.state.end())
-        {
-            if (auto const json = event_json_for_id(store, current->event_id); json.has_value())
-            {
-                auto const parsed = canonicaljson::parse_lossless(*json);
-                auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                auto const* old_content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
-                if (old_content != nullptr)
-                {
-                    std::ignore = collect(*old_content, present);
-                }
-            }
-        }
-        auto const is_new = [&present](std::string const& alias) {
-            return std::ranges::find(present, alias) == present.end();
-        };
-
-        for (auto const& alias : listed)
-        {
-            if (is_new(alias) && !auth::room_alias_is_valid(alias))
-            {
-                return CanonicalAliasRefusal{"M_INVALID_PARAM", "'" + alias + "' is not a valid room alias"};
-            }
-        }
-        for (auto const& alias : listed)
-        {
-            if (!is_new(alias))
-            {
-                continue;
-            }
-            // room_alias_is_valid ended the localpart at the first ':', which the domain follows.
-            if (std::string_view{alias}.substr(alias.find(':') + 1U) != local_server_name)
-            {
-                continue;
-            }
-            auto const mapping = database::find_room_alias(store, alias);
-            if (!mapping.has_value() || mapping->room_id != room_id)
-            {
-                return CanonicalAliasRefusal{"M_BAD_ALIAS", "The alias '" + alias + "' does not point to this room."};
-            }
-        }
-        return std::nullopt;
-    }
-
     // The Event ID of the last known event in a room: the newest, by stream ordering, of its
     // forward extremities (events no later event follows; rejected and soft-failed events are
     // never one). LocalRoom::events holds event JSON, not IDs, so it cannot answer this (F-48,
@@ -14282,6 +14175,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return DispatchResult{DispatchResult::Status::complete, std::move(missing), {}};
         }
         auto local = call_local(req);
+        if (req.method == "POST" && local.status == 200U)
+        {
+            erase_login_tokens_of_deactivated_target(rt, request_path);
+        }
         apply_cors_headers(req, local, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};
     }
@@ -14791,8 +14688,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 uia_failure_body(challenge, "M_SESSION_NOT_VALIDATED", "the email address is not validated"));
         }
         auto const* const logout_devices_member = boolean_member(*object, "logout_devices");
-        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password,
-                                                      logout_devices_member == nullptr || *logout_devices_member);
+        auto const reset_logs_out = logout_devices_member == nullptr || *logout_devices_member;
+        auto const result = reset_local_user_password(rt.homeserver, user_id, *new_password, reset_logs_out);
         if (!result.ok)
         {
             if (result.status == 429U)
@@ -14806,6 +14703,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
         }
         consume_registration_validation_session(rt, password_reset_purpose, *sid, *secret);
+        if (reset_logs_out)
+        {
+            // F-07: every session of the account was revoked, and the login tokens with them.
+            rt.login_tokens.erase_user(user_id);
+        }
         log_diagnostic("password_reset.completed", {
                                                        {"user_id", user_id, false}
         });
@@ -16463,6 +16365,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
         if (r.ok)
         {
+            // F-07: a login token is derived from the sessions just revoked.
+            rt.login_tokens.erase_user(*user);
             // Spec (POST /logout/all): "All devices for the user are also deleted."
             std::erase_if(rt.devices, [&user](ClientDevice const& device) {
                 return device.user_id == *user;
@@ -16733,6 +16637,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
+        if (logout_devices)
+        {
+            // F-07: the other sessions are revoked, so the login tokens minted from them go too.
+            rt.login_tokens.erase_user(*user);
+        }
         return dispatch_resp(req, rt, 200U, "{}");
     }
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#account-deactivation
@@ -16790,6 +16699,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
+        // F-07: a deactivated account holds no login token.
+        rt.login_tokens.erase_user(*user);
         // Unbind every identity-server-bound 3PID the account holds. Spec: the
         // 200 response's id_server_unbind_result is "success" only when *all*
         // identifiers were unbound -- and when there were none to unbind --
@@ -17192,6 +17103,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "account");
             }
         }
+        // F-17: app_id m.email belongs to kind email (spec: "If the kind is "email", this is "m.email""). Any
+        // other kind with that app_id would be a way to reach the email pushers of other users, whose pushkey is
+        // an address the account owns.
+        if (body->kind.has_value() && *body->kind != "email" && body->app_id == "m.email")
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "app_id m.email is reserved for email pushers");
+        }
         auto& store = rt.homeserver.database.persistent_store;
         if (!body->kind.has_value())
         {
@@ -17287,7 +17205,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto other_users = std::vector<std::string>{};
             for (auto const& existing : store.pushers)
             {
-                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey)
+                // F-17: an email pusher's pushkey is the address its owner holds; it is never another user's to
+                // displace, whatever pusher is being set.
+                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey &&
+                    existing.kind != "email")
                 {
                     other_users.push_back(existing.user_id);
                 }
@@ -18624,6 +18545,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (room_alias_name != nullptr && !room_alias_name->empty())
         {
             auto const alias = "#" + *room_alias_name + ":" + rt.homeserver.config.server().server_name;
+            // F-18. Spec (createRoom): `room_alias_name` is the local part of a room alias, so the composed alias
+            // must satisfy the alias grammar (no ':' or NUL in the local part, UTF-8, at most 255 bytes in all).
+            // The spec names no errcode for this, so M_INVALID_PARAM. Refused before anything is stored.
+            if (!auth::room_alias_is_valid(alias))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "room_alias_name does not make a valid room alias");
+            }
             if (database::find_room_alias(rt.homeserver.database.persistent_store, alias).has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_ROOM_IN_USE", "room alias already in use");
@@ -19299,31 +19228,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "state content must be a JSON object");
                 }
-                // Only for a sender who may send it: anyone else gets the 403 the send path gives.
-                if (path->event_type == "m.room.canonical_alias" && path->state_key.empty() &&
-                    may_send_state_event(rt.homeserver.database.persistent_store, path->room_id, *user,
-                                         "m.room.canonical_alias"))
-                {
-                    if (auto const refusal =
-                            canonical_alias_refusal(rt.homeserver.database.persistent_store, path->room_id,
-                                                    rt.homeserver.config.server().server_name, req.body);
-                        refusal.has_value())
-                    {
-                        return dispatch_err(req, rt, 400U, std::string{refusal->errcode}, refusal->message);
-                    }
-                }
-                // Spec (m.room.encryption): `algorithm` is "Required", "One of: `[m.megolm.v1.aes-sha2]`"; a body
-                // missing it or holding another value is M_BAD_JSON ("missing required keys, invalid values for
-                // keys"). Local PUT only: federated events are not judged (ADR-0448). Like the alias check, only
-                // for a sender who may send the event: anyone else gets the 403 the send path gives.
-                if (path->event_type == "m.room.encryption" &&
-                    may_send_state_event(rt.homeserver.database.persistent_store, path->room_id, *user,
-                                         "m.room.encryption") &&
-                    !encryption_content_has_valid_algorithm(req.body))
-                {
-                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
-                                        "m.room.encryption requires an algorithm of m.megolm.v1.aes-sha2");
-                }
+                // The content checks of m.room.canonical_alias and m.room.encryption (F-19) are made by send_event, which
+                // every local writer of those events reaches.
                 log_diagnostic("room.state_event.dispatch", {
                                                                 {"actor",      *user,            false},
                                                                 {"room_id",    path->room_id,    false},

@@ -169,6 +169,23 @@ indexes by alias, by room and by creator. Look up with `find_room_alias` / `room
 Write only through `insert`, `erase`, `reassign` and `clear` (hydration uses `insert`); an erase moves the last row into
 the hole, so row order means nothing. The table has no lock: a reader needs exclusion from writers (`runtime.mutex`).
 
+## Credential tables (F-08, ADR-0325, ADR-0488)
+
+`PersistentStore::access_tokens` and `refresh_tokens` are `CredentialTable<Row>` (header-only,
+`include/merovingian/database/CredentialTable.hpp`), not vectors: they own their rows, show them read-only and index them
+by token hash, by (user ID, device ID), by user and, for refresh tokens, by predecessor hash. The hash and predecessor
+indexes are DIGEST indexes (ADR-0488): keyed on `std::hash` of the stored hash, they only narrow, and every candidate is
+confirmed with `crypto::constant_time_equal` (`src/auth/AGENTS.md` rule 3). Never key a map on the hash string, never answer
+from the index alone, never scan after a miss. Look up with `find`/`contains`/`has_unrevoked_*`, revoke with `revoke_hash`,
+`revoke_for_user`, `revoke_for_device`, `revoke_for_user_except_device` and `revoke_with_predecessor`, add with `insert`
+(hydration too) and remove with `erase` (the last row fills the hole, so order means nothing) or `erase_if` (the retention
+sweep; it rebuilds the indexes). A row's hash, user, device and predecessor never change after `insert`; `revoked` flips only
+through the revoke methods, and only one way. `rows_examined()` is an `ExaminedRows` counter of every row a method visited, for
+tests that prove cost. `erase_for_device` removes a device's rows through the device index and
+`oldest_retired_beyond` names the retired refresh rows past a count, oldest `issued_at_ms` first, never an unrevoked one
+(ADR-0590); `store_device_and_access_token(..., true)` and `rotate_device_credentials` delete and insert in one transaction and
+change memory only after the commit. The tables have no lock: `runtime.mutex` serialises them.
+
 ## Retained PDUs (F-18, ADR-0326)
 
 `PersistentStore::deferred_pdu_awaits` indexes each retained PDU under the event IDs it is missing

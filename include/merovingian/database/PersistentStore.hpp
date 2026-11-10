@@ -4,6 +4,7 @@
 
 #include "merovingian/core/CopyableMutex.hpp"
 #include "merovingian/database/CappedAccountDataStore.hpp"
+#include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
@@ -284,8 +285,9 @@ struct PersistentStore final
     SchemaState schema{};
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
-    std::vector<PersistentAccessToken> access_tokens{};
-    std::vector<PersistentRefreshToken> refresh_tokens{};
+    // The credential tables own their rows and index them (F-08): look up and revoke through their methods.
+    CredentialTable<PersistentAccessToken> access_tokens{};
+    CredentialTable<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
@@ -352,6 +354,8 @@ struct PersistentStore final
     std::vector<PersistentMediaBlob> media_blobs{};
     // Migration 026: reservations made by POST /_matrix/media/v1/create.
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
+    // F-16: rows of `pending_media_uploads` visited by commit_pending_media_upload.
+    ExaminedRows pending_media_rows_examined{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
     // list is a bounded mirror for the admin views, so an unauthenticated flood
@@ -563,8 +567,19 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
+// One transaction: the device row when `device` is set, the access token, and, with `replace_device_credentials`, the
+// DELETE of every earlier access and refresh row of the token's (user, device) first (F-08, ADR-0590: a login on a
+// device the user holds replaces its credentials; deleted, not revoked, because a presented revoked refresh row counts
+// as reuse). Memory changes only after the commit; a failed commit changes nothing.
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
-                                                 PersistentAccessToken token) -> bool;
+                                                 PersistentAccessToken token, bool replace_device_credentials = false)
+    -> bool;
+// A refresh rotation's writes in one transaction (F-08, ADR-0590): every earlier access row of the device is deleted,
+// the new access and refresh rows are inserted, and `evicted_refresh_hashes` (rows the caller found retired, from
+// `CredentialTable::oldest_retired_beyond`) are deleted. False, with nothing changed, if a named row is not retired.
+[[nodiscard]] auto rotate_device_credentials(PersistentStore& store, PersistentAccessToken access,
+                                             PersistentRefreshToken refresh,
+                                             std::span<std::string const> evicted_refresh_hashes) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
@@ -977,9 +992,12 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
                                              PersistentMediaBlob const& blob, bool new_blob,
                                              std::string_view completes_pending_media_id = {}) -> bool;
+// F-16: the most expired reservations one commit_pending_media_upload deletes. A longer list is refused.
+inline constexpr std::size_t max_pending_media_deleted_per_commit{256U};
 // ADR-0212: inserts one pending upload reservation and deletes the expired
-// reservations in `expired_media_ids`, in one transaction. The in-memory mirror
-// changes only after the commit succeeds.
+// reservations in `expired_media_ids` (at most max_pending_media_deleted_per_commit)
+// with DELETE statements of up to 128 IDs, in one transaction. The in-memory mirror changes only after the
+// commit succeeds, in one pass over the reservations with hash-set membership.
 [[nodiscard]] auto commit_pending_media_upload(PersistentStore& store, PersistentPendingMediaUpload row,
                                                std::vector<std::string> const& expired_media_ids) -> bool;
 

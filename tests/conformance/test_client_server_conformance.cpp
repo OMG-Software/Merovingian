@@ -3952,10 +3952,11 @@ SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client
         WHEN("the refresh token's expiry is forced into the past and /refresh is called")
         {
             // Force every stored refresh row for this device into the past.
-            for (auto& row : started.runtime.homeserver.database.persistent_store.refresh_tokens)
-            {
-                row.expires_at = std::chrono::system_clock::time_point{};
-            }
+            std::ignore = started.runtime.homeserver.database.persistent_store.refresh_tokens.set_expires_at_where(
+                [](merovingian::database::PersistentRefreshToken const&) {
+                    return true;
+                },
+                std::chrono::system_clock::time_point{});
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",
@@ -18403,6 +18404,293 @@ SCENARIO("POST /pushers/set accepts an email pusher for the account's own addres
             {
                 REQUIRE(deleted.response.status == 200U);
                 REQUIRE(listed_pushers().find("alice@example.net") == std::string::npos);
+            }
+        }
+    }
+}
+
+// F-17 (security audit run 4). Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3pushersset
+// `app_id`: "If the kind is "email", this is "m.email"" and `append`: "Otherwise, the homeserver must remove any other
+// pushers with the same App ID and pushkey for different users." The removal is required for ordinary pushers; an
+// email pusher is the account's own address (ADR-0219), so another user's http pusher must not reach it.
+SCENARIO("POST /pushers/set reserves app_id m.email for email pushers and never removes one for another user",
+         "[conformance][client-server][push][email-pusher][f17]")
+{
+    GIVEN("alice holds an email pusher and bob is another user")
+    {
+        auto config = conformance_config();
+        config.server().email.smtp_url = "smtps://smtp.example.org";
+        config.server().email.from = "matrix@example.org";
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice_token = logged_in_token(runtime);
+        auto const bob_token = register_and_login(runtime, "bob");
+        auto binding = merovingian::database::PersistentThreePidBinding{};
+        binding.user_id = "@alice:example.org";
+        binding.medium = "email";
+        binding.address = "alice@example.net";
+        binding.added_at_ms = 1700000000000U;
+        binding.validated_at_ms = 1700000000000U;
+        REQUIRE(merovingian::database::store_account_threepid(runtime.homeserver.database.persistent_store, binding));
+
+        auto const set_pusher = [&](std::string const& token, std::string const& app_id, std::string const& kind,
+                                    std::string const& pushkey, std::string const& extra) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_display_name":"App","app_id":")" + app_id +
+                     R"(","data":{"url":"https://push.example.org/_matrix/push/v1/notify"},"device_display_name":"D",)"
+                     R"("kind":")" +
+                     kind + R"(","lang":"en","pushkey":")" + pushkey + "\"" + extra + "}"});
+        };
+        auto const pusher_listed = [&](std::string const& token, std::string const& pushkey) {
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+            REQUIRE(listed.response.status == 200U);
+            return listed.response.body.find(pushkey) != std::string::npos;
+        };
+        REQUIRE(set_pusher(alice_token, "m.email", "email", "alice@example.net", "").response.status == 200U);
+        REQUIRE(pusher_listed(alice_token, "alice@example.net"));
+
+        WHEN("bob sets an http pusher with app_id m.email and alice's address as pushkey")
+        {
+            auto const response = set_pusher(bob_token, "m.email", "http", "alice@example.net", "");
+
+            THEN("it is refused and alice's email pusher survives")
+            {
+                // Spec MUST: an app_id of m.email belongs to kind "email"; 400 for an invalid pusher value.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(pusher_listed(alice_token, "alice@example.net"));
+                REQUIRE_FALSE(pusher_listed(bob_token, "alice@example.net"));
+            }
+        }
+
+        WHEN("bob sets an http pusher for another app_id with a pushkey alice also holds, append false")
+        {
+            REQUIRE(set_pusher(alice_token, "org.example.app", "http", "shared-key", "").response.status == 200U);
+            auto const response = set_pusher(bob_token, "org.example.app", "http", "shared-key", "");
+
+            THEN("alice's http pusher is removed")
+            {
+                // Spec MUST: with append false, "remove any other pushers with the same App ID and pushkey for
+                // different users".
+                REQUIRE(response.response.status == 200U);
+                REQUIRE_FALSE(pusher_listed(alice_token, "shared-key"));
+                REQUIRE(pusher_listed(bob_token, "shared-key"));
+            }
+        }
+    }
+}
+
+// F-18 (security audit run 4). Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
+// `room_alias_name`: "The desired room alias **local part**" of a room alias, whose grammar (appendices.md, "Room
+// Aliases") allows no ':' in the localpart and at most 255 bytes in all. The spec names no errcode for an invalid
+// alias in createRoom, so it is 400 M_INVALID_PARAM.
+SCENARIO("POST /createRoom refuses a room_alias_name that does not make a valid alias",
+         "[conformance][client-server][createroom][f18]")
+{
+    GIVEN("a started homeserver with an authenticated user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = logged_in_token(runtime);
+        auto const create_with_alias = [&](std::string const& json_alias_literal) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_alias_name":)" + json_alias_literal + "}"});
+        };
+        auto const joined_room_count = [&]() {
+            auto const joined = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
+            REQUIRE(joined.response.status == 200U);
+            auto const body = parse_object(joined.response.body);
+            auto const* rooms = object_member_as_array(body, "joined_rooms");
+            REQUIRE(rooms != nullptr);
+            return rooms->size();
+        };
+        auto const before = joined_room_count();
+
+        WHEN("the name holds a colon")
+        {
+            auto const response = create_with_alias(R"("a:b")");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias localpart holds no ':'.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name holds a NUL")
+        {
+            auto const response = create_with_alias(R"("a\u0000b")");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias is a valid string without NUL.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name is not valid UTF-8")
+        {
+            auto const response =
+                create_with_alias(std::string{"\"a"} + std::string(1U, static_cast<char>(0xFF)) + "b\"");
+
+            THEN("it is refused with 400 and no room is made")
+            {
+                // Spec MUST: Matrix strings are UTF-8.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name makes an alias over 255 bytes")
+        {
+            auto const response = create_with_alias("\"" + std::string(300U, 'a') + "\"");
+
+            THEN("it is refused with M_INVALID_PARAM and no room is made")
+            {
+                // Spec MUST: a room alias is at most 255 bytes.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(joined_room_count() == before);
+            }
+        }
+
+        WHEN("the name is valid")
+        {
+            auto const response = create_with_alias(R"("pleasant")");
+
+            THEN("the room is made")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(joined_room_count() == before + 1U);
+            }
+        }
+    }
+}
+
+// F-20 (security audit run 4). Spec:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite `user_id`: "The fully
+// qualified user ID of the invitee"; the identifier grammar (appendices.md, "User Identifiers") is
+// `@localpart:server_name`. An invitee may be on another server. The request is invalid (400) otherwise, and no event
+// is composed for it.
+SCENARIO("POST /rooms/{roomId}/invite refuses an invitee that is not a user ID",
+         "[conformance][client-server][invite][f20]")
+{
+    GIVEN("alice in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, alice);
+        auto const invite = [&](std::string const& invitee) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                          R"({"user_id":")" + invitee + R"("})"});
+        };
+
+        WHEN("the invitee has no @ sigil")
+        {
+            auto const response = invite("bob:example.org");
+
+            THEN("it is refused with M_INVALID_PARAM")
+            {
+                // Spec MUST: the invitee is a fully qualified user ID.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the invitee has no server part")
+        {
+            auto const response = invite("@bob");
+
+            THEN("it is refused with M_INVALID_PARAM")
+            {
+                // Spec MUST: the invitee is a fully qualified user ID.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the invitee is a valid user ID of another server")
+        {
+            auto const response = invite("@carol:remote.invalid");
+
+            THEN("it is not refused as an invalid user ID")
+            {
+                // Spec: an invitee may be on any server.
+                REQUIRE(response.response.body.find("not a valid Matrix user ID") == std::string::npos);
+            }
+        }
+    }
+}
+
+// F-21 (security audit run 4). Spec:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidban (and `/kick`, `/unban`):
+// `user_id` is "The fully qualified user ID" of the target. A federated user ID may use characters the grammar only
+// discourages in new local accounts (uppercase letters in the localpart), so a remote user is judged by the federated
+// rule, not the rule for registering an account here.
+SCENARIO("ban, kick and unban accept a valid federated user ID", "[conformance][client-server][moderation][f21]")
+{
+    GIVEN("alice in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = logged_in_token(runtime);
+        auto const room_id = create_room(runtime, alice);
+        auto const act = [&](std::string const& action, std::string const& target) {
+            return merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/" + action, alice,
+                          R"({"user_id":")" + target + R"("})"});
+        };
+        constexpr auto remote_upper = "@Remote.User:other.example";
+
+        WHEN("an uppercase remote ID is banned and then unbanned")
+        {
+            auto const banned = act("ban", remote_upper);
+            auto const unbanned = act("unban", remote_upper);
+
+            THEN("both succeed")
+            {
+                // Spec MUST: a ban of a fully qualified user ID is applied; so is its lifting.
+                REQUIRE(banned.response.status == 200U);
+                REQUIRE(unbanned.response.status == 200U);
+            }
+        }
+
+        WHEN("an uppercase remote ID who is not in the room is kicked")
+        {
+            auto const kicked = act("kick", remote_upper);
+
+            THEN("the ID is not what is refused")
+            {
+                // Spec: the target is a valid user ID; the answer is about membership, not the ID's shape.
+                REQUIRE(kicked.response.body.find("not a valid Matrix user ID") == std::string::npos);
+            }
+        }
+
+        WHEN("a malformed ID is the target")
+        {
+            THEN("ban, kick and unban each refuse it with M_INVALID_PARAM")
+            {
+                for (auto const* action : {"ban", "kick", "unban"})
+                {
+                    auto const response = act(action, "not-a-user-id");
+                    REQUIRE(response.response.status == 400U);
+                    REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                }
             }
         }
     }

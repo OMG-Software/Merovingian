@@ -8,7 +8,7 @@ CREATE TABLE "devices" (user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_
 -- statement create_access_tokens
 CREATE TABLE "access_tokens" (user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '', predecessor_refresh_hash TEXT NOT NULL DEFAULT '')
 -- statement create_refresh_tokens
-CREATE TABLE "refresh_tokens" (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT '')
+CREATE TABLE "refresh_tokens" (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '', predecessor_hash TEXT NOT NULL DEFAULT '', issued_at_ms TEXT NOT NULL DEFAULT '0')
 -- statement create_server_signing_keys
 CREATE TABLE "server_signing_keys" (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', expired_ts TEXT NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id))
 -- statement create_rooms
@@ -137,3 +137,9 @@ CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_use
 CREATE INDEX idx_events_room_id ON events (room_id)
 -- statement create_idx_state_groups_room_id
 CREATE INDEX idx_state_groups_room_id ON state_groups (room_id)
+-- statement create_idx_access_tokens_user_device
+CREATE INDEX idx_access_tokens_user_device ON access_tokens (user_id, device_id)
+-- statement create_idx_refresh_tokens_user_device
+CREATE INDEX idx_refresh_tokens_user_device ON refresh_tokens (user_id, device_id)
+-- statement create_idx_refresh_tokens_predecessor
+CREATE INDEX idx_refresh_tokens_predecessor ON refresh_tokens (predecessor_hash)

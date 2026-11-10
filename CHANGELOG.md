@@ -1,3 +1,125 @@
+## 0.12.84
+
+Fixes the client, account and local media low findings of security audit run 4 (F-07, F-08, F-16 to F-21).
+
+### F-07: login tokens go with the sessions they came from
+
+A login token minted by `POST /login/get_token` survived `POST /logout/all`, a password change or reset with
+`logout_devices`, and deactivation, so for the rest of its two-minute life it still opened a new session. `LoginTokenStore::erase_user`
+existed but had no caller. Every path that revokes all of a user's sessions now erases that user's unredeemed login tokens,
+after the revocation succeeded: `POST /logout/all`, `POST /account/password` with `logout_devices` true, the email password
+reset with `logout_devices` true, `POST /account/deactivate` and the operator deactivation
+(`POST /_merovingian/admin/accounts/{userId}`, erased by the client-server dispatcher because the operator code holds only the
+`HomeserverRuntime`). A password change with `logout_devices` false leaves the tokens alone. The store is guarded by
+`runtime.mutex`, which every one of these handlers holds.
+The email password reset had no test; `[f07]` in `tests/conformance/test_password_reset_conformance.cpp` now completes a reset and
+checks that a login token minted before it is refused with `logout_devices` true and still works with it false.
+
+### F-17: another user's http pusher cannot remove an email pusher
+
+`POST /pushers/set` with `append` false removes the pushers of other users that share the new pusher's `app_id` and pushkey,
+as the spec requires. A pusher of kind `http` with `app_id` `m.email` and a victim's address as pushkey therefore removed the
+victim's email pusher and silently stopped their notification emails. `app_id` `m.email` is now reserved for kind `email`: any
+other kind with it is `400 M_INVALID_PARAM`. The cross-user removal also skips pushers of kind `email`, whose pushkey is an
+address the owner holds. Ordinary pushers are still removed across users.
+
+### F-18: createRoom validates room_alias_name
+
+`POST /createRoom` composed `#<room_alias_name>:<server>` without checking it, so a name with a colon, a NUL, invalid UTF-8
+or a total over 255 bytes was stored as an alias that `GET /directory/room/{alias}` and `DELETE` could not reach. The
+handler now checks the composed alias with `auth::room_alias_is_valid` and answers `400 M_INVALID_PARAM` (the spec names no
+errcode for it) before anything is stored, and `create_room` repeats the check as defence in depth. A valid name still works.
+
+### F-20: the invite target is validated
+
+`POST /rooms/{roomId}/invite` accepted any string as `user_id` and composed an `m.room.member` event with it as `state_key`
+(an ID with no `@`, or no server part, was treated as a local user). `invite_user` now requires
+`auth::user_id_is_valid_federated` (the invitee may be on another server) and answers `400 M_INVALID_PARAM` before any event
+is composed. A valid remote ID is still accepted.
+
+### F-21: ban, kick and unban accept federated user IDs
+
+`POST /rooms/{roomId}/ban`, `/kick` and `/unban` judged their target with the strict rule for registering a local account,
+so a valid user ID of another server with an uppercase letter in its localpart was refused with `400 M_INVALID_PARAM` and
+could not be banned. The route check (`membership_target_refusal`) and the service check (`refuse_invalid_membership_target`)
+now use `auth::user_id_is_valid_federated`. Registration and local-user creation keep the strict rule; a malformed ID is
+still refused.
+
+### F-19: canonical alias and encryption content checks apply to every local writer
+
+The checks the spec asks for on `m.room.canonical_alias` (new aliases valid and pointing at the room) and `m.room.encryption`
+(`algorithm` must be `m.megolm.v1.aes-sha2`) ran only in the `PUT /state` branch of the dispatcher, so `POST /rooms/{roomId}/send`
+with a `state_key` and `createRoom` `initial_state` could store an alias that points at another room, or an encryption event with
+no usable algorithm. They are now one function, `state_content_refusal` (`src/homeserver/state_content_check.cpp`), called by
+`send_event_as_user` (after the power check, for a state event with the empty state key only) and by `create_room` for the
+`m.room.canonical_alias` entries of `initial_state`, before anything is stored. `PUT /state` keeps its status codes and errcodes.
+A canonical alias in `initial_state` naming the alias the same request creates with `room_alias_name` is accepted, because that
+alias points at the room as soon as it exists; any other refusal there is `400 M_INVALID_ROOM_STATE`, the spec's code for an
+invalid initial state. `m.room.encryption` in `initial_state` is left to the encryption policy (ADR-0445): an entry that is not
+megolm is how a client asks for an unencrypted room, refused by default and allowed where the operator allows it. See ADR-0588.
+`POST /rooms/{roomId}/send` is not a v1.19 route and stays.
+
+### F-16: the expired media-reservation sweep is bounded and linear
+
+`POST /_matrix/media/v1/create` removed every expired reservation with `std::erase_if` over the stored rows and, for each row,
+a `std::find` over the list of expired IDs, under `runtime.mutex`: quadratic in the backlog (about 0.85 s at the default caps).
+The plan now lists at most 256 expired reservations (`max_expired_reservations_swept_per_create`, which must equal
+`database::max_pending_media_deleted_per_commit`); `commit_pending_media_upload` deletes them with `DELETE ... WHERE
+media_id IN (...)` statements of up to 128 IDs (the prepared-statement parameter limit, so two for a full batch) in the one
+transaction instead of one statement per row, refuses a longer list, and removes them from memory in one pass with
+hash-set membership. Later creates sweep the rest. Because a sweep is bounded, an expired reservation not yet swept is
+dead to every reader: it counts toward neither the per-user nor the server limit, `find_pending_media_upload` (uploads,
+waiting downloads) ignores it, and it is still never minted again as a media ID. `LocalMediaRepository::pending_rows_examined`
+and `PersistentStore::pending_media_rows_examined` count the rows visited so tests prove cost without timing. See ADR-0589.
+The duplicate-ID check in `commit_pending_media_upload` still reads `local_media` and is not part of this change.
+
+### F-08: the credential rows of a device are bounded, and the credential tables are indexed
+
+Every presented-token check, `store_*_token` duplicate check and `revoke_*` helper scanned all of `access_tokens` and
+`refresh_tokens` under `runtime.mutex` (about 56 ms per refresh at 100,000 rows). `PersistentStore::access_tokens` and
+`refresh_tokens` are now `database::CredentialTable`: they own their rows, show them read-only, and index them by token hash
+(a digest index in the sense of ADR-0488: it narrows, and every candidate is confirmed with `crypto::constant_time_equal`,
+with no scan after a miss), by (user ID, device ID), by user and, for refresh tokens, by predecessor hash. Lookup, duplicate
+checks, every revoke helper, `revoke_device_credentials`, `revoke_tokens_for_user_except_device`, the presented-token lookup
+in `refresh_local_session` and the "are they all revoked" checks after a revocation cost the rows they touch. The SQL each
+helper issues is unchanged, and the retention sweep (`collect_unusable_credentials`, `forget_credentials`) still iterates.
+`SessionTable` gained an index by (user ID, device ID) and `erase_device`, which removes one device's sessions in time
+proportional to them (the last session fills each hole, so after it `back()` is no longer the newest session; nothing in
+production reads the order). This part changes no login or refresh behaviour; the cap on a device's rows and the retired-row
+grace window follow in part 2. `[f08]` in `tests/unit/test_credential_tables.cpp` proves with the tables' `rows_examined()`
+counters that storing a token, each per-device revoke, the per-predecessor revoke and one refresh examine the same rows with
+200 and 400 other-user rows, and that every index agrees with the rows after erases, a sweep and a copy.
+Three tests that aged rows by writing `expires_at` through a mutable iterator use `set_expires_at_where` now.
+The v1 schema (`core_tables`/`core_indexes` and `migrations/001_initial_schema.sql`, together, ADR-0224) gains the secondary
+indexes `idx_access_tokens_user_device` and `idx_refresh_tokens_user_device` on `(user_id, device_id)` and
+`idx_refresh_tokens_predecessor` on `predecessor_hash`, which serve the `WHERE` clauses of the revoke statements, and
+`refresh_tokens.issued_at_ms` as its last column (`TEXT NOT NULL DEFAULT '0'`, the type every other millisecond column uses;
+`PersistentRefreshToken::issued_at_ms` is an `std::int64_t`). Both refresh-token mint sites (`issue_refresh_token_for_session`
+and `refresh_local_session`) set it to the wall clock, and part 2 deletes a device's retired refresh rows oldest first by it.
+A database created before this change has
+no such column or index and must be recreated (ADR-0224: no upgrade shim before 1.0).
+
+Part 2 bounds the rows (ADR-0590). `POST /login` on a `device_id` the user already holds now replaces that device's
+credentials, as the spec says ("invalidate any access token previously associated with that device"): `complete_login`
+and `login_local_user_by_id` (password, `m.login.token`, SSO, application service) delete the device's earlier access
+and refresh rows and its sessions (`SessionTable::erase_device`) and insert the new access row in one transaction
+(`store_device_and_access_token` with `replace_device_credentials`), and memory changes only after the commit, so a
+failed commit is a 500 with no token and the earlier token still works. The rows are deleted, not revoked, because a
+presented revoked refresh row is read as reuse (ADR-0074) and would end the login that replaced it; an absent row is a
+plain 401. `POST /refresh` keeps ADR-0074 (the presented token stays valid until its successor is used, a retry works,
+a retained retired token ends the session) but now deletes the device's earlier access rows and sessions in the same
+transaction as the new rows (`rotate_device_credentials`) instead of leaving them revoked, and keeps at most
+`max_retired_refresh_tokens_per_device` (32) retired refresh rows per device, deleting the oldest by `issued_at_ms`
+(`CredentialTable::oldest_retired_beyond`; an unrevoked row is never named). The audit's suggested grace window was
+rejected: a count keeps detection across the last 32 rotations however slowly a client refreshes and bounds the rows even
+when `refresh_token_lifetime_ms` is 0. `collect_unusable_credentials` also drops a retired refresh row whose device no
+longer exists, from one set of device keys built per sweep (a login and a logout on a fresh device ID used to leave
+one until it expired). There is no per-user cap: `device_count_limit` (200) times the per-device bound is the bound.
+`[f08-rows]` in `tests/unit/test_credential_tables.cpp` and `tests/conformance/test_token_expiry_conformance.cpp` prove
+the row counts (also after a SQLite reload), that a stale refresh token is a plain 401 and a retained one is audited as
+reuse, the sweep rule and, with `rows_examined()` on both tables and the sessions, that one login and one rotation cost
+the same with 200 and 400 other-user rows.
+
 ## 0.12.83
 
 Fixes the high and medium findings of security audit run 4 (F-01 to F-06).

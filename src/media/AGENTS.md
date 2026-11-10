@@ -24,7 +24,10 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
   `media_content_disposition` (ADR-0211).
 - `pending_uploads` holds IDs reserved by `POST /_matrix/media/v1/create`; `make_media_id` never
   mints one of them, and `upload_local_media` with `LocalMediaUploadRequest::media_id` fills one
-  only once (ADR-0212).
+  only once (ADR-0212). `plan_pending_media_upload` lists at most `max_expired_reservations_swept_per_create` (256)
+  expired reservations for deletion; the rest stay until later creates. So every reader of `pending_uploads` must test
+  `expires_at_ms` (`find_pending_media_upload` does) and never treat presence as liveness (F-16, ADR-0589). Cost is
+  proved with `LocalMediaRepository::pending_rows_examined`, never timing.
 
 ## Internal body format
 

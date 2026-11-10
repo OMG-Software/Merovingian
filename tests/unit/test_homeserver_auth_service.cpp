@@ -2010,8 +2010,9 @@ SCENARIO("refresh_local_session fails closed when token revocation cannot persis
 
         WHEN("the access-token revocation statement is forced to fail")
         {
+            // F-08 (ADR-0590): the device's access rows are deleted in the rotation's own transaction now.
             merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
-                                                                       "revoke_device_access_tokens");
+                                                                       "delete_device_access_tokens");
             auto const result = merovingian::homeserver::refresh_local_session(runtime, issued.value);
 
             THEN("refresh reports a persistence failure and issues no credential")

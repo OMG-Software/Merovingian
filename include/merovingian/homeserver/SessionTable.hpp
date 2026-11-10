@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/homeserver/LocalSession.hpp"
 
 #include <cstddef>
@@ -19,12 +20,15 @@ namespace merovingian::homeserver
 // The in-memory mirror of the access-token table, with a lookup that does not scan it (P7).
 //
 // The sessions stay in a vector in insertion order, so iteration, `front()`, `back()` and `size()` behave as
-// they did when the field was a plain vector. Beside it sits an index from a digest of the token HASH to the
-// session's position. The digest is `std::hash` of the stored hash, itself a uniformly distributed BLAKE2b
-// output (keyed for v3 and v4), so a client that holds only a bearer token cannot steer which bucket a lookup
-// lands in, and the index compares only the digests, never the hashes. `find` then confirms every candidate
-// with the caller's predicate, which compares the full hashes with `crypto::constant_time_equal`
-// (src/auth/AGENTS.md rule 3): the index narrows the search and never decides a match.
+// they did when the field was a plain vector; `erase_if` keeps the order of what remains. The one exception is
+// `erase_device`, which moves the last session into each hole (so a request can drop one device's sessions in
+// time proportional to them), after which `back()` is no longer the newest session. Production code relies on the
+// order nowhere: only tests read `front()`/`back()`. Beside the vector sits an index from a digest of the token
+// HASH to the session's position, and one from (user ID, device ID) to the device's positions. The digest is
+// `std::hash` of the stored hash, itself a uniformly distributed BLAKE2b output (keyed for v3 and v4), so a client that
+// holds only a bearer token cannot steer which bucket a lookup lands in, and the index compares only the digests, never
+// the hashes. `find` then confirms every candidate with the caller's predicate, which compares the full hashes with
+// `crypto::constant_time_equal` (src/auth/AGENTS.md rule 3): the index narrows the search and never decides a match.
 //
 // Not thread-safe: the runtime mutex serialises every use, as it did the vector this replaces.
 //
@@ -85,6 +89,16 @@ public:
     // of this table.
     auto set_access_token_hash(LocalSession& session, std::string hash) -> void;
 
+    // Removes every session of the device and returns how many went. Costs the device's sessions, not the table:
+    // the last session fills each hole, so insertion order is not kept (see the class comment).
+    auto erase_device(std::string_view user_id, std::string_view device_id) -> std::size_t;
+
+    // How many sessions `erase_device` visited, in total, for tests that prove its cost (F-08).
+    [[nodiscard]] auto rows_examined() const noexcept -> database::ExaminedRows const&
+    {
+        return examined_;
+    }
+
     // Removes every session `should_remove` accepts and returns how many went. One pass over the vector and one
     // rebuild of the index: for the retention sweep, never for a request.
     template <typename Predicate>
@@ -129,10 +143,19 @@ private:
         return std::hash<std::string_view>{}(hash);
     }
 
+    // The length prefix makes the pair unambiguous: ("a", "bc") and ("ab", "c") get different keys.
+    [[nodiscard]] static auto device_key(std::string_view user_id, std::string_view device_id) -> std::string;
+
     auto rebuild_index() -> void;
+    auto index_session(std::size_t position) -> void;
+    auto unindex_session(std::size_t position) -> void;
 
     Container sessions_{};
     std::unordered_multimap<std::size_t, std::size_t> index_{};
+    // device_key(user_id, device_id) -> positions in sessions_. Keyed on identifiers, not secrets. A session's user
+    // and device are never changed after push_back.
+    std::unordered_map<std::string, std::vector<std::size_t>> device_index_{};
+    database::ExaminedRows examined_{};
 };
 
 } // namespace merovingian::homeserver

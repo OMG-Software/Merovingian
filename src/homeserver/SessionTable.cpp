@@ -3,10 +3,14 @@
 
 #include "merovingian/homeserver/SessionTable.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -17,11 +21,75 @@ auto SessionTable::reserve(std::size_t capacity) -> void
     index_.reserve(capacity);
 }
 
+auto SessionTable::device_key(std::string_view user_id, std::string_view device_id) -> std::string
+{
+    auto key = std::to_string(user_id.size());
+    key += ':';
+    key += user_id;
+    key += device_id;
+    return key;
+}
+
+auto SessionTable::index_session(std::size_t position) -> void
+{
+    auto const& session = sessions_[position];
+    index_.emplace(digest(session.access_token_hash), position);
+    device_index_[device_key(session.user_id, session.device_id)].push_back(position);
+}
+
+auto SessionTable::unindex_session(std::size_t position) -> void
+{
+    auto const& session = sessions_[position];
+    auto const [first, last] = index_.equal_range(digest(session.access_token_hash));
+    for (auto entry = first; entry != last; ++entry)
+    {
+        if (entry->second == position)
+        {
+            index_.erase(entry);
+            break;
+        }
+    }
+    auto const found = device_index_.find(device_key(session.user_id, session.device_id));
+    if (found != device_index_.end())
+    {
+        std::erase(found->second, position);
+        if (found->second.empty())
+        {
+            device_index_.erase(found);
+        }
+    }
+}
+
 auto SessionTable::push_back(LocalSession session) -> void
 {
-    auto const key = digest(session.access_token_hash);
     sessions_.push_back(std::move(session));
-    index_.emplace(key, sessions_.size() - 1U);
+    index_session(sessions_.size() - 1U);
+}
+
+auto SessionTable::erase_device(std::string_view user_id, std::string_view device_id) -> std::size_t
+{
+    auto const found = device_index_.find(device_key(user_id, device_id));
+    if (found == device_index_.end())
+    {
+        return 0U;
+    }
+    // Highest position first, so the session that fills a hole is never one still waiting to go.
+    auto positions = found->second;
+    examined_.add(positions.size());
+    std::ranges::sort(positions, std::greater<>{});
+    for (auto const position : positions)
+    {
+        unindex_session(position);
+        auto const last = sessions_.size() - 1U;
+        if (position != last)
+        {
+            unindex_session(last);
+            sessions_[position] = std::move(sessions_[last]);
+            index_session(position);
+        }
+        sessions_.pop_back();
+    }
+    return positions.size();
 }
 
 auto SessionTable::set_access_token_hash(LocalSession& session, std::string hash) -> void
@@ -51,10 +119,11 @@ auto SessionTable::set_access_token_hash(LocalSession& session, std::string hash
 auto SessionTable::rebuild_index() -> void
 {
     index_.clear();
+    device_index_.clear();
     index_.reserve(sessions_.size());
     for (auto position = std::size_t{0U}; position < sessions_.size(); ++position)
     {
-        index_.emplace(digest(sessions_[position].access_token_hash), position);
+        index_session(position);
     }
 }
 

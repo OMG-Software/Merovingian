@@ -268,10 +268,12 @@ SCENARIO("Logging out deletes the device", "[conformance][client-server][auth][l
                 REQUIRE(send(started.runtime, "GET", "/_matrix/client/v3/devices", second_token).status == 401U);
             }
         }
-        WHEN("the second device holds another access token, and one of them logs out")
+        WHEN("the second device logs in again (replacing its token, F-08) and the new token logs out")
         {
             auto const other_token_for_device = login_again(started.runtime, "alice", "DEVICE2");
-            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout", second_token).status == 200U);
+            // Spec MUST: a login with a known device_id invalidates the device's earlier access token.
+            REQUIRE(send(started.runtime, "GET", "/_matrix/client/v3/devices", second_token).status == 401U);
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/logout", other_token_for_device).status == 200U);
 
             THEN("no token of the deleted device still authenticates")
             {
