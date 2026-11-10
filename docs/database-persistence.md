@@ -730,7 +730,7 @@ value. Test fixtures that do not exercise persistence select it through
   through `ingest_pdu_event`, end-to-end through local send/create paths,
   and the source-tree guard, respectively;
   `tests/integration/test_join_room_flow.cpp` covers the federated-join
-  seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
+  seeding end to end; `tests/integration/test_sync_handler_flow.cpp` covers a
   resolution-driven reactivation reaching an incremental `/sync` client.
 - **Token rotation lineage (ADR-0074).** `refresh_tokens.predecessor_hash` and
   `access_tokens.predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`) are

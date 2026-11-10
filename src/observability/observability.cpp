@@ -93,7 +93,7 @@ namespace
         // fixed. That misuse was a handful of call sites passing
         // req.access_token as the actor argument; the fix is those call sites
         // now passing "<unknown>" instead (see audit_events.actor tests in
-        // test_security_issues_460_463.cpp), not blinding this field globally.
+        // test_security_issues_460_463_flow.cpp), not blinding this field globally.
         if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" || lowered == "password" ||
             lowered == "secret" || lowered == "session" || lowered == "token")
         {

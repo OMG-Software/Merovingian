@@ -5942,7 +5942,7 @@ namespace
     // initial sync deliberately reports the full set rather than nothing, so a
     // freshly-logged-in device is prompted to /keys/query its own user's
     // devices straight away; see the initial-sync assertions in
-    // tests/unit/test_sync_handler.cpp.
+    // tests/integration/test_sync_handler_flow.cpp.
     [[nodiscard]] auto build_device_list_arrays(database::PersistentStore const& store, std::string_view user,
                                                 std::uint64_t since_sync_stream_id,
                                                 std::uint64_t& max_observed_stream_id)
