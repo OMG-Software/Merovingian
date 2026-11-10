@@ -8,6 +8,8 @@
 // from. This should be the next_batch token returned by an earlier call to this endpoint." The spec lists no error
 // for a token the server cannot serve, so such a token is served as an initial sync. MSC4186 (sliding sync) answers
 // an unknown `pos` with 400 M_UNKNOWN_POS.
+#include "../support/SqliteCloser.hpp"
+#include "../support/SqliteInsertFault.hpp"
 #include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -29,12 +31,14 @@
 #include "merovingian/sync/ToDevicePosition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -168,6 +172,16 @@ auto send_room_key(merovingian::homeserver::ClientServerRuntime& runtime, std::s
     auto const sent = merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/" + txn, sender_token, body});
     REQUIRE(sent.response.status == 200U);
+}
+
+// Deletes the epoch row from a database at rest, as a database written before the table had a row would be.
+auto delete_stream_token_epoch_row(std::filesystem::path const& path) -> void
+{
+    auto* raw_connection = static_cast<sqlite3*>(nullptr);
+    auto const status = sqlite3_open(path.string().c_str(), &raw_connection);
+    auto const connection = std::unique_ptr<sqlite3, merovingian::tests::SqliteCloser>{raw_connection};
+    REQUIRE(status == SQLITE_OK);
+    REQUIRE(sqlite3_exec(connection.get(), "DELETE FROM stream_token_epoch", nullptr, nullptr, nullptr) == SQLITE_OK);
 }
 
 } // namespace
@@ -482,6 +496,75 @@ SCENARIO("A database keeps its stream token epoch across restarts until --after-
                 REQUIRE_FALSE(restored);
             }
         }
+    }
+}
+
+// ADR-0592: the server never serves tokens without an epoch, and --after-restore reports success only once the
+// replacement is written, or the operator would bring the server up still handing out the backup's epoch.
+SCENARIO("A start or --after-restore whose stream token epoch cannot be written is refused",
+         "[sync][sync-stream][restore]")
+{
+    GIVEN("a SQLite database the server has started on once")
+    {
+        auto const path = unique_path("epoch-fault");
+        remove_database(path);
+        auto const config = sqlite_config(path);
+        auto first = std::uint64_t{0U};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            first = started.runtime.homeserver.database.persistent_store.stream_token_epoch;
+        }
+        REQUIRE(first != 0U);
+
+        WHEN("--after-restore runs while the epoch table refuses writes")
+        {
+            auto restored = true;
+            {
+                auto const fault =
+                    merovingian::tests::SqliteInsertFault{path, "stream_token_epoch", "epoch_write_fault"};
+                restored = merovingian::homeserver::begin_stream_token_epoch_after_restore(config);
+            }
+            auto after = std::uint64_t{0U};
+            {
+                auto started = merovingian::homeserver::start_client_server(config);
+                REQUIRE(started.started);
+                after = started.runtime.homeserver.database.persistent_store.stream_token_epoch;
+            }
+
+            THEN("it is refused and the database keeps the epoch it had")
+            {
+                REQUIRE_FALSE(restored);
+                REQUIRE(after == first);
+            }
+        }
+
+        WHEN("the database holds no epoch and the epoch table refuses writes")
+        {
+            delete_stream_token_epoch_row(path);
+            auto fault = merovingian::tests::SqliteInsertFault{path, "stream_token_epoch", "epoch_write_fault"};
+            auto const server_started = merovingian::homeserver::start_client_server(config).started;
+            auto const restored = merovingian::homeserver::begin_stream_token_epoch_after_restore(config);
+            fault.clear();
+            auto drawn = std::uint64_t{0U};
+            {
+                auto started = merovingian::homeserver::start_client_server(config);
+                REQUIRE(started.started);
+                drawn = started.runtime.homeserver.database.persistent_store.stream_token_epoch;
+            }
+
+            THEN("neither the server nor --after-restore starts")
+            {
+                REQUIRE_FALSE(server_started);
+                REQUIRE_FALSE(restored);
+            }
+
+            THEN("once the table takes writes again, the next start draws an epoch")
+            {
+                REQUIRE(drawn != 0U);
+            }
+        }
+        remove_database(path);
     }
 }
 
