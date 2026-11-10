@@ -379,6 +379,168 @@ SCENARIO("A stored leave relayed as send_knock is refused before it is answered 
 }
 
 // Spec: Matrix Server-Server API v1.19
+// Section: PUT /_matrix/federation/v2/send_leave/{roomId}/{eventId}; PUT /_matrix/federation/v1/send_knock/...
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
+//
+// send_leave: "200: An empty response to indicate the event was accepted into the graph by the receiving
+// homeserver." send_knock: "200: Information about the room to pass along to clients regarding the knock." A
+// sending server that lost the first answer retries; while the event is still the sender's accepted membership it is
+// answered again, and is not stored a second time.
+SCENARIO("A resent leave or knock that is still the sender's membership is answered again and not stored twice",
+         "[federation][conformance][membership][f10]")
+{
+    GIVEN("a public room and a remote user whose accepted leave is their current membership")
+    {
+        auto fixture = Fixture{"!f10leaveretry:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$f10leaveretryjoin:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        REQUIRE(fixture.accept(FederationEndpoint::send_join, join).accepted);
+        auto const leave_id = std::string{"$f10leaveretry:remote.example.org"};
+        auto const leave =
+            fixture.member_event(leave_id, bob, "leave", {join_id}, {genesis.create_id, genesis.pl_id, join_id}, 5);
+        REQUIRE(fixture.accept(FederationEndpoint::send_leave, leave).accepted);
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("their server sends the leave again")
+        {
+            auto const second = fixture.accept(FederationEndpoint::send_leave, leave);
+
+            THEN("it is answered 200 with the stored event, and nothing is stored")
+            {
+                // Spec MUST: 200 when the event "was accepted into the graph".
+                REQUIRE(second.accepted);
+                // Spec MUST: the status of an accepted leave is 200.
+                REQUIRE(second.status == 200U);
+                // Spec: the answer is about the event already in the graph, the one the sender sent.
+                REQUIRE_FALSE(second.signed_event_json.empty());
+                // Spec: a retry does not take the event into the graph a second time.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+
+    GIVEN("a knock room and a remote user whose accepted knock is their current membership")
+    {
+        auto fixture = Fixture{"!f10knockretry:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const rules_id = fixture.room_id() + ":knock-rules";
+        auto rules_content = merovingian::canonicaljson::Object{};
+        rules_content.push_back(merovingian::canonicaljson::make_member(
+            "join_rule", merovingian::canonicaljson::Value{std::string{"knock"}}));
+        auto const rules_json = build_event_json(fixture.room_id(), "m.room.join_rules", std::string{}, local_admin,
+                                                 std::move(rules_content), {genesis.join_rules_id},
+                                                 {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 4, 5);
+        seed_accepted_event(fixture.runtime(), fixture.room_id(), rules_id, "m.room.join_rules", std::string{},
+                            local_admin, rules_json, {genesis.join_rules_id}, 4U);
+        auto const knock_id = std::string{"$f10knockretry:remote.example.org"};
+        auto const knock =
+            fixture.member_event(knock_id, bob, "knock", {rules_id}, {genesis.create_id, genesis.pl_id, rules_id}, 5);
+        auto const first = fixture.accept(FederationEndpoint::send_knock, knock);
+        REQUIRE(first.accepted);
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("their server sends the knock again")
+        {
+            auto const second = fixture.accept(FederationEndpoint::send_knock, knock);
+
+            THEN("it is answered 200 with knock_room_state, and nothing is stored")
+            {
+                // Spec MUST: 200 with "Information about the room to pass along to clients regarding the knock".
+                REQUIRE(second.accepted);
+                // Spec MUST: the status of an accepted knock is 200.
+                REQUIRE(second.status == 200U);
+                // Spec MUST: knock_room_state is part of the answer.
+                REQUIRE_FALSE(second.knock_room_state_json.empty());
+                // Spec: a retry does not take the event into the graph a second time.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}; "Joining Rooms"
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+//
+// "The receiving server MUST apply certain validation before accepting the event. A specific error code is not
+// mandated, but servers SHOULD return M_INVALID_PARAM if: ... The event type is not m.room.member. The membership
+// field inside the event content is not join. The event sender is not a user ID on the origin server. The state_key
+// is not equal to the sender." The acceptor also holds the event to the room and event ID the request names. Each
+// is refused before anything is stored or any stored event is answered again.
+SCENARIO("A membership event that does not match its endpoint, path or origin is refused 400 M_INVALID_PARAM",
+         "[federation][conformance][membership][f10]")
+{
+    GIVEN("a public room with a local member and a well-formed join from a remote user")
+    {
+        auto fixture = Fixture{"!f10agree:local.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$f10agree:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        auto const leave = fixture.member_event(join_id, bob, "leave", {genesis.join_rules_id}, join_auth(genesis), 4);
+
+        struct Case final
+        {
+            std::string name;
+            FederationEndpoint endpoint;
+            std::string event_id;
+            InboundPduEnvelope envelope;
+        };
+        auto cases = std::vector<Case>{};
+        cases.push_back({"a leave sent to send_join", FederationEndpoint::send_join, join_id, leave});
+        cases.push_back({"an endpoint that is not send_*", FederationEndpoint::transaction, join_id, join});
+        auto not_member = join;
+        not_member.event_type = "m.room.topic";
+        cases.push_back({"an event type other than m.room.member", FederationEndpoint::send_join, join_id, not_member});
+        auto other_target = join;
+        other_target.state_key = std::string{"@carol:remote.example.org"};
+        cases.push_back({"a state_key other than the sender", FederationEndpoint::send_join, join_id, other_target});
+        auto no_target = join;
+        no_target.state_key.reset();
+        cases.push_back({"no state_key", FederationEndpoint::send_join, join_id, no_target});
+        auto other_room = join;
+        other_room.room_id = "!elsewhere:local.example.org";
+        cases.push_back({"another room than the path's", FederationEndpoint::send_join, join_id, other_room});
+        cases.push_back(
+            {"another event ID than the path's", FederationEndpoint::send_join, "$other:remote.example.org", join});
+        auto other_origin = join;
+        other_origin.origin = "other.example.org";
+        cases.push_back({"a sender not on the origin", FederationEndpoint::send_join, join_id, other_origin});
+        auto unparsable = join;
+        unparsable.json = "{";
+        cases.push_back({"a body that is not JSON", FederationEndpoint::send_join, join_id, unparsable});
+        auto const before = store_shape(fixture.runtime());
+
+        WHEN("each is sent")
+        {
+            auto results = std::vector<MembershipAcceptResult>{};
+            for (auto const& c : cases)
+            {
+                results.push_back(fixture.runtime().federation.membership_acceptor(c.endpoint, fixture.room_id(),
+                                                                                   c.event_id, c.envelope));
+            }
+
+            THEN("each is refused 400 and nothing is stored")
+            {
+                for (auto i = std::size_t{0U}; i < cases.size(); ++i)
+                {
+                    CAPTURE(cases[i].name);
+                    // Spec SHOULD: the receiving server refuses the event (M_INVALID_PARAM).
+                    REQUIRE_FALSE(results[i].accepted);
+                    // Spec SHOULD: the refusal is a 400.
+                    REQUIRE(results[i].status == 400U);
+                    // Spec MUST NOT: a refused join is answered with no room state.
+                    REQUIRE(results[i].state_json.empty());
+                }
+                // Spec: a refused request leaves nothing behind.
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
 // Section: PUT send_join, send_leave, send_knock; "Rejection"; "Soft failure"
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms
 //

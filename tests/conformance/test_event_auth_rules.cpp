@@ -4296,8 +4296,15 @@ SCENARIO("Rule 9.3 and additional_creators accept historical user IDs and refuse
 
     GIVEN("user IDs whose server name holds a space or a control byte")
     {
-        auto const refused =
-            std::vector<std::string>{"@alice:not a server", R"(@alice:remote\u0001.example)", "@alice:", "@alice"};
+        // Also refused: NUL in the localpart (the one code point besides ':' a historical localpart may not hold), no
+        // leading '@', and more than 255 bytes in all.
+        auto const refused = std::vector<std::string>{"@alice:not a server",
+                                                      R"(@alice:remote\u0001.example)",
+                                                      "@alice:",
+                                                      "@alice",
+                                                      R"(@a\u0000b:remote.example)",
+                                                      "alice:remote.example",
+                                                      "@" + std::string(250U, 'a') + ":remote.example"};
 
         WHEN("each is used as a users key or an additional creator")
         {
