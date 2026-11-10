@@ -51,6 +51,8 @@ struct ClientApiLimits final
     // CSAZ-10: per-user caps on stored end-to-end key material and filters.
     // An upload over a cap is refused with M_TOO_LARGE; nothing is evicted.
     std::uint32_t max_one_time_keys_per_device{1000U};
+    // GHSA-3p9g-gpvx-2cx9 (ADR-0594): fallback keys, so algorithms, held per (user, device).
+    std::uint32_t max_fallback_keys_per_device{16U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
     // Security audit run-1 (ADR-0173): global account-data types per user.

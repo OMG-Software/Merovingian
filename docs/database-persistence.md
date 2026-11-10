@@ -167,6 +167,13 @@ value. Test fixtures that do not exercise persistence select it through
 - One fallback key per algorithm per device: `store_fallback_key` deletes the
   device's other fallback keys of the same algorithm and inserts the new one in a
   single transaction (spec v1.19, `POST /keys/upload`, `fallback_keys`).
+  A key's algorithm is `database::fallback_key_algorithm(key_id)`: the key ID up
+  to and including its first `:` (the whole ID when it has none). Replacement
+  matches that algorithm exactly: a key ID with no `:` replaces only a held key
+  of the same ID, never keys whose IDs merely begin with it, as the former
+  prefix match did. The same function counts the algorithms a device holds for
+  `max_fallback_keys_per_device`
+  ([ADR-0594](adr/0594-fallback-keys-are-capped-per-device-by-algorithm-count-not-by-an-algorithm-allow-list.md)).
 - `key_signatures_for_target` reads key signatures through an in-memory index
   keyed by target user (`PersistentStore::key_signature_target_index`). The index
   is maintained by `store_key_signature`, rebuilt after SQLite and PostgreSQL

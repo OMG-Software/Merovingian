@@ -514,3 +514,4 @@
 * [0591 - A refused send_join, send_leave or send_knock is never stored, and is asked for only in a room with a local member](0591-a-refused-send-join-leave-or-knock-is-never-stored-and-needs-local-interest.md)
 * [0592 - Sync tokens carry a stream token epoch that the restore step replaces](0592-sync-tokens-carry-a-stream-token-epoch-that-a-restore-replaces.md)
 * [0593 - A unit test never builds a homeserver runtime](0593-a-unit-test-never-builds-a-homeserver-runtime.md)
+* [0594 - Fallback keys are capped per device by algorithm count, not by an algorithm allow-list](0594-fallback-keys-are-capped-per-device-by-algorithm-count-not-by-an-algorithm-allow-list.md)

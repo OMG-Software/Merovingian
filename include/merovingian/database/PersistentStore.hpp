@@ -944,6 +944,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool;
 [[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
                                       std::string_view algorithm = {}) -> std::optional<PersistentOneTimeKey>;
+// The algorithm part of a fallback key ID: up to and including its first ':', or the whole ID when it has none. A
+// device holds one fallback key per value of this; store_fallback_key replaces by it and the upload cap counts it
+// (GHSA-3p9g-gpvx-2cx9, ADR-0594), so both must use this one function.
+[[nodiscard]] auto fallback_key_algorithm(std::string_view key_id) noexcept -> std::string_view;
 [[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool;
 [[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
                                      std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;

@@ -1089,6 +1089,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_one_time_keys_per_device");
     }
+    if (current.server().client_api.max_fallback_keys_per_device !=
+        next.server().client_api.max_fallback_keys_per_device)
+    {
+        add_change(plan, "server.client_api.max_fallback_keys_per_device");
+    }
     if (current.server().client_api.max_key_signatures_per_user != next.server().client_api.max_key_signatures_per_user)
     {
         add_change(plan, "server.client_api.max_key_signatures_per_user");

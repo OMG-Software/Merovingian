@@ -738,6 +738,9 @@ server.client_api.to_device_message_ttl_seconds=604800
 server.client_api.max_to_device_message_bytes=65536
 server.client_api.max_to_device_bytes_per_user_device=16777216
 server.client_api.max_one_time_keys_per_device=1000
+# Fallback keys one device may hold (GHSA-3p9g-gpvx-2cx9, ADR-0594). A device keeps one per algorithm, so this
+# bounds the algorithms; replacing a held algorithm's key always succeeds. Range 1..1024.
+server.client_api.max_fallback_keys_per_device=16
 server.client_api.max_key_signatures_per_user=10000
 server.client_api.max_filters_per_user=1000
 server.client_api.max_global_account_data_per_user=1000

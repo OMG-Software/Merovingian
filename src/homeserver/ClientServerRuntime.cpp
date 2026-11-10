@@ -8499,6 +8499,32 @@ namespace
         return held.size() + added.size() > rt.limits.max_one_time_keys_per_device;
     }
 
+    // GHSA-3p9g-gpvx-2cx9 (ADR-0594): true when storing the fallback keys named in `keys` would leave `device_id`
+    // holding more than `max_fallback_keys_per_device`. A device holds one fallback key per algorithm
+    // (database::fallback_key_algorithm), so an algorithm it already holds, or one the request names twice, is a
+    // replacement and adds nothing: a device can always refresh the keys it has. That holds for a device already
+    // over the cap too (one that held more before the cap existed or was lowered): only an upload that adds an
+    // algorithm is judged against the cap.
+    [[nodiscard]] auto fallback_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view user,
+                                                   std::string_view device_id, canonicaljson::Object const& keys)
+        -> bool
+    {
+        auto algorithms = std::set<std::string_view>{};
+        for (auto const& key : rt.homeserver.database.persistent_store.fallback_keys)
+        {
+            if (key.user_id == user && key.device_id == device_id)
+            {
+                algorithms.insert(database::fallback_key_algorithm(key.key_id));
+            }
+        }
+        auto const held = algorithms.size();
+        for (auto const& member : keys)
+        {
+            algorithms.insert(database::fallback_key_algorithm(member.key));
+        }
+        return algorithms.size() > held && algorithms.size() > rt.limits.max_fallback_keys_per_device;
+    }
+
     [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,
                                                 std::string_view device_id, canonicaljson::Object const& object,
                                                 bool fallback) -> bool
@@ -8634,6 +8660,13 @@ namespace
             return err(400U, "M_TOO_LARGE",
                        "one-time key upload would exceed the per-device limit of " +
                            std::to_string(rt.limits.max_one_time_keys_per_device));
+        }
+        if (auto const* fallback_keys = object_member_object(*object, "fallback_keys");
+            fallback_keys != nullptr && fallback_upload_exceeds_cap(rt, user, device_id, *fallback_keys))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "fallback key upload would exceed the per-device limit of " +
+                           std::to_string(rt.limits.max_fallback_keys_per_device) + " algorithms");
         }
         auto const* raw_device_keys = object_member(*object, "device_keys");
         auto const* device_keys_object = object_member_as_object(*object, "device_keys");
@@ -13779,6 +13812,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
     rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
     rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
+    rt.limits.max_fallback_keys_per_device = client_api.max_fallback_keys_per_device;
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
@@ -19242,8 +19276,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "state content must be a JSON object");
                 }
-                // The content checks of m.room.canonical_alias and m.room.encryption (F-19) are made by send_event, which
-                // every local writer of those events reaches.
+                // The content checks of m.room.canonical_alias and m.room.encryption (F-19) are made by send_event,
+                // which every local writer of those events reaches.
                 log_diagnostic("room.state_event.dispatch", {
                                                                 {"actor",      *user,            false},
                                                                 {"room_id",    path->room_id,    false},
