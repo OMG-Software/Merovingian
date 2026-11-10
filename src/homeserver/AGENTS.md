@@ -652,7 +652,8 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `max_one_time_keys_per_device` one-time keys or fallback keys of more than `max_fallback_keys_per_device` algorithms
   (400 `M_TOO_LARGE`; GHSA-3p9g-gpvx-2cx9, ADR-0594). A fallback key's algorithm is `database::fallback_key_algorithm`,
   the function `store_fallback_key` replaces by: never compute it another way, or the cap and the replacement disagree.
-  A held algorithm is a replacement and is never refused. Any new per-device key material gets a cap the same way.
+  A held algorithm is a replacement and is never refused, even on a device above a lowered cap: only a request that adds
+  an algorithm is judged against it. Any new per-device key material gets a cap the same way.
 - `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it
   (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
   500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
