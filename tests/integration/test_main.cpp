@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/NonCapturingXmlReporter.hpp"
-#include "../support/catch_report_arguments.hpp"
+#include "../support/CatchReportArguments.hpp"
 
 #include <catch2/catch_session.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>

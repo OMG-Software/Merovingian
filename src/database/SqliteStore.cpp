@@ -1,0 +1,2088 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/MigrationStep.hpp"
+#include "merovingian/database/PersistentAccountData.hpp"
+#include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
+#include "merovingian/database/PersistentAppserviceTxnCursor.hpp"
+#include "merovingian/database/PersistentAuditEvent.hpp"
+#include "merovingian/database/PersistentDeferredPdu.hpp"
+#include "merovingian/database/PersistentDeviceListChange.hpp"
+#include "merovingian/database/PersistentLoginToken.hpp"
+#include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOpenidToken.hpp"
+#include "merovingian/database/PersistentPresence.hpp"
+#include "merovingian/database/PersistentPusher.hpp"
+#include "merovingian/database/PersistentReceipt.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
+#include "merovingian/database/PersistentStoreOpenResult.hpp"
+#include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/database/PersistentToDeviceMessage.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/SqliteConnectionDeleter.hpp"
+#include "merovingian/database/SqliteWritePool.hpp"
+#include "merovingian/database/Migration.hpp"
+#include "merovingian/database/Schema.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <fcntl.h>
+#include <sqlite3.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <array>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <new>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+namespace merovingian::database
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("sqlite_store", event, fields, severity);
+    }
+
+    struct SqliteStatementDeleter final
+    {
+        auto operator()(sqlite3_stmt* statement) const noexcept -> void
+        {
+            sqlite3_finalize(statement);
+        }
+    };
+
+    using SqliteStatement = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
+
+    struct SqliteBlobDeleter final
+    {
+        auto operator()(sqlite3_blob* blob) const noexcept -> void
+        {
+            std::ignore = sqlite3_blob_close(blob);
+        }
+    };
+    using SqliteBlob = std::unique_ptr<sqlite3_blob, SqliteBlobDeleter>;
+
+    [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool;
+
+    [[nodiscard]] auto parse_invite_state_events_json(std::string_view json) -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* events = std::get_if<canonicaljson::Array>(&parsed.value.storage());
+        if (events == nullptr)
+        {
+            return {};
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(events->size());
+        for (auto const& event : *events)
+        {
+            auto serialized = canonicaljson::serialize_canonical(event);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return {};
+            }
+            result.push_back(std::move(serialized.output));
+        }
+        return result;
+    }
+
+    class SqliteTransaction final
+    {
+    public:
+        explicit SqliteTransaction(sqlite3& connection)
+            : connection_{connection}
+        {
+            active_ = execute_sql(connection_, "BEGIN IMMEDIATE");
+        }
+
+        SqliteTransaction(SqliteTransaction const& other) = delete;
+        auto operator=(SqliteTransaction const& other) -> SqliteTransaction& = delete;
+        SqliteTransaction(SqliteTransaction&& other) noexcept = delete;
+        auto operator=(SqliteTransaction&& other) noexcept -> SqliteTransaction& = delete;
+
+        ~SqliteTransaction()
+        {
+            if (active_)
+            {
+                std::ignore = execute_sql(connection_, "ROLLBACK");
+            }
+        }
+
+        [[nodiscard]] auto active() const noexcept -> bool
+        {
+            return active_;
+        }
+
+        [[nodiscard]] auto commit() noexcept -> bool
+        {
+            if (!active_ || !execute_sql(connection_, "COMMIT"))
+            {
+                return false;
+            }
+            active_ = false;
+            return true;
+        }
+
+    private:
+        sqlite3& connection_;
+        bool active_{false};
+    };
+
+    // A deferred read transaction. Its first read takes SHARED and holds it to
+    // the end, so every statement in between reads one committed state of the
+    // database, and a writer's commit waits for it (ADR-0161). Ending it
+    // releases the lock; a read has nothing to commit.
+    class SqliteReadTransaction final
+    {
+    public:
+        explicit SqliteReadTransaction(sqlite3& connection)
+            : connection_{connection}
+        {
+            active_ = execute_sql(connection_, "BEGIN DEFERRED");
+        }
+
+        SqliteReadTransaction(SqliteReadTransaction const& other) = delete;
+        auto operator=(SqliteReadTransaction const& other) -> SqliteReadTransaction& = delete;
+        SqliteReadTransaction(SqliteReadTransaction&& other) noexcept = delete;
+        auto operator=(SqliteReadTransaction&& other) noexcept -> SqliteReadTransaction& = delete;
+
+        ~SqliteReadTransaction()
+        {
+            if (active_)
+            {
+                std::ignore = execute_sql(connection_, "ROLLBACK");
+            }
+        }
+
+        [[nodiscard]] auto active() const noexcept -> bool
+        {
+            return active_;
+        }
+
+    private:
+        sqlite3& connection_;
+        bool active_{false};
+    };
+
+    [[nodiscard]] auto sqlite_transient_destructor() noexcept -> sqlite3_destructor_type
+    {
+        // SQLite documents -1 as the special destructor value that copies the bound data immediately.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        return reinterpret_cast<sqlite3_destructor_type>(-1);
+    }
+
+    // Create each missing directory with its final mode, never chmod an
+    // operator's existing directory, and never let the database file itself be
+    // a symlink (DB-10).
+    //
+    // Directories that already exist are the operator's and are followed as
+    // the kernel resolves them, symlinks included: refusing a symlinked
+    // ancestor broke ordinary layouts such as /var/lib/merovingian -> /data
+    // (PR #509 review). From the first directory this function creates, every
+    // later component is created here too and opened without following links,
+    // so nothing can be slipped into a directory the server made.
+    [[nodiscard]] auto prepare_sqlite_file(std::string const& path) -> bool
+    {
+        if (path.empty() || path.find('\0') != std::string::npos)
+        {
+            return false;
+        }
+        auto const target = std::filesystem::path{path};
+        auto directory =
+            core::FileDescriptor{::open(target.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+        if (!directory.valid() || target.filename().empty())
+        {
+            return false;
+        }
+        auto creating = false;
+        for (auto const& component : target.parent_path().relative_path())
+        {
+            auto const name = component.string();
+            if (!creating)
+            {
+                auto existing =
+                    core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+                if (existing.valid())
+                {
+                    directory = std::move(existing);
+                    continue;
+                }
+                if (errno != ENOENT)
+                {
+                    return false;
+                }
+            }
+            // A name that appears between the lookup and here (a dangling
+            // symlink, or a race) is refused rather than adopted.
+            if (::mkdirat(directory.get(), name.c_str(), 0700) != 0)
+            {
+                return false;
+            }
+            creating = true;
+            auto next = core::FileDescriptor{
+                ::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
+            if (!next.valid())
+            {
+                return false;
+            }
+            directory = std::move(next);
+        }
+        auto const name = target.filename().string();
+        auto created = core::FileDescriptor{
+            ::openat(directory.get(), name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+        struct stat metadata{};
+        if (created.valid())
+        {
+            // A new file: no connection of this process can hold a lock on it.
+            return ::fstat(created.get(), &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+                   metadata.st_uid == ::geteuid() && ::fchmod(created.get(), 0600) == 0;
+        }
+        if (errno != EEXIST)
+        {
+            return false;
+        }
+        // An existing file is checked by name and never opened here. Closing
+        // any descriptor of it would drop every POSIX lock this process holds
+        // on it, including a write transaction's on another connection, and
+        // another process would then roll its journal back as hot (ADR-0157).
+        if (::fstatat(directory.get(), name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(metadata.st_mode) || metadata.st_uid != ::geteuid())
+        {
+            return false;
+        }
+        if ((metadata.st_mode & 07777) == 0600)
+        {
+            return true;
+        }
+        // Tightening a loose mode needs a descriptor. It happens once, before
+        // the first connection; once tightened, the mode check above returns.
+        auto file = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC)};
+        struct stat opened{};
+        return file.valid() && ::fstat(file.get(), &opened) == 0 && opened.st_dev == metadata.st_dev &&
+               opened.st_ino == metadata.st_ino && ::fchmod(file.get(), 0600) == 0;
+    }
+
+    // `path` with its directory resolved to the real one. SQLITE_OPEN_NOFOLLOW
+    // refuses a symlink anywhere in the name SQLite is given, so SQLite gets the
+    // real directory while the final component is still checked as a link (by
+    // O_NOFOLLOW here and by SQLite). An operator's symlinked data directory
+    // then works (PR #509 review); a symlinked database file still does not.
+    [[nodiscard]] auto resolve_sqlite_directory(std::string const& path) -> std::optional<std::string>
+    try
+    {
+        auto const target = std::filesystem::path{path};
+        if (path.empty() || path.find('\0') != std::string::npos || target.filename().empty())
+        {
+            return std::nullopt;
+        }
+        auto const directory = target.parent_path().empty() ? std::filesystem::current_path()
+                                                            : std::filesystem::canonical(target.parent_path());
+        return (directory / target.filename()).string();
+    }
+    catch (std::filesystem::filesystem_error const&)
+    {
+        return std::nullopt;
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
+
+    // Whether the database header names the rollback journal (file format
+    // bytes 18 and 19 both 1) rather than WAL (2). Read through the descriptor
+    // SQLite opened, before any statement runs: sqlite3_open_v2 opens the file
+    // but starts no read transaction, so nothing has looked for WAL yet.
+    [[nodiscard]] auto sqlite_file_uses_rollback_journal(sqlite3& connection) -> bool
+    {
+        auto* file = static_cast<sqlite3_file*>(nullptr);
+        if (sqlite3_file_control(&connection, "main", SQLITE_FCNTL_FILE_POINTER, &file) != SQLITE_OK ||
+            file == nullptr || file->pMethods == nullptr)
+        {
+            return false;
+        }
+        auto header = std::array<unsigned char, 20>{};
+        return file->pMethods->xRead(file, header.data(), static_cast<int>(header.size()), 0) == SQLITE_OK &&
+               header[18] == 1U && header[19] == 1U;
+    }
+
+    // SQLite looks for a hot journal whenever a connection takes its SHARED
+    // lock: it checks that the journal exists, then that no process holds
+    // RESERVED. A writer that deletes its journal and unlocks between those
+    // two checks makes a live commit look like a crashed one (SQLite ticket
+    // #3883). A read-write connection settles that under EXCLUSIVE; a read-only
+    // one, which the federation worker uses for every room reload, fails at
+    // once with SQLITE_READONLY_ROLLBACK and never reaches the busy handler.
+    // Retry that one result for a bounded time (ADR-0159). A journal that is
+    // really hot outlasts the budget, fails as before, and is rolled back by
+    // main's next read-write connection.
+    constexpr auto false_hot_journal_retry_budget = std::chrono::seconds{2};
+    constexpr auto false_hot_journal_retry_pause = std::chrono::milliseconds{10};
+
+    [[nodiscard]] auto is_false_hot_journal(sqlite3& connection, int result) -> bool
+    {
+        return result != SQLITE_OK && result != SQLITE_ROW && result != SQLITE_DONE &&
+               sqlite3_extended_errcode(&connection) == SQLITE_READONLY_ROLLBACK;
+    }
+
+    // Runs `operation`, which returns an SQLite result code, again while it
+    // fails only because a journal looked hot to a read-only connection.
+    template <typename Operation>
+    [[nodiscard]] auto retry_false_hot_journal(sqlite3& connection, Operation operation) -> int
+    {
+        auto const deadline = std::chrono::steady_clock::now() + false_hot_journal_retry_budget;
+        auto result = operation();
+        while (is_false_hot_journal(connection, result) && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(false_hot_journal_retry_pause);
+            result = operation();
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false)
+        -> std::optional<SqliteConnection>
+    {
+        if (!read_only && !prepare_sqlite_file(path))
+        {
+            return std::nullopt;
+        }
+        auto const resolved = resolve_sqlite_directory(path);
+        if (!resolved.has_value())
+        {
+            return std::nullopt;
+        }
+        struct stat metadata{};
+        if (read_only && (::lstat(resolved->c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)))
+        {
+            return std::nullopt;
+        }
+        auto* raw = static_cast<sqlite3*>(nullptr);
+        auto const mode = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
+        if (sqlite3_open_v2(resolved->c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX, nullptr) !=
+            SQLITE_OK)
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+        // READONLY alone can write a WAL shared-memory index, and immutable=1
+        // would silently ignore WAL, so refuse WAL before anything reads the
+        // database. The header is read through SQLite's own descriptor: one
+        // opened and closed here would drop this process's locks (ADR-0157).
+        if (read_only && !sqlite_file_uses_rollback_journal(*raw))
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+
+        auto constexpr busy_timeout_ms = 5000;
+        if (sqlite3_busy_timeout(raw, busy_timeout_ms) != SQLITE_OK)
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+
+        // Pin durability pragmas explicitly (#447): the stock defaults
+        // (synchronous=FULL, journal_mode=DELETE) are safe, but a deployment
+        // environment that loads global default pragmas could silently
+        // weaken them. Every connection this process opens states its
+        // requirements instead of trusting the environment. `synchronous`
+        // reads the schema, so it takes this connection's first SHARED lock.
+        auto const pin_pragmas = [raw, read_only]() -> int {
+            for (auto const* pragma :
+                 {"PRAGMA secure_delete = ON", "PRAGMA trusted_schema = OFF", "PRAGMA synchronous = FULL"})
+            {
+                if (auto const result = sqlite3_exec(raw, pragma, nullptr, nullptr, nullptr); result != SQLITE_OK)
+                {
+                    return result;
+                }
+            }
+            return read_only ? SQLITE_OK : sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr);
+        };
+        if (retry_false_hot_journal(*raw, pin_pragmas) != SQLITE_OK)
+        {
+            log_diagnostic("connection.rejected",
+                           {
+                               {"read_only",   read_only ? "true" : "false",                  false},
+                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(raw)), false}
+            },
+                           observability::LogEventSeverity::warning);
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+
+        return SqliteConnection{raw};
+    }
+
+    [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool
+    {
+        auto* error = static_cast<char*>(nullptr);
+        auto const ok = sqlite3_exec(&connection, sql.c_str(), nullptr, nullptr, &error) == SQLITE_OK;
+        sqlite3_free(error);
+        return ok;
+    }
+
+    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::optional<std::string>
+    {
+        // Only core tables may be materialised by the bootstrap path; unknown
+        // names fail closed rather than being concatenated into DDL.
+        if (!schema_table_is_core(table.name))
+        {
+            return std::nullopt;
+        }
+
+        auto quoted = quote_sqlite_identifier(table.name);
+        if (!quoted.has_value())
+        {
+            return std::nullopt;
+        }
+
+        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
+    }
+
+    [[nodiscard]] auto prepare(sqlite3& connection, std::string const& sql) -> std::optional<SqliteStatement>
+    {
+        auto* raw = static_cast<sqlite3_stmt*>(nullptr);
+        // Preparing can read the schema, and so take a SHARED lock.
+        if (retry_false_hot_journal(connection, [&connection, &sql, &raw] {
+                return sqlite3_prepare_v2(&connection, sql.c_str(), -1, &raw, nullptr);
+            }) != SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        return SqliteStatement{raw};
+    }
+
+    // The first step of a read takes its SHARED lock, so only it can see a
+    // journal that looks hot; no row has been delivered yet, so rerunning it
+    // is the same read.
+    [[nodiscard]] auto first_step(sqlite3& connection, sqlite3_stmt& statement) -> int
+    {
+        return retry_false_hot_journal(connection, [&statement] {
+            std::ignore = sqlite3_reset(&statement);
+            return sqlite3_step(&statement);
+        });
+    }
+
+    [[nodiscard]] auto column_text(sqlite3_stmt& statement, int column) -> std::string
+    {
+        auto const* value = sqlite3_column_text(&statement, column);
+        if (value == nullptr)
+        {
+            return {};
+        }
+        // Length-based construction (#448): media blob bytes (and other
+        // binary payloads) may legitimately contain NUL, which a C-string
+        // constructor would silently truncate on reload.
+        auto const size = sqlite3_column_bytes(&statement, column);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        return std::string{reinterpret_cast<char const*>(value), static_cast<std::size_t>(size)};
+    }
+
+    [[nodiscard]] auto text_is_true(std::string_view value) noexcept -> bool
+    {
+        return value == "true";
+    }
+
+    [[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::uint64_t
+    {
+        auto result = std::uint64_t{0U};
+        for (auto const character : value)
+        {
+            if (character < '0' || character > '9')
+            {
+                return 0U;
+            }
+            result = (result * 10U) + static_cast<std::uint64_t>(character - '0');
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto load_table_names(sqlite3& connection) -> std::vector<std::string>
+    {
+        auto statement = prepare(connection, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name");
+        auto tables = std::vector<std::string>{};
+        if (!statement.has_value())
+        {
+            return tables;
+        }
+        for (auto step = first_step(connection, *statement->get()); step == SQLITE_ROW;
+             step = sqlite3_step(statement->get()))
+        {
+            tables.push_back(column_text(*statement->get(), 0));
+        }
+        return tables;
+    }
+
+    [[nodiscard]] auto direction_from_text(std::string_view value) noexcept -> MigrationDirection
+    {
+        return value == "downgrade" ? MigrationDirection::downgrade : MigrationDirection::upgrade;
+    }
+
+    [[nodiscard]] auto load_schema_state(sqlite3& connection) -> SchemaState
+    {
+        auto state = SchemaState{};
+        state.tables = load_table_names(connection);
+        // `version` is TEXT: ORDER BY it alone puts '10' before '9'.
+        auto statement = prepare(
+            connection, "SELECT version, name, direction FROM schema_migrations ORDER BY CAST(version AS INTEGER)");
+        if (!statement.has_value())
+        {
+            return state;
+        }
+        for (auto step = first_step(connection, *statement->get()); step == SQLITE_ROW;
+             step = sqlite3_step(statement->get()))
+        {
+            auto const version = static_cast<std::uint32_t>(parse_u64(column_text(*statement->get(), 0)));
+            state.applied_migrations.push_back(
+                {version, column_text(*statement->get(), 1), direction_from_text(column_text(*statement->get(), 2))});
+            if (version > state.version)
+            {
+                state.version = version;
+            }
+        }
+        return state;
+    }
+
+    auto initialize_current_schema(sqlite3& connection) -> bool
+    {
+        // Wrap the entire bootstrap in one transaction so that a failure
+        // after any CREATE TABLE leaves no partial schema or ledger row.
+        auto transaction = SqliteTransaction{connection};
+        if (!transaction.active())
+        {
+            return false;
+        }
+
+        for (auto const& table : initial_schema_definitions())
+        {
+            auto const sql = create_table_if_missing_sql(table);
+            if (!sql.has_value() || !execute_sql(connection, *sql))
+            {
+                return false;
+            }
+        }
+        for (auto const& index : initial_schema_indexes())
+        {
+            auto const sql = create_index_if_missing_sql(index);
+            if (!sql.has_value() || !execute_sql(connection, *sql))
+            {
+                return false;
+            }
+        }
+
+        // Bootstrap builds exactly what the v1 migration builds and records only
+        // its row. Runtime startup then applies any later numbered migration on
+        // top, as it would for a database a previous release left at v1.
+        if (!execute_sql(connection,
+                         "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')"))
+        {
+            return false;
+        }
+
+        return transaction.commit();
+    }
+
+    // True when `step` is already recorded in the ledger in the same direction.
+    // Called inside the step's own BEGIN IMMEDIATE transaction so the answer
+    // cannot change between the check and the apply.
+    [[nodiscard]] auto migration_step_already_applied(sqlite3& connection, MigrationStep const& step) -> bool
+    {
+        auto statement = prepare(connection, "SELECT direction FROM schema_migrations WHERE version = ?1");
+        if (!statement.has_value())
+        {
+            return false;
+        }
+        auto& handle = *statement->get();
+        auto const version_text = std::to_string(step.version);
+        if (sqlite3_bind_text(&handle, 1, version_text.c_str(), static_cast<int>(version_text.size()),
+                              sqlite_transient_destructor()) != SQLITE_OK)
+        {
+            return false;
+        }
+        if (sqlite3_step(&handle) != SQLITE_ROW)
+        {
+            return false;
+        }
+        auto const* recorded = sqlite3_column_text(&handle, 0);
+        if (recorded == nullptr)
+        {
+            return false;
+        }
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        return std::string_view{reinterpret_cast<char const*>(recorded)} == migration_direction_name(step.direction);
+    }
+
+    // Migrates `state` forward to `target_version`: current_schema_version()
+    // on open, an older version for migrate_sqlite_schema_to.
+    [[nodiscard]] auto apply_pending_migrations(sqlite3& connection, SchemaState state, std::uint32_t target_version)
+        -> std::optional<SchemaState>
+    {
+        // Never let a schema already past the target turn into a downgrade plan.
+        if (state.version > target_version)
+        {
+            return std::nullopt;
+        }
+        auto const plan = migration_plan_between(state.version, target_version);
+        auto const validation = migration_plan_is_valid(plan);
+        if (!validation.valid)
+        {
+            return std::nullopt;
+        }
+        for (auto const& step : plan.steps)
+        {
+            // Each migration step is atomic: all of its statements plus the
+            // ledger-row insert succeed together or are rolled back together.
+            auto transaction = SqliteTransaction{connection};
+            if (!transaction.active())
+            {
+                return std::nullopt;
+            }
+
+            // M-10: re-read the ledger *inside* the step transaction before
+            // applying it. Each step commits separately, so a plan computed
+            // from a schema state read moments earlier can race a second
+            // process that already applied this step -- the DDL would then
+            // fail ("table already exists") and leave the schema stranded
+            // part-way. BEGIN IMMEDIATE above serialises the check and the
+            // apply, so the loser of the race observes the winner's row and
+            // skips the step instead of re-running it. This is what makes the
+            // runner idempotent under concurrency, which migrations/AGENTS.md
+            // requires. (PostgreSQL takes a plan-wide advisory lock instead;
+            // SQLite has no cross-process lock that can span the separate
+            // per-step transactions without deadlocking against them.)
+            if (migration_step_already_applied(connection, step))
+            {
+                if (!transaction.commit())
+                {
+                    return std::nullopt;
+                }
+                continue;
+            }
+
+            for (auto const& statement : step.statements)
+            {
+                if (!execute_sql(connection, statement.sql))
+                {
+                    return std::nullopt;
+                }
+            }
+            // C3: switch the schema_migrations INSERT to a bound
+            // PreparedStatement instead of string concatenation. The
+            // values pass through SQLite's parameter binding (which
+            // handles quoting, NUL bytes, and binary safely), matching
+            // the boundary used by the rest of the database layer.
+            auto record_statement = prepare(connection, "INSERT OR IGNORE INTO schema_migrations VALUES (?1, ?2, ?3)");
+            if (!record_statement.has_value())
+            {
+                return std::nullopt;
+            }
+            auto& record_handle = *record_statement->get();
+            auto const bind_result =
+                sqlite3_bind_int64(&record_handle, 1, static_cast<sqlite3_int64>(step.version)) == SQLITE_OK &&
+                sqlite3_bind_text(&record_handle, 2, step.name.c_str(), static_cast<int>(step.name.size()),
+                                  sqlite_transient_destructor()) == SQLITE_OK &&
+                sqlite3_bind_text(&record_handle, 3, migration_direction_name(step.direction).data(),
+                                  static_cast<int>(migration_direction_name(step.direction).size()),
+                                  sqlite_transient_destructor()) == SQLITE_OK;
+            if (!bind_result)
+            {
+                return std::nullopt;
+            }
+            if (sqlite3_step(&record_handle) != SQLITE_DONE)
+            {
+                return std::nullopt;
+            }
+            sqlite3_reset(&record_handle);
+
+            if (!transaction.commit())
+            {
+                return std::nullopt;
+            }
+        }
+        auto applied = apply_migration_plan(std::move(state), plan);
+        if (!applied.ok)
+        {
+            return std::nullopt;
+        }
+        return std::move(applied.state);
+    }
+
+    template <typename RowLoader>
+    auto load_rows(sqlite3& connection, std::string const& sql, RowLoader load_row) -> bool
+    {
+        auto statement = prepare(connection, sql);
+        if (!statement.has_value())
+        {
+            return false;
+        }
+        auto step = first_step(connection, *statement->get());
+        for (; step == SQLITE_ROW; step = sqlite3_step(statement->get()))
+        {
+            load_row(*statement->get());
+        }
+        return step == SQLITE_DONE;
+    }
+
+    // Events go to `hydrated_events` rather than `store.events`, for the caller to index in one pass
+    // (ADR-0215): the SELECT has no ORDER BY, so adding them one at a time could shift the
+    // stream-order index for every row.
+    auto load_persistent_rows(sqlite3& connection, PersistentStore& store,
+                              std::vector<PersistentEvent>& hydrated_events) -> bool
+    {
+        // Tables load in dependency order and the chain short-circuits: the first failed SELECT
+        // fails the whole load, so a partially read store is never served.
+        return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
+                         [&store](sqlite3_stmt& row) {
+                             store.users.push_back(
+                                 {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2)),
+                                  text_is_true(column_text(row, 3)), text_is_true(column_text(row, 4)),
+                                  text_is_true(column_text(row, 5))});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, display_name FROM devices",
+                         [&store](sqlite3_stmt& row) {
+                             store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               // Only stored token hashes are read back; raw tokens never reach SQLite.
+               load_rows(connection,
+                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_refresh_hash "
+                         "FROM access_tokens",
+                         [&store](sqlite3_stmt& row) {
+                             std::ignore = store.access_tokens.insert(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                  text_is_true(column_text(row, 3)), parse_expires_at(column_text(row, 4)),
+                                  column_text(row, 5)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash, issued_at_ms "
+                         "FROM refresh_tokens",
+                         [&store](sqlite3_stmt& row) {
+                             std::ignore = store.refresh_tokens.insert(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                  text_is_true(column_text(row, 3)), parse_expires_at(column_text(row, 4)),
+                                  column_text(row, 5), static_cast<std::int64_t>(parse_u64(column_text(row, 6)))});
+                         }) &&
+               load_rows(connection,
+                         "SELECT server_name, key_id, public_key, valid_until_ts, secret_key, expired_ts FROM "
+                         "server_signing_keys",
+                         [&store](sqlite3_stmt& row) {
+                             auto key = PersistentServerSigningKey{column_text(row, 0), column_text(row, 1),
+                                                                   column_text(row, 2), parse_u64(column_text(row, 3)),
+                                                                   column_text(row, 4)};
+                             key.expired_ts = parse_u64(column_text(row, 5));
+                             store.server_signing_keys.push_back(std::move(key));
+                         }) &&
+               load_rows(connection,
+                         "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
+                         "federation_destinations",
+                         [&store](sqlite3_stmt& row) {
+                             store.federation_destinations.push_back(
+                                 {column_text(row, 0), column_text(row, 1), parse_u64(column_text(row, 2)),
+                                  parse_u64(column_text(row, 3)),
+                                  static_cast<std::uint32_t>(parse_u64(column_text(row, 4)))});
+                         }) &&
+               load_rows(connection,
+                         "SELECT transaction_id, server_name, method, target, origin, origin_server_ts, body, "
+                         "retry_count, next_retry_ts FROM federation_transactions",
+                         [&store](sqlite3_stmt& row) {
+                             store.federation_transactions.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
+                                  column_text(row, 4), column_text(row, 5), column_text(row, 6),
+                                  static_cast<std::uint32_t>(parse_u64(column_text(row, 7))),
+                                  parse_u64(column_text(row, 8))});
+                         }) &&
+               // Rooms and membership load before events so event rows can be attributed to a known room.
+               load_rows(connection, "SELECT room_id, creator_user_id, directory_public FROM rooms",
+                         [&store](sqlite3_stmt& row) {
+                             store.rooms.push_back(
+                                 {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2))});
+                         }) &&
+               load_rows(connection, "SELECT room_id, user_id, membership, stream_ordering FROM membership",
+                         [&store](sqlite3_stmt& row) {
+                             store.memberships.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                          parse_u64(column_text(row, 3))});
+                         }) &&
+               load_rows(connection,
+                         "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
+                         "stream_ordering, resident_server FROM invites",
+                         [&store](sqlite3_stmt& row) {
+                             store.invites.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                      column_text(row, 3), column_text(row, 4),
+                                                      parse_invite_state_events_json(column_text(row, 5)),
+                                                      parse_u64(column_text(row, 6)), column_text(row, 7)});
+                         }) &&
+               // Events go to the caller's hydrated_events vector so the stream-order index is built in one pass
+               // (ADR-0215).
+               load_rows(connection,
+                         "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events",
+                         [&hydrated_events](sqlite3_stmt& row) {
+                             auto event = PersistentEvent{column_text(row, 0),
+                                                          column_text(row, 1),
+                                                          column_text(row, 2),
+                                                          column_text(row, 3),
+                                                          parse_u64(column_text(row, 4)),
+                                                          parse_u64(column_text(row, 5))};
+                             event.status = column_text(row, 6);
+                             hydrated_events.push_back(std::move(event));
+                         }) &&
+               // The event graph tables (prev edges, auth links, signatures) rebuild what auth checks
+               // and state resolution traverse; they are keyed by event id, not by load order.
+               load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, auth_event_id FROM event_auth",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, server_name, key_id, signature FROM event_signatures",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_signatures.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               // Current state and the recorded state transitions are restored as stored,
+               // not recomputed from the events at start-up.
+               load_rows(connection, "SELECT room_id, event_type, state_key, event_id FROM current_state",
+                         [&store](sqlite3_stmt& row) {
+                             store.state.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM state_transitions",
+                         [&store](sqlite3_stmt& row) {
+                             store.state_transitions.push_back({column_text(row, 0), column_text(row, 1),
+                                                                column_text(row, 2), column_text(row, 3),
+                                                                column_text(row, 4)});
+                         }) &&
+               // End-to-end key material: device, one-time, fallback and cross-signing keys, then signatures.
+               load_rows(connection, "SELECT user_id, device_id, json FROM device_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.device_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, key_id, json FROM one_time_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.one_time_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, key_id, json FROM fallback_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.fallback_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, key_type, json FROM cross_signing_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.cross_signing_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_signatures.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               // Key backup versions, their per-user counters and the backed-up sessions.
+               // The counter keeps version numbers monotonic after a version is deleted.
+               load_rows(connection, "SELECT user_id, version, json FROM key_backup_versions",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_versions.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, last_version FROM key_backup_version_counters",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_version_high_water[column_text(row, 0)] = parse_u64(column_text(row, 1));
+                         }) &&
+               load_rows(connection, "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_sessions.push_back({column_text(row, 0), column_text(row, 1),
+                                                                  column_text(row, 2), column_text(row, 3),
+                                                                  column_text(row, 4)});
+                         }) &&
+               // Media metadata, pending uploads, stored blobs and the remote media cache.
+               load_rows(
+                   connection,
+                   "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
+                   "removed, legacy_endpoint_visible, upload_name FROM media",
+                   [&store](sqlite3_stmt& row) {
+                       store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                    parse_u64(column_text(row, 3)), column_text(row, 4),
+                                                    column_text(row, 5), text_is_true(column_text(row, 6)),
+                                                    text_is_true(column_text(row, 7)),
+                                                    text_is_true(column_text(row, 8)), column_text(row, 9)});
+                   }) &&
+               // Migration 026 (ADR-0212): reserved mxc:// URIs awaiting content.
+               load_rows(connection,
+                         "SELECT media_id, owner_user_id, created_at_ms, expires_at_ms FROM media_pending_uploads",
+                         [&store](sqlite3_stmt& row) {
+                             store.pending_media_uploads.push_back({column_text(row, 0), column_text(row, 1),
+                                                                    parse_u64(column_text(row, 2)),
+                                                                    parse_u64(column_text(row, 3))});
+                         }) &&
+               // ADR-0119: metadata only. The bytes are read per request
+               // (read_media_blob), so memory does not grow with stored media.
+               load_rows(connection,
+                         "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs",
+                         [&store](sqlite3_stmt& row) {
+                             store.media_blobs.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                          parse_u64(column_text(row, 3)), std::string{},
+                                                          parse_u64(column_text(row, 4))});
+                         }) &&
+               load_rows(connection,
+                         "SELECT server_name, media_id, content_type, size_bytes, quarantined, local_media_id, "
+                         "fetched_at_ms FROM remote_media",
+                         [&store](sqlite3_stmt& row) {
+                             store.remote_media.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), parse_u64(column_text(row, 3)),
+                                                           text_is_true(column_text(row, 4)), column_text(row, 5),
+                                                           parse_u64(column_text(row, 6))});
+                         }) &&
+               // AUTH-1: stream rows in insertion order into the bounded in-memory
+               // window, so hydrating a long-lived audit_log keeps only the newest rows.
+               // Operator-facing records: the audit log, admin actions and trust-and-safety policy rules.
+               load_rows(connection,
+                         "SELECT category, event_type, actor, target, reason, created_at_ms FROM audit_log ORDER BY "
+                         "rowid",
+                         [&store](sqlite3_stmt& row) {
+                             remember_audit_event(store, {column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                          column_text(row, 3), column_text(row, 4),
+                                                          parse_u64(column_text(row, 5))});
+                         }) &&
+               load_rows(connection, "SELECT admin_user_id, action, target FROM admin_actions",
+                         [&store](sqlite3_stmt& row) {
+                             store.admin_actions.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER BY rule_id",
+                         [&store](sqlite3_stmt& row) {
+                             store.policy_rules.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), column_text(row, 3),
+                                                           column_text(row, 4)});
+                         }) &&
+               // Global and per-room account data come back ordered by stream id so the in-memory order matches the
+               // stream.
+               load_rows(connection, "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentAccountData{};
+                             entry.user_id = column_text(row, 0);
+                             entry.event_type = column_text(row, 1);
+                             entry.content_json = column_text(row, 2);
+                             entry.stream_id = parse_u64(column_text(row, 3));
+                             store.account_data.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_type, stream_id, json FROM room_account_data ORDER "
+                         "BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentAccountData{};
+                             entry.user_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.event_type = column_text(row, 2);
+                             entry.stream_id = parse_u64(column_text(row, 3));
+                             entry.content_json = column_text(row, 4);
+                             store.account_data.push_back(std::move(entry));
+                         }) &&
+               // Queued to-device messages and presence survive restarts until delivered or expired.
+               load_rows(connection,
+                         "SELECT stream_id, sender_user_id, target_user_id, target_device_id, message_type, "
+                         "content, created_at_ms FROM to_device_messages ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentToDeviceMessage{};
+                             entry.stream_id = parse_u64(column_text(row, 0));
+                             entry.sender_user_id = column_text(row, 1);
+                             entry.target_user_id = column_text(row, 2);
+                             entry.target_device_id = column_text(row, 3);
+                             entry.message_type = column_text(row, 4);
+                             entry.content_json = column_text(row, 5);
+                             entry.created_at_ms = parse_u64(column_text(row, 6));
+                             store.to_device_messages.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                         "device_list_changes ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentDeviceListChange{};
+                             entry.stream_id = parse_u64(column_text(row, 0));
+                             entry.observer_user_id = column_text(row, 1);
+                             entry.subject_user_id = column_text(row, 2);
+                             entry.change_type = column_text(row, 3);
+                             store.device_list_changes.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, stream_id, presence, status_msg, last_active_ago, currently_active "
+                         "FROM presence_state ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentPresence{};
+                             entry.user_id = column_text(row, 0);
+                             entry.stream_id = parse_u64(column_text(row, 1));
+                             entry.presence = column_text(row, 2);
+                             entry.status_msg = column_text(row, 3);
+                             entry.last_active_ago = static_cast<std::int64_t>(parse_u64(column_text(row, 4)));
+                             entry.currently_active = text_is_true(column_text(row, 5));
+                             store.presence_states.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, filter_id, json FROM filters",
+                         [&store](sqlite3_stmt& row) {
+                             store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               // Profiles, aliases and filters are plain per-user or per-room lookups with no cross references.
+               load_rows(connection, "SELECT user_id, displayname, avatar_url, fields_json FROM profiles",
+                         [&store](sqlite3_stmt& row) {
+                             store.profiles.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias",
+                         [&store](sqlite3_stmt& row) {
+                             store.room_aliases.insert({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_type, txn_id, event_id, device_id, created_at_ms FROM "
+                         "client_txn_ids",
+                         [&store](sqlite3_stmt& row) {
+                             store.client_txn_ids.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
+                                  column_text(row, 4), column_text(row, 5), parse_u64(column_text(row, 6))});
+                         }) &&
+               // Push configuration: pushers, then the stored notification rows.
+               load_rows(connection,
+                         "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                         "profile_tag, lang, data_url, data_format, data_extra_json, device_id FROM pushers ORDER BY "
+                         "user_id, "
+                         "app_id, pushkey",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentPusher entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.app_id = column_text(row, 1);
+                             entry.pushkey = column_text(row, 2);
+                             entry.kind = column_text(row, 3);
+                             entry.app_display_name = column_text(row, 4);
+                             entry.device_display_name = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.lang = column_text(row, 7);
+                             entry.data_url = column_text(row, 8);
+                             entry.data_format = column_text(row, 9);
+                             entry.data_extra_json = column_text(row, 10);
+                             entry.device_id = column_text(row, 11);
+                             store.pushers.push_back(std::move(entry));
+                         }) &&
+               // The stream watermarks restore the counters so a new sync token
+               // never reuses a position handed out before the restart.
+               load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
+                         [&store](sqlite3_stmt& row) {
+                             store.next_sync_stream_id = parse_u64(column_text(row, 0));
+                         }) &&
+               load_rows(connection, "SELECT watermark FROM event_stream_watermark",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_stream_watermark = parse_u64(column_text(row, 0));
+                         }) &&
+               // ADR-0592: the epoch every sync token is issued in.
+               load_rows(connection, "SELECT epoch FROM stream_token_epoch",
+                         [&store](sqlite3_stmt& row) {
+                             store.stream_token_epoch = parse_u64(column_text(row, 0));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, medium, address, country, id_server, added_at_ms, validated_at_ms, bound, "
+                         "client_secret, sid FROM account_threepids ORDER BY user_id, medium, address",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentThreePidBinding entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.medium = column_text(row, 1);
+                             entry.address = column_text(row, 2);
+                             auto const country = column_text(row, 3);
+                             entry.country = country.empty() ? std::nullopt : std::optional<std::string>{country};
+                             auto const id_server = column_text(row, 4);
+                             entry.id_server = id_server.empty() ? std::nullopt : std::optional<std::string>{id_server};
+                             entry.added_at_ms = parse_u64(column_text(row, 5));
+                             entry.validated_at_ms = parse_u64(column_text(row, 6));
+                             entry.bound = text_is_true(column_text(row, 7));
+                             auto const client_secret = column_text(row, 8);
+                             entry.client_secret =
+                                 client_secret.empty() ? std::nullopt : std::optional<std::string>{client_secret};
+                             auto const sid = column_text(row, 9);
+                             entry.sid = sid.empty() ? std::nullopt : std::optional<std::string>{sid};
+                             store.account_threepids.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, highlight "
+                         "FROM notifications ORDER BY user_id, stream_ordering",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentNotification entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.event_id = column_text(row, 2);
+                             entry.stream_ordering = parse_u64(column_text(row, 3));
+                             entry.ts = parse_u64(column_text(row, 4));
+                             entry.actions = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.highlight = text_is_true(column_text(row, 7));
+                             store.notifications.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, token_hash, expires_at FROM openid_tokens ORDER BY user_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentOpenidToken entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.token_hash = column_text(row, 1);
+                             entry.expires_at = std::chrono::system_clock::time_point{
+                                 std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
+                             store.openid_tokens.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, token_hash, expires_at, used FROM login_tokens ORDER BY user_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentLoginToken entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.token_hash = column_text(row, 1);
+                             entry.expires_at = std::chrono::system_clock::time_point{
+                                 std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
+                             entry.used = text_is_true(column_text(row, 3));
+                             store.login_tokens.push_back(std::move(entry));
+                         }) &&
+               // Application service delivery state: transaction cursors, the outbox and the directory mapping.
+               load_rows(connection,
+                         "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+                         "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentAppserviceTxnCursor entry{};
+                             entry.appservice_id = column_text(row, 0);
+                             entry.next_txn_id = parse_u64(column_text(row, 1));
+                             entry.delivered_stream_ordering = parse_u64(column_text(row, 2));
+                             entry.pending_txn_id = parse_u64(column_text(row, 3));
+                             entry.pending_stream_ordering = parse_u64(column_text(row, 4));
+                             store.appservice_txn_cursors.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT appservice_id, stream_ordering, event_id FROM appservice_outbox",
+                         [&store](sqlite3_stmt& row) {
+                             store.appservice_outbox.push_back(
+                                 {column_text(row, 0), parse_u64(column_text(row, 1)), column_text(row, 2)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT event_id, room_id, origin, pdu_json, received_at_ms, attempts FROM deferred_pdus "
+                         "ORDER BY received_at_ms, event_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentDeferredPdu entry{};
+                             entry.event_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.origin = column_text(row, 2);
+                             entry.pdu_json = column_text(row, 3);
+                             entry.received_at_ms = static_cast<std::int64_t>(parse_u64(column_text(row, 4)));
+                             entry.attempts = static_cast<std::uint32_t>(parse_u64(column_text(row, 5)));
+                             store.deferred_pdus.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id FROM receipts",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentReceipt entry{};
+                             entry.room_id = column_text(row, 0);
+                             entry.receipt_type = column_text(row, 1);
+                             entry.user_id = column_text(row, 2);
+                             entry.thread_id = column_text(row, 3);
+                             entry.event_id = column_text(row, 4);
+                             entry.ts = parse_u64(column_text(row, 5));
+                             entry.stream_id = parse_u64(column_text(row, 6));
+                             store.receipts.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT appservice_id, network_id, room_id FROM appservice_directory",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentAppserviceDirectoryEntry entry{};
+                             entry.appservice_id = column_text(row, 0);
+                             entry.network_id = column_text(row, 1);
+                             entry.room_id = column_text(row, 2);
+                             store.appservice_directory.push_back(std::move(entry));
+                         }) &&
+               // State groups, their member rows and the per-event assignments restore
+               // the compressed state-group store and the forward extremities.
+               load_rows(connection,
+                         "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentStateGroup entry{};
+                             entry.state_group_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             auto const parent_text = column_text(row, 2);
+                             entry.parent_state_group_id =
+                                 parent_text.empty() ? std::nullopt : std::optional<std::string>{parent_text};
+                             entry.delta_depth = static_cast<std::uint32_t>(parse_u64(column_text(row, 3)));
+                             std::ignore = store.state_groups.insert(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT state_group_id, event_type, state_key, event_id FROM state_group_state",
+                         [&store](sqlite3_stmt& row) {
+                             store.state_group_state.insert(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, state_group_id FROM event_state_groups",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_state_groups.assign(column_text(row, 0), column_text(row, 1));
+                         }) &&
+               load_rows(connection, "SELECT room_id, event_id FROM forward_extremities", [&store](sqlite3_stmt& row) {
+                   store.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
+               });
+    }
+
+    [[nodiscard]] auto bind_text_params(sqlite3_stmt& statement, std::vector<std::string> const& params) -> bool
+    {
+        for (auto i = std::size_t{0U}; i < params.size(); ++i)
+        {
+            if (params[i].size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                return false;
+            }
+            if (sqlite3_bind_text(&statement, static_cast<int>(i + 1U), params[i].c_str(),
+                                  static_cast<int>(params[i].size()), sqlite_transient_destructor()) != SQLITE_OK)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Like load_rows, but binds `params` positionally ($1, $2, ...) before
+    // stepping. Used by the room-scoped reload queries below so room_id and
+    // event_id values are always bound, never interpolated into SQL text.
+    template <typename RowLoader>
+    [[nodiscard]] auto load_rows_bound(sqlite3& connection, std::string const& sql,
+                                       std::vector<std::string> const& params, RowLoader load_row) -> bool
+    {
+        auto statement = prepare(connection, sql);
+        if (!statement.has_value() || !bind_text_params(*statement->get(), params))
+        {
+            return false;
+        }
+        auto step = first_step(connection, *statement->get());
+        for (; step == SQLITE_ROW; step = sqlite3_step(statement->get()))
+        {
+            load_row(*statement->get());
+        }
+        return step == SQLITE_DONE;
+    }
+
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id,
+                                               detail::RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        auto const params = std::vector<std::string>{std::string{room_id}};
+        // Reads one table's rows of this room, then tells the hook. False when the read failed: the
+        // caller then returns no snapshot, so no later table is read. Not generic, so the eleven
+        // reads share one instantiation, and the SQL text and parameters are built here, not at
+        // each call.
+        auto const read_table = [&connection, &params,
+                                 &after_table](std::string_view table, std::string_view sql,
+                                               std::function<void(sqlite3_stmt&)> const& load_row) {
+            if (!load_rows_bound(connection, std::string{sql}, params, load_row))
+            {
+                return false;
+            }
+            if (after_table)
+            {
+                after_table(table);
+            }
+            return true;
+        };
+        auto snapshot = RoomReloadSnapshot{};
+
+        if (!read_table("rooms", "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& room = snapshot.room.emplace();
+                            room.room_id = column_text(row, 0);
+                            room.creator_user_id = column_text(row, 1);
+                            room.directory_public = text_is_true(column_text(row, 2));
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("membership",
+                        "SELECT room_id, user_id, membership, stream_ordering FROM membership WHERE room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& membership = snapshot.memberships.emplace_back();
+                            membership.room_id = column_text(row, 0);
+                            membership.user_id = column_text(row, 1);
+                            membership.membership = column_text(row, 2);
+                            membership.stream_ordering = parse_u64(column_text(row, 3));
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("invites",
+                        "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                        "invite_state_json, stream_ordering, resident_server FROM invites WHERE room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& invite = snapshot.invites.emplace_back();
+                            invite.room_id = column_text(row, 0);
+                            invite.user_id = column_text(row, 1);
+                            invite.sender_user_id = column_text(row, 2);
+                            invite.event_id = column_text(row, 3);
+                            invite.signed_event_json = column_text(row, 4);
+                            invite.invite_state_events_json = parse_invite_state_events_json(column_text(row, 5));
+                            invite.stream_ordering = parse_u64(column_text(row, 6));
+                            invite.resident_server = column_text(row, 7);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("events",
+                        "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
+                        "FROM events WHERE room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& event = snapshot.events.emplace_back();
+                            event.event_id = column_text(row, 0);
+                            event.room_id = column_text(row, 1);
+                            event.sender_user_id = column_text(row, 2);
+                            event.json = column_text(row, 3);
+                            event.depth = parse_u64(column_text(row, 4));
+                            event.stream_ordering = parse_u64(column_text(row, 5));
+                            event.status = column_text(row, 6);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("current_state",
+                        "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE "
+                        "room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& entry = snapshot.state.emplace_back();
+                            entry.room_id = column_text(row, 0);
+                            entry.event_type = column_text(row, 1);
+                            entry.state_key = column_text(row, 2);
+                            entry.event_id = column_text(row, 3);
+                        }))
+        {
+            return std::nullopt;
+        }
+        // The room's state groups, their own entries and its events' group mappings (ADR-0064), read in
+        // the same transaction as the rows above. Federation reads judge an event on the group recorded
+        // for it and treat one without a group as invisible, so these must travel with the events.
+        if (!read_table("state_groups",
+                        "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups "
+                        "WHERE room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            PersistentStateGroup group{};
+                            group.state_group_id = column_text(row, 0);
+                            group.room_id = column_text(row, 1);
+                            auto const parent_text = column_text(row, 2);
+                            group.parent_state_group_id =
+                                parent_text.empty() ? std::nullopt : std::optional<std::string>{parent_text};
+                            group.delta_depth = static_cast<std::uint32_t>(parse_u64(column_text(row, 3)));
+                            snapshot.state_groups.push_back(std::move(group));
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("state_group_state",
+                        "SELECT s.state_group_id, s.event_type, s.state_key, s.event_id FROM state_group_state s "
+                        "INNER JOIN state_groups g ON g.state_group_id = s.state_group_id WHERE g.room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& entry = snapshot.state_group_state.emplace_back();
+                            entry.state_group_id = column_text(row, 0);
+                            entry.event_type = column_text(row, 1);
+                            entry.state_key = column_text(row, 2);
+                            entry.event_id = column_text(row, 3);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("event_state_groups",
+                        "SELECT m.event_id, m.state_group_id FROM event_state_groups m "
+                        "INNER JOIN events ev ON ev.event_id = m.event_id WHERE ev.room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& mapping = snapshot.event_state_groups.emplace_back();
+                            mapping.event_id = column_text(row, 0);
+                            mapping.state_group_id = column_text(row, 1);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (snapshot.events.empty())
+        {
+            return snapshot;
+        }
+
+        // DB-2: scope the relation-table reads to this room using a JOIN on
+        // events.room_id, not by binding one placeholder per loaded event.
+        auto relations = PersistentStore{};
+        std::ignore = relations.events.insert_all(std::move(snapshot.events));
+        if (!read_table("event_edges",
+                        "SELECT e.event_id, e.prev_event_id FROM event_edges e "
+                        "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& edge = relations.event_edges.emplace_back();
+                            edge.event_id = column_text(row, 0);
+                            edge.prev_event_id = column_text(row, 1);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("event_auth",
+                        "SELECT e.event_id, e.auth_event_id FROM event_auth e "
+                        "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& auth = relations.event_auth.emplace_back();
+                            auth.event_id = column_text(row, 0);
+                            auth.auth_event_id = column_text(row, 1);
+                        }))
+        {
+            return std::nullopt;
+        }
+        if (!read_table("event_signatures",
+                        "SELECT e.event_id, e.server_name, e.key_id, e.signature FROM event_signatures e "
+                        "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                        [&](sqlite3_stmt& row) {
+                            auto& signature = relations.event_signatures.emplace_back();
+                            signature.event_id = column_text(row, 0);
+                            signature.server_name = column_text(row, 1);
+                            signature.key_id = column_text(row, 2);
+                            signature.signature = column_text(row, 3);
+                        }))
+        {
+            return std::nullopt;
+        }
+        reconstruct_event_relations(relations);
+        snapshot.events = relations.events.extract();
+        return snapshot;
+    }
+
+    [[nodiscard]] auto bind_statement_parameters(sqlite3_stmt& statement, PreparedStatement const& prepared) -> bool
+    {
+        for (auto index = std::size_t{0U}; index < prepared.parameters.size(); ++index)
+        {
+            auto const name = "$" + std::to_string(index + 1U);
+            auto bind_index = sqlite3_bind_parameter_index(&statement, name.c_str());
+            if (bind_index == 0)
+            {
+                bind_index = static_cast<int>(index + 1U);
+            }
+            auto const& value = prepared.parameters[index].value;
+            if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                return false;
+            }
+            auto const value_size = static_cast<int>(value.size());
+            // B5 contract: sqlite_transient_destructor() (the -1 sentinel)
+            // tells SQLite to copy the bound buffer immediately, so the
+            // std::string we're passing a c_str() of can be a stack-local
+            // that goes out of scope before sqlite3_step returns. Do not
+            // switch to SQLITE_STATIC without ensuring the parameter view
+            // outlives the step call — otherwise we'd be reading freed
+            // memory.
+            if (sqlite3_bind_text(&statement, bind_index, value.c_str(), value_size, sqlite_transient_destructor()) !=
+                SQLITE_OK)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto execute_prepared(sqlite3& connection, PreparedStatement const& prepared) -> bool
+    {
+        if (!prepared_statement_is_valid(prepared).valid)
+        {
+            return false;
+        }
+        auto statement = prepare(connection, prepared.sql);
+        if (!statement.has_value())
+        {
+            return false;
+        }
+        return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
+    }
+
+    // Names what failed: the stage, the statement and SQLite's own code and
+    // message ("UNIQUE constraint failed: rooms.room_id", "database is locked").
+    // Never the bound values, which can be token or password hashes (rule 2 of
+    // src/database/AGENTS.md); SQLite's messages name columns, not values.
+    auto log_transaction_failure(sqlite3& connection, std::string_view stage, std::string_view statement_name) -> void
+    {
+        log_diagnostic("transaction.failed",
+                       {
+                           {"stage",        std::string{stage},                                    false},
+                           {"statement",    std::string{statement_name},                           false},
+                           {"sqlite_code",  std::to_string(sqlite3_extended_errcode(&connection)), false},
+                           {"sqlite_error", std::string{sqlite3_errmsg(&connection)},              false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+
+    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
+        -> bool
+    {
+        auto transaction = SqliteTransaction{connection};
+        if (!transaction.active())
+        {
+            log_transaction_failure(connection, "begin",
+                                    statements.empty() ? std::string_view{} : statements.front().name);
+            return false;
+        }
+        for (auto const& statement : statements)
+        {
+            if (!execute_prepared(connection, statement))
+            {
+                log_transaction_failure(connection, "statement", statement.name);
+                return false;
+            }
+        }
+        if (!transaction.commit())
+        {
+            log_transaction_failure(connection, "commit",
+                                    statements.empty() ? std::string_view{} : statements.back().name);
+            return false;
+        }
+        return true;
+    }
+
+} // namespace
+
+namespace detail
+{
+
+    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void
+    {
+        pool.pool.set_limit(limit);
+    }
+
+    auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t
+    {
+        return pool.pool.opened_total();
+    }
+
+} // namespace detail
+
+auto migrate_sqlite_schema_to(std::string const& path, std::uint32_t target_version) -> MigrationApplyResult
+{
+    // Checked before the file is opened, so a refused call creates nothing.
+    if (target_version == 0U || target_version > current_schema_version())
+    {
+        return {false, "target schema version is not one this build knows", {}};
+    }
+    auto connection = open_sqlite_connection(path, false);
+    if (!connection.has_value())
+    {
+        return {false, "unable to open SQLite persistent store", {}};
+    }
+    auto& sqlite = **connection;
+    if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
+    {
+        return {false, "unable to configure SQLite persistent store", {}};
+    }
+    if (load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
+    {
+        return {false, "unable to initialize SQLite schema", {}};
+    }
+    auto state = load_schema_state(sqlite);
+    if (auto const known = schema_ledger_is_known(state); !known.valid)
+    {
+        return {false, known.reason, std::move(state)};
+    }
+    if (state.version > target_version)
+    {
+        return {false, "schema is newer than the target version; migrations never move a schema backwards",
+                std::move(state)};
+    }
+    auto migrated = apply_pending_migrations(sqlite, state, target_version);
+    if (!migrated.has_value())
+    {
+        return {false, "unable to migrate SQLite schema", std::move(state)};
+    }
+    // The ledger and tables as SQLite now has them, not as the plan predicted.
+    return {true, {}, load_schema_state(sqlite)};
+}
+
+auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile profile) -> PersistentStoreOpenResult
+{
+    log_diagnostic("store.opening", {
+                                        {"path", path, false}
+    });
+    // The federation worker opens the database read-only: it never initializes or migrates the schema.
+    auto const read_only = profile == TableLoadProfile::federation_worker;
+    auto connection = open_sqlite_connection(path, read_only);
+    if (!connection.has_value())
+    {
+        log_diagnostic("store.rejected",
+                       {
+                           {"path",   path,                                     false},
+                           {"reason", "unable to open SQLite persistent store", false}
+        });
+        return {false, "unable to open SQLite persistent store", {}};
+    }
+    // Foreign keys are a per-connection setting in SQLite, so they are switched on for every open.
+    auto& sqlite = **connection;
+    if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
+    {
+        log_diagnostic("store.rejected",
+                       {
+                           {"path",   path,                                          false},
+                           {"reason", "unable to configure SQLite persistent store", false}
+        });
+        return {false, "unable to configure SQLite persistent store", {}};
+    }
+    if (!read_only && load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
+    {
+        log_diagnostic("store.rejected",
+                       {
+                           {"path",   path,                                 false},
+                           {"reason", "unable to initialize SQLite schema", false}
+        });
+        return {false, "unable to initialize SQLite schema", {}};
+    }
+
+    // The in-memory store is built up from the tables; nothing is served until validation passes.
+    auto store = PersistentStore{};
+    store.open = true;
+    store.backend = PersistentStoreBackend::sqlite;
+    store.sqlite_path = path;
+    store.sqlite_read_only = read_only;
+    if (!read_only)
+    {
+        store.sqlite_write_pool = std::make_shared<detail::SqliteWritePool>(store.write_connection_limit);
+    }
+    store.schema = load_schema_state(sqlite);
+    log_diagnostic("store.schema_loaded",
+                   {
+                       {"path",    path,                                 false},
+                       {"version", std::to_string(store.schema.version), false}
+    });
+    // Before migrating or hydrating anything: a ledger this build does not
+    // recognise describes tables it must not read or alter (ADR-0224).
+    if (auto const known = schema_ledger_is_known(store.schema); !known.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"path",   path,         false},
+                                             {"reason", known.reason, false}
+        });
+        return {false, known.reason, {}};
+    }
+    if (store.schema.version < current_schema_version())
+    {
+        if (read_only)
+        {
+            return {false, "SQLite worker requires main to initialize/migrate the database in DELETE journal mode", {}};
+        }
+        log_diagnostic("store.migrating", {
+                                              {"path",            path,                                     false},
+                                              {"current_version", std::to_string(store.schema.version),     false},
+                                              {"target_version",  std::to_string(current_schema_version()), false}
+        });
+        auto migrated = apply_pending_migrations(sqlite, store.schema, current_schema_version());
+        if (!migrated.has_value())
+        {
+            log_diagnostic("store.rejected",
+                           {
+                               {"path",   path,                              false},
+                               {"reason", "unable to migrate SQLite schema", false}
+            });
+            return {false, "unable to migrate SQLite schema", {}};
+        }
+        store.schema = std::move(*migrated);
+        log_diagnostic("store.migrated",
+                       {
+                           {"path",    path,                                 false},
+                           {"version", std::to_string(store.schema.version), false}
+        });
+    }
+    auto hydrated_events = std::vector<PersistentEvent>{};
+    if (!load_persistent_rows(sqlite, store, hydrated_events))
+    {
+        log_diagnostic("store.rejected",
+                       {
+                           {"path",   path,                            false},
+                           {"reason", "unable to hydrate SQLite rows", false}
+        });
+        return {false, "unable to hydrate SQLite rows", {}};
+    }
+    // Everything below rebuilds the derived in-memory indexes from the raw rows, because
+    // only the base tables are persisted.
+    std::ignore = store.events.insert_all(std::move(hydrated_events));
+    sort_appservice_outbox(store);
+    sort_to_device_messages(store);
+    reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
+    rebuild_state_index(store);
+    rebuild_membership_index(store);
+    rebuild_client_txn_index(store);
+    rebuild_account_data_index(store);
+    rebuild_notification_index(store);
+    rebuild_federation_transaction_index(store);
+    rebuild_redaction_state(store);
+    rebuild_deferred_pdu_awaits(store);
+    rebuild_key_signature_index(store);
+    restore_sync_stream_id(store);
+
+    // Cross-table consistency check on the hydrated store; an incompatible store is refused, not repaired.
+    auto compatibility = validate_persistent_store(store);
+    if (!compatibility.valid)
+    {
+        log_diagnostic("store.rejected", {
+                                             {"path",   path,                 false},
+                                             {"reason", compatibility.reason, false}
+        });
+        return {false, compatibility.reason, {}};
+    }
+    log_diagnostic("store.ready", {
+                                      {"path",    path,                                 false},
+                                      {"version", std::to_string(store.schema.version), false}
+    });
+    return {true, {}, std::move(store)};
+}
+
+namespace detail
+{
+
+    auto persist_statement_to_backend(PersistentStore& store, PreparedStatement const& statement) -> bool
+    {
+        return persist_transaction_to_backend(store, {statement});
+    }
+
+    auto persist_transaction_to_backend(PersistentStore& store, std::vector<PreparedStatement> const& statements)
+        -> bool
+    {
+        if (store.sqlite_read_only)
+        {
+            return false;
+        }
+        if (store.backend == PersistentStoreBackend::memory)
+        {
+            // Test-only failure injection. Production never sets these fields.
+            for (auto const& statement : statements)
+            {
+                if (store.force_failure_statement_names.erase(statement.name) != 0U)
+                {
+                    return false;
+                }
+            }
+            if (store.force_next_persist_failures != 0U)
+            {
+                --store.force_next_persist_failures;
+                return false;
+            }
+            return true;
+        }
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return persist_transaction_to_postgresql(store, statements);
+        }
+        if (store.sqlite_path.empty())
+        {
+            return false;
+        }
+        auto const open_writer = [&store]() -> std::optional<SqliteConnection> {
+            auto connection = open_sqlite_connection(store.sqlite_path);
+            if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
+            {
+                // A writer that cannot be opened (descriptor exhaustion, a file it may not open)
+                // fails the write before any transaction runs, so say so here too.
+                log_diagnostic("transaction.failed",
+                               {
+                                   {"stage", connection.has_value() ? "open_pragma" : "open", false}
+                },
+                               observability::LogEventSeverity::warning);
+                return std::nullopt;
+            }
+            return connection;
+        };
+        if (store.sqlite_write_pool == nullptr)
+        {
+            // A store assembled by hand rather than opened: one connection per write.
+            auto connection = open_writer();
+            return connection.has_value() && execute_transaction(**connection, statements);
+        }
+        // DB-7, ADR-0154: reuse a pooled connection; a SQLite handle stays usable
+        // after a failed transaction (execute_transaction rolls back).
+        auto lease = store.sqlite_write_pool->pool.acquire(open_writer, [](SqliteConnection const&) {
+            return true;
+        });
+        return lease.has_value() && execute_transaction(*lease->get(), statements);
+    }
+
+    auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_room_snapshot_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role,
+                                                      room_id);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
+    }
+
+    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id,
+                                        RoomSnapshotReadHook const& after_table) -> std::optional<RoomReloadSnapshot>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
+        {
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage", "open", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+        // One room's rows, read as one committed state: separate autocommit
+        // reads could mix rows from before and after one of main's commits.
+        auto const read = SqliteReadTransaction{**connection};
+        if (!read.active())
+        {
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage", "begin", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+        auto snapshot = load_room_snapshot_impl(**connection, room_id, after_table);
+        if (!snapshot.has_value())
+        {
+            // The extended code names the cause (busy, I/O, a journal that
+            // looked hot for longer than the retry budget) in the worker log.
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage",       "read",                                                      false},
+                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(connection->get())), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        return snapshot;
+    }
+
+    auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id) -> std::optional<std::string>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto bytes = std::optional<std::string>{};
+        auto const ok =
+            load_rows_bound(**connection, "SELECT bytes FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'",
+                            {std::string{storage_id}}, [&bytes](sqlite3_stmt& row) {
+                                bytes = column_text(row, 0);
+                            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return bytes;
+    }
+
+    auto read_media_blob_chunk_from_sqlite(std::string const& path, std::string_view storage_id,
+                                           std::uint64_t expected_size, std::uint64_t offset, std::size_t length)
+        -> std::optional<std::string>
+    {
+        // sqlite3_blob_read takes int offsets and lengths.
+        auto constexpr int_limit = static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+        if (path.empty() || length == 0U || expected_size > int_limit || offset > expected_size ||
+            length > expected_size - offset)
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto& database = **connection;
+        // One deferred transaction pins a single snapshot: the row check and the blob read below see the same
+        // bytes. The connection is closed (rolling the transaction back) before this returns, so a client that
+        // stops reading holds no read lock between chunks (ADR-0574).
+        if (retry_false_hot_journal(database, [&database] {
+                return sqlite3_exec(&database, "BEGIN", nullptr, nullptr, nullptr);
+            }) != SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        auto row_id = std::int64_t{0};
+        {
+            auto statement =
+                prepare(database, "SELECT rowid FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'");
+            if (!statement.has_value() || !bind_text_params(*statement->get(), {std::string{storage_id}}) ||
+                first_step(database, *statement->get()) != SQLITE_ROW)
+            {
+                return std::nullopt;
+            }
+            row_id = sqlite3_column_int64(statement->get(), 0);
+        }
+        auto* raw_blob = static_cast<sqlite3_blob*>(nullptr);
+        if (retry_false_hot_journal(database, [&database, row_id, &raw_blob] {
+                return sqlite3_blob_open(&database, "main", "media_blobs", "bytes", row_id, 0, &raw_blob);
+            }) != SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        auto const blob = SqliteBlob{raw_blob};
+        // The stored length must still be the length the response promised in Content-Length.
+        if (static_cast<std::uint64_t>(sqlite3_blob_bytes(blob.get())) != expected_size)
+        {
+            return std::nullopt;
+        }
+        auto chunk = std::string(length, 'x');
+        if (sqlite3_blob_read(blob.get(), chunk.data(), static_cast<int>(length), static_cast<int>(offset)) !=
+            SQLITE_OK)
+        {
+            return std::nullopt;
+        }
+        return chunk;
+    }
+
+    auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        // The prefix is bound, never interpolated, and compared with substr() rather
+        // than LIKE so `%` and `_` stay literal and the match is case-sensitive.
+        // `limit` is a size_t the caller has already clamped, so writing its digits
+        // into the statement text carries no attacker-controlled content.
+        auto rows = std::vector<PersistentAuditEvent>{};
+        auto const ok =
+            load_rows_bound(**connection,
+                            "SELECT category, event_type, actor, target, reason FROM audit_log "
+                            "WHERE substr(event_type, 1, length(?1)) = ?1 ORDER BY rowid DESC LIMIT " +
+                                std::to_string(limit),
+                            {std::string{prefix}}, [&rows](sqlite3_stmt& row) {
+                                rows.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                column_text(row, 3), column_text(row, 4)});
+                            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return rows;
+    }
+
+    auto audit_rows_older_than_exist_in_sqlite(std::string const& path, std::uint64_t cutoff_ms) -> std::optional<bool>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto found = false;
+        auto const ok = load_rows_bound(
+            **connection,
+            "SELECT 1 FROM audit_log WHERE CAST(created_at_ms AS INTEGER) > 0 AND CAST(created_at_ms AS INTEGER) < "
+            "CAST(?1 AS INTEGER) LIMIT 1",
+            {std::to_string(cutoff_ms)}, [&found](sqlite3_stmt&) {
+                found = true;
+            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return found;
+    }
+
+    auto load_remote_signing_keys_from_sqlite(std::string const& path, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        // Public columns only: the secret_key column is never named, so the
+        // row cannot carry this server's signing secret into a worker whatever
+        // `server_name` says. The name is bound, never interpolated.
+        auto keys = std::vector<PersistentServerSigningKey>{};
+        auto const ok = load_rows_bound(
+            **connection,
+            "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "
+            "server_name = ?1",
+            {std::string{server_name}}, [&keys](sqlite3_stmt& row) {
+                auto key = PersistentServerSigningKey{
+                    column_text(row, 0), column_text(row, 1), column_text(row, 2), parse_u64(column_text(row, 3)), {}};
+                key.expired_ts = parse_u64(column_text(row, 4));
+                keys.push_back(std::move(key));
+            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return keys;
+    }
+
+    auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)
+        -> std::optional<std::vector<PersistentServerSigningKey>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_remote_signing_keys_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role,
+                                                            server_name);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_remote_signing_keys_from_sqlite(store.sqlite_path, server_name);
+    }
+
+    auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_audit_events_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role, prefix,
+                                                     limit);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_audit_events_from_sqlite(store.sqlite_path, prefix, limit);
+    }
+
+} // namespace detail
+
+} // namespace merovingian::database

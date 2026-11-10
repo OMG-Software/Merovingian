@@ -8,14 +8,14 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | File | Responsibility |
 |---|---|
 | `LocalMediaRepository.cpp` | Core media store: save, retrieve, deduplicate by content hash |
-| `security.cpp` | MIME type allow-list, size limits, quarantine policy |
-| `thumbnailer.cpp` | Generates thumbnails for image media |
+| `Security.cpp` | MIME type allow-list, size limits, quarantine policy |
+| `Thumbnailer.cpp` | Generates thumbnails for image media |
 | `ThumbnailCache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
-| `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
-| `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
-| `ClamdScanner.cpp` | `ClamdScanner` (ADR-0565): clamd `zINSTREAM` over an AF_UNIX socket, one deadline, a bounded number of concurrent scans, fail closed (`ClamdVerdict`: clean / infected / failed / oversize; only clean clears). No logging: `homeserver/clamd_media_scan.cpp` logs and audits |
+| `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `DecoderHardening.cpp` |
+| `DecoderHardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
+| `ClamdScanner.cpp` | `ClamdScanner` (ADR-0565): clamd `zINSTREAM` over an AF_UNIX socket, one deadline, a bounded number of concurrent scans, fail closed (`ClamdVerdict`: clean / infected / failed / oversize; only clean clears). No logging: `homeserver/ClamdMediaScan.cpp` logs and audits |
 | `RuntimeMediaConfig.cpp` | Wires the media service into the runtime |
-| `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
+| `UrlPreview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/UrlPreviewService.cpp` |
 
 ## Upload names and reserved IDs
 
@@ -40,14 +40,14 @@ declared_mime|sniffed_mime|scanner_verdict|<raw binary body>
 This format is built by `homeserver/ClientServerRuntime.cpp` before calling `call_local()`.
 `sniffed_mime` comes from `media::sniff_mime_type()` and `scanner_verdict` (`clean` / `dirty`)
 from `media::content_matches_eicar_test_signature()`. There is no real AV engine; the check
-recognises the EICAR test file; with `security.media.clamd_socket_path` set, `homeserver/media_service.cpp` also asks clamd (`homeserver::clamd_media_cleared`) after the authenticated user is known and only for `allow-after-scan` media, so the pipe verdict stays the EICAR one.
+recognises the EICAR test file; with `security.media.clamd_socket_path` set, `homeserver/MediaService.cpp` also asks clamd (`homeserver::clamd_media_cleared`) after the authenticated user is known and only for `allow-after-scan` media, so the pipe verdict stays the EICAR one.
 **Never** construct this format outside of `ClientServerRuntime.cpp`.
 
 The 4th field is split on the 3rd `|` — binary bodies containing `|` are safe.
 
 ## MIME policy
 
-`security.cpp` enforces:
+`Security.cpp` enforces:
 - `allowed_mime_types` — list from config; defaults to `{"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf", "application/octet-stream"}`
 - `quarantine_unknown_mime = true` — unknown MIME types stored but flagged (status 202 internally); mapped to 200 externally
 - `max_upload_size` — from `security.media.max_upload_size` in config (default `50MiB`; 100 MiB is
@@ -87,7 +87,7 @@ is reserved (`auth::localpart_is_reserved`).
 
 A file name (the `{fileName}` of a named download) is client-chosen text that lands in a
 response header. Write `Content-Disposition` only with `media::media_content_disposition()`
-(`security.cpp`): it leaves out a name that `media_filename_is_valid()` refuses (control
+(`Security.cpp`): it leaves out a name that `media_filename_is_valid()` refuses (control
 characters, `/`, `\`, invalid UTF-8, over 255 bytes) and encodes the rest per RFC 6266. Never
 concatenate a name into a header value anywhere else.
 
@@ -96,7 +96,7 @@ concatenate a name into a header value anywhere else.
 The thumbnail worker runs as a separate sandboxed process (`thumbnail_worker_main.cpp`).
 Communication is via pipes. Do not load image decoding libraries in the main server process.
 
-`main()` calls `media::apply_decoder_hardening()` (`decoder_hardening.hpp`/`.cpp`) before
+`main()` calls `media::apply_decoder_hardening()` (`DecoderHardening.hpp`/`.cpp`) before
 reading a single byte of stdin, and the result is fail-closed: if any hardening control
 applicable on the current platform fails — a `setrlimit` call, or the platform sandbox
 (Linux seccomp decoder profile, OpenBSD `pledge`, FreeBSD `cap_enter`) — the worker writes
@@ -116,7 +116,7 @@ confinement comes from privilege separation. `decoder_platform_sandbox_available
 `DecoderHardeningOps::platform_sandbox_available` are the seam; integration tests that expect a
 thumbnail call it first and assert the refusal where it is false.
 
-Every request to the worker goes through `exchange_with_worker` in `thumbnailer.cpp`, including
+Every request to the worker goes through `exchange_with_worker` in `Thumbnailer.cpp`, including
 the library report the server asks for at startup (`query_thumbnail_worker_libraries`, 0.12.45).
 Do not spawn the worker any other way: the environment, descriptor sweep, `NO_NEW_PRIVS`, FreeBSD
 `fexecve` and deadline live there once. The worker answers the report request, and `--version`,

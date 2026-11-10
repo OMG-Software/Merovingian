@@ -1,0 +1,695 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/platform/RuntimeHardening.hpp"
+
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/platform/BsdHardeningPlan.hpp"
+#include "merovingian/platform/FilesystemRestrictionPlan.hpp"
+#include "merovingian/platform/HardeningAction.hpp"
+#include "merovingian/platform/HardeningGate.hpp"
+#include "merovingian/platform/HardeningMode.hpp"
+#include "merovingian/platform/HardeningPlanDecision.hpp"
+#include "merovingian/platform/HardeningPlatform.hpp"
+#include "merovingian/platform/LinuxHardeningPlan.hpp"
+#include "merovingian/platform/MemoryLockingPlan.hpp"
+#include "merovingian/platform/PrivilegeDropPlan.hpp"
+#include "merovingian/platform/RandomSourcePlan.hpp"
+#include "merovingian/platform/ResourceLimitPlan.hpp"
+#include "merovingian/platform/RuntimeHardeningProfile.hpp"
+#include "merovingian/platform/SignalHandlingPlan.hpp"
+#include "merovingian/platform/UnveilRule.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
+
+#include <algorithm>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+// POSIX, not Linux-only: apply_posix_core_dump_limit() clamps RLIMIT_CORE on
+// every supported platform.
+#include <sys/resource.h>
+
+#ifdef __linux__
+#include <linux/capability.h>
+#include <sys/prctl.h>
+#endif
+
+#ifdef __OpenBSD__
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <new>
+#endif
+
+#ifdef __FreeBSD__
+#include <sys/capsicum.h>
+
+#include <cerrno>
+#include <cstring>
+#endif
+
+namespace merovingian::platform
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("runtime_hardening", event, fields, severity);
+    }
+
+    [[nodiscard]] auto reject(std::string reason) -> HardeningPlanDecision
+    {
+        return {false, true, std::move(reason)};
+    }
+
+    [[nodiscard]] auto accept() -> HardeningPlanDecision
+    {
+        return {true, false, {}};
+    }
+
+    [[nodiscard]] auto accept_optional(std::string reason) -> HardeningPlanDecision
+    {
+        return {true, false, "optional hardening unavailable: " + std::move(reason)};
+    }
+
+    [[nodiscard]] auto reject_if_required(HardeningMode mode, std::string reason) -> HardeningPlanDecision
+    {
+        if (mode == HardeningMode::required)
+        {
+            return reject(std::move(reason));
+        }
+
+        return accept_optional(std::move(reason));
+    }
+
+    [[nodiscard]] auto path_is_absolute_normalized(std::string_view path) noexcept -> bool
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            return false;
+        }
+        if (path.size() > 1U && path.back() == '/')
+        {
+            return false;
+        }
+        if (path == "/")
+        {
+            return true;
+        }
+
+        auto segment_start = std::size_t{1U};
+        while (segment_start < path.size())
+        {
+            auto segment_end = path.find('/', segment_start);
+            if (segment_end == std::string_view::npos)
+            {
+                segment_end = path.size();
+            }
+            if (segment_end == segment_start)
+            {
+                return false;
+            }
+
+            auto const segment = path.substr(segment_start, segment_end - segment_start);
+            if (segment == "." || segment == "..")
+            {
+                return false;
+            }
+
+            segment_start = segment_end + 1U;
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] auto is_path_or_child_of(std::string_view path, std::string_view protected_path) noexcept -> bool
+    {
+        return path == protected_path ||
+               (path.size() > protected_path.size() && path.substr(0U, protected_path.size()) == protected_path &&
+                path[protected_path.size()] == '/');
+    }
+
+    [[nodiscard]] auto writable_path_is_safe(std::string_view path) noexcept -> bool
+    {
+        return path_is_absolute_normalized(path) && path != "/" && !is_path_or_child_of(path, "/etc") &&
+               !is_path_or_child_of(path, "/usr");
+    }
+
+} // namespace
+
+auto hardening_platform_name(HardeningPlatform platform) noexcept -> char const*
+{
+    switch (platform)
+    {
+    case HardeningPlatform::linux:
+        return "linux";
+    case HardeningPlatform::bsd:
+        return "bsd";
+    case HardeningPlatform::portable:
+        return "portable";
+    }
+
+    return "unknown";
+}
+
+auto hardening_action_name(HardeningAction action) noexcept -> char const*
+{
+    switch (action)
+    {
+    case HardeningAction::privilege_drop:
+        return "privilege_drop";
+    case HardeningAction::filesystem_restriction:
+        return "filesystem_restriction";
+    case HardeningAction::resource_limit:
+        return "resource_limit";
+    case HardeningAction::memory_locking:
+        return "memory_locking";
+    case HardeningAction::random_source:
+        return "random_source";
+    case HardeningAction::signal_handling:
+        return "signal_handling";
+    case HardeningAction::syscall_filter:
+        return "syscall_filter";
+    case HardeningAction::capability_bounding:
+        return "capability_bounding";
+    case HardeningAction::sandbox_profile:
+        return "sandbox_profile";
+    }
+
+    return "unknown";
+}
+
+auto hardening_mode_name(HardeningMode mode) noexcept -> char const*
+{
+    switch (mode)
+    {
+    case HardeningMode::optional:
+        return "optional";
+    case HardeningMode::required:
+        return "required";
+    }
+
+    return "unknown";
+}
+
+auto default_linux_hardening_profile() -> RuntimeHardeningProfile
+{
+    auto profile = RuntimeHardeningProfile{};
+    profile.platform = HardeningPlatform::linux;
+    profile.mode = HardeningMode::required;
+    profile.privilege_drop.user = "merovingian";
+    profile.privilege_drop.group = "merovingian";
+    profile.filesystem.read_only_paths = {"/usr", "/etc/merovingian"};
+    profile.filesystem.writable_paths = {"/var/lib/merovingian", "/run/merovingian"};
+    profile.resources.max_address_space_bytes = 1073741824U;
+    return profile;
+}
+
+auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
+{
+    auto profile = default_linux_hardening_profile();
+    profile.platform = HardeningPlatform::bsd;
+    // SQLite writes its temporary files (large sorts, temporary tables,
+    // VACUUM) to the first usable directory of: sqlite3_temp_directory (never
+    // set here), $SQLITE_TMPDIR, $TMPDIR, /var/tmp, /usr/tmp, /tmp and the
+    // working directory. OpenBSD's unveil(2) hides every path not listed, so a
+    // directory outside this list is skipped, and /tmp is listed alongside the
+    // persistent and runtime state directories so one is always usable. SQLite opens each file with
+    // O_EXCL|O_NOFOLLOW under a random name and unlinks it at once, so another
+    // user's file there is never followed or reused. Nothing else in the
+    // server writes to /tmp: thumbnails pass through pipes.
+    profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian", "/tmp"};
+    return profile;
+}
+
+auto openbsd_unveil_rules(RuntimeHardeningProfile const& profile,
+                          std::function<bool(std::string const&)> const& directory_exists)
+    -> std::optional<std::vector<UnveilRule>>
+{
+    auto rules = std::vector<UnveilRule>{};
+    // Read-only paths need read + execute, so shared libraries under /usr and
+    // the worker binaries can be loaded. Writable paths need read + write +
+    // create (journals, sockets). /etc/ssl is LibreSSL's CA store, read for
+    // outbound TLS and federation server verification.
+    for (auto const& path : profile.filesystem.read_only_paths)
+    {
+        rules.push_back({path, "rx"});
+    }
+    for (auto const& path : profile.filesystem.writable_paths)
+    {
+        rules.push_back({path, "rwc"});
+    }
+    rules.push_back({"/etc/ssl", "r"});
+    // unveil(2) accepts a path that does not exist yet (so it can be created)
+    // but fails with ENOENT when the directory it would be created in is missing.
+    auto const reachable = [&directory_exists](std::string const& path) {
+        auto const parent = std::filesystem::path{path}.parent_path().string();
+        return directory_exists(path) || (!parent.empty() && directory_exists(parent));
+    };
+    if (!std::ranges::all_of(rules, [&reachable](UnveilRule const& rule) {
+            return reachable(rule.path);
+        }))
+    {
+        return std::nullopt;
+    }
+    return rules;
+}
+
+auto default_portable_hardening_profile() -> RuntimeHardeningProfile
+{
+    auto profile = default_linux_hardening_profile();
+    profile.platform = HardeningPlatform::portable;
+    profile.mode = HardeningMode::optional;
+    return profile;
+}
+
+auto privilege_drop_plan_is_safe(PrivilegeDropPlan const& plan) noexcept -> bool
+{
+    return !plan.user.empty() && !plan.group.empty() && plan.drop_supplementary_groups && plan.clear_environment;
+}
+
+auto filesystem_plan_is_safe(FilesystemRestrictionPlan const& plan) noexcept -> bool
+{
+    return plan.deny_home && plan.deny_proc_write && plan.private_tmp && !plan.writable_paths.empty() &&
+           std::ranges::all_of(plan.writable_paths, [](std::string const& path) {
+               return writable_path_is_safe(path);
+           });
+}
+
+auto resource_limit_plan_is_safe(ResourceLimitPlan const& plan) noexcept -> bool
+{
+    return plan.max_open_files > 0U && plan.max_processes > 0U && plan.max_address_space_bytes > 0U &&
+           plan.max_core_bytes == 0U;
+}
+
+auto memory_locking_plan_is_safe(MemoryLockingPlan const& plan) noexcept -> bool
+{
+    return plan.lock_secret_pages && plan.disable_core_dumps && plan.wipe_on_release;
+}
+
+auto random_source_plan_is_safe(RandomSourcePlan const& plan) noexcept -> bool
+{
+    return !plan.source_path.empty() && plan.require_nonblocking && plan.fail_if_unavailable;
+}
+
+auto signal_handling_plan_is_safe(SignalHandlingPlan const& plan) noexcept -> bool
+{
+    return plan.install_shutdown_handlers && plan.ignore_sigpipe && plan.block_unexpected_signals;
+}
+
+auto linux_hardening_plan_is_documented(LinuxHardeningPlan const& plan) noexcept -> bool
+{
+    return plan.seccomp_filter_required && plan.no_new_privs_required && plan.capability_bounding_required &&
+           plan.core_dump_policy_required && plan.landlock_documented && plan.apparmor_documented &&
+           plan.selinux_documented && plan.systemd_sandboxing_documented;
+}
+
+auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool
+{
+    return plan.pledge_documented && plan.unveil_documented && plan.capsicum_documented && plan.jail_documented &&
+           plan.chroot_documented && plan.setrlimit_documented;
+}
+
+auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
+{
+    auto result = [&]() -> HardeningPlanDecision {
+        if (!filesystem_plan_is_safe(profile.filesystem))
+        {
+            return reject("filesystem restriction plan is unsafe");
+        }
+        if (!privilege_drop_plan_is_safe(profile.privilege_drop))
+        {
+            return reject_if_required(profile.mode, "privilege drop plan is incomplete");
+        }
+        if (!resource_limit_plan_is_safe(profile.resources))
+        {
+            return reject_if_required(profile.mode, "resource limit plan is unsafe");
+        }
+        if (!memory_locking_plan_is_safe(profile.memory))
+        {
+            return reject_if_required(profile.mode, "memory locking plan is unsafe");
+        }
+        if (!random_source_plan_is_safe(profile.random))
+        {
+            return reject_if_required(profile.mode, "random source plan is unsafe");
+        }
+        if (!signal_handling_plan_is_safe(profile.signals))
+        {
+            return reject_if_required(profile.mode, "signal handling plan is unsafe");
+        }
+        if (profile.platform == HardeningPlatform::linux && !linux_hardening_plan_is_documented(profile.linux))
+        {
+            return reject_if_required(profile.mode, "linux hardening plan is incomplete");
+        }
+        if (profile.platform == HardeningPlatform::bsd && !bsd_hardening_plan_is_documented(profile.bsd))
+        {
+            return reject_if_required(profile.mode, "bsd hardening plan is incomplete");
+        }
+        return accept();
+    }();
+    log_diagnostic(result.accepted ? "profile.accepted" : "profile.rejected",
+                   {
+                       {"platform", std::string{hardening_platform_name(profile.platform)}, false},
+                       {"mode",     std::string{hardening_mode_name(profile.mode)},         false},
+                       {"reason",   result.reason,                                          false}
+    });
+    return result;
+}
+
+auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision
+{
+    for (auto const& gate : gates)
+    {
+        if (gate.name.empty())
+        {
+            log_diagnostic("gates.rejected", {
+                                                 {"reason", "hardening gate name is required", false}
+            });
+            return reject("hardening gate name is required");
+        }
+        if (gate.mode == HardeningMode::required && !gate.available)
+        {
+            auto const reason = "required hardening gate unavailable: " + gate.name;
+            log_diagnostic("gates.rejected", {
+                                                 {"gate",   gate.name, false},
+                                                 {"reason", reason,    false}
+            });
+            return reject(reason);
+        }
+    }
+
+    log_diagnostic("gates.accepted", {
+                                         {"gate_count", std::to_string(gates.size()), false}
+    });
+    return accept();
+}
+
+auto linux_deployment_profile_notes() -> std::vector<std::string>
+{
+    return {
+        "Linux profile: enable seccomp filters, no_new_privs, capability bounding, and resource limits before serving "
+        "traffic.",
+        "Linux profile: document Landlock, AppArmor, and SELinux policy expectations for deployments that support "
+        "them.",
+        "Linux profile: systemd units should use sandboxing directives such as PrivateTmp, ProtectSystem, ProtectHome, "
+        "NoNewPrivileges, RestrictAddressFamilies, and CapabilityBoundingSet.",
+    };
+}
+
+auto bsd_deployment_profile_notes() -> std::vector<std::string>
+{
+    return {
+        "BSD profile: document pledge and unveil restrictions where available.",
+        "BSD profile: document Capsicum, jails, and chroot deployment boundaries where available.",
+        "BSD profile: setrlimit gates should bound file descriptors, processes, address space, and core dump "
+        "generation.",
+    };
+}
+
+auto runtime_hardening_ci_gate_notes() -> std::vector<std::string>
+{
+    return {
+        "CI gate: unit tests validate hardening profile fail-closed behavior across Linux, BSD, and portable plans.",
+        "CI gate: BSD build verifies that platform hardening scaffolds remain portable where OS APIs are documented "
+        "but not linked.",
+        "CI gate: static analysis and unsafe source gates protect hardening code paths from accidental unsafe API use.",
+    };
+}
+
+namespace
+{
+
+#ifdef __linux__
+
+    [[nodiscard]] auto apply_linux_core_dump_policy() noexcept -> bool
+    {
+        auto const limit = ::rlimit{
+            .rlim_cur = 0,
+            .rlim_max = 0,
+        };
+        if (::setrlimit(RLIMIT_CORE, &limit) != 0)
+        {
+            return false;
+        }
+        // 0.12.5 audit, finding 21: this used to discard the prctl result and
+        // report success on RLIMIT_CORE alone. RLIMIT_CORE=0 stops the kernel
+        // writing a core file for an ordinary crash, but it does not clear the
+        // dumpable flag, and a core_pattern that pipes to a handler
+        // (systemd-coredump, apport) is not bound by the process rlimit. With
+        // the flag still set, the process image — including the master key and
+        // every signing secret derived from it — can still be captured while
+        // the policy reported success.
+        return ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0;
+    }
+
+    [[nodiscard]] auto apply_linux_no_new_privs() noexcept -> bool
+    {
+        return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
+    }
+
+    [[nodiscard]] auto apply_linux_capability_bounding_set() noexcept -> bool
+    {
+        // Drop every capability from the ambient bounding set. Failures are
+        // ignored for individual caps because the kernel may not expose all
+        // caps to userspace; the goal is to drop as many as possible.
+        for (auto cap = std::int32_t{0}; cap <= CAP_LAST_CAP; ++cap)
+        {
+            std::ignore = ::prctl(PR_CAPBSET_DROP, cap, 0, 0, 0);
+        }
+        return true;
+    }
+
+#endif // __linux__
+
+#ifdef __OpenBSD__
+
+    // Atomic flag set once pledge(2) is called. Allows the probe function to
+    // answer without re-entering the kernel on every health-check query.
+    static std::atomic<bool> g_pledge_applied{false};
+
+    // Apply filesystem access restrictions via unveil(2), then restrict
+    // available syscalls via pledge(2). Returns false on any failure.
+    [[nodiscard]] auto apply_openbsd_pledge_unveil(RuntimeHardeningProfile const& profile) noexcept -> bool
+    try
+    {
+        // ADR-0162: plan every call first. The first unveil(2) hides the rest
+        // of the filesystem, so a call that failed halfway used to leave the
+        // process seeing only the paths before it (the federation worker on
+        // OpenBSD CI could no longer reopen its database).
+        auto const rules = openbsd_unveil_rules(profile, [](std::string const& directory) {
+            struct stat status{};
+            return ::stat(directory.c_str(), &status) == 0 && S_ISDIR(status.st_mode);
+        });
+        if (!rules.has_value())
+        {
+            return false;
+        }
+        for (auto const& rule : *rules)
+        {
+            if (::unveil(rule.path.c_str(), rule.permissions.c_str()) != 0)
+            {
+                return false;
+            }
+        }
+        // Lock the vnode allowlist — no further paths may be added after this point.
+        if (::unveil(nullptr, nullptr) != 0)
+        {
+            return false;
+        }
+        if (::pledge(bsd_pledge_promises(), nullptr) != 0)
+        {
+            return false;
+        }
+        g_pledge_applied.store(true, std::memory_order_release);
+        return true;
+    }
+    catch (std::bad_alloc const&)
+    {
+        // Thrown only while planning, before the first unveil(2).
+        return false;
+    }
+
+#endif // __OpenBSD__
+
+} // namespace
+
+#ifdef __OpenBSD__
+
+auto bsd_pledge_promises() noexcept -> char const*
+{
+    // proc + exec: required to fork and exec the thumbnail and federation worker
+    //              child processes via posix_spawn() and fork()/execv().
+    // flock:       SQLite WAL-mode file locking (flock(2) on WAL files).
+    // unix:        AF_UNIX IPC channel to the out-of-process federation worker.
+    // dns:         server-discovery DNS resolution for outbound federation.
+    return "stdio rpath wpath cpath flock inet unix dns proc exec";
+}
+
+auto openbsd_pledge_is_active() noexcept -> bool
+{
+    return g_pledge_applied.load(std::memory_order_acquire);
+}
+
+#endif // __OpenBSD__
+
+#ifdef __FreeBSD__
+
+auto freebsd_capsicum_is_active() noexcept -> bool
+{
+    unsigned int mode = 0U;
+    return ::cap_getmode(&mode) == 0 && mode != 0U;
+}
+
+auto apply_freebsd_capsicum_capability_mode() -> HardeningPlanDecision
+{
+    if (::cap_enter() != 0)
+    {
+        return reject("FreeBSD cap_enter() failed: " + std::string{::strerror(errno)});
+    }
+    return accept();
+}
+
+#endif // __FreeBSD__
+
+namespace
+{
+
+    // Clamp both the soft and hard core-dump limit to zero. POSIX, so it is the
+    // one core-dump control every supported platform shares; the Linux path adds
+    // prctl(PR_SET_DUMPABLE, 0) on top of it.
+    [[nodiscard]] auto apply_posix_core_dump_limit() noexcept -> bool
+    {
+        auto const limit = ::rlimit{
+            .rlim_cur = 0,
+            .rlim_max = 0,
+        };
+        return ::setrlimit(RLIMIT_CORE, &limit) == 0;
+    }
+
+} // namespace
+
+auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
+{
+    auto profile_decision = evaluate_runtime_hardening_profile(profile);
+    if (!profile_decision.accepted)
+    {
+        return profile_decision;
+    }
+
+    if (profile.platform == HardeningPlatform::linux)
+    {
+#ifdef __linux__
+        if (profile.linux.core_dump_policy_required && !apply_linux_core_dump_policy())
+        {
+            return reject_if_required(profile.mode, "failed to apply Linux core dump policy");
+        }
+        if (profile.linux.no_new_privs_required && !apply_linux_no_new_privs())
+        {
+            return reject_if_required(profile.mode, "failed to apply PR_SET_NO_NEW_PRIVS");
+        }
+        if (profile.linux.capability_bounding_required && !apply_linux_capability_bounding_set())
+        {
+            return reject_if_required(profile.mode, "failed to drop Linux capability bounding set");
+        }
+        return accept();
+#else
+        return reject_if_required(profile.mode, "Linux hardening requested on non-Linux platform");
+#endif
+    }
+
+    if (profile.platform == HardeningPlatform::bsd)
+    {
+        // setrlimit(RLIMIT_CORE, 0) is POSIX, not a Linux control. It was only
+        // ever applied on the Linux path, so a BSD server dumped core with its
+        // master key and every signing secret in the image -- and, once the
+        // self-check stopped treating that control as Linux-only (0.12.5 audit,
+        // findings 10 and 21), also failed the startup readiness gate.
+        if (!apply_posix_core_dump_limit())
+        {
+            return reject_if_required(profile.mode, "failed to clamp RLIMIT_CORE to zero");
+        }
+#ifdef __OpenBSD__
+        if (!apply_openbsd_pledge_unveil(profile))
+        {
+            return reject_if_required(profile.mode, "OpenBSD pledge/unveil application failed");
+        }
+        return accept();
+#elif defined(__FreeBSD__)
+        // Capsicum capability mode is entered separately after all resources are opened;
+        // call apply_freebsd_capsicum_capability_mode() from main.cpp after spawning
+        // the federation worker. This call only validates the profile.
+        return accept();
+#else
+        // NetBSD and other BSD variants: no in-process sandbox primitives implemented.
+        return reject_if_required(profile.mode, "BSD sandbox helpers are not yet implemented on this BSD variant");
+#endif
+    }
+
+    // Portable profile: service-manager units apply privilege drop and filesystem
+    // restrictions; the process only validates that the plan documents them.
+    return accept();
+}
+
+auto worker_hardening_unavailable_decision() -> HardeningPlanDecision
+{
+    return reject("worker hardening: in-process sandboxing (seccomp-bpf syscall filter, capability-bounding "
+                  "drop, core dump policy, PR_SET_NO_NEW_PRIVS) is only implemented on Linux; this platform "
+                  "cannot satisfy federation.worker.apply_hardening=true. Set "
+                  "security.federation.enabled=false to run a non-federating server, which starts no worker. "
+                  "Only if you have confined the worker yourself (a jail, for example; the packaged service "
+                  "script provides none), set federation.worker.apply_hardening=false and "
+                  "federation.worker.allow_without_landlock=true to run it without an in-process sandbox.");
+}
+
+auto apply_worker_hardening() -> HardeningPlanDecision
+{
+#ifdef __linux__
+    // Order matters: each control is fail-closed. The worker has already read
+    // its config + master-key file and validated the IPC fd before this is
+    // called, and the worker seccomp allowlist still permits open() (needed for
+    // the DB file the event loop opens next), so installing the filter here
+    // does not block subsequent startup.
+    if (!apply_linux_core_dump_policy())
+    {
+        return reject("worker hardening: failed to apply core dump policy");
+    }
+    if (!apply_linux_no_new_privs())
+    {
+        return reject("worker hardening: failed to apply PR_SET_NO_NEW_PRIVS");
+    }
+    if (!apply_linux_capability_bounding_set())
+    {
+        return reject("worker hardening: failed to drop capability bounding set");
+    }
+    if (!apply_worker_seccomp_filter())
+    {
+        return reject("worker hardening: failed to install worker seccomp filter");
+    }
+    return accept();
+#else
+    // seccomp-bpf and the sibling Linux-only controls above are unavailable
+    // here. A caller only reaches apply_worker_hardening() when the operator
+    // requested worker hardening (federation.worker.apply_hardening=true, the
+    // production default) — this branch used to silently return accept(), so
+    // the worker logged "runtime hardening applied (seccomp filter active)"
+    // and went on to handle untrusted federation traffic completely
+    // unsandboxed on every non-Linux platform. Fail closed instead: refuse to
+    // run rather than pretend the control was applied. The worker's main()
+    // treats a rejected decision as fatal (LOG_CRITICAL + exit 1). The first
+    // spawn then fails its IPC handshake and the server exits with
+    // runtime_start_error, so it never serves federation traffic through an
+    // unhardened worker. See docs/hardening.md "What is intentionally deferred".
+    return worker_hardening_unavailable_decision();
+#endif
+}
+
+} // namespace merovingian::platform

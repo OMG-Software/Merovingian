@@ -10,7 +10,7 @@ Spec authority:
 
 | File | Responsibility |
 |---|---|
-| `push_rules.cpp` | `parse_push_ruleset` / `evaluate_push_rules`: pure, in-memory rule evaluation against an event |
+| `PushRules.cpp` | `parse_push_ruleset` / `evaluate_push_rules`: pure, in-memory rule evaluation against an event |
 | `UserPushRules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
 | `PushGatewayClient.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
 | `GatewayCircuitBreaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
@@ -18,13 +18,13 @@ Spec authority:
 | `PushRetryQueue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
 | `EmailDigestQueue.cpp` | `EmailDigestQueue`, `email_digest_backoff`: which kind `"email"` pushers have a digest email due, and when; the delay, throttle, fold and retry policy (ADR-0219) |
 
-The server-default ruleset is in `homeserver/default_push_ruleset.cpp`; delivery scheduling and the
-concurrency caps are in `homeserver/room_service.cpp`; every attempt and the retry job are in
-`homeserver/push_retry.cpp`.
+The server-default ruleset is in `homeserver/DefaultPushRuleset.cpp`; delivery scheduling and the
+concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retry job are in
+`homeserver/PushRetry.cpp`.
 
 ## Rules — non-negotiable
 
-1. **`push_rules.cpp` is pure: no I/O, no database, no locks.** The caller supplies room member
+1. **`PushRules.cpp` is pure: no I/O, no database, no locks.** The caller supplies room member
    count, power levels and display name in `PushEvaluationContext`, so evaluation is safe while
    `runtime.mutex` is held.
 2. **An unrecognised condition kind never matches** ("Unrecognised conditions MUST NOT match any
@@ -58,7 +58,7 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
    queued with `defer_push_delivery`), and `PushGatewayClient::notify` takes a `GatewayInFlightLimiter`
    slot per gateway host (an eighth of `max_in_flight_deliveries`) and per resolved address (a quarter),
    returning `busy`, which is retried and not counted against the host. The delivery caps and the
-   breaker are applied in `room_service.cpp`; any change to how push is invoked must preserve them.
+   breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.
 11. **Glob matching stays linear and never uses `std::regex`** (ADR-0175). Evaluation runs per
@@ -92,7 +92,7 @@ concurrency caps are in `homeserver/room_service.cpp`; every attempt and the ret
     task to retry, which would hold an in-flight slot (ADR-0028).
 
 14. **Email pushers send a delayed, throttled digest of the unread count, to the account's own
-    email 3PID only** (ADR-0219). `EmailDigestQueue` decides when; `homeserver/email_push.cpp`
+    email 3PID only** (ADR-0219). `EmailDigestQueue` decides when; `homeserver/EmailPush.cpp`
     re-checks the pusher, the address and the count before each send, and `src/email/` sends.
     Push delivery only notes the notification, under `runtime.mutex`, and never sends. The queue
     is bounded (`email_digest_queue_capacity`) and drops past it.

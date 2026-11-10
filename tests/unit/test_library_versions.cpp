@@ -5,15 +5,15 @@
 // what it was built against (0.12.45). A dynamically linked library can change under the binary
 // with an OS update; a statically linked one changes only with a rebuild.
 
-#include "merovingian/canonicaljson/library_versions.hpp"
+#include "merovingian/canonicaljson/LibraryVersions.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/core/Linkage.hpp"
-#include "merovingian/database/library_versions.hpp"
-#include "merovingian/homeserver/library_versions.hpp"
+#include "merovingian/database/LibraryVersions.hpp"
+#include "merovingian/homeserver/LibraryVersions.hpp"
 #include "merovingian/media/ThumbnailMethod.hpp"
 #include "merovingian/media/ThumbnailSourceFormat.hpp"
 #include "merovingian/media/ThumbnailWorkerRequest.hpp"
-#include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

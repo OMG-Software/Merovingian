@@ -11,10 +11,10 @@ implementing custom cryptographic primitives.
   `events/` and `auth/` directories). Everything else goes through the crypto
   and auth wrappers. `scripts/reject-unsafe.sh` fails the build on any other
   use ([ADR-0014](adr/0014-confine-cryptographic-primitives-behind-providers.md)).
-- Generic hashing (`generic_hash.cpp`) and hex/base64 encoding (`encoding.cpp`)
+- Generic hashing (`GenericHash.cpp`) and hex/base64 encoding (`Encoding.cpp`)
   wrapping libsodium's `crypto_generichash`/`sodium_bin2hex`/`sodium_bin2base64`.
 - Constant-time comparison boundary (fixed and variable-length inputs).
-- `hmac_sha1` (`hmac_sha1.cpp`), a wrapper over OpenSSL's `HMAC` with `EVP_sha1()`: the one place SHA-1 is used, because
+- `hmac_sha1` (`HmacSha1.cpp`), a wrapper over OpenSSL's `HMAC` with `EVP_sha1()`: the one place SHA-1 is used, because
   the coturn REST API defines a TURN password as the base64 of HMAC-SHA1 over the username (ADR-0480). libsodium has no
   SHA-1; OpenSSL is already a required dependency, so no new dependency enters the build, but `merovingian-crypto` now
   links it. No other code may use SHA-1 for a new purpose.
@@ -104,7 +104,7 @@ implementing custom cryptographic primitives.
   signing-key ciphertext and token hashes unusable. See
   [ADR-0128](adr/0128-lock-derived-key-storage-without-changing-persisted-derivations.md).
 - **The master key file is no longer read once per HMAC key derivation.**
-  `token_hmac_keys()` (`src/homeserver/auth_service.cpp`) derives the v3 and
+  `token_hmac_keys()` (`src/homeserver/AuthService.cpp`) derives the v3 and
   v4 access-token HMAC keys once and caches them, invalidated on the file's
   descriptor-validated file identity (path, device, inode, size, timestamps,
   mode and owner) so replacing the key still takes effect
@@ -142,7 +142,7 @@ Runtime-created local room events use the persisted server signing-key record
 and fail closed if the signing key cannot be materialized.
 Access-token and refresh-token hashes are minted with a keyed BLAKE2b
 (`token-hash:v4`) construction seeded from runtime secret material
-(`hash_access_token_v4`, `src/auth/token.cpp`). The older `token-hash:v3` (keyed,
+(`hash_access_token_v4`, `src/auth/Token.cpp`). The older `token-hash:v3` (keyed,
 legacy-label key) and unkeyed `token-hash:v2` forms are accepted only to look up
 older persisted rows, never to issue new tokens.
 - Every Ed25519 provider validates the secret key's size before handing it to
@@ -299,7 +299,7 @@ These remain deferred:
 
 1. Add dependency review documentation for the selected crypto provider.
 2. Add a concrete production provider behind the `RandomSource` interface
-   (`include/merovingian/crypto/random.hpp`) — the Ed25519 half is already done
+   (`include/merovingian/crypto/Random.hpp`) — the Ed25519 half is already done
    (`RuntimeEd25519Provider`, `RuntimeMultiKeyEd25519Provider`, wired in
    `src/homeserver/HomeserverRuntime.cpp`); production code paths call
    `secure_random_bytes`/`secure_random_hex` directly rather than going through

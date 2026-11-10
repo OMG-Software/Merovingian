@@ -4,7 +4,7 @@
 #include "merovingian/crypto/RuntimeEd25519Provider.hpp"
 
 #include "merovingian/crypto/Ed25519Keypair.hpp"
-#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 
 #include <sodium.h>
 

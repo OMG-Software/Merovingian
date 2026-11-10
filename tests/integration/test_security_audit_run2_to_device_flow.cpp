@@ -9,11 +9,11 @@
 // ID to device ID to message body; the spec states no size limit, so the limit is an ADR-0335 choice
 // and an over-limit message is dropped alone, not the EDU (EDUs are best-effort).
 
-#include "../federation_signing_test_support.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -24,12 +24,12 @@
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

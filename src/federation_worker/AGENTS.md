@@ -15,11 +15,11 @@ because it is the process most exposed to hostile input, holds as little trust a
 |---|---|
 | `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC, IPC-key, and (when present) db-uri fds, applies worker hardening, runs the event loop |
 | `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
-| `ipc_key_fd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
-| `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
+| `IpcKeyFd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
+| `DbUriFd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
-| `worker_relay_frame.cpp` | `worker_relay_frame` / `relay_to_main`: the claim and key/profile query relay frames and their send, bound to the request being served (rule 12) |
+| `WorkerRelayFrame.cpp` | `worker_relay_frame` / `relay_to_main`: the claim and key/profile query relay frames and their send, bound to the request being served (rule 12) |
 | `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `WorkerEventLoop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
@@ -37,7 +37,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    0.12.13 (finding N1, [ADR-0062](../../docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md))
    it never opens the operator master-key file either: main derives the IPC channel's auth key
    once and hands the worker only those 32 bytes over a second inherited pipe fd (`--ipc-key-fd`,
-   read by `federation_worker::read_ipc_auth_key` in `ipc_key_fd.cpp`). `WorkerEventLoop::run()`
+   read by `federation_worker::read_ipc_auth_key` in `IpcKeyFd.cpp`). `WorkerEventLoop::run()`
    then clears `security.secrets.master_key_file` on its own config copy
    (`federation_worker::clear_master_key_file`) before starting the runtime, so no later code
    path — reached today or added in the future — can open that file from inside the worker.
@@ -45,7 +45,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    part 2).** A separate, least-privilege role's connection URI (`federation.worker.
    database_uri_file`, provisioned by `packaging/postgresql/provision-federation-worker-role.sql`)
    is delivered the same way as the IPC auth key — a third inherited pipe fd (`--db-uri-fd`,
-   read by `federation_worker::read_worker_database_uri` in `db_uri_fd.cpp`) — never a file the
+   read by `federation_worker::read_worker_database_uri` in `DbUriFd.cpp`) — never a file the
    worker opens. `federation_worker::apply_worker_database_uri` clears the worker's config
    copy's `database.uri_file`/`runtime_role`/`migration_role` at the same time, so the worker's
    restricted login connects directly with its own grants and never attempts a `SET ROLE` onto
@@ -130,9 +130,9 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 12. **A claim or key/profile query relay names the request it serves (GHSA-3p5v-vrg8-f545, ADR-0595).** The
    `one_time_keys_claim_provider`, `device_keys_query_provider`, `user_devices_provider` and `profile_query_provider`
-   overrides send through `relay_to_main` (`worker_relay_frame.cpp`), which puts `current_fed_parent_request_id` in the
+   overrides send through `relay_to_main` (`WorkerRelayFrame.cpp`), which puts `current_fed_parent_request_id` in the
    frame and sends nothing when it is 0. They relay the argument the federation handler passed unchanged (the request
-   body, or the user ID read by `worker_relay_binding.hpp` and `core::query_parameter`): main admits only a digest of
+   body, or the user ID read by `WorkerRelayBinding.hpp` and `core::query_parameter`): main admits only a digest of
    that exact argument, once, for the verified request it forwarded. Never build one of these frames by hand: main's
    relay tests run against `worker_relay_frame`, so a hand-built frame is one no test has seen.
 

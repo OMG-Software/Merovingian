@@ -21,7 +21,7 @@ jobs:
       CXX: g++-14
       # A live PostgreSQL so the [postgresql] scenarios run here and the
       # PostgreSQL store is measured; without it they skip and every line of
-      # postgresql_store.cpp reads as uncovered. Same database and roles as
+      # PostgresqlStore.cpp reads as uncovered. Same database and roles as
       # postgres-integration.yml, except that runtime hardening is left on so
       # the hardening paths stay measured.
       MEROVINGIAN_TEST_POSTGRESQL_URI: postgresql://merovingian_test:test-password@127.0.0.1:5432/merovingian_test

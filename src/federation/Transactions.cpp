@@ -1,0 +1,430 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/Transactions.hpp"
+
+#include "merovingian/federation/FederationEndpoint.hpp"
+#include "merovingian/federation/FederationRoute.hpp"
+#include "merovingian/federation/FederationRouteMatch.hpp"
+#include "merovingian/federation/FederationTransaction.hpp"
+#include "merovingian/federation/FederationTransactionDecision.hpp"
+#include "merovingian/federation/Security.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <algorithm>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace merovingian::federation
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("transactions", event, fields, severity);
+    }
+
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto dynamic_suffix_has_segments(std::string_view target, std::string_view prefix,
+                                                   std::size_t expected_segments) noexcept -> bool
+    {
+        if (target.size() <= prefix.size() || !starts_with(target, prefix))
+        {
+            return false;
+        }
+        auto const suffix = target.substr(prefix.size());
+        auto segments = std::size_t{1U};
+        for (auto const character : suffix)
+        {
+            if (character == '/')
+            {
+                ++segments;
+            }
+        }
+        return segments == expected_segments && suffix.find("//") == std::string_view::npos && suffix.front() != '/' &&
+               suffix.back() != '/';
+    }
+
+    [[nodiscard]] auto route(std::string method, std::string path_template, FederationEndpoint endpoint)
+        -> FederationRoute
+    {
+        // make_* + backfill are GET endpoints that return event templates or
+        // historical PDUs; the server never receives signed event bodies on
+        // those paths. send_edu also carries no inbound event signatures.
+        auto const carries_event_bodies =
+            endpoint == FederationEndpoint::transaction || endpoint == FederationEndpoint::send_join ||
+            endpoint == FederationEndpoint::send_leave || endpoint == FederationEndpoint::send_knock ||
+            endpoint == FederationEndpoint::invite;
+        return {std::move(method), std::move(path_template), endpoint, true, carries_event_bodies};
+    }
+
+} // namespace
+
+auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char const*
+{
+    switch (endpoint)
+    {
+    case FederationEndpoint::transaction:
+        return "transaction";
+    case FederationEndpoint::make_join:
+        return "make_join";
+    case FederationEndpoint::send_join:
+        return "send_join";
+    case FederationEndpoint::make_leave:
+        return "make_leave";
+    case FederationEndpoint::send_leave:
+        return "send_leave";
+    case FederationEndpoint::make_knock:
+        return "make_knock";
+    case FederationEndpoint::send_knock:
+        return "send_knock";
+    case FederationEndpoint::invite:
+        return "invite";
+    case FederationEndpoint::backfill:
+        return "backfill";
+    case FederationEndpoint::edu:
+        return "edu";
+    case FederationEndpoint::query_directory:
+        return "query_directory";
+    case FederationEndpoint::public_rooms:
+        return "public_rooms";
+    case FederationEndpoint::query_profile:
+        return "query_profile";
+    case FederationEndpoint::query_keys:
+        return "query_keys";
+    case FederationEndpoint::claim_keys:
+        return "claim_keys";
+    case FederationEndpoint::query_user_devices:
+        return "query_user_devices";
+    case FederationEndpoint::query_event:
+        return "query_event";
+    case FederationEndpoint::query_state:
+        return "query_state";
+    case FederationEndpoint::query_state_ids:
+        return "query_state_ids";
+    case FederationEndpoint::event_auth:
+        return "event_auth";
+    case FederationEndpoint::get_missing_events:
+        return "get_missing_events";
+    case FederationEndpoint::space_hierarchy:
+        return "space_hierarchy";
+    case FederationEndpoint::timestamp_to_event:
+        return "timestamp_to_event";
+    case FederationEndpoint::media_download:
+        return "media_download";
+    case FederationEndpoint::media_thumbnail:
+        return "media_thumbnail";
+    case FederationEndpoint::exchange_third_party_invite:
+        return "exchange_third_party_invite";
+    }
+
+    return "unknown";
+}
+
+auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexcept -> bool
+{
+    switch (endpoint)
+    {
+    case FederationEndpoint::transaction:
+    // make_join relays its template to main: a restricted room's allow
+    // conditions name rooms another shard owns (R04, ADR-0185).
+    case FederationEndpoint::make_join:
+    case FederationEndpoint::send_join:
+    case FederationEndpoint::send_leave:
+    case FederationEndpoint::send_knock:
+    case FederationEndpoint::invite:
+    case FederationEndpoint::query_profile:
+    // query_directory carries no room ID, so no room_sync refreshes a worker's alias table; main
+    // answers from its own store.
+    case FederationEndpoint::query_directory:
+    // The published directory names no room, so it lands on one shard whatever it lists, and it reads
+    // appservice registrations, which a worker never loads (ADR-0296). Main answers (ADR-0461).
+    case FederationEndpoint::public_rooms:
+    case FederationEndpoint::query_keys:
+    case FederationEndpoint::claim_keys:
+    case FederationEndpoint::query_user_devices:
+    case FederationEndpoint::query_event:
+        return true;
+    case FederationEndpoint::make_leave:
+    case FederationEndpoint::make_knock:
+    case FederationEndpoint::backfill:
+    case FederationEndpoint::edu:
+    case FederationEndpoint::query_state:
+    case FederationEndpoint::query_state_ids:
+    case FederationEndpoint::event_auth:
+    case FederationEndpoint::get_missing_events:
+    case FederationEndpoint::space_hierarchy:
+    // Names a room, so the shard that owns the room answers it from its own snapshot (ADR-0281).
+    case FederationEndpoint::timestamp_to_event:
+    case FederationEndpoint::media_download:
+    case FederationEndpoint::media_thumbnail:
+        return false;
+    // Signs an invite for this server, which only main can do; the proxy answers it in main without a worker
+    // (ADR-0484), so it is never relayed.
+    case FederationEndpoint::exchange_third_party_invite:
+        return false;
+    }
+    return false;
+}
+
+auto federation_routes() -> std::vector<FederationRoute>
+{
+    return {
+        route("PUT", "/_matrix/federation/v1/send/{txnId}", FederationEndpoint::transaction),
+        route("GET", "/_matrix/federation/v1/make_join/{roomId}/{userId}", FederationEndpoint::make_join),
+        route("PUT", "/_matrix/federation/v2/send_join/{roomId}/{eventId}", FederationEndpoint::send_join),
+        route("PUT", "/_matrix/federation/v1/send_join/{roomId}/{eventId}", FederationEndpoint::send_join),
+        route("GET", "/_matrix/federation/v1/make_leave/{roomId}/{userId}", FederationEndpoint::make_leave),
+        route("PUT", "/_matrix/federation/v2/send_leave/{roomId}/{eventId}", FederationEndpoint::send_leave),
+        route("PUT", "/_matrix/federation/v1/send_leave/{roomId}/{eventId}", FederationEndpoint::send_leave),
+        route("GET", "/_matrix/federation/v1/make_knock/{roomId}/{userId}", FederationEndpoint::make_knock),
+        route("PUT", "/_matrix/federation/v1/send_knock/{roomId}/{eventId}", FederationEndpoint::send_knock),
+        route("PUT", "/_matrix/federation/v2/invite/{roomId}/{eventId}", FederationEndpoint::invite),
+        route("PUT", "/_matrix/federation/v1/invite/{roomId}/{eventId}", FederationEndpoint::invite),
+        route("GET", "/_matrix/federation/v1/backfill/{roomId}", FederationEndpoint::backfill),
+        route("PUT", "/_matrix/federation/v1/send_edu/{eduType}/{txnId}", FederationEndpoint::edu),
+        route("GET", "/_matrix/federation/v1/query/directory", FederationEndpoint::query_directory),
+        route("GET", "/_matrix/federation/v1/query/profile", FederationEndpoint::query_profile),
+        route("GET", "/_matrix/federation/v1/publicRooms", FederationEndpoint::public_rooms),
+        route("POST", "/_matrix/federation/v1/publicRooms", FederationEndpoint::public_rooms),
+        route("POST", "/_matrix/federation/v1/user/keys/query", FederationEndpoint::query_keys),
+        route("POST", "/_matrix/federation/v1/user/keys/claim", FederationEndpoint::claim_keys),
+        route("GET", "/_matrix/federation/v1/user/devices/{userId}", FederationEndpoint::query_user_devices),
+        route("GET", "/_matrix/federation/v1/event/{eventId}", FederationEndpoint::query_event),
+        route("GET", "/_matrix/federation/v1/state/{roomId}", FederationEndpoint::query_state),
+        route("GET", "/_matrix/federation/v1/state_ids/{roomId}", FederationEndpoint::query_state_ids),
+        route("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", FederationEndpoint::event_auth),
+        route("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", FederationEndpoint::get_missing_events),
+        route("GET", "/_matrix/federation/v1/hierarchy/{roomId}", FederationEndpoint::space_hierarchy),
+        route("GET", "/_matrix/federation/v1/timestamp_to_event/{roomId}", FederationEndpoint::timestamp_to_event),
+        route("GET", "/_matrix/federation/v1/media/download/{mediaId}", FederationEndpoint::media_download),
+        route("GET", "/_matrix/federation/v1/media/thumbnail/{mediaId}", FederationEndpoint::media_thumbnail),
+        route("PUT", "/_matrix/federation/v1/exchange_third_party_invite/{roomId}",
+              FederationEndpoint::exchange_third_party_invite),
+    };
+}
+
+auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch
+{
+    // Match on the path alone: the query string is never part of a route.
+    auto const target_has_query = target.find('?');
+    auto const target_path = target_has_query == std::string_view::npos ? target : target.substr(0U, target_has_query);
+    for (auto const& candidate : federation_routes())
+    {
+        // Exact templates (no placeholders) match literally; the dynamic routes below match on a prefix.
+        if (candidate.method != method)
+        {
+            continue;
+        }
+        if (candidate.path_template == target_path)
+        {
+            return {true, candidate, {}};
+        }
+        // Each placeholder route requires the exact number of non-empty trailing segments, so a missing or extra
+        // segment is not routed.
+        if (candidate.endpoint == FederationEndpoint::transaction &&
+            candidate.path_template == "/_matrix/federation/v1/send/{txnId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::make_join &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/make_join/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        // send_join, send_leave and invite exist as both v1 and v2; the template check keeps each version on its own
+        // route entry.
+        if (candidate.endpoint == FederationEndpoint::send_join &&
+            candidate.path_template == "/_matrix/federation/v2/send_join/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v2/send_join/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::send_join &&
+            candidate.path_template == "/_matrix/federation/v1/send_join/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send_join/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::make_leave &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/make_leave/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::send_leave &&
+            candidate.path_template == "/_matrix/federation/v2/send_leave/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v2/send_leave/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::send_leave &&
+            candidate.path_template == "/_matrix/federation/v1/send_leave/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send_leave/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::make_knock &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/make_knock/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::send_knock &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send_knock/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::invite &&
+            candidate.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v2/invite/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::invite &&
+            candidate.path_template == "/_matrix/federation/v1/invite/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/invite/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        // The remaining routes have a single template, so the endpoint and prefix are enough.
+        if (candidate.endpoint == FederationEndpoint::backfill &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/backfill/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::edu &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send_edu/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_user_devices &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/user/devices/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_event &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/event/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_state &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/state/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_state_ids &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/state_ids/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::event_auth &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/event_auth/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::get_missing_events &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/get_missing_events/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::space_hierarchy &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/hierarchy/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::timestamp_to_event &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/timestamp_to_event/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::media_download &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/media/download/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::exchange_third_party_invite &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/exchange_third_party_invite/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::media_thumbnail &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/media/thumbnail/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+    }
+
+    // No route matched this method and path; the caller turns this into M_UNRECOGNIZED rather than guessing.
+    return {false, {}, "federation route not found"};
+}
+
+auto federation_methods_for_path(std::string_view target) -> std::vector<std::string>
+{
+    auto methods = std::vector<std::string>{};
+    for (auto const& candidate : federation_routes())
+    {
+        if (std::ranges::find(methods, candidate.method) != methods.end())
+        {
+            continue;
+        }
+        if (match_federation_route(candidate.method, target).matched)
+        {
+            methods.push_back(candidate.method);
+        }
+    }
+    return methods;
+}
+
+auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes,
+                                     std::uint32_t max_transaction_pdus, std::uint32_t max_transaction_edus)
+    -> FederationTransactionDecision
+{
+    auto result = [&]() -> FederationTransactionDecision {
+        if (!server_name_is_valid(transaction.origin))
+        {
+            return {false, "invalid transaction origin"};
+        }
+        if (transaction.transaction_id.empty())
+        {
+            return {false, "transaction id is required"};
+        }
+        if (transaction.byte_size > max_transaction_bytes)
+        {
+            return {false, "transaction exceeds configured byte limit"};
+        }
+        if (transaction.pdus.size() > max_transaction_pdus)
+        {
+            return {false, "transaction exceeds configured PDU count limit"};
+        }
+        if (transaction.edus.size() > max_transaction_edus)
+        {
+            return {false, "transaction exceeds configured EDU count limit"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.accepted ? "transaction.accepted" : "transaction.rejected",
+                   {
+                       {"origin",         transaction.origin,                      false},
+                       {"transaction_id", transaction.transaction_id,              false},
+                       {"pdus",           std::to_string(transaction.pdus.size()), false},
+                       {"edus",           std::to_string(transaction.edus.size()), false},
+                       {"reason",         result.reason,                           false}
+    });
+    return result;
+}
+
+auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string
+{
+    return "federation." + std::string{federation_endpoint_name(route.endpoint)} + " origin=" + std::string{origin};
+}
+
+} // namespace merovingian::federation

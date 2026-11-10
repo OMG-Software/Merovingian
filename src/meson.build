@@ -1,5 +1,5 @@
 subdir('crypto')
-# canonicaljson before auth: auth links it (identity.cpp, oidc_discovery.cpp).
+# canonicaljson before auth: auth links it (Identity.cpp, OidcDiscovery.cpp).
 subdir('canonicaljson')
 subdir('auth')
 subdir('core')
@@ -55,7 +55,7 @@ thumbnail_worker_exe = []
 if thumbnail_worker_available
   thumbnail_worker_exe = executable(
     'merovingian-thumbnail-worker',
-    sources: files('media/decoder_hardening.cpp', 'media/DecoderHardeningOps.cpp', 'media/thumbnailer.cpp', 'media/thumbnail_worker_main.cpp'),
+    sources: files('media/DecoderHardening.cpp', 'media/DecoderHardeningOps.cpp', 'media/Thumbnailer.cpp', 'media/thumbnail_worker_main.cpp'),
     include_directories: inc,
     dependencies: [libpng_dep, turbojpeg_dep],
     link_with: [core_lib, platform_lib],

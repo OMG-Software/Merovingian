@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX EVENT RELATIONSHIPS CONFORMANCE TESTS                    |
@@ -27,9 +27,9 @@
 // |    m.reference   — reference to another event                           |
 // +-------------------------------------------------------------------------+
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -39,7 +39,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/FetchThreadsRequest.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

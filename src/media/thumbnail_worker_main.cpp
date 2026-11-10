@@ -10,8 +10,8 @@
 //      FreeBSD Capsicum) before reading any input — fail-closed: if any
 //      applicable control cannot be applied, the worker exits before reading
 //      stdin rather than decoding untrusted bytes unconfined (see
-//      media/decoder_hardening.hpp),
-//   2. reads a single framed request from stdin (see media/thumbnailer.hpp),
+//      media/DecoderHardening.hpp),
+//   2. reads a single framed request from stdin (see media/Thumbnailer.hpp),
 //   3. decodes PNG (libpng) or JPEG (libjpeg-turbo) into an RGBA8 buffer,
 //      enforcing a pixel-count bomb guard,
 //   4. resamples to the requested geometry (scale or crop), and
@@ -33,9 +33,9 @@
 #include "merovingian/media/ThumbnailWorkerRequest.hpp"
 #include "merovingian/media/ThumbnailWorkerResponse.hpp"
 #include "merovingian/media/ThumbnailWorkerStatus.hpp"
-#include "merovingian/media/decoder_hardening.hpp"
-#include "merovingian/media/thumbnailer.hpp"
-#include "merovingian/platform/signal_hardening.hpp"
+#include "merovingian/media/DecoderHardening.hpp"
+#include "merovingian/media/Thumbnailer.hpp"
+#include "merovingian/platform/SignalHardening.hpp"
 
 #include <png.h>
 #include <sys/stat.h>
@@ -85,7 +85,7 @@ using merovingian::media::ThumbnailWorkerStatus;
 // Hard ceilings the worker imposes on itself regardless of the request, so a
 // malformed frame or hostile image cannot exhaust the host. The resource
 // limits applied by hardening (address space, CPU, file size, core dumps,
-// open files) live in media/decoder_hardening.cpp alongside the platform
+// open files) live in media/DecoderHardening.cpp alongside the platform
 // sandbox they precede.
 constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U; // 64 MiB source
 constexpr std::uint32_t absolute_max_dimension = merovingian::media::max_thumbnail_dimension;

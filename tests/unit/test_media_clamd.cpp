@@ -5,7 +5,7 @@
 // what it was sent on its own thread; every assertion runs here, on the test thread.
 
 #include "../support/FakeClamdServer.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/media/ClamdScanResult.hpp"
 #include "merovingian/media/ClamdScanner.hpp"
 #include "merovingian/media/ClamdScannerSettings.hpp"

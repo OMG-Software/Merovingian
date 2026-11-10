@@ -6,14 +6,14 @@
 // uncapped it must equal the sum of the exact per-room counts /sync reports; when capped it must
 // never count more than they would.
 
-#include "../support/room_history_fixture.hpp"
+#include "../support/RoomHistoryFixture.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
-#include "merovingian/homeserver/stored_push_rules.hpp"
-#include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/homeserver/StoredPushRules.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

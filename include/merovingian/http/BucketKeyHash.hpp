@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
+#include "merovingian/crypto/Random.hpp"
 
 #include <array>
 #include <cstddef>

@@ -6,10 +6,10 @@
 // for a room they cannot serve. The spec does not say what a resident answers when it has no tip; a template with
 // empty `prev_events` would detach the joiner's event from the room's graph. Moved here from
 // tests/conformance/test_event_depth_conformance.cpp (issue 551): conformance tests hold spec requirements only.
-#include "../federation_signing_test_support.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -19,14 +19,14 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

@@ -123,19 +123,19 @@ namespace merovingian::database
 //
 //   rooms               membership_template_provider (make_join/leave/knock),
 //                       directory_query_provider, space_hierarchy_provider —
-//                       local_http_router.cpp:1278, :1749, space_hierarchy.cpp
+//                       LocalHttpRouter.cpp:1278, :1749, SpaceHierarchy.cpp
 //   membership          directory_query_provider (joined servers for a room
-//                       alias), space_hierarchy.cpp's joined_member_count —
-//                       local_http_router.cpp:1749
+//                       alias), SpaceHierarchy.cpp's joined_member_count —
+//                       LocalHttpRouter.cpp:1749
 //   current_state       membership_template_provider (auth_events),
 //                       room_version_resolver, room_server_acl_provider,
-//                       space_hierarchy.cpp (join_rule/is_space/space_children)
-//                       — local_http_router.cpp:1335, :1830, :1838
+//                       SpaceHierarchy.cpp (join_rule/is_space/space_children)
+//                       — LocalHttpRouter.cpp:1335, :1830, :1838
 //   events              membership_template_provider (forward extremities),
 //                       build_backfill_pdus, build_state_response,
 //                       build_state_ids_response,
 //                       build_get_missing_events_response —
-//                       local_http_router.cpp:1354, federation/event_query.cpp
+//                       LocalHttpRouter.cpp:1354, federation/EventQuery.cpp
 //   event_edges         reconstruct_event_relations populates
 //                       PersistentEvent::prev_event_ids from this table;
 //                       without it every event's prev_events reads back
@@ -148,13 +148,13 @@ namespace merovingian::database
 //   event_signatures    same reconstruct_event_relations dependency, for
 //                       PersistentEvent::signatures
 //   room_aliases        directory_query_provider (find_room_alias) —
-//                       local_http_router.cpp:1736
+//                       LocalHttpRouter.cpp:1736
 //   server_signing_keys remote_key_cache_probe / remote_key_resolver cache
 //                       OTHER servers' keys here (find_cached_remote_key /
-//                       store_server_signing_key) — local_http_router.cpp:
-//                       1857-1871, federation/remote_key_cache.cpp. Column-
+//                       store_server_signing_key) — LocalHttpRouter.cpp:
+//                       1857-1871, federation/RemoteKeyCache.cpp. Column-
 //                       restricted: the worker load path (see
-//                       postgresql_store.cpp load_persistent_rows) never
+//                       PostgresqlStore.cpp load_persistent_rows) never
 //                       selects the secret_key column, and
 //                       provision-federation-worker-role.sql grants SELECT
 //                       on exactly the other four columns — so this entry
@@ -255,7 +255,7 @@ namespace detail
 } // namespace detail
 
 // Called after an event has been added to `PersistentStore::events`, with the event's ID. The
-// homeserver installs the redaction reconciler here (see homeserver/redaction_service.hpp).
+// homeserver installs the redaction reconciler here (see homeserver/RedactionService.hpp).
 using RedactionObserver = std::function<void(PersistentStore&, std::string const&)>;
 
 struct PersistentStore final
@@ -428,7 +428,7 @@ struct PersistentStore final
     // The state-group tables (ADR-0064) with their hash indexes (ADR-0325). Read-only through the
     // tables; every change goes through them, so a writer cannot leave an index behind. Lookups:
     // `event_state_groups.state_group_of(event_id)`, `state_groups.find(id)`,
-    // `state_group_state.entries_of(id)`; see state_group_table_support.hpp for the reader discipline.
+    // `state_group_state.entries_of(id)`; see StateGroupTableSupport.hpp for the reader discipline.
     StateGroupTable state_groups{};
     StateGroupEntryTable state_group_state{};
     EventStateGroupTable event_state_groups{};

@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
-#include "merovingian/events/authorization.hpp"
-#include "merovingian/events/state_resolution.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/StateResolution.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

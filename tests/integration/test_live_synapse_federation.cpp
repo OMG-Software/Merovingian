@@ -7,12 +7,12 @@
 // skipped in CI environments without network access. Each scenario
 // checks connectivity first and SKIP()s if the remote is unreachable.
 
-#include "federation_signing_test_support.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"

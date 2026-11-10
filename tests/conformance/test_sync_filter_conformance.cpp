@@ -23,7 +23,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/sync/SyncFilter.hpp"
 
 #include <catch2/catch_test_macros.hpp>

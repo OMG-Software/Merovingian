@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Load/soak evidence harness for the "Global runtime lock" release blocker
 // (docs/todos/production-milestone.md, "Release-blocking functional holes").
@@ -48,12 +48,12 @@
 // in test_request_lock_contention_flow.cpp; this harness does not duplicate
 // it.
 
-#include "../federation_signing_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "bounded_connect.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -61,13 +61,13 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"
@@ -105,7 +105,7 @@ namespace
 // test_http_server_listener_flow.cpp: both files live in tests/integration/,
 // and per tests/support/AGENTS.md an I/O-performing helper used by exactly
 // one suite's files stays local to that suite rather than moving into
-// tests/support/ (the documented exception there, tls_mock_server.hpp, is
+// tests/support/ (the documented exception there, TlsMockServer.hpp, is
 // specifically for helpers shared *across* suites). Promoting these into a
 // shared tests/integration/ header would mean editing the existing,
 // recently-landed keep-alive test file purely for reuse — out of scope for
@@ -401,7 +401,7 @@ struct SimulatedRemote final
 }
 
 // Builds a real "Authorization: X-Matrix ..." header exactly as a live peer
-// would (src/federation/outbound_transaction.cpp's build_authorization_header
+// would (src/federation/OutboundTransactionSupport.cpp's build_authorization_header
 // mirrored here), so the request this harness sends is authenticated through
 // the production verification path, not a test-only bypass.
 [[nodiscard]] auto x_matrix_header(SimulatedRemote const& remote, std::string_view destination, std::string_view method,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // End-to-end proof that merovingian::homeserver::ingest_pdu_event — the
-// production federation PDU sink (src/homeserver/local_http_router.cpp) —
+// production federation PDU sink (src/homeserver/LocalHttpRouter.cpp) —
 // is actually wired to ADR-0064 phase B1's state bookkeeping, not just the
 // helper functions in isolation (see tests/unit/test_state_bookkeeping.cpp
 // for those). Tags: [pdu_ingestion][state_groups].
@@ -10,12 +10,12 @@
 // receipt of a PDU", "Transactions" (a rejected/unprocessable PDU must not
 // fail the whole transaction).
 
-#include "../support/master_key.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -26,15 +26,15 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/DeferredPduRetryJob.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/deferred_pdu_retry.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/DeferredPduRetry.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

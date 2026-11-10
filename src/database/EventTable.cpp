@@ -4,9 +4,9 @@
 #include "merovingian/database/EventTable.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/RelationKind.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Limits.hpp"
 
 #include <algorithm>
 #include <charconv>

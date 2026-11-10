@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY FIX TESTS — Issues #460-#463                                   |
@@ -9,24 +9,24 @@
 // |  the fix establishes — not implementation details.                      |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InviteAcceptResult.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         IS-DELEGATED 3PID BIND/UNBIND ROUND-TRIP INTEGRATION TEST       |
@@ -19,10 +19,10 @@
 
 #include "../support/MockIdentityServer.hpp"
 #include "../support/ScopedThreadJoin.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -35,7 +35,7 @@
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
-#include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/identity/TestForcedIdentityResolution.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"

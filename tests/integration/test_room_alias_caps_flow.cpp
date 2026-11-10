@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // Security audit run-4 F-03 (ADR-0581): a room alias is created only while its creator is under
 // max_room_aliases_per_user and its room under max_room_aliases_per_room, so the alias listing
@@ -10,16 +10,16 @@
 // GET /rooms/{roomId}/aliases. The spec sets no limit; M_TOO_LARGE is this server's per-user cap code.
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

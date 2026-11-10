@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -16,8 +16,8 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/retention_sweep.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/RetentionSweep.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

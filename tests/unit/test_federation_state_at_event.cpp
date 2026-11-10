@@ -7,10 +7,10 @@
 // (`compute_state_before`, `compute_state_after`, `record_event_state`), so the recorded state is
 // what a real room would hold.
 
-#include "../support/ingested_state_fixture.hpp"
+#include "../support/IngestedStateFixture.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/federation/event_query.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/federation/EventQuery.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -73,7 +73,7 @@ struct NewEvent final
     return stored;
 }
 
-// Stores `event` and records its state the way ingestion does (tests/support/ingested_state_fixture.hpp).
+// Stores `event` and records its state the way ingestion does (tests/support/IngestedStateFixture.hpp).
 auto ingest(db::PersistentStore& store, NewEvent const& event) -> void
 {
     auto const stored = make_event(event);

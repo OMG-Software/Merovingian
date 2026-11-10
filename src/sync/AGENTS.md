@@ -14,22 +14,22 @@ Spec authority:
 | `StreamToken.cpp` | Encode/decode stream ordering tokens; used for `since=` / `next_batch` / `from=` parameters |
 | `ToDevicePosition.cpp` | Encode/decode the sliding sync `to_device` extension's position with its stream token epoch; exact decimal parse (ADR-0592) |
 | `SyncFilter.cpp` | Parse and apply sync filter arguments (event type filters, room filters, timeline limits); `PreparedRoomEventFilter`, the same rules over hash sets and a sorted prefix list for a caller that judges many events (`POST /search`, ADR-0332). A change to the rules in `event_passes_filter` / `room_passes_filter` goes into both; `test_prepared_room_event_filter.cpp` holds them equal |
-| `type_pattern.cpp` | `type_pattern_matches`: the `*` wildcard (anywhere, any number of times) of `types` / `not_types`, iterative with no backtracking (ADR-0541); the one matcher both filter paths use |
+| `TypePattern.cpp` | `type_pattern_matches`: the `*` wildcard (anywhere, any number of times) of `types` / `not_types`, iterative with no backtracking (ADR-0541); the one matcher both filter paths use |
 | `SyncNotifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
-| `sliding_sync_parser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
-| `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
-| `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
-| `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
+| `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
+| `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
+| `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
+| `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
 | `RoomAccess.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
-| `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
+| `ReceiptVisibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
 | `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
 | `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
-| `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
+| `SlidingSync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
 | `DeviceListDelta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
 ## Stream token format
@@ -206,7 +206,7 @@ use it; a new read path that returns timeline events to a client should too.
 `unsigned.m.relations` is built by `BundledAggregations` and nothing else, at the point an event is serialized:
 `/messages`, `/context`, `/event`, the `/relations` forms, `/search` (results and context), `/threads`, `/sync`
 and sliding sync. `/sync` and sliding sync pass `enabled = limited` (spec: only a `limited` section); a new
-read path that returns timeline events calls `make_bundled_aggregations` (`room_service.hpp`) and `apply()`.
+read path that returns timeline events calls `make_bundled_aggregations` (`RoomService.hpp`) and `apply()`.
 Children come from `EventTable::for_each_relation_child_newest_first`, never a scan of `store.events`, capped
 by `max_aggregated_children_examined` (per relation kind, so one kind never exhausts another's window), `max_aggregated_edits_parsed` and `max_reference_chunk_entries`. A child
 counts only if it is in the parent's room, not rejected or soft-failed, not from an ignored sender and
@@ -317,7 +317,7 @@ nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
   `ClientApiLimits::max_messages_events_examined` events per page.
 
 Tests that write events straight into a `PersistentStore` must record a state group for them
-(`tests/support/room_history_fixture.hpp`), or the filter hides them.
+(`tests/support/RoomHistoryFixture.hpp`), or the filter hides them.
 
 ## Device lists
 
@@ -342,7 +342,7 @@ both changed and left to whichever came last. Do not walk
 `store.device_list_changes` directly.
 
 Rows are written where a membership is applied to the roster, whichever path learned it:
-`apply_membership_to_roster` (`room_service.hpp`) records `changed` when a user joins and
+`apply_membership_to_roster` (`RoomService.hpp`) records `changed` when a user joins and
 `left` when they leave the last room they share with a local user, for local members of the
 room and, when the user is local, for them. The membership acceptor (`send_join`,
 `send_leave`) and `ingest_pdu_event` call it; a roster edit that skips it silently stops

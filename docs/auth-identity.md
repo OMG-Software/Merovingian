@@ -144,7 +144,7 @@ production-gated.
   change any of the existing derivation labels, BLAKE2b inputs or persisted
   digest formats; see [ADR-0128](adr/0128-lock-derived-key-storage-without-changing-persisted-derivations.md).
 - The v3 and v4 HMAC keys are derived together and cached
-  (`token_hmac_keys`, `src/homeserver/auth_service.cpp`). Cache identity includes
+  (`token_hmac_keys`, `src/homeserver/AuthService.cpp`). Cache identity includes
   path, device, inode, size, modification/change timestamps (with nanoseconds),
   mode and owner; an insecure or missing file cannot reuse a cache entry.
   Every returned copy has its own locked allocation. Allocation failure
@@ -174,8 +174,8 @@ production-gated.
   masquerade is resolved exactly once, at the top of
   `handle_client_server_request_impl`, by substituting `req.access_token`
   with an internal token (`appservice::encode_masquerade_token`,
-  `appservice/masquerade_token.hpp`) that `authenticated_user`/
-  `authenticated_session`/`authenticated_admin_user` in `auth_service.cpp`
+  `appservice/MasqueradeToken.hpp`) that `authenticated_user`/
+  `authenticated_session`/`authenticated_admin_user` in `AuthService.cpp`
   recognise and re-validate — never a real DB-backed session row, and never
   sent or logged. A raw client-presented token already in that internal
   shape is rejected before any auth logic runs, so the format cannot be
@@ -207,7 +207,7 @@ production-gated.
   (`src/appservice/AppserviceClient.cpp`) implements `send_transaction`
   (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
   and the `/thirdparty/*` queries. Delivery is a durable queue (ADR-0163):
-  `enqueue_appservice_delivery` (`src/homeserver/appservice_delivery.cpp`)
+  `enqueue_appservice_delivery` (`src/homeserver/AppserviceDelivery.cpp`)
   writes one `appservice_outbox` row per namespace-interested appservice at
   event time and makes no network call; one dedicated thread
   (`drain_appservice_queues`, run by a `PeriodicJob` started in `main.cpp`)
@@ -283,7 +283,7 @@ production-gated.
   learned over federation (`send_join`, `send_leave`, a PDU in a `/send` transaction) records
   `changed` or `left` for the local members the same way a local membership change does:
   every path that learns a membership goes through `apply_membership_to_roster`
-  (`room_service.hpp`), which updates the roster and writes one batch of rows. A user who joins
+  (`RoomService.hpp`), which updates the roster and writes one batch of rows. A user who joins
   a room over federation is also listed in their own `changed`, which the spec permits ("a
   server may add Alice to `changed` when Alice and Bob share a new room"). `PUT
   /devices/{deviceId}` sends an `m.device_list_update` for the renamed device to every server
@@ -308,7 +308,7 @@ production-gated.
   signed by its owner's self-signing key, and a user as verified when the viewer's own
   user-signing key has signed that user's master key. Every link in that chain now crosses
   servers:
-  - **Signatures are merged in one place.** `federation/key_signatures.hpp` merges the
+  - **Signatures are merged in one place.** `federation/KeySignatures.hpp` merges the
     signatures uploaded through `POST /keys/signatures/upload` into a published key. Every
     path that serves keys uses it: client `/keys/query`, federation `/user/keys/query` and
     `/user/devices/{userId}`, and the `keys` of outbound `m.device_list_update`.
@@ -527,7 +527,7 @@ so it has its own, deliberately separate, lifecycle:
   (part of the v1 schema), never
   `access_tokens`. See `docs/database-persistence.md` for the schema.
 - **Separate mint path.** `homeserver::request_openid_token`
-  (`src/homeserver/auth_service.cpp`) is the only function that writes to
+  (`src/homeserver/AuthService.cpp`) is the only function that writes to
   `openid_tokens`. It reuses the same keyed-hash machinery
   (`issue_token_hash`, preferring the master-key-derived v4 HMAC, falling
   back to v3/v2) access tokens use — sharing a well-reviewed hash function
@@ -556,7 +556,7 @@ so it has its own, deliberately separate, lifecycle:
   requires no X-Matrix request signature and is not rate-limited: the caller
   may be any third-party service, not necessarily a homeserver. It is
   therefore dispatched outside the federation module's signed-request path
-  entirely (`src/homeserver/local_http_router.cpp`,
+  entirely (`src/homeserver/LocalHttpRouter.cpp`,
   `federation_openid_userinfo_response`), alongside the same-shaped bypass
   for `GET /_matrix/key/v2/server`.
 - **Retention.** `store_openid_token` sweeps every already-expired row
@@ -713,7 +713,7 @@ are reversible where deactivation is not.
   completed `m.login.password` auth stage proving current knowledge of the
   password. A missing, incomplete, or wrong-credential `auth` block returns
   the `401` UIA challenge, never `403`.
-- **`homeserver::deactivate_local_user`** (`src/homeserver/auth_service.cpp`)
+- **`homeserver::deactivate_local_user`** (`src/homeserver/AuthService.cpp`)
   marks the account permanently deactivated, revokes every access and
   refresh token for the user — including the caller's own, unlike a
   password change, since there is no session left worth preserving — and
@@ -732,7 +732,7 @@ are reversible where deactivation is not.
   rejecting a re-registration of the same localpart.
 - **Both login gates check it first.** `complete_login`'s shared tail and
   the token-login path in `login_local_user_by_id` (`src/homeserver/
-  auth_service.cpp`) each reject `user.deactivated` with `403` "account
+  AuthService.cpp`) each reject `user.deactivated` with `403` "account
   deactivated" before evaluating the reversible `locked`/`suspended`
   states — deactivation outranks them because it is permanent where they
   are not.
@@ -777,7 +777,7 @@ place a client request reaches it shares one concurrency budget, `HomeserverRunt
 | UIA password check (`verify_local_user_password`) | slot, else 429 | account exists, stored hash unchanged, access token still valid; otherwise not verified |
 
 Hashing uses `crypto_pwhash_str` with libsodium's `crypto_pwhash_OPSLIMIT_INTERACTIVE` and
-`crypto_pwhash_MEMLIMIT_INTERACTIVE` (about 27 ms and 64 MiB per hash), set in `src/auth/password.cpp` and not
+`crypto_pwhash_MEMLIMIT_INTERACTIVE` (about 27 ms and 64 MiB per hash), set in `src/auth/Password.cpp` and not
 configurable. The unit, conformance and integration test binaries link a wrapper that first refuses any other cost
 and then hashes at the minimum cost; the production library is unchanged and `tests/password_cost/` proves the
 production cost ([ADR-0510](adr/0510-the-test-binaries-hash-passwords-at-minimum-cost.md)).
@@ -795,7 +795,7 @@ limiter's per-user tier keys on the *authenticated* user, who does not exist
 before a login succeeds (see `docs/http-transport.md` "Rate-limit policy").
 Guesses against one account spread across many source IPs would therefore
 accumulate against nothing. `login_local_user`
-(`src/homeserver/auth_service.cpp`) counts failed password logins against the
+(`src/homeserver/AuthService.cpp`) counts failed password logins against the
 *claimed* user ID, whether or not that user exists, so the throttle cannot be
 used to probe which accounts are real.
 
@@ -863,7 +863,7 @@ tier) makes expensive. The tables are guarded by `HomeserverRuntime::mutex`.
 
 ### User-interactive auth is separate
 
-`verify_local_user_password` (`src/homeserver/auth_service.cpp`) is the password
+`verify_local_user_password` (`src/homeserver/AuthService.cpp`) is the password
 stage of every UI-Auth (UIA) flow: password change, account deactivation,
 adding a 3PID, cross-signing key upload, and single/bulk device deletion. It is
 reached only with a valid access token, so it has its own counter, keyed on
@@ -1002,7 +1002,7 @@ These remain deferred:
 - Full Matrix UI-auth fallback flows and account recovery endpoints.
 - An HTTP admin bootstrap endpoint (the CLI flags `--bootstrap-admin-localpart` /
   `--bootstrap-admin-password-file` in `src/main.cpp`, backed by
-  `homeserver::bootstrap_admin_user` in `src/homeserver/auth_service.cpp`,
+  `homeserver::bootstrap_admin_user` in `src/homeserver/AuthService.cpp`,
   cover the bootstrap need at process start-up).
 
 ## Profile updates

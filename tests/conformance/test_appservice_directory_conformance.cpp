@@ -12,8 +12,8 @@
 
 #include "../support/MockAppservice.hpp"
 #include "../support/TestAppservice.hpp"
-#include "../support/appservice_test_config.hpp"
-#include "../support/json_test_support.hpp"
+#include "../support/AppserviceTestConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

@@ -4,9 +4,9 @@
 #include "merovingian/appservice/AppserviceRegistry.hpp"
 
 #include "merovingian/appservice/AppserviceRegistration.hpp"
-#include "merovingian/appservice/registration.hpp"
-#include "merovingian/appservice/secret_view.hpp"
-#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/appservice/Registration.hpp"
+#include "merovingian/appservice/SecretView.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
 
 #include <algorithm>
 #include <string_view>

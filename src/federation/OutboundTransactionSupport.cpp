@@ -1,0 +1,363 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
+
+#include "merovingian/canonicaljson/CanonicalJsonError.hpp"
+#include "merovingian/canonicaljson/ParseError.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/crypto/Random.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
+#include "merovingian/federation/OutboundTransactionResult.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <array>
+#include <chrono>
+#include <optional>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace merovingian::federation
+{
+
+namespace
+{
+
+    constexpr auto base_retry_interval_ms = std::uint64_t{2000U};
+    constexpr auto max_retry_interval_ms = std::uint64_t{300000U};
+    constexpr auto max_consecutive_failures_before_circuit_open = std::uint32_t{3U};
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("outbound_transaction", event, fields, severity);
+    }
+
+    [[nodiscard]] auto build_url(OutboundCall const& call) -> std::string
+    {
+        auto url = std::string{"https://"};
+        // M-02: the URL host is the TLS identity, not the resolved target. On an
+        // SRV path resolved_host is the SRV target, and the spec requires the
+        // certificate to match the original hostname instead. The connection
+        // still lands on the resolved target because pinned_addresses is bound
+        // to this authority through CURLOPT_RESOLVE.
+        auto const& url_host = call.tls_server_name.empty() ? call.resolved_host : call.tls_server_name;
+        // IPv6 literals contain colons that would collide with the port separator
+        // in the URL authority, so they must be bracketed per RFC 3986.
+        auto const needs_brackets = url_host.find(':') != std::string::npos && url_host.front() != '[';
+        if (needs_brackets)
+        {
+            url += '[';
+        }
+        url += url_host;
+        if (needs_brackets)
+        {
+            url += ']';
+        }
+        // Always include the port so CURLOPT_RESOLVE entries match the URL
+        // authority. Matrix federation defaults to 8448 anyway, so the URL
+        // is rarely shorter without it.
+        url += ':';
+        url += std::to_string(call.resolved_port);
+        url += call.transaction.target;
+        return url;
+    }
+
+    [[nodiscard]] auto build_authorization_header(OutboundCall const& call) -> std::string
+    {
+        // X-Matrix authorization header per the Matrix federation spec. The
+        // signature is produced through the same primitive the inbound
+        // verifier uses so the project speaks a single signing scheme.
+        auto signature =
+            make_federation_signature(call.transaction.origin, call.transaction.destination, call.transaction.method,
+                                      call.transaction.target, call.transaction.body, call.secret_key.bytes());
+        auto header = std::string{"X-Matrix origin=\""};
+        header += call.transaction.origin;
+        header += "\",destination=\"";
+        header += call.transaction.destination;
+        header += "\",key=\"";
+        header += call.key_id;
+        header += "\",sig=\"";
+        header += signature;
+        header += '"';
+        return header;
+    }
+
+    [[nodiscard]] auto status_is_success(std::uint16_t status) noexcept -> bool
+    {
+        return status >= 200U && status < 300U;
+    }
+
+} // namespace
+
+auto make_outbound_transaction(std::string_view destination, std::string_view method, std::string_view target,
+                               std::string_view origin, std::string_view body) -> OutboundTransaction
+{
+    auto transaction = OutboundTransaction{};
+    transaction.destination = destination;
+    transaction.method = method;
+    transaction.target = target;
+    transaction.origin = origin;
+    transaction.body = body;
+    return transaction;
+}
+
+auto make_federation_transaction_id() -> std::string
+{
+    auto const id = crypto::secure_random_hex(16U);
+    return id.value_or("");
+}
+
+auto build_pdu_transaction_body(std::string_view origin, std::string_view pdu_json) -> std::optional<std::string>
+{
+    if (origin.empty())
+    {
+        return std::nullopt;
+    }
+    auto pdu = canonicaljson::parse_lossless(pdu_json);
+    if (pdu.error != canonicaljson::ParseError::none ||
+        std::get_if<canonicaljson::Object>(&pdu.value.storage()) == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto pdus = canonicaljson::Array{};
+    pdus.push_back(std::move(pdu.value));
+
+    // Transaction: `origin`, `origin_server_ts` and `pdus` are all Required. A strict
+    // receiver refuses a transaction without them.
+    auto tx_root = canonicaljson::Object{};
+    auto const now_ms = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    tx_root.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+    tx_root.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
+    tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
+    tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
+
+    auto const tx_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+    if (tx_body.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return tx_body.output;
+}
+
+auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type, std::string_view edu_content_json)
+    -> std::optional<std::string>
+{
+    if (origin.empty())
+    {
+        return std::nullopt;
+    }
+    auto edu_value = canonicaljson::parse_lossless(edu_content_json);
+    if (edu_value.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+
+    // Matrix federation transactions key each EDU by "edu_type" (not "type").
+    // Synapse reads edu["edu_type"] and raises KeyError otherwise, rejecting the
+    // entire transaction (PDUs included) with HTTP 500 — so the wrong key silently
+    // breaks all outbound typing/receipt/to-device delivery.
+    auto edu_obj = canonicaljson::Object{};
+    edu_obj.push_back(canonicaljson::make_member("edu_type", canonicaljson::Value{std::string{edu_type}}));
+    edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value.value)));
+
+    auto edus_array = canonicaljson::Array{};
+    edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
+
+    auto tx_root = canonicaljson::Object{};
+    auto const now_ms = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    tx_root.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+    tx_root.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
+    tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Array{}}));
+    tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{std::move(edus_array)}));
+
+    auto const tx_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+    if (tx_body.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return tx_body.output;
+}
+
+auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type, std::string_view user_id,
+                               std::string_view event_id, std::int64_t ts, std::string_view thread_id)
+    -> std::optional<std::string>
+{
+    // Matrix spec receipt EDU content shape (per §receipts):
+    // { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
+    // with "<content (ts & thread_id, currently)>": a threaded receipt carries its thread_id.
+    auto receipt_data = canonicaljson::Object{};
+    if (!thread_id.empty())
+    {
+        receipt_data.push_back(canonicaljson::make_member("thread_id", canonicaljson::Value{std::string{thread_id}}));
+    }
+    receipt_data.push_back(canonicaljson::make_member("ts", canonicaljson::Value{ts}));
+
+    auto user_obj = canonicaljson::Object{};
+    user_obj.push_back(canonicaljson::make_member("data", canonicaljson::Value{std::move(receipt_data)}));
+    user_obj.push_back(canonicaljson::make_member(
+        "event_ids", canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{std::string{event_id}}}}));
+
+    auto receipt_type_users = canonicaljson::Object{};
+    receipt_type_users.push_back(
+        canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(user_obj)}));
+
+    auto room_obj = canonicaljson::Object{};
+    room_obj.push_back(
+        canonicaljson::make_member(std::string{receipt_type}, canonicaljson::Value{std::move(receipt_type_users)}));
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member(std::string{room_id}, canonicaljson::Value{std::move(room_obj)}));
+
+    auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content)});
+    if (result.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return result.output;
+}
+
+auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t
+{
+    auto interval = base_retry_interval_ms;
+    if (retry_count == 0U)
+    {
+        return interval;
+    }
+    for (auto attempt = std::uint32_t{0U}; attempt < retry_count; ++attempt)
+    {
+        if (interval >= max_retry_interval_ms)
+        {
+            return max_retry_interval_ms;
+        }
+        if (interval > max_retry_interval_ms / 2U)
+        {
+            return max_retry_interval_ms;
+        }
+        interval *= 2U;
+    }
+    return interval;
+}
+
+auto destination_should_retry(FederationDestination const& destination, std::uint64_t now_ts) noexcept -> bool
+{
+    if (destination.consecutive_failures >= max_consecutive_failures_before_circuit_open)
+    {
+        if (now_ts < destination.retry_after_ts)
+        {
+            return false;
+        }
+    }
+    if (now_ts < destination.retry_after_ts)
+    {
+        return false;
+    }
+    return true;
+}
+
+auto build_outbound_request(OutboundCall const& call) -> http::OutboundRequest
+{
+    auto request = http::OutboundRequest{};
+    request.method = call.transaction.method;
+    request.url = build_url(call);
+    request.body = call.transaction.body;
+    request.pinned_addresses = call.pinned_addresses;
+    request.connect_timeout_seconds = call.connect_timeout_seconds;
+    request.total_timeout_seconds = call.total_timeout_seconds;
+    request.trusted_ca_pem = call.trusted_ca_pem;
+    request.max_response_body_bytes = call.max_response_body_bytes;
+    request.headers.push_back(http::OutboundHeader{"Authorization", build_authorization_header(call)});
+    request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
+    return request;
+}
+
+auto apply_outbound_result(FederationDestination& destination, OutboundTransactionResult const& result,
+                           std::uint64_t now_ts) noexcept -> void
+{
+    if (result.sent && status_is_success(result.http_status))
+    {
+        destination.consecutive_failures = 0U;
+        destination.last_success_ts = now_ts;
+        destination.retry_after_ts = 0U;
+        destination.state = "ok";
+        return;
+    }
+    destination.consecutive_failures = destination.consecutive_failures + 1U;
+    destination.retry_after_ts = now_ts + compute_backoff(destination.consecutive_failures);
+    destination.state = "backoff";
+}
+
+auto apply_slow_success(FederationDestination& destination, std::uint32_t failures_before,
+                        std::uint64_t now_ts) noexcept -> void
+{
+    destination.consecutive_failures = failures_before + 1U;
+    destination.retry_after_ts = now_ts + compute_backoff(destination.consecutive_failures);
+    destination.state = "backoff";
+}
+
+auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
+                                  FederationDestination& destination, std::uint64_t now_ts,
+                                  std::function<std::uint64_t()> const& finished_clock) -> OutboundTransactionResult
+{
+    if (!destination_should_retry(destination, now_ts))
+    {
+        log_diagnostic("transaction.circuit_open",
+                       {
+                           {"destination",          call.transaction.destination,                     false},
+                           {"target",               call.transaction.target,                          false},
+                           {"consecutive_failures", std::to_string(destination.consecutive_failures), false},
+                           {"retry_after_ts",       std::to_string(destination.retry_after_ts),       false}
+        });
+        return OutboundTransactionResult{false, std::uint16_t{0U}, std::string{}, std::string{"circuit_open"}};
+    }
+
+    auto const request = build_outbound_request(call);
+    auto const outcome = client.perform(request);
+
+    auto result = OutboundTransactionResult{};
+    result.sent = outcome.ok;
+    result.http_status = outcome.response.status;
+    result.response_body = outcome.response.body;
+    result.error = outcome.ok ? std::string{} : std::string{http::outbound_error_name(outcome.error)};
+
+    apply_outbound_result(destination, result, finished_clock ? finished_clock() : now_ts);
+
+    if (result.sent && status_is_success(result.http_status))
+    {
+        log_diagnostic("transaction.delivered", {
+                                                    {"destination", call.transaction.destination,       false},
+                                                    {"method",      call.transaction.method,            false},
+                                                    {"target",      call.transaction.target,            false},
+                                                    {"http_status", std::to_string(result.http_status), false}
+        });
+    }
+    else
+    {
+        log_diagnostic("transaction.failed",
+                       {
+                           {"destination",   call.transaction.destination,                     false},
+                           {"method",        call.transaction.method,                          false},
+                           {"target",        call.transaction.target,                          false},
+                           {"http_status",   std::to_string(result.http_status),               false},
+                           {"error",         result.error,                                     false},
+                           {"response_body", result.response_body,                             false},
+                           {"failures",      std::to_string(destination.consecutive_failures), false}
+        });
+    }
+
+    return result;
+}
+
+} // namespace merovingian::federation

@@ -5,7 +5,7 @@
 // The header is read before any signature is checked, so any server on the network can send it.
 
 #include "fuzz_input.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -2,8 +2,8 @@
 
 #include "../support/JoiningThreads.hpp"
 #include "../support/ScopedThreadJoin.hpp"
-#include "../support/tls_mock_server.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/TlsMockServer.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/database/PersistentFederationDestination.hpp"
 #include "merovingian/database/PersistentFederationTransaction.hpp"
 #include "merovingian/database/PersistentStore.hpp"
@@ -12,7 +12,7 @@
 #include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/OutboundTransaction.hpp"
 #include "merovingian/federation/ServerDiscoveryResult.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 

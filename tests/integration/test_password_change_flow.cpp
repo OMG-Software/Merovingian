@@ -4,9 +4,9 @@
 // A password change end to end, on a real SQLite database: the auth service, the store and a
 // write the database itself refuses. A change that cannot finish must commit nothing a client
 // would have to undo, in memory or on disk.
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -20,7 +20,7 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>

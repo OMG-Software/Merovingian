@@ -8,7 +8,7 @@ namespace merovingian::events
 {
 
 // One key/value pair of the diagnostic emitted when an event is signed. Modelled
-// here rather than as an observability::StructuredLogField so event_signer.hpp
+// here rather than as an observability::StructuredLogField so EventSigner.hpp
 // does not drag the observability header (and its database/http dependencies)
 // into every translation unit that signs an event.
 struct EventSigningDiagnosticField final

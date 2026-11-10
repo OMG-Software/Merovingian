@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/json_test_support.hpp"
-#include "../support/room_history_fixture.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/RoomHistoryFixture.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"

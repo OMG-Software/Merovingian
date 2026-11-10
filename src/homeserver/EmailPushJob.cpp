@@ -4,7 +4,7 @@
 #include "merovingian/homeserver/EmailPushJob.hpp"
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/email_push.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
 #include "merovingian/push/EmailDigestQueue.hpp"
 
 #include <chrono>

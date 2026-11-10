@@ -5,9 +5,9 @@
 // with the runtime mutex released for the read. These scenarios fail against
 // the earlier design, which held every file's bytes in memory.
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -23,9 +23,9 @@
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/MediaService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>
@@ -244,12 +244,12 @@ SCENARIO("Federation media downloads run safely alongside uploads", "[media-on-d
 
 // MED-7: federation media must consult the same production media policy as
 // authenticated client downloads, before repository resolution or byte reads.
-#include "../support/json_test_support.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"

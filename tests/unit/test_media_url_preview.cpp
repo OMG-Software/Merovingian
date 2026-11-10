@@ -3,7 +3,7 @@
 
 #include "merovingian/media/OpenGraphData.hpp"
 #include "merovingian/media/UrlPreviewCache.hpp"
-#include "merovingian/media/url_preview.hpp"
+#include "merovingian/media/UrlPreview.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

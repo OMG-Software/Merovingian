@@ -11,10 +11,10 @@
 // Spec: Matrix Server-Server API v1.19, GET /timestamp_to_event/{roomId} ("404 - No event was
 // found") and GET /backfill/{roomId}; docs/matrix-v1.19-spec/server-server-api.md.
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/federation/event_query.hpp"
+#include "merovingian/federation/EventQuery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -106,7 +106,7 @@ Use this checklist for every release candidate.
 
 - A stored key signature is merged into a published key only through
   `federation::merge_visible_key_signatures()`, `published_device_keys()`, or
-  `published_cross_signing_key()` (`key_signatures.hpp`) — never by hand
+  `published_cross_signing_key()` (`KeySignatures.hpp`) — never by hand
   elsewhere.
 - An uploaded signature is shown only to its uploader's own audience unless the
   uploader owns the key, so an upload cannot speak for another user

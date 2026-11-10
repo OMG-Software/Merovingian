@@ -6,11 +6,11 @@
 // the test thread.
 
 #include "../support/FakeClamdServer.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -19,7 +19,7 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/clamd_media_scan.hpp"
+#include "merovingian/homeserver/ClamdMediaScan.hpp"
 #include "merovingian/media/MediaAcceptancePolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

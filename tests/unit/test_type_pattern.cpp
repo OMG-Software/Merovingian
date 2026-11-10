@@ -8,7 +8,7 @@
 
 #include "merovingian/sync/EventTypeFilter.hpp"
 #include "merovingian/sync/SyncFilter.hpp"
-#include "merovingian/sync/type_pattern.hpp"
+#include "merovingian/sync/TypePattern.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

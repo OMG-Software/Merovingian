@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/TestAppservice.hpp"
-#include "../support/appservice_test_config.hpp"
-#include "../support/in_memory_database_config.hpp"
+#include "../support/AppserviceTestConfig.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |        APPLICATION SERVICE TRANSACTION QUEUE (AUDIT R01)                |
@@ -23,10 +23,10 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/SqliteInsertFault.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -44,7 +44,7 @@
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/appservice_delivery.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>

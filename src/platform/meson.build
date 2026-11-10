@@ -1,11 +1,11 @@
 platform_sources = files(
-  'elf_probe.cpp',
-  'file_metadata.cpp',
+  'ElfProbe.cpp',
+  'FileMetadataSupport.cpp',
   'HardeningSelfCheck.cpp',
-  'landlock_hardening.cpp',
-  'runtime_hardening.cpp',
-  'seccomp_hardening.cpp',
-  'signal_hardening.cpp',
+  'LandlockHardening.cpp',
+  'RuntimeHardening.cpp',
+  'SeccompHardening.cpp',
+  'SignalHardening.cpp',
 )
 
 platform_lib = static_library(

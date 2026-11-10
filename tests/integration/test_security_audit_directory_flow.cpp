@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -17,12 +17,12 @@
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>

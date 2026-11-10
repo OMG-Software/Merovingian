@@ -7,7 +7,7 @@
 // |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1auth_metadata |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/auth/oidc_discovery.hpp"
+#include "merovingian/auth/OidcDiscovery.hpp"
 #include "merovingian/config/OidcConfig.hpp"
 
 #include <catch2/catch_test_macros.hpp>

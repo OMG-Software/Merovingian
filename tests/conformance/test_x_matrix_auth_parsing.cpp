@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "federation_signing_test_support.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "FederationSigningTestSupport.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

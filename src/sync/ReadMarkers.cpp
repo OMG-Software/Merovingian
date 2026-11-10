@@ -4,7 +4,7 @@
 #include "merovingian/sync/ReadMarkers.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 
 #include <algorithm>
 #include <cstddef>

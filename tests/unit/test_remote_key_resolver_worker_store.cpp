@@ -9,12 +9,12 @@
 // already cached when it started (Complement run 2, "remote is unknown").
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/ServerDiscoveryResult.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>

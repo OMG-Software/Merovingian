@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 
 // F-19 (security audit run 4): the content checks of m.room.canonical_alias and m.room.encryption apply to every local
 // writer of those state events, not only PUT /state: the POST /rooms/{roomId}/send form that names a `state_key`, and
@@ -10,9 +10,9 @@
 // "m.room.canonical_alias", "m.room.encryption" and "POST /_matrix/client/v3/createRoom".
 // ../../docs/matrix-v1.19-spec/client-server-api.md
 
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

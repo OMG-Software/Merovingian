@@ -23,13 +23,13 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/CachedServerDiscovery.hpp"
 #include "merovingian/federation/RemoteKeyResponse.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -753,7 +753,7 @@ SCENARIO("fetch_remote_server_keys via CachedServerDiscovery fails closed on dis
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // This is the resolver overload wired by the homeserver in production whenever
-// `cached_discovery` is available (see local_http_router.cpp). Both the
+// `cached_discovery` is available (see LocalHttpRouter.cpp). Both the
 // resolver's own discovery lookup and the fetch's internal lookup are meant to
 // go through the same TTL cache, so a cache-hit key resolution never repeats
 // discovery for the same server. A fresh cached key MUST short-circuit before

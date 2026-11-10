@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Complement run 10: invites and their stripped room state over federation.
 //
@@ -8,18 +8,18 @@
 // "Leaving Rooms (Rejecting Invites)".
 // URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#inviting-to-a-room
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/membership_fixture_support.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/MembershipFixtureSupport.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -30,7 +30,7 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentInvite.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/DispatchWorker.hpp"
 #include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
@@ -42,8 +42,8 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 

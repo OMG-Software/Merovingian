@@ -3,7 +3,7 @@
 
 #include "merovingian/database/StateGroupTable.hpp"
 
-#include "merovingian/database/state_group_table_support.hpp"
+#include "merovingian/database/StateGroupTableSupport.hpp"
 
 #include <cstddef>
 #include <iterator>

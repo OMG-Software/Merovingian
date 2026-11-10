@@ -9,7 +9,7 @@
 // --check-config against temp files with known permissions, so it exercises the
 // real kernel metadata path (TOCTOU-safe `lstat`) rather than a mock.
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

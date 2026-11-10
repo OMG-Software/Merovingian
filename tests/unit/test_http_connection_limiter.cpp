@@ -6,7 +6,7 @@
 
 #include "../support/JoiningThreads.hpp"
 #include "merovingian/http/ConnectionLimiter.hpp"
-#include "merovingian/http/client_address.hpp"
+#include "merovingian/http/ClientAddress.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -5,11 +5,11 @@
 // hashes the process admits at once. Four unless the operator says otherwise; a request past it
 // is answered 429 at once, before any hash work.
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/auth/Argon2idSlot.hpp"
-#include "merovingian/auth/password.hpp"
+#include "merovingian/auth/Password.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ConfigParseResult.hpp"
@@ -20,7 +20,7 @@
 #include "merovingian/config/ReloadPolicy.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 

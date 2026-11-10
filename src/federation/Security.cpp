@@ -1,0 +1,622 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/Security.hpp"
+
+#include "merovingian/config/Config.hpp"
+#include "merovingian/federation/FederationDiscoveryDecision.hpp"
+#include "merovingian/federation/FederationRequestSignature.hpp"
+#include "merovingian/federation/FederationVerificationDecision.hpp"
+#include "merovingian/federation/RemoteServerRecord.hpp"
+#include "merovingian/federation/RemoteTrustDecision.hpp"
+#include "merovingian/federation/RemoteTrustState.hpp"
+#include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/SingleLog.hpp"
+#include "merovingian/observability/StructuredLogField.hpp"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
+
+namespace merovingian::federation
+{
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
+    {
+        observability::log_diagnostic("federation_security", event, fields, severity);
+    }
+
+    [[nodiscard]] auto contains_no_control_or_space(std::string_view value) noexcept -> bool
+    {
+        for (auto const character : value)
+        {
+            auto const byte = static_cast<unsigned char>(character);
+            if (byte <= 0x20U || byte == 0x7FU)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] auto ascii_alphanumeric(char value) noexcept -> bool
+    {
+        return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+    }
+
+    [[nodiscard]] auto valid_port(std::string_view port) noexcept -> bool
+    {
+        if (port.empty() || port.size() > 5U)
+        {
+            return false;
+        }
+        auto value = std::uint16_t{0U};
+        auto const parsed = std::from_chars(port.data(), port.data() + port.size(), value);
+        return parsed.ec == std::errc{} && parsed.ptr == port.data() + port.size() && value != 0U;
+    }
+
+    [[nodiscard]] auto valid_ipv4(std::string_view host) noexcept -> bool
+    {
+        auto remaining = host;
+        for (unsigned index = 0; index < 4U; ++index)
+        {
+            auto const separator = remaining.find('.');
+            auto const part = remaining.substr(0U, separator);
+            auto value = unsigned{0U};
+            auto const parsed = std::from_chars(part.data(), part.data() + part.size(), value);
+            if (part.empty() || part.size() > 3U || parsed.ec != std::errc{} ||
+                parsed.ptr != part.data() + part.size() || value > 255U)
+            {
+                return false;
+            }
+            if (index == 3U)
+            {
+                return separator == std::string_view::npos;
+            }
+            if (separator == std::string_view::npos)
+            {
+                return false;
+            }
+            remaining.remove_prefix(separator + 1U);
+        }
+        return false;
+    }
+
+    [[nodiscard]] auto valid_ipv6(std::string_view host) noexcept -> bool
+    {
+        auto text = std::array<char, 256U>{};
+        if (host.empty() || host.size() >= text.size())
+        {
+            return false;
+        }
+        std::ranges::copy(host, text.begin());
+        auto address = in6_addr{};
+        return ::inet_pton(AF_INET6, text.data(), &address) == 1;
+    }
+
+    [[nodiscard]] auto valid_server_name_host(std::string_view host) noexcept -> bool
+    {
+        if (host.empty() || host.size() > 255U || !contains_no_control_or_space(host))
+        {
+            return false;
+        }
+
+        if (host.front() == '[')
+        {
+            if (host.size() < 4U || host.back() != ']')
+            {
+                return false;
+            }
+            return valid_ipv6(host.substr(1U, host.size() - 2U));
+        }
+
+        auto const numeric_address = std::ranges::all_of(host, [](char value) {
+            return (value >= '0' && value <= '9') || value == '.';
+        });
+        if (numeric_address && std::ranges::count(host, '.') == 3)
+        {
+            return valid_ipv4(host);
+        }
+
+        return std::ranges::all_of(host, [](char value) {
+            return ascii_alphanumeric(value) || value == '-' || value == '.';
+        });
+    }
+
+    [[nodiscard]] auto valid_matrix_server_name(std::string_view server_name) noexcept -> bool
+    {
+        if (server_name.empty() || server_name.size() > 261U)
+        {
+            return false;
+        }
+
+        auto host = server_name;
+        if (server_name.front() == '[')
+        {
+            auto const close = server_name.find(']');
+            if (close == std::string_view::npos)
+            {
+                return false;
+            }
+            host = server_name.substr(0U, close + 1U);
+            auto const suffix = server_name.substr(close + 1U);
+            return valid_server_name_host(host) &&
+                   (suffix.empty() || (suffix.front() == ':' && valid_port(suffix.substr(1U))));
+        }
+
+        auto const colon = server_name.find(':');
+        if (colon != std::string_view::npos)
+        {
+            if (server_name.find(':', colon + 1U) != std::string_view::npos)
+            {
+                return false;
+            }
+            host = server_name.substr(0U, colon);
+            return valid_server_name_host(host) && valid_port(server_name.substr(colon + 1U));
+        }
+        return valid_server_name_host(host);
+    }
+
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    // IPv4 non-public ranges used for SSRF rejection. Includes loopback (127/8),
+    // RFC 1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), CGNAT
+    // (100.64/10), multicast (224/4), reserved/future-use (240/4), and the
+    // unspecified address 0.0.0.0.
+    [[nodiscard]] auto ipv4_is_private_or_loopback(std::uint32_t address) noexcept -> bool
+    {
+        auto const first = static_cast<std::uint8_t>((address >> 24U) & 0xFFU);
+        auto const second = static_cast<std::uint8_t>((address >> 16U) & 0xFFU);
+        if (first == 0U || first == 10U || first == 127U || (first == 169U && second == 254U) ||
+            (first == 172U && second >= 16U && second <= 31U) || (first == 192U && second == 168U))
+        {
+            return true;
+        }
+        // CGNAT (RFC 6598) and multicast/reserved space.
+        if (first == 100U && second >= 64U && second <= 127U)
+        {
+            return true;
+        }
+        if (first >= 224U)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    // IPv6 non-public ranges used for SSRF rejection. Includes unspecified (::/128),
+    // loopback (::1/128), ULA (fc00::/7), link-local (fe80::/10), NAT64 well-known
+    // prefix (64:ff9b::/96), multicast (ff00::/8), and IPv4-mapped variants of the
+    // IPv4 ranges above.
+    [[nodiscard]] auto ipv6_is_private_or_loopback(in6_addr const& address) noexcept -> bool
+    {
+        auto const* bytes = address.s6_addr;
+        auto const is_unspecified = std::all_of(bytes, bytes + 16U, [](auto byte) noexcept {
+            return byte == std::uint8_t{0U};
+        });
+        auto const is_loopback = std::all_of(bytes, bytes + 15U,
+                                             [](auto byte) noexcept {
+                                                 return byte == std::uint8_t{0U};
+                                             }) &&
+                                 bytes[15] == std::uint8_t{1U};
+        auto const is_unique_local = (bytes[0] & 0xFEU) == 0xFCU;
+        auto const is_link_local = bytes[0] == 0xFEU && (bytes[1] & 0xC0U) == 0x80U;
+        // Well-known NAT64 prefix 64:ff9b::/96.
+        auto const is_nat64 = bytes[0] == 0x00U && bytes[1] == 0x64U && bytes[2] == 0xFFU && bytes[3] == 0x9BU &&
+                              std::all_of(bytes + 4U, bytes + 8U, [](auto byte) noexcept {
+                                  return byte == std::uint8_t{0U};
+                              });
+        auto const is_multicast = bytes[0] == 0xFFU;
+        auto const is_v4_mapped = std::all_of(bytes, bytes + 10U,
+                                              [](auto byte) noexcept {
+                                                  return byte == std::uint8_t{0U};
+                                              }) &&
+                                  bytes[10] == 0xFFU && bytes[11] == 0xFFU;
+        auto const mapped_v4 = (static_cast<std::uint32_t>(bytes[12]) << 24U) |
+                               (static_cast<std::uint32_t>(bytes[13]) << 16U) |
+                               (static_cast<std::uint32_t>(bytes[14]) << 8U) | static_cast<std::uint32_t>(bytes[15]);
+        return is_unspecified || is_loopback || is_unique_local || is_link_local || is_nat64 || is_multicast ||
+               (is_v4_mapped && ipv4_is_private_or_loopback(mapped_v4));
+    }
+
+    [[nodiscard]] auto contains_signature_for(std::vector<events::EventSignature> const& signatures,
+                                              std::string_view expected_server) noexcept -> bool
+    {
+        return std::ranges::any_of(signatures, [expected_server](events::EventSignature const& signature) {
+            return signature.server_name == expected_server && !signature.key_id.empty() &&
+                   !signature.signature.empty();
+        });
+    }
+
+} // namespace
+
+auto server_name_is_valid(std::string_view server_name) noexcept -> bool
+{
+    return valid_matrix_server_name(server_name);
+}
+
+auto ip_address_is_valid(std::string_view address) noexcept -> bool
+{
+    auto const text = std::string{address};
+    auto v4 = in_addr{};
+    auto v6 = in6_addr{};
+    return ::inet_pton(AF_INET, text.c_str(), &v4) == 1 || ::inet_pton(AF_INET6, text.c_str(), &v6) == 1;
+}
+
+auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool
+{
+    auto const text = std::string{address};
+    auto v4 = in_addr{};
+    if (::inet_pton(AF_INET, text.c_str(), &v4) == 1)
+    {
+        return ipv4_is_private_or_loopback(ntohl(v4.s_addr));
+    }
+    auto v6 = in6_addr{};
+    if (::inet_pton(AF_INET6, text.c_str(), &v6) == 1)
+    {
+        return ipv6_is_private_or_loopback(v6);
+    }
+    // Fallback for inputs inet_pton cannot parse as a literal IP (e.g. the
+    // hostname "localhost"). The numeric private/loopback/reserved/CGNAT ranges
+    // are handled exactly by the inet_pton path above; a string-prefix guess
+    // for 172. or 100. would both over-block public addresses and under-block
+    // the intended ranges, so they are intentionally omitted.
+    return address == "localhost" || starts_with(address, "127.") || starts_with(address, "10.") ||
+           starts_with(address, "192.168.") || starts_with(address, "169.254.") || starts_with(address, "fc") ||
+           starts_with(address, "fd");
+}
+
+namespace
+{
+    struct IpBytes final
+    {
+        std::array<std::uint8_t, 16U> bytes{};
+        std::size_t size{0U};
+    };
+
+    [[nodiscard]] auto parse_ip_bytes(std::string_view text) noexcept -> IpBytes
+    {
+        auto result = IpBytes{};
+        if (text.empty() || text.size() >= INET6_ADDRSTRLEN || text.find('\0') != std::string_view::npos)
+        {
+            return result;
+        }
+        auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+        std::ranges::copy(text, literal.begin());
+        auto v4 = in_addr{};
+        if (::inet_pton(AF_INET, literal.data(), &v4) == 1)
+        {
+            auto const value = ntohl(v4.s_addr);
+            for (auto index = 0U; index < 4U; ++index)
+            {
+                result.bytes[index] = static_cast<std::uint8_t>(value >> (24U - index * 8U));
+            }
+            result.size = 4U;
+            return result;
+        }
+        auto v6 = in6_addr{};
+        if (::inet_pton(AF_INET6, literal.data(), &v6) == 1)
+        {
+            std::ranges::copy(v6.s6_addr, result.bytes.begin());
+            result.size = 16U;
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto prefix_matches(IpBytes const& address, IpBytes const& network, unsigned prefix) noexcept -> bool
+    {
+        if (address.size != network.size)
+        {
+            return false;
+        }
+        for (auto index = 0U; index < prefix / 8U; ++index)
+        {
+            if (address.bytes[index] != network.bytes[index])
+            {
+                return false;
+            }
+        }
+        auto const remaining = prefix % 8U;
+        auto const mask = remaining == 0U ? 0U : 0xFFU << (8U - remaining);
+        return remaining == 0U || (address.bytes[prefix / 8U] & mask) == (network.bytes[prefix / 8U] & mask);
+    }
+
+    [[nodiscard]] auto unwrap_v4_mapped(IpBytes address) noexcept -> IpBytes
+    {
+        if (address.size == 16U &&
+            std::ranges::all_of(address.bytes.begin(), address.bytes.begin() + 10,
+                                [](auto byte) {
+                                    return byte == 0U;
+                                }) &&
+            address.bytes[10] == 0xFFU && address.bytes[11] == 0xFFU)
+        {
+            std::copy_n(address.bytes.begin() + 12, 4U, address.bytes.begin());
+            address.size = 4U;
+        }
+        return address;
+    }
+
+    [[nodiscard]] auto range_denies(IpBytes address, std::string_view range) noexcept -> bool
+    {
+        auto const slash = range.find('/');
+        auto const network = parse_ip_bytes(range.substr(0U, slash));
+        auto prefix = static_cast<unsigned>(network.size * 8U);
+        if (network.size == 0U)
+        {
+            return true; // An invalid operator policy must never open the boundary.
+        }
+        if (slash != std::string_view::npos)
+        {
+            auto const text = range.substr(slash + 1U);
+            auto const parsed = std::from_chars(text.data(), text.data() + text.size(), prefix);
+            if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+                prefix > network.size * 8U)
+            {
+                return true;
+            }
+        }
+        if (network.size == 4U)
+        {
+            address = unwrap_v4_mapped(address);
+        }
+        return prefix_matches(address, network, prefix);
+    }
+
+    // Only for a range config::private_ip_range_is_allowable() accepted, which
+    // guarantees an explicit, in-bounds prefix and an RFC 1918 or ULA network.
+    [[nodiscard]] auto allowable_range_contains(IpBytes const& address, std::string_view range) noexcept -> bool
+    {
+        auto const slash = range.find('/');
+        auto const network = parse_ip_bytes(range.substr(0U, slash));
+        auto const text = range.substr(slash + 1U);
+        auto prefix = 0U;
+        std::ignore = std::from_chars(text.data(), text.data() + text.size(), prefix);
+        return prefix_matches(network.size == 4U ? unwrap_v4_mapped(address) : address, network, prefix);
+    }
+} // namespace
+
+auto ip_address_in_allowed_private_range(std::string_view address,
+                                         std::vector<std::string> const& allowed_private_ranges) noexcept -> bool
+{
+    if (allowed_private_ranges.empty())
+    {
+        return false;
+    }
+    auto const parsed = parse_ip_bytes(address);
+    return parsed.size != 0U && std::ranges::any_of(allowed_private_ranges, [&parsed](std::string const& range) {
+               return config::private_ip_range_is_allowable(range) && allowable_range_contains(parsed, range);
+           });
+}
+
+auto address_set_allowed(std::vector<std::string> const& addresses, std::vector<std::string> const& denied_ranges,
+                         std::vector<std::string> const& allowed_private_ranges) noexcept -> bool
+{
+    return !addresses.empty() &&
+           std::ranges::none_of(addresses, [&denied_ranges, &allowed_private_ranges](std::string const& address) {
+               if (ip_address_in_allowed_private_range(address, allowed_private_ranges))
+               {
+                   return false;
+               }
+               auto const parsed = parse_ip_bytes(address);
+               return parsed.size == 0U || ip_address_is_private_or_loopback(address) ||
+                      std::ranges::any_of(denied_ranges, [&parsed](std::string const& range) {
+                          return range_denies(parsed, range);
+                      });
+           });
+}
+
+auto federation_discovery_policy(RemoteServerRecord const& remote,
+                                 std::vector<std::string> const& allowed_private_ranges) -> FederationDiscoveryDecision
+{
+    if (!server_name_is_valid(remote.server_name))
+    {
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name", remote.server_name,           false},
+                                                 {"reason",      "invalid remote server name", false}
+        });
+        return {false, "invalid remote server name"};
+    }
+    if (remote.resolved_host.empty())
+    {
+        log_diagnostic("discovery.rejected",
+                       {
+                           {"server_name", remote.server_name,          false},
+                           {"reason",      "remote host is unresolved", false}
+        });
+        return {false, "remote host is unresolved"};
+    }
+    if (!remote.well_known_host.empty() && remote.well_known_host != remote.resolved_host)
+    {
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name",     remote.server_name,                           false},
+                                                 {"well_known_host", remote.well_known_host,                       false},
+                                                 {"resolved_host",   remote.resolved_host,                         false},
+                                                 {"reason",          "well-known host and resolved host mismatch", false}
+        });
+        return {false, "well-known host and resolved host mismatch"};
+    }
+    if (remote.resolved_addresses.empty())
+    {
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name", remote.server_name,                false},
+                                                 {"reason",      "remote addresses are unresolved", false}
+        });
+        return {false, "remote addresses are unresolved"};
+    }
+    for (auto const& address : remote.resolved_addresses)
+    {
+        if (ip_address_is_private_or_loopback(address) &&
+            !ip_address_in_allowed_private_range(address, allowed_private_ranges))
+        {
+            log_diagnostic("discovery.rejected", {
+                                                     {"server_name", remote.server_name,                      false},
+                                                     {"address",     address,                                 false},
+                                                     {"reason",      "remote address is private or loopback", false}
+            });
+            return {false, "remote address is private or loopback"};
+        }
+    }
+    if (!remote.tls_required)
+    {
+        log_diagnostic("discovery.rejected",
+                       {
+                           {"server_name", remote.server_name,        false},
+                           {"reason",      "federation requires TLS", false}
+        });
+        return {false, "federation requires TLS"};
+    }
+
+    return {true, {}};
+}
+
+auto verify_federation_request_signature(FederationRequestSignature const& signature) -> FederationVerificationDecision
+{
+    if (!server_name_is_valid(signature.origin))
+    {
+        log_diagnostic("request_signature.rejected",
+                       {
+                           {"origin", signature.origin,         false},
+                           {"reason", "invalid request origin", false}
+        });
+        return {false, "invalid request origin"};
+    }
+    if (signature.key_id.empty() || signature.signature.empty())
+    {
+        log_diagnostic("request_signature.rejected",
+                       {
+                           {"origin", signature.origin,            false},
+                           {"reason", "missing request signature", false}
+        });
+        return {false, "missing request signature"};
+    }
+    if (!signature.canonical_json_verified)
+    {
+        log_diagnostic("request_signature.rejected",
+                       {
+                           {"origin", signature.origin,                                 false},
+                           {"reason", "canonical JSON signature verification required", false}
+        });
+        return {false, "canonical JSON signature verification required"};
+    }
+
+    return {true, {}};
+}
+
+auto verify_federation_event_signatures(std::vector<events::EventSignature> const& signatures,
+                                        std::string_view expected_server) -> FederationVerificationDecision
+{
+    if (!server_name_is_valid(expected_server))
+    {
+        log_diagnostic("event_signatures.rejected", {
+                                                        {"expected_server", std::string{expected_server},    false},
+                                                        {"reason",          "invalid expected event signer", false}
+        });
+        return {false, "invalid expected event signer"};
+    }
+    if (!contains_signature_for(signatures, expected_server))
+    {
+        log_diagnostic("event_signatures.rejected",
+                       {
+                           {"expected_server", std::string{expected_server},                  false},
+                           {"reason",          "missing event signature for expected server", false}
+        });
+        return {false, "missing event signature for expected server"};
+    }
+
+    return {true, {}};
+}
+
+namespace
+{
+
+    [[nodiscard]] auto backoff_has_decayed(RemoteTrustState const& state,
+                                           std::chrono::steady_clock::time_point now) noexcept -> bool
+    {
+        // An unset timestamp cannot be aged, so it never decays.
+        return state.last_failure_at != std::chrono::steady_clock::time_point{} &&
+               now - state.last_failure_at >= remote_backoff_decay_window;
+    }
+
+} // namespace
+
+auto record_remote_trust_failure(RemoteTrustState& state, std::chrono::steady_clock::time_point now) noexcept -> void
+{
+    if (backoff_has_decayed(state, now))
+    {
+        state.consecutive_failures = 0U;
+    }
+    if (state.consecutive_failures < std::numeric_limits<std::uint32_t>::max())
+    {
+        ++state.consecutive_failures;
+    }
+    state.last_failure_at = now;
+}
+
+auto remote_trust_policy(RemoteTrustState state, std::chrono::steady_clock::time_point now) -> RemoteTrustDecision
+{
+    if (state.quarantined)
+    {
+        log_diagnostic("trust.rejected", {
+                                             {"reason", "remote server is quarantined", false}
+        });
+        return {false, false, "remote server is quarantined"};
+    }
+    if (state.circuit_open)
+    {
+        log_diagnostic("trust.rejected", {
+                                             {"reason", "remote circuit breaker is open", false}
+        });
+        return {false, true, "remote circuit breaker is open"};
+    }
+    if (state.reputation_score < 25U)
+    {
+        log_diagnostic("trust.rejected", {
+                                             {"reputation_score", std::to_string(state.reputation_score), false},
+                                             {"reason",           "remote reputation is too low",         false}
+        });
+        return {false, true, "remote reputation is too low"};
+    }
+    if (state.consecutive_failures >= 3U && !backoff_has_decayed(state, now))
+    {
+        log_diagnostic("trust.rejected",
+                       {
+                           {"consecutive_failures", std::to_string(state.consecutive_failures), false},
+                           {"reason",               "remote backoff required",                  false}
+        });
+        return {false, true, "remote backoff required"};
+    }
+
+    return {true, false, {}};
+}
+
+auto federation_security_boundary_notes() -> std::vector<std::string>
+{
+    return {
+        "SSRF boundary: never connect to loopback, link-local, private, or unique-local remote addresses discovered "
+        "through federation resolution.",
+        "DNS rebinding boundary: bind the validated address set to the outbound request and reject host/address drift "
+        "between discovery and connect.",
+        "Trust boundary: request signatures, event signatures, remote rate limits, backoff, circuit breakers, "
+        "reputation, and quarantine must be evaluated before accepting federation traffic.",
+    };
+}
+
+} // namespace merovingian::federation

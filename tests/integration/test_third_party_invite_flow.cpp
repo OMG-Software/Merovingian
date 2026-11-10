@@ -2,10 +2,10 @@
 //
 // Third-party invite exchange: decisions of this server (ADR-0484, ADR-0485), run against a real runtime.
 
-#include "../support/third_party_invite_fixture.hpp"
+#include "../support/ThirdPartyInviteFixture.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

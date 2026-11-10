@@ -2,7 +2,7 @@
 
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/federation/OutboundCall.hpp"
-#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

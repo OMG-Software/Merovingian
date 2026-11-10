@@ -5,7 +5,7 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
 
 #include <algorithm>

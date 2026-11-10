@@ -14,7 +14,7 @@
 
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <linux/seccomp.h>

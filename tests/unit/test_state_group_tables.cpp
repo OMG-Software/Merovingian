@@ -9,14 +9,14 @@
 // result of the state-before and visibility reads the Server-Server API specifies: "Checks performed
 // on receipt of a PDU" and "Room State Resolution".
 
-#include "../support/state_group_scan.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/StateGroupScan.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Limits.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

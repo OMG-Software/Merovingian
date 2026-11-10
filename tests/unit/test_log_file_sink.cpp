@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/observability/LogFileSink.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 

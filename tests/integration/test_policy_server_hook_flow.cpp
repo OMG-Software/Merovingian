@@ -17,12 +17,12 @@
 
 #include "../support/ScopedThreadJoin.hpp"
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -37,12 +37,12 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/trust_safety/PolicyAction.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
 #include "merovingian/trust_safety/PolicySurface.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyEngine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

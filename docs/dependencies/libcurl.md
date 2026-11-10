@@ -6,7 +6,7 @@ This note records the dependency review for libcurl.
 
 libcurl is accepted as the selected HTTP transport for the federation
 outbound HTTP client, and (since 0.12.44) as the SMTP client for email
-pushers (`src/email/smtp_client.cpp`, ADR-0220). It is wrapped behind `merovingian::http::OutboundClient`
+pushers (`src/email/SmtpClient.cpp`, ADR-0220). It is wrapped behind `merovingian::http::OutboundClient`
 and must not leak `CURL*`, `CURLcode`, or `curl_slist*` types into routing,
 federation logic, room logic, or any caller above the HTTP transport
 boundary.
@@ -41,7 +41,7 @@ supported Linux and BSD targets, and ships in mainline distributions.
 
 ### SMTP (email pushers)
 
-`src/email/smtp_client.cpp` is the second, and only other, place `CURL*` and
+`src/email/SmtpClient.cpp` is the second, and only other, place `CURL*` and
 `curl_slist*` appear, under the same RAII rules. Each email is one easy handle,
 destroyed when the send ends, with `CURLOPT_PROTOCOLS_STR` restricted to the
 configured `smtps` or `smtp`, `CURLOPT_USE_SSL=CURLUSESSL_ALL` unless the

@@ -7,10 +7,10 @@ assertion (`?user_id=`), and the outbound `/_matrix/app/v1/*` client.
 
 | File | Responsibility |
 |---|---|
-| `registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
-| `registration_yaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
-| `cleartext_policy.cpp` | `appservice_url_problem`: the ADR-0515 rule for a registration `url` (scheme, userinfo, query, cleartext host) |
-| `masquerade_token.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
+| `Registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
+| `RegistrationYaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
+| `CleartextPolicy.cpp` | `appservice_url_problem`: the ADR-0515 rule for a registration `url` (scheme, userinfo, query, cleartext host) |
+| `MasqueradeToken.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
 | `AppserviceClient.cpp` | Outbound `PUT /transactions/{txnId}` (with the optional `ephemeral` array), `POST /ping`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
 
 ## Third-party lookups
@@ -57,7 +57,7 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   files parse too, but treating JSON as sufficient means loading no real
   bridge — that was a live bug. `load_registration_file()` tries YAML first
   and falls back to JSON.
-- `registration_yaml.cpp` is a **strict, bounded YAML subset**, not a general
+- `RegistrationYaml.cpp` is a **strict, bounded YAML subset**, not a general
   YAML parser: 2-space-indented block maps and lists, plain/single-/double-quoted
   scalars, `#` comments, `null`/`~`.
 - Anchors, aliases, tags, block scalars, tabs, document markers and unknown
@@ -125,7 +125,7 @@ directory network (appservice, protocol) it names without asking the appservice 
   (`net::is_loopback_ip_literal`, shared with SMTP), or an exact, ASCII-case-insensitive entry of
   `appservice.allow_cleartext_hosts`. `localhost` is a name, not a literal. A `url` with userinfo, a query or a
   scheme other than http/https is refused. `https` is unchanged and a null `url` stays valid. The rule is
-  `appservice_url_problem()` in `cleartext_policy.cpp`, applied by `load_registrations` (a per-file finding that
+  `appservice_url_problem()` in `CleartextPolicy.cpp`, applied by `load_registrations` (a per-file finding that
   never contains a token) and again by `AppserviceClient` before any lookup (defence in depth; the client takes
   the list from `config::AppserviceConfig`). `AppserviceClient.cpp` holds no `http://`/`https://` literal: it
   rebuilds the request URL from `http::parse_outbound_url` parts.
@@ -151,7 +151,7 @@ directory network (appservice, protocol) it names without asking the appservice 
   `/register` and `/login` themselves are exempt from this check because they
   act as the always-present `sender_localpart` user.
 - **Assertion never reaches Account Management** (AUTH-8):
-  `is_account_management_endpoint` in `masquerade_token.cpp` classifies every
+  `is_account_management_endpoint` in `MasqueradeToken.cpp` classifies every
   `/account/*` path except `GET /account/whoami` (fail closed on unknown
   paths under `/account/`). A new `/account/...` endpoint is covered
   automatically; do not add exceptions.

@@ -51,7 +51,7 @@ struct OutboundRequest final
     //      Application Service API's own canonical example (and most
     //      real-world bridges) gives as a plain `http://` localhost address.
     //   2. A URL preview hop (ADR-0213), made only through the preview gate
-    //      (`gated_fetch` in homeserver/url_preview_service.cpp). It is
+    //      (`gated_fetch` in homeserver/UrlPreviewService.cpp). It is
     //      client-named, but carries no credential, and the gate checks and
     //      pins its addresses like any other request.
     // It MUST be left false for every other URL that is attacker- or

@@ -15,7 +15,7 @@ struct BoundValue final
     // media_blobs.bytes or server_signing_keys.secret_key) rather than text.
     // Every write to a `BLOB` column must set it. The PostgreSQL backend binds
     // such a parameter in libpq's binary format with an explicit length (see
-    // postgresql_store.hpp), so an embedded NUL or invalid UTF-8 cannot
+    // PostgresqlStore.hpp), so an embedded NUL or invalid UTF-8 cannot
     // truncate or corrupt it; SQLite already binds every parameter by explicit
     // length, so it is unaffected and ignores the flag.
     bool binary{false};

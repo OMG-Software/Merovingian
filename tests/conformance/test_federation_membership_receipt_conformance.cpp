@@ -5,9 +5,9 @@
 // (send_join, send_leave, send_knock, invite; v1 and v2) apply the receipt
 // checks to the event they carry.
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InviteAcceptResult.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
@@ -15,7 +15,7 @@
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

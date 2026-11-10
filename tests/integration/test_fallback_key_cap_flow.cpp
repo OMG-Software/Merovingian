@@ -5,7 +5,7 @@
 // that was persisted, held in memory and scanned by /sync and /keys/claim. Same policy as CSAZ-10: an over-cap upload
 // is refused with M_TOO_LARGE, nothing from it is stored, and nothing is evicted.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

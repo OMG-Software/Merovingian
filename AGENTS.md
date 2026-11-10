@@ -157,7 +157,7 @@ Ignore these dirs:
 ## Project Layout
 Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module and file name.
 Some headers have no `.cpp` (header-only types, such as all of `bootstrap/`), and five sources in module directories have no header of
-the same name in `include/`: `src/appservice/registration_yaml.cpp`, `src/database/sqlite_store.cpp`,
+the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/database/SqliteStore.cpp`,
 `src/federation_worker/WorkerEventLoop.cpp` (its header, `WorkerEventLoop.hpp`, sits beside it in `src/`),
 `src/federation_worker/main.cpp`, and `src/media/thumbnail_worker_main.cpp`. The top-level `src/main.cpp` and
 `src/db_migrate.cpp` are the other two executables' entry points.
@@ -169,7 +169,7 @@ the same name in `include/`: `src/appservice/registration_yaml.cpp`, `src/databa
 │   ├── bootstrap/         #   Process exit codes (header-only)
 │   ├── canonicaljson/     #   Canonical JSON (value, parser, serializer, signable)
 │   ├── config/            #   Config model, parser, runtime config, reload plan/policy
-│   ├── core/              #   Error, file_descriptor, socket_handle, not_null, query_params, secret_buffer
+│   ├── core/              #   Error, FileDescriptor, SocketHandle, not_null, QueryParams, SecretBuffer
 │   ├── crypto/            #   Ed25519, signing service, secret box, master key, IPC cipher, constant-time ops
 │   ├── database/          #   Connection, statement, frozen v1 schema definitions, migrations, persistent_store, postgresql/sqlite
 │   ├── email/             #   SMTP client (libcurl), mailbox-address and relay-URL checks, notification email
@@ -198,7 +198,7 @@ the same name in `include/`: `src/appservice/registration_yaml.cpp`, `src/databa
 │   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
 │   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; no cross-release database fixture until 1.1)
-│   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)
+│   ├── support/           #   Test helpers (JsonTestSupport, MasterKey, RegistrationToken, TempDirectory, TlsMockServer)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
 │   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter
 ├── migrations/            #   Numbered SQL migrations (001_*.sql …)
@@ -237,7 +237,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/auth/AGENTS.md` | Auth: token lifecycle, UIAA, constant-time comparison, password hashing |
 | `src/canonicaljson/AGENTS.md` | Canonical JSON: encoding rules, signing pipeline, serializer constraints |
 | `src/config/AGENTS.md` | Config: parse-time validation, reload planning, size limit parsing |
-| `src/core/AGENTS.md` | Core primitives: `SecretBuffer`, `FileDescriptor`, `Error`, `query_params` |
+| `src/core/AGENTS.md` | Core primitives: `SecretBuffer`, `FileDescriptor`, `Error`, `QueryParams` |
 | `src/crypto/AGENTS.md` | Crypto security boundary: libsodium isolation, constant-time, key validation |
 | `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |
 | `src/email/AGENTS.md` | Outbound email: refuse-never-repair address checks, TLS-required SMTP, password read per send, main process only |
@@ -263,7 +263,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `tests/smoke/AGENTS.md` | Smoke test scope: startup, basic HTTP, migration |
 | `tests/fixtures/AGENTS.md` | Complement fixture format: step schema, supported fields |
 | `tests/complement/AGENTS.md` | Complement image: release package only, root entrypoint that drops privileges, config template |
-| `tests/support/AGENTS.md` | Test helpers: `master_key`, `json_test_support`, registration token |
+| `tests/support/AGENTS.md` | Test helpers: `MasterKey`, `JsonTestSupport`, `RegistrationToken` |
 | `migrations/AGENTS.md` | Migration format, numbering, and safety rules |
 | `docs/AGENTS.md` | Which documents to update and when |
 | `scripts/AGENTS.md` | Build and lint scripts: what each does, idempotency rules |
@@ -302,21 +302,21 @@ Base: docs/matrix-v1.19-spec/index.md
 |------|-----------|-------------|
 | PDU | Persistent Data Unit — a room event propagated over federation | `federation/`, [spec §pdus](docs/matrix-v1.19-spec/server-server-api.md#pdus) |
 | EDU | Ephemeral Data Unit — non-persisted federation message (typing, presence) | `federation/`, [spec §edus](docs/matrix-v1.19-spec/server-server-api.md#edus) |
-| Event ID | Unique identifier for a room event (format varies by room version) | `events/event_id.hpp` |
-| Auth chain | Sequence of auth events proving an event's validity | `events/authorization.hpp`, [spec §authorisation-rules](docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
-| State resolution | Algorithm to merge divergent room state across forks | `events/state_resolution.hpp`, [spec](docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
+| Event ID | Unique identifier for a room event (format varies by room version) | `events/EventId.hpp` |
+| Auth chain | Sequence of auth events proving an event's validity | `events/Authorization.hpp`, [spec §authorisation-rules](docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
+| State resolution | Algorithm to merge divergent room state across forks | `events/StateResolution.hpp`, [spec](docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
 | Canonical JSON | Deterministic JSON encoding for signing/hashing | `canonicaljson/`, [spec](docs/matrix-v1.19-spec/appendices.md#canonical-json) |
-| Signing key | Ed25519 key pair used to sign events and federation requests | `crypto/ed25519.hpp` |
+| Signing key | Ed25519 key pair used to sign events and federation requests | `crypto/Ed25519.hpp` |
 | Stream token | Monotonic token for sync pagination | `sync/StreamToken.hpp` |
 | Room version | Defines event format, auth rules, and state resolution algorithm | `rooms/RoomVersionPolicy.hpp`, [spec](docs/matrix-v1.19-spec/rooms/index.md) |
 | Via servers | List of server names used to route joins (v12/MSC4291) | `federation/` |
 | Content hash | SHA-256 hash of event content, used for integrity checks | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | Reference hash | Hash of redacted event, used in event IDs | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event) |
-| Redaction | Strips non-essential keys from an event, preserving integrity | `events/redaction.hpp` |
-| Power levels | Per-user permission levels in a room (ban, kick, redact, etc.) | `events/authorization.hpp` |
-| Membership | User's room membership state (join, leave, invite, ban, knock) | `federation/membership_endpoints.hpp` |
+| Redaction | Strips non-essential keys from an event, preserving integrity | `events/Redaction.hpp` |
+| Power levels | Per-user permission levels in a room (ban, kick, redact, etc.) | `events/Authorization.hpp` |
+| Membership | User's room membership state (join, leave, invite, ban, knock) | `federation/MembershipEndpoints.hpp` |
 | Backfill | Retrieving historical events from other servers to fill gaps | [spec](docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) |
-| Transaction | Batch of PDUs/EDUs sent between servers | `federation/transactions.hpp` |
+| Transaction | Batch of PDUs/EDUs sent between servers | `federation/Transactions.hpp` |
 | Key ID | `algorithm:version` identifier for a signing key | `crypto/`, [spec](docs/matrix-v1.19-spec/appendices.md#cryptographic-key-representation) |
 | Complement | The external Matrix homeserver test suite (matrix-org/complement), run against the release package. The JSON flow fixtures under `tests/fixtures/complement/` are this project's own tests, not Complement | `tests/complement/` |
 

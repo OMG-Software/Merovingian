@@ -4,9 +4,9 @@
 #include "../support/JoiningThreads.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/http/RequestErrorCode.hpp"
-#include "merovingian/http/request.hpp"
+#include "merovingian/http/Request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/socket.h>

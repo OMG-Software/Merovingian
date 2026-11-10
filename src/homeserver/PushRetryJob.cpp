@@ -4,7 +4,7 @@
 #include "merovingian/homeserver/PushRetryJob.hpp"
 
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/push_retry.hpp"
+#include "merovingian/homeserver/PushRetry.hpp"
 
 #include <chrono>
 #include <mutex>

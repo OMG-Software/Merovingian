@@ -14,7 +14,7 @@
 #include "merovingian/push/PushRule.hpp"
 #include "merovingian/push/PushRuleKind.hpp"
 #include "merovingian/push/PushRuleset.hpp"
-#include "merovingian/push/push_rules.hpp"
+#include "merovingian/push/PushRules.hpp"
 
 #include <cstddef>
 #include <cstdint>

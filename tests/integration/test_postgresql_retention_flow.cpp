@@ -4,7 +4,7 @@
 #include "ScratchPostgresqlDatabase.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <libpq-fe.h>

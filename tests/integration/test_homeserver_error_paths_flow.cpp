@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Unit tests for homeserver authentication and HTTP-dispatch error paths.
 // Happy paths live in test_homeserver_vertical_slice_flow.cpp. This file targets
@@ -16,8 +16,8 @@
 //     returns 401 M_MISSING_TOKEN
 //   - handle_federation_http_request for a non-federation path returns 4xx
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -27,8 +27,8 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

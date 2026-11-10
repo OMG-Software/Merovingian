@@ -3,9 +3,9 @@
 
 #include "merovingian/homeserver/FederationProxy.hpp"
 
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
@@ -13,8 +13,8 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
-#include "merovingian/homeserver/federation_request_routing.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 

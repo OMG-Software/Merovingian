@@ -14,7 +14,7 @@ namespace merovingian::database
 // independent of whether the recipient has a registered pusher or whether
 // `server.push.enabled` is set (a user with push notifications turned off
 // must still see their notification history when they open the client; see
-// room_service.cpp's build_pending_push_deliveries). `actions` is the
+// RoomService.cpp's build_pending_push_deliveries). `actions` is the
 // canonical-JSON-serialized actions array the matched rule produced;
 // `highlight` mirrors its `set_tweak: highlight` action so `GET
 // /notifications?only=highlight` can filter without re-parsing `actions`.

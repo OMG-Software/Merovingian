@@ -4,7 +4,7 @@
 #include "merovingian/sync/PreparedRoomEventFilter.hpp"
 
 #include "merovingian/sync/RoomFilter.hpp"
-#include "merovingian/sync/type_pattern.hpp"
+#include "merovingian/sync/TypePattern.hpp"
 
 #include <algorithm>
 #include <iterator>

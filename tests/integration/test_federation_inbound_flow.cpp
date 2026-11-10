@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
@@ -21,12 +21,12 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
-#include "federation_signing_test_support.hpp"
+#include "../support/MasterKey.hpp"
+#include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -43,19 +43,19 @@
 #include "merovingian/crypto/SigningKeyRecord.hpp"
 #include "merovingian/crypto/SigningKeyStore.hpp"
 #include "merovingian/crypto/VerificationResult.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/EduType.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 #include "merovingian/sync/DeviceListDelta.hpp"
 
@@ -932,7 +932,7 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
 // never actually written to the recipient's to-device queue.
 //
 // Bug this guards against: enqueue_direct_to_device_messages()
-// (local_http_router.cpp) discarded the per-device store result with
+// (LocalHttpRouter.cpp) discarded the per-device store result with
 // std::ignore, and the EduType::direct_to_device case always returned
 // EduDispositionStatus::accepted regardless of whether anything was
 // persisted. A megolm room-key share that failed validation inside

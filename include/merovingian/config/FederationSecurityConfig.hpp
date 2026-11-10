@@ -5,7 +5,7 @@
 #include "merovingian/config/FederationBackfillConfig.hpp"
 #include "merovingian/config/FederationQueryConfig.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
-#include "merovingian/config/special_use_ip_ranges.hpp"
+#include "merovingian/config/SpecialUseIpRanges.hpp"
 #include "merovingian/http/RateLimitPolicy.hpp"
 
 #include <cstdint>

@@ -15,20 +15,20 @@
 // ID."
 // Tags: [worker_policy_authority].
 
-#include "../federation_signing_test_support.hpp"
-#include "../support/remote_room_fixture.hpp"
+#include "../FederationSigningTestSupport.hpp"
+#include "../support/RemoteRoomFixture.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

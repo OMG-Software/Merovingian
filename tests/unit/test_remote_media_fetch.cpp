@@ -6,7 +6,7 @@
 #include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchScope.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

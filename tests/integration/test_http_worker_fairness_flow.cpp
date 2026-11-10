@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // Audit findings HTTP-1 and HTTP-8 (ADR-0077): one client must not be able to
 // hold every worker of the main request pool, whether by keeping connections
@@ -12,11 +12,11 @@
 //
 // Tags: [http-1] [http-8] [integration].
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "bounded_connect.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "BoundedConnect.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -29,7 +29,7 @@
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"

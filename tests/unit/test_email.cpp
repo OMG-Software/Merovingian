@@ -8,8 +8,8 @@
 
 #include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/UnreadNotificationEmail.hpp"
-#include "merovingian/email/mailbox_address.hpp"
-#include "merovingian/email/notification_email.hpp"
+#include "merovingian/email/MailboxAddress.hpp"
+#include "merovingian/email/NotificationEmail.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

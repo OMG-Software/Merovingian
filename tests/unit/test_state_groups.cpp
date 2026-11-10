@@ -9,7 +9,7 @@
 // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
 
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/limits.hpp"
+#include "merovingian/events/Limits.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

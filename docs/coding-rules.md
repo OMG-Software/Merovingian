@@ -63,7 +63,7 @@ requirements are met.
 - Put module headers in `include/merovingian/<module>/<name>.hpp` and their
   implementations in `src/<module>/<name>.cpp`. Keep the paths aligned when
   both files exist. Header-only types, executable entry points, and documented
-  source-only files such as `src/database/sqlite_store.cpp` do not need an
+  source-only files such as `src/database/SqliteStore.cpp` do not need an
   artificial counterpart. See the implementation guidance for layout exceptions.
 - Use the `m_` prefix for member variables. Mark non-mutating member functions `const`.
 - Add a brief function comment that explains its purpose. Document ownership,

@@ -10,10 +10,10 @@
 // an unknown `pos` with 400 M_UNKNOWN_POS.
 #include "../support/SqliteCloser.hpp"
 #include "../support/SqliteInsertFault.hpp"
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -26,7 +26,7 @@
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/stream_token_epoch.hpp"
+#include "merovingian/homeserver/StreamTokenEpoch.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/ToDevicePosition.hpp"
 

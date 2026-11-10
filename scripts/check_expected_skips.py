@@ -5,7 +5,7 @@
 `meson test` reports a Catch2 test case that called SKIP() as passed, so a runner that lacks a
 precondition (a kernel feature, a loopback alias, a libcurl with SMTP) would pass green with the test
 silently not run. Each CI job names the skips it expects in tests/expected_skips.json; this script
-reads the XML reports the test binaries wrote (tests/support/catch_report_arguments.hpp, enabled by
+reads the XML reports the test binaries wrote (tests/support/CatchReportArguments.hpp, enabled by
 MEROVINGIAN_CATCH_REPORT_DIR) and fails on any skip that is not on the job's list. See ADR-0546.
 
 Exit status: 0 every skip was expected; 1 at least one unexpected skip (or, with --strict-stale,

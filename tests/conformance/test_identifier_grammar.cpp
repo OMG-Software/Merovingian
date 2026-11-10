@@ -20,8 +20,8 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
-#include "merovingian/auth/identity.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/auth/Identity.hpp"
+#include "merovingian/events/EventId.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -10,25 +10,25 @@
 // retrieving missing events", "Checks performed on receipt of a PDU".
 // Tags: [pdu_ingestion][backfill].
 
-#include "../federation_signing_test_support.hpp"
+#include "../FederationSigningTestSupport.hpp"
 #include "../support/ScopedThreadJoin.hpp"
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/forged_unsigned.hpp"
-#include "../support/remote_room_fixture.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/ForgedUnsigned.hpp"
+#include "../support/RemoteRoomFixture.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/core/SocketHandle.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
@@ -36,8 +36,8 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
@@ -45,9 +45,9 @@
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
-#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
@@ -80,7 +80,7 @@ using merovingian::federation::PduIngestionStatus;
 using merovingian::homeserver::HomeserverRuntime;
 
 // The room fixture, remote-signed event builders and the remote server's key
-// live in tests/support/remote_room_fixture.hpp, shared with the worker relay
+// live in tests/support/RemoteRoomFixture.hpp, shared with the worker relay
 // signature tests.
 using namespace merovingian::tests::remote_room;
 
@@ -183,7 +183,7 @@ auto seed_strict_power_levels(HomeserverRuntime& runtime, std::string const& roo
 
 // Reads a full HTTP/1.1 request (headers + Content-Length body) from a TLS
 // connection so the mock can receive a POST body before responding. The generic
-// helpers in tls_mock_server.hpp stop at the header terminator, which is fine
+// helpers in TlsMockServer.hpp stop at the header terminator, which is fine
 // for GETs but risks a POST client seeing the response before its body is read.
 [[nodiscard]] auto read_full_http_request(merovingian::homeserver::TlsConnection& connection) -> std::string
 {

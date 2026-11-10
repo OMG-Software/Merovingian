@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
@@ -16,15 +16,15 @@
 #include "merovingian/crypto/SigningKeyRecord.hpp"
 #include "merovingian/crypto/SigningKeyStore.hpp"
 #include "merovingian/crypto/VerificationResult.hpp"
-#include "merovingian/crypto/constant_time.hpp"
-#include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/crypto/encoding.hpp"
-#include "merovingian/crypto/generic_hash.hpp"
-#include "merovingian/crypto/master_key.hpp"
-#include "merovingian/crypto/random.hpp"
-#include "merovingian/crypto/secret_box.hpp"
-#include "merovingian/crypto/signing_service.hpp"
-#include "merovingian/crypto/token_key.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/Encoding.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
+#include "merovingian/crypto/MasterKey.hpp"
+#include "merovingian/crypto/Random.hpp"
+#include "merovingian/crypto/SecretBox.hpp"
+#include "merovingian/crypto/SigningService.hpp"
+#include "merovingian/crypto/TokenKey.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

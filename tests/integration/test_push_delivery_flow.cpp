@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../support/in_memory_database_config.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            PUSH GATEWAY DELIVERY — END-TO-END INTEGRATION TESTS         |
@@ -17,19 +17,19 @@
 // |  notify-worthy message reaches the gateway with the right fields; a     |
 // |  rejected pushkey is deleted; and an unreachable gateway never blocks   |
 // |  or fails the send that triggered it (delivery runs off the request     |
-// |  path via HomeserverRuntime::orphan_futures_ — see room_service.cpp's   |
+// |  path via HomeserverRuntime::orphan_futures_ — see RoomService.cpp's   |
 // |  dispatch_push_deliveries).                                             |
 // +-------------------------------------------------------------------------+
 
 #include "../support/ScopedThreadJoin.hpp"
 #include "../support/StallingTlsServerState.hpp"
 #include "../support/TlsTestCertificate.hpp"
-#include "../support/json_test_support.hpp"
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/tls_mock_server.hpp"
+#include "../support/JsonTestSupport.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -40,7 +40,7 @@
 #include "merovingian/database/PersistentPusher.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/EventId.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
@@ -49,9 +49,9 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/push_retry.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/PushRetry.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/push/PushGatewayClient.hpp"
 #include "merovingian/push/TestForcedPushGatewayResolution.hpp"
@@ -280,7 +280,7 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
 
 // POST /rooms/{roomId}/invite — invites `user_id` (a full mxid) into the room.
 // Named _via_http to avoid any ambiguity with merovingian::homeserver::invite_user
-// (the room_service.cpp entry point this HTTP call ultimately dispatches to).
+// (the RoomService.cpp entry point this HTTP call ultimately dispatches to).
 [[nodiscard]] auto invite_user_via_http(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                                         std::string const& room_id, std::string const& user_id)
     -> merovingian::homeserver::DispatchResult
@@ -390,7 +390,7 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
 // federation-delivery scenarios below, which need security.federation.enabled
 // so wire_federation_callbacks() actually wires runtime.federation.pdu_sink
 // (see wire_federation_callbacks_impl's early-return guard in
-// local_http_router.cpp).
+// LocalHttpRouter.cpp).
 [[nodiscard]] auto push_federation_test_config() -> merovingian::config::Config
 {
     auto config = push_test_config();
@@ -477,7 +477,7 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
 // Builds an already-signed-shaped (content-hash-correct, but not
 // Ed25519-signed — ingest_pdu_event/PduSink never re-verify the signature;
 // that already happened once upstream at authorize_federation_pdu, see
-// local_http_router.cpp's #450 TRUST BOUNDARY comment) m.room.message PDU
+// LocalHttpRouter.cpp's #450 TRUST BOUNDARY comment) m.room.message PDU
 // envelope from `sender`, mirroring test_federation_pdu_ingest_concurrency.
 // cpp's make_message_pdu. Used to drive the wired federation pdu_sink
 // directly, standing in for a real inbound /_matrix/federation/v1/send/{txn}
@@ -573,7 +573,7 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
 // Merovingian-specific gate (docs/todos/capability-gaps.md): push.enabled
 // defaults to false so merging delivery cannot cause an existing deployment
 // to start sending gateway traffic on upgrade. This proves the gate is
-// load-bearing at the room_service.cpp call site, not just inside
+// load-bearing at the RoomService.cpp call site, not just inside
 // PushGatewayClient::notify().
 SCENARIO("push delivery is never attempted while push.enabled is false", "[integration][push]")
 {
@@ -885,7 +885,7 @@ SCENARIO("a gateway rejecting a pushkey this request did not carry leaves the re
 }
 
 // This is the core resilience guarantee behind the delivery design: gateway
-// I/O runs entirely off the request path (see room_service.cpp's
+// I/O runs entirely off the request path (see RoomService.cpp's
 // dispatch_push_deliveries), so a slow, hostile, or unreachable gateway
 // cannot block or fail the message send that triggered it.
 SCENARIO("message sending succeeds even when the recipient's push gateway is unreachable", "[integration][push]")
@@ -1073,7 +1073,7 @@ SCENARIO("exceeding the in-flight push-delivery cap drops the notification inste
 // to notify a user they were invited — could never actually fire. Proves the
 // fix: bob is registered with a pusher but is NOT a member of the room (so
 // he is absent from LocalRoom::members) when alice invites him; the
-// notification must still reach his gateway. See room_service.cpp's
+// notification must still reach his gateway. See RoomService.cpp's
 // persist_membership_transition and dispatch_membership_push_notification.
 SCENARIO("inviting a user delivers a notification to the invitee's pusher", "[integration][push]")
 {
@@ -1271,7 +1271,7 @@ SCENARIO("an invite from an ignored sender never queues a push notification for 
 // an ignored sender's events must not reach the ignoring user through any
 // client-facing delivery surface, and GET /notifications is exactly that —
 // it is fed by the same build_pending_push_deliveries evaluation the push
-// gateway path uses (see room_service.cpp), gated by the same
+// gateway path uses (see RoomService.cpp), gated by the same
 // trust_safety::is_delivery_suppressed check, so a suppressed event is never
 // recorded as a notification in the first place.
 SCENARIO("a message from an ignored sender never appears in the ignoring recipient's GET /notifications",
@@ -1388,13 +1388,13 @@ SCENARIO("a notification is recorded even when push.enabled is false and the rec
 // Before this fix, push delivery was wired only into send_event() — the
 // locally-composed-event path. Events accepted over federation persist
 // through ingest_pdu_event() (called from the runtime.federation.pdu_sink
-// callback wired by wire_federation_callbacks_impl in local_http_router.cpp)
+// callback wired by wire_federation_callbacks_impl in LocalHttpRouter.cpp)
 // and only ever published the sync token, never reaching build_pending_push_
 // deliveries/dispatch_push_deliveries. A message from a remote room member —
 // the ordinary federated-room case — therefore produced no /notifications
 // row and no Push Gateway request for a local recipient. This is the
 // regression test for the fix (deliver_federation_push_notifications,
-// room_service.cpp, called from the pdu_sink lambda).
+// RoomService.cpp, called from the pdu_sink lambda).
 SCENARIO("an event accepted via federation from a remote sender delivers a push notification and a "
          "notifications-history row to a local recipient",
          "[integration][push][federation]")
@@ -1484,7 +1484,7 @@ SCENARIO("an event accepted via federation from a remote sender delivers a push 
 // wired into the federation pdu_sink, a code path send_event() never touches
 // (they are structurally disjoint — send_event() persists locally-composed
 // events, pdu_sink only ever runs for PDUs accepted from a remote server —
-// see room_service.hpp's doc comment on deliver_federation_push_
+// see RoomService.hpp's doc comment on deliver_federation_push_
 // notifications). This proves a locally composed event, sent the ordinary
 // way, is still delivered exactly once now that the federation path also
 // dispatches push notifications: not zero (a regression in the other
@@ -1570,7 +1570,7 @@ SCENARIO("a locally composed event is still delivered exactly once now that fede
 // pairs, and build_pending_push_deliveries used to copy and process every one
 // of a recipient's pushers sequentially inside a single background task —
 // unbounded by the configured task in-flight cap, which only bounds the number of
-// *tasks*, not the work inside one. Fixed by room_service.cpp's
+// *tasks*, not the work inside one. Fixed by RoomService.cpp's
 // configured max_pushers_per_delivery: only the configured number of a
 // recipient's pushers are contacted per event; the rest are skipped (with a
 // push.pushers.truncated warning log, not silently).
@@ -1657,7 +1657,7 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
 // tweak as the observable signal. Per the spec text above,
 // `.m.rule.contains_display_name` is not one of the ten rules the current
 // spec's "Default Override Rules" list defines and has been removed from
-// default_push_ruleset.cpp (see src/homeserver/default_push_ruleset.cpp and
+// DefaultPushRuleset.cpp (see src/homeserver/DefaultPushRuleset.cpp and
 // tests/unit/test_default_push_ruleset.cpp) -- it was exactly the kind of
 // body-text-mention-scanning rule that list's v1.17 change removed, and
 // caused a real false positive: a message merely containing someone's name
@@ -1669,7 +1669,7 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
 // (non-highlighted) notification via the underride rules, so the fix is
 // "no more false-positive highlight", not "no more delivery at all". The
 // room-membership-vs-account-profile distinction this scenario's setup
-// exercises (room_service.cpp's room_member_display_name) remains live
+// exercises (RoomService.cpp's room_member_display_name) remains live
 // infrastructure feeding PushEvaluationContext::receiving_user_display_name
 // on every evaluation, ready for any future rule (default or user-defined)
 // that references the contains_display_name condition kind, even though no
@@ -2341,7 +2341,7 @@ auto deactivate_account(merovingian::homeserver::ClientServerRuntime& runtime, s
 
 } // namespace
 
-// Project rule (email_push.cpp): a deactivated account keeps no way to be notified, because nobody
+// Project rule (EmailPush.cpp): a deactivated account keeps no way to be notified, because nobody
 // can sign in to turn a pusher off. The Matrix spec says nothing of pushers on deactivation.
 SCENARIO("a deactivated account's pushers are removed and nothing more is sent to them", "[integration][push][f80]")
 {

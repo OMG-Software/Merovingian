@@ -8,7 +8,7 @@
 // threaded receipt.
 
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
 

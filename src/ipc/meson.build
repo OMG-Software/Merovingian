@@ -1,6 +1,6 @@
 ipc_lib = static_library(
   'merovingian-ipc',
-  sources: files('IpcChannel.cpp', 'federation_ipc_frames.cpp'),
+  sources: files('IpcChannel.cpp', 'FederationIpcFrames.cpp'),
   include_directories: inc,
   dependencies: [libsodium_dep, thread_dep],
 )

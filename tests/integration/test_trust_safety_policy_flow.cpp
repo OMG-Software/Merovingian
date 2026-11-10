@@ -6,7 +6,7 @@
 #include "merovingian/trust_safety/ReviewRecord.hpp"
 #include "merovingian/trust_safety/ReviewTarget.hpp"
 #include "merovingian/trust_safety/SafetyReportRequest.hpp"
-#include "merovingian/trust_safety/policy_engine.hpp"
+#include "merovingian/trust_safety/PolicyEngine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

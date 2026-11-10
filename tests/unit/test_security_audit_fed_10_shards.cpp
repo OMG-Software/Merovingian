@@ -5,8 +5,8 @@
 // shard is its own process, so N shards used to allow N times both budgets.
 // A worker now gets its shard's share (ADR-0153).
 
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"

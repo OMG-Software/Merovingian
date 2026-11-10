@@ -7,9 +7,9 @@
 // than a fresh pair of locked key copies, and they are only ever derived from
 // the file whose identity they are cached under.
 
-#include "../support/temp_directory.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/crypto/SecureKeyBytes.hpp"
-#include "merovingian/crypto/token_key.hpp"
+#include "merovingian/crypto/TokenKey.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

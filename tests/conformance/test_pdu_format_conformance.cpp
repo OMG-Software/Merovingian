@@ -28,10 +28,10 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/events/event_id.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/events/EventId.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

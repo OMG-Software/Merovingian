@@ -35,7 +35,7 @@ namespace merovingian::ipc
 // federation when it was dropped. 16 MiB (the immediately prior default)
 // bounded the per-frame allocation but was sized as if a frame's body cost
 // equalled the raw HTTP payload it carries. It doesn't: outbound_http_response
-// and fed_response frames (src/ipc/federation_ipc_frames.cpp) base64-encode
+// and fed_response frames (src/ipc/FederationIpcFrames.cpp) base64-encode
 // the HTTP response body before framing, a fixed 4/3 expansion. A response
 // body at http::OutboundRequest::max_response_body_bytes (16 MiB by default —
 // the ceiling a large room's send_join response legitimately reaches) becomes

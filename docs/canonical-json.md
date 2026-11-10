@@ -28,10 +28,10 @@ Implemented now:
   the worker pool, federation request routing, push gateway payloads, sliding
   sync, trust & safety) and not limited to account data and `m.tag`
 - DoS bounds enforced during parsing: maximum nesting depth of 64
-  (`max_depth`, `src/canonicaljson/parser.cpp`) and a maximum of 65536 members
-  per object (`max_object_members`, `include/merovingian/canonicaljson/parser.hpp`),
+  (`max_depth`, `src/canonicaljson/Parser.cpp`) and a maximum of 65536 members
+  per object (`max_object_members`, `include/merovingian/canonicaljson/Parser.hpp`),
   with `O(n)` duplicate-key detection (`std::unordered_set`, not a quadratic
-  scan) on both parse (`parser.cpp`) and serialize (`serializer.cpp`)
+  scan) on both parse (`Parser.cpp`) and serialize (`Serializer.cpp`)
 - stable parser and serializer error names
 - signable object view scaffolding
 - Matrix spec conformance fixture suites in `tests/conformance/`: room-version
@@ -63,7 +63,7 @@ policy stay focused on project code. The parser copies parsed data into
 No `yyjson_*` type is exposed outside the canonical JSON implementation.
 Unicode escape decoding, including surrogate-pair handling, is not
 reimplemented in project code — it is delegated entirely to vendored `yyjson`;
-`convert_yyjson_value()` (`src/canonicaljson/parser.cpp`) copies already-decoded
+`convert_yyjson_value()` (`src/canonicaljson/Parser.cpp`) copies already-decoded
 string bytes out of the `yyjson` document.
 
 ## Numeric policy
@@ -73,7 +73,7 @@ the JS-safe-integer range `[-(2^53)+1, (2^53)-1]`. Floating-point values,
 exponent notation, and integers outside that range are rejected even though
 `yyjson` can parse broader JSON number forms. This keeps Matrix signing
 inputs lossless and deterministic. `is_canonical_int64_token()`
-(`src/canonicaljson/parser.cpp`, around line 102) explicitly rejects negative
+(`src/canonicaljson/Parser.cpp`, around line 102) explicitly rejects negative
 zero (`-0`, per the spec's "Numbers that are negative zero MUST NOT appear in
 canonical JSON") and any leading-zero integer token (e.g. `01`) other than the
 literal `0` itself; an explicit leading `+` sign is never seen by this
@@ -87,8 +87,8 @@ never wrap to negative values (HTTP-7).
 
 The serializer mirrors this split: `serialize_canonical_strict()` rejects a
 `Value` tree containing any double with `CanonicalJsonError::float_not_allowed`
-instead of serializing it, and is the entry point `event_signer.cpp`,
-`event_id.cpp`, and `signable.cpp` use for signing/hashing payloads.
+instead of serializing it, and is the entry point `EventSigner.cpp`,
+`EventId.cpp`, and `Signable.cpp` use for signing/hashing payloads.
 `serialize_canonical()` still accepts floats — via a portable escalating-precision
 `snprintf`/`strtod` round-trip search, not the fixed-precision `std::to_string`
 formatting an earlier version used (`std::to_chars`'s floating-point overload
@@ -114,4 +114,4 @@ body so that one PDU's number costs that PDU alone (ADR-0398).
 keys (per the spec's Signing JSON procedure) and serializes the result with
 `serialize_canonical_strict` — it is a signing-scoped entry point, so a
 `Value` tree containing a float fails closed rather than being serialized.
-Signing-key identifiers are not part of the signable view: `events::event_signer` (`src/events/event_signer.cpp`) files each signature under the server name and key ID in `signatures`.
+Signing-key identifiers are not part of the signable view: `events::event_signer` (`src/events/EventSigner.cpp`) files each signature under the server name and key ID in `signatures`.

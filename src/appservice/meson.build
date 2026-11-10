@@ -2,10 +2,10 @@ appservice_sources = files(
   'AppserviceClient.cpp',
   'AppserviceRegistry.cpp',
   'Namespace.cpp',
-  'cleartext_policy.cpp',
-  'masquerade_token.cpp',
-  'registration.cpp',
-  'registration_yaml.cpp',
+  'CleartextPolicy.cpp',
+  'MasqueradeToken.cpp',
+  'Registration.cpp',
+  'RegistrationYaml.cpp',
 )
 
 appservice_lib = static_library(

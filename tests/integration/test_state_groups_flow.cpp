@@ -8,14 +8,14 @@
 // and tests/integration/AGENTS.md.
 
 #include "../support/SqliteInsertFault.hpp"
-#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <merovingian/database/PersistentStore.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
+#include <merovingian/database/Migration.hpp>
+#include <merovingian/database/PostgresqlStore.hpp>
+#include <merovingian/database/Schema.hpp>
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -50,7 +50,7 @@ using merovingian::database::open_sqlite_persistent_store;
 
 // RAII wrappers for the raw SQLite handles this file drives directly (no
 // owning raw pointers, per coding-rules.md), mirroring the
-// SqliteConnection/SqliteStatement pattern in src/database/sqlite_store.cpp.
+// SqliteConnection/SqliteStatement pattern in src/database/SqliteStore.cpp.
 struct SqliteConnectionDeleter final
 {
     auto operator()(sqlite3* connection) const noexcept -> void
@@ -72,7 +72,7 @@ struct SqliteStatementDeleter final
 using SqliteStatementHandle = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
 // SQLITE_TRANSIENT expands to an old-style C cast ((sqlite3_destructor_type)-1),
-// which trips -Wold-style-cast -Werror if used directly; sqlite_store.cpp's own
+// which trips -Wold-style-cast -Werror if used directly; SqliteStore.cpp's own
 // sqlite_transient_destructor() works around the same thing the same way.
 [[nodiscard]] auto sqlite_transient_destructor() noexcept -> sqlite3_destructor_type
 {

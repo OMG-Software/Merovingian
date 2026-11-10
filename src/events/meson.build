@@ -1,12 +1,12 @@
 events_sources = files(
-  'authorization.cpp',
-  'event.cpp',
-  'event_id.cpp',
-  'event_signer.cpp',
-  'redaction.cpp',
-  'redaction_validity.cpp',
-  'state_resolution.cpp',
-  'unsigned_data.cpp',
+  'Authorization.cpp',
+  'Event.cpp',
+  'EventId.cpp',
+  'EventSigner.cpp',
+  'Redaction.cpp',
+  'RedactionValidity.cpp',
+  'StateResolution.cpp',
+  'UnsignedData.cpp',
 )
 
 events_lib = static_library(

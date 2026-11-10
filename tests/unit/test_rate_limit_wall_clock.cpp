@@ -5,7 +5,7 @@
 #include "merovingian/http/RateLimitDecision.hpp"
 #include "merovingian/http/RateLimitEngine.hpp"
 #include "merovingian/http/RateLimitPolicy.hpp"
-#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/http/RateLimit.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

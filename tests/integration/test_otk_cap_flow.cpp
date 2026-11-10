@@ -3,7 +3,7 @@
 // CSAZ-10 (security audit 2026-09-29). Owner policy: refuse over-cap uploads with
 // M_TOO_LARGE and never evict; the caps are operator-configurable.
 
-#include "../support/e2ee_caps_support.hpp"
+#include "../support/E2eeCapsSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 

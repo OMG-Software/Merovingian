@@ -8,10 +8,10 @@
 // matches the original event sender's domain.
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/events/RedactionContext.hpp"
 #include "merovingian/events/RedactionVerdict.hpp"
-#include "merovingian/events/redaction_validity.hpp"
+#include "merovingian/events/RedactionValidity.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>

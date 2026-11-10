@@ -249,7 +249,7 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
         {
             // Real PNG magic bytes are required here: the repository now sniffs the
             // actual content and quarantines uploads whose declared MIME type doesn't
-            // match (see media/security.hpp sniff_mime_type) — a literal "png-bytes"
+            // match (see media/Security.hpp sniff_mime_type) — a literal "png-bytes"
             // string sniffs as text/plain and would be quarantined, not accepted.
             // Kept to the PNG signature alone (8 bytes) — test_repository() caps
             // max_upload_bytes at 16, and any trailing payload counts against it.

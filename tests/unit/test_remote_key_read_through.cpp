@@ -10,11 +10,11 @@
 //
 // Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 // (valid_until_ts: "Servers MUST use the lesser of this field and 7 days").
-#include "../support/in_memory_database_config.hpp"
-#include "../support/master_key.hpp"
+#include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/MasterKey.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -23,10 +23,10 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
-#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/KeyMirrorRefresh.hpp"
 #include "merovingian/federation/ServerDiscoveryResult.hpp"
-#include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"

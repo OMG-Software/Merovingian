@@ -4,8 +4,8 @@
 // ADR-0064 phase B1: source-tree guard test. Every locally created or
 // inbound-accepted event must go through code that maintains its
 // state-group / forward-extremity bookkeeping — database::store_event_with_state
-// itself does not. persist_composed_event/send_event (room_service.cpp) and
-// ingest_pdu_event (local_http_router.cpp) both learned this the hard way:
+// itself does not. persist_composed_event/send_event (RoomService.cpp) and
+// ingest_pdu_event (LocalHttpRouter.cpp) both learned this the hard way:
 // each silently bypassed bookkeeping for months before the regression was
 // caught by tests/integration/test_local_event_state_bookkeeping_flow.cpp. This test
 // fails the build the moment a NEW call site appears anywhere in src/ that
@@ -76,14 +76,14 @@ namespace
         // leave_room's rejection of a remote invite (outlier: the signed leave
         // that ends an invite to a room whose state this server does not hold,
         // like the invite it replaces, so the user's sync can report it).
-        {"src/homeserver/room_service.cpp",      2U},
+        {"src/homeserver/RoomService.cpp",      2U},
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as
         // ingest_pdu_event), invite_handler (outlier) and
         // rescind_invite_from_inviter (outlier: the leave that withdraws an invite for a room whose
         // state this server does not hold, like the invite it replaces).
-        {"src/homeserver/local_http_router.cpp", 3U},
+        {"src/homeserver/LocalHttpRouter.cpp", 3U},
     };
 }
 
@@ -96,16 +96,16 @@ namespace
         // The choke point itself: homeserver::store_event_with_bookkeeping,
         // which commits the event with its state group, mapping, forward
         // extremities and current state in one transaction (ADR-0228).
-        {"src/homeserver/state_bookkeeping.cpp", 1U},
+        {"src/homeserver/StateBookkeeping.cpp", 1U},
         // Backfill (outliers that never become forward extremities) and
         // ingest_pdu_event (records its own state group after the commit).
-        {"src/homeserver/local_http_router.cpp", 2U},
+        {"src/homeserver/LocalHttpRouter.cpp", 2U},
         // ingest_send_join_state: the send_join snapshot's events are outliers
         // (no state group, no forward extremity; join_room builds the join's
         // one snapshot group from them), prepared together and committed in
         // one transaction so a large room is not one commit per member under
         // runtime.mutex (review of #541).
-        {"src/homeserver/room_service.cpp",      1U},
+        {"src/homeserver/RoomService.cpp",      1U},
     };
 }
 

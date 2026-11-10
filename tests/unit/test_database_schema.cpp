@@ -26,8 +26,8 @@
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/migration.hpp"
-#include "merovingian/database/schema.hpp"
+#include "merovingian/database/Migration.hpp"
+#include "merovingian/database/Schema.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

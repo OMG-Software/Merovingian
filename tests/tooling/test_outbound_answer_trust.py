@@ -99,7 +99,7 @@ class OutboundAnswerTrustTable(unittest.TestCase):
         self.assertEqual(mixed, {})
 
     def test_the_worker_route_is_reached_only_for_signature_verified_answers(self) -> None:
-        text = (SOURCE_DIR / "homeserver" / "room_service.cpp").read_text(encoding="utf-8")
+        text = (SOURCE_DIR / "homeserver" / "RoomService.cpp").read_text(encoding="utf-8")
         self.assertIn("auto const via_worker = trust == OutboundAnswerTrust::signature_verified;", text)
         # Nothing else may hand a request to the tunnel.
         senders = [
@@ -107,7 +107,7 @@ class OutboundAnswerTrustTable(unittest.TestCase):
             for path in sorted(SOURCE_DIR.rglob("*.cpp"))
             if "federation_proxy->send_outbound_request" in path.read_text(encoding="utf-8")
         ]
-        self.assertEqual(senders, ["src/homeserver/room_service.cpp"])
+        self.assertEqual(senders, ["src/homeserver/RoomService.cpp"])
         self.assertEqual(text.count("federation_proxy->send_outbound_request"), 1)
         gate = text.index("else if (via_worker && runtime.federation_proxy)")
         self.assertLess(gate, text.index("federation_proxy->send_outbound_request"))

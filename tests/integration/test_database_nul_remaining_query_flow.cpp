@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/master_key.hpp"
-#include "../support/registration_token.hpp"
-#include "../support/temp_directory.hpp"
+#include "../support/MasterKey.hpp"
+#include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -16,7 +16,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/query_params.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
@@ -26,8 +26,8 @@
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

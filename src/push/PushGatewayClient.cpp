@@ -4,8 +4,8 @@
 #include "merovingian/push/PushGatewayClient.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/push/GatewayCircuitOutcome.hpp"
 #include "merovingian/push/PushGatewayCounts.hpp"
 #include "merovingian/push/PushGatewayDevice.hpp"

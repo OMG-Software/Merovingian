@@ -6,7 +6,7 @@
 // user", "GET /_matrix/federation/v1/user/devices/{userId}" and "GET /_matrix/federation/v1/query/profile".
 
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/worker_relay_binding.hpp"
+#include "merovingian/federation/WorkerRelayBinding.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>

@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "packaging" / "systemd" / "merovingian.service"
-SECCOMP = REPO_ROOT / "src" / "platform" / "seccomp_hardening.cpp"
+SECCOMP = REPO_ROOT / "src" / "platform" / "SeccompHardening.cpp"
 
 # What the hardening installs itself with, which its own allow-lists need not name.
 INSTALL_TIME_CALLS = {

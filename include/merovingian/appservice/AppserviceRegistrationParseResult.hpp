@@ -16,7 +16,7 @@ namespace merovingian::appservice
 // toolchain (clang + libstdc++, see docs/dev-environment.md) does not build
 // `<expected>` cleanly, and no other module in the codebase uses it, so
 // fallible operations here follow the same `optional value + separate
-// error` shape used throughout config_parser.cpp and auth_service.cpp.
+// error` shape used throughout ConfigParser.cpp and AuthService.cpp.
 struct AppserviceRegistrationParseResult final
 {
     std::optional<AppserviceRegistration> value{};

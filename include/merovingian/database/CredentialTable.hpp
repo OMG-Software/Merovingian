@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/crypto/ConstantTime.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/StateGroupKeyHash.hpp"
 

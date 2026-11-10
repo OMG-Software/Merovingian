@@ -8,7 +8,7 @@
 // part and header scanning is reached without the fuzzer first having to invent a boundary.
 
 #include "fuzz_input.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/MediaService.hpp"
 
 #include <cstddef>
 #include <cstdint>
