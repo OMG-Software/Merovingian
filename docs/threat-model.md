@@ -2670,6 +2670,8 @@ nothing, all from trusting the worker's view or the hook's transport.
   room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
   by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
   the origin-in-room gate.
+- **A client's federated join, knock or leave held a request thread with no limit (release-gate audit).** Each now holds a
+  client-outbound slot (ADR-0622).
 - **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,
   and a window in which a room had no ACL (`room_server_acl_allows` answers true) while its rows were rewritten. Mitigated:
   the worker's store readers hold a shared lock for their own call, a reload takes the exclusive lock only for the

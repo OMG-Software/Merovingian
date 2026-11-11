@@ -531,3 +531,4 @@
 * [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
 * [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)
 * [0621 - Failing destinations share half the dispatch queue, and their transactions age out](0621-failing-destinations-share-half-the-dispatch-queue-and-their-transactions-age-out.md)
+* [0622 - A client's federated join, knock or leave holds a client-outbound slot](0622-a-clients-federated-join-knock-or-leave-holds-a-client-outbound-slot.md)

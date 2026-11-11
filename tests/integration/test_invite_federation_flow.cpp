@@ -37,6 +37,7 @@
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -51,6 +52,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sodium.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -454,6 +456,73 @@ struct InvitingServer final
 }
 
 } // namespace
+
+// Release-gate audit (ADR-0622): the exchange holds a request thread, so it holds a client-outbound slot.
+SCENARIO("Rejecting a remote invite takes a client-outbound slot and gives it back",
+         "[integration][federation][invite][membership-exchange-slot][security]")
+{
+    GIVEN("alice, who holds an invite from a user of another server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = invited_user(runtime);
+        auto inviter = InvitingServer{runtime};
+        auto const leave_target = "/_matrix/client/v3/rooms/" + std::string{bare_room_id_encoded} + "/leave";
+
+        WHEN("every client-outbound slot is held by another client")
+        {
+            runtime.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+            auto const held =
+                merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, "another-client");
+            REQUIRE(held.has_value());
+            auto const left = call(runtime, "POST", leave_target, alice.token, "{}");
+
+            THEN("it is answered as the outbound limit answers, the inviter is not called and the invite stands")
+            {
+                CAPTURE(left.response.body);
+                REQUIRE(left.response.status == 429U);
+                REQUIRE(left.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(membership_of(runtime, alice) == "invite");
+                auto pending = pollfd{inviter.acceptor.fd(), POLLIN, 0};
+                REQUIRE(::poll(&pending, 1, 0) == 0);
+            }
+        }
+
+        WHEN("a slot is free and the inviting server accepts the leave")
+        {
+            auto active_during_exchange = std::uint32_t{0U};
+            auto captured = std::vector<std::string>{};
+            auto server = std::thread{[&]() {
+                // The connection has arrived, so the exchange is under way: what is held now is held across it.
+                auto pending = pollfd{inviter.acceptor.fd(), POLLIN, 0};
+                if (::poll(&pending, 1, 30000) == 1)
+                {
+                    active_during_exchange = runtime.homeserver.client_outbound_budget->active();
+                }
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(
+                    inviter.acceptor, *inviter.tls.context,
+                    {
+                        {"/make_leave/",
+                         merovingian::tests::tls_mock::json_http_response("200 OK",                 make_leave_template(alice))},
+                        {"/send_leave/", merovingian::tests::tls_mock::json_http_response("200 OK", "{}")                      }
+                },
+                    &captured);
+            }};
+            auto const left = call(runtime, "POST", leave_target, alice.token, "{}");
+            server.join();
+
+            THEN("the slot was held across the exchange and is free afterwards")
+            {
+                CAPTURE(left.response.body);
+                REQUIRE(left.response.status == 200);
+                REQUIRE(active_during_exchange == 1U);
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 0U);
+            }
+        }
+    }
+}
 
 // Spec: Matrix Server-Server API v1.19, "Leaving Rooms (Rejecting Invites)": "Remote invites/knocks from
 // other homeservers do not involve the server in the graph and therefore need another approach to reject

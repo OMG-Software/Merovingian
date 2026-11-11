@@ -1324,6 +1324,16 @@ namespace
         return refused;
     }
 
+    // The answer when a federated join, knock or leave finds no client-outbound slot (ADR-0622): the same as the
+    // other client-triggered outbound calls give (ADR-0079).
+    [[nodiscard]] auto client_outbound_limit_result(HomeserverRuntime const& runtime) -> OperationResult
+    {
+        auto refused = make_operation_result(false, {}, "too many concurrent remote requests, retry shortly", 429U);
+        refused.errcode = "M_LIMIT_EXCEEDED";
+        refused.retry_after_ms = runtime.client_outbound_proxy_policy.retry_after_ms;
+        return refused;
+    }
+
     // Whether the room's stored m.room.create was sent by a user of this server.
     [[nodiscard]] auto room_created_here(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
@@ -5937,7 +5947,8 @@ namespace
 
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers,
-                             canonicaljson::Object const* third_party_signed) -> OperationResult
+                             canonicaljson::Object const* third_party_signed, std::string_view client_key)
+    -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -6137,6 +6148,12 @@ namespace
         // restores exactly what it released, on the throwing path too.
         // Read under the lock: the profile goes into the join event the released region signs.
         auto const joining_profile = database::find_profile(runtime.database.persistent_store, *user_id);
+        // Releasing the mutex frees it, not this request's thread: the exchange holds a slot until it returns.
+        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        if (!outbound_slot.has_value())
+        {
+            return client_outbound_limit_result(runtime);
+        }
         auto pending_join = PendingJoinLease{runtime, room_id};
         if (!pending_join.acquired())
         {
@@ -6600,6 +6617,11 @@ namespace
                             std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
                     if (!candidates.empty())
                     {
+                        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+                        if (!outbound_slot.has_value())
+                        {
+                            return client_outbound_limit_result(runtime);
+                        }
                         auto joined_elsewhere =
                             join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
                         if (joined_elsewhere.ok)
@@ -6719,8 +6741,8 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
-[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                              std::string_view client_key) -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.leave.started", {
@@ -6883,6 +6905,11 @@ namespace
         // template from one. The spec defines no other route, so the invite is dropped here, as a
         // leave in this server's own records, and nothing is sent.
         auto reject_locally = false;
+        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        if (!outbound_slot.has_value())
+        {
+            return client_outbound_limit_result(runtime);
+        }
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
 
         // The whole remote-leave exchange runs with runtime.mutex released:
@@ -8443,7 +8470,8 @@ namespace
 } // namespace
 
 [[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::vector<std::string> const& via_servers, std::string_view reason) -> OperationResult
+                              std::vector<std::string> const& via_servers, std::string_view reason,
+                              std::string_view client_key) -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -8482,6 +8510,11 @@ namespace
     }
     auto const secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
     auto const user = *user_id;
+    auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+    if (!outbound_slot.has_value())
+    {
+        return client_outbound_limit_result(runtime);
+    }
     auto const exchange = MembershipExchangeClaim{runtime, room_id, user};
     auto knocked = [&] {
         auto const released = RuntimeLockRelease{guard};

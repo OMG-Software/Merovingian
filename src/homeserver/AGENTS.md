@@ -333,7 +333,9 @@ held, and never take `runtime.mutex` while holding its mutex.
 
 ## One membership exchange per user and room (ADR-0252)
 
-A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident.
+A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident. It frees the mutex, not the
+thread, so each takes a client-outbound slot on its federated branch first, before the claim, and holds it until it
+returns; none free is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` (ADR-0622). A route passes `rate_limit_client_key`.
 Before releasing it, take a `MembershipExchangeClaim` for the (room, user) pair; `join_room`,
 `knock_room` and `leave_room` refuse a claimed pair with 429 `M_LIMIT_EXCEEDED` before reading
 anything. A new path that changes a user's own membership over federation takes the claim, and a

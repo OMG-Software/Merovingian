@@ -6437,7 +6437,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed);
+            return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed,
+                             rate_limit_client_key(request, runtime.config.server()));
         }();
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {

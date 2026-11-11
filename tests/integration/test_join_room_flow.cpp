@@ -56,6 +56,7 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/InboundIngestion.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
@@ -882,6 +883,93 @@ SCENARIO("join_room answers 403 when the resident server refuses the join",
                 REQUIRE_FALSE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& m) {
                     return m.room_id == room_id && m.user_id == alice && m.membership == "join";
                 }));
+            }
+        }
+    }
+}
+
+// Release-gate audit, resource-exhaustion.client-membership-exchange (ADR-0622). A federated join or knock holds a
+// request thread for as long as its resident takes, so it holds a client-outbound slot (ADR-0079) the whole time.
+SCENARIO("A federated join or knock takes a client-outbound slot and gives it back",
+         "[homeserver][federation][join][membership-exchange-slot][integration][security]")
+{
+    GIVEN("a client API runtime, a logged-in local user, and a resident that refuses")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const route = GENERATE(as<std::string>{}, "join", "knock");
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto& runtime = rt.homeserver;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        REQUIRE(acceptor.bound_port() > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const target = "/_matrix/client/v3/" + route + "/%21slotroom%3A" + std::string{resident_server} +
+                            "?via=" + std::string{resident_server};
+        auto const refusal =
+            json_http_response("403 Forbidden", R"({"errcode":"M_FORBIDDEN","error":"You are not invited"})");
+
+        WHEN("every client-outbound slot is held by another client")
+        {
+            runtime.client_outbound_proxy_policy.global_cap = 1U;
+            auto const held = merovingian::homeserver::admit_client_outbound_proxy(runtime, "another-client");
+            REQUIRE(held.has_value());
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(rt, {"POST", target, login.value, "{}"});
+
+            THEN("it is answered as the outbound limit answers, and no resident is called")
+            {
+                CAPTURE(route, response.response.body);
+                REQUIRE(response.response.status == 429U);
+                REQUIRE(response.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(runtime.client_outbound_budget->active() == 1U);
+                auto pending = pollfd{acceptor.fd(), POLLIN, 0};
+                REQUIRE(::poll(&pending, 1, 0) == 0);
+            }
+        }
+
+        WHEN("a slot is free and the resident refuses")
+        {
+            auto active_during_exchange = std::uint32_t{0U};
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                // The connection has arrived, so the exchange is under way: what is held now is held across it.
+                auto pending = pollfd{acceptor.fd(), POLLIN, 0};
+                if (::poll(&pending, 1, 30000) == 1)
+                {
+                    active_during_exchange = runtime.client_outbound_budget->active();
+                }
+                merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls_context.context,
+                                                                           {
+                                                                               {"/make_", refusal},
+                },
+                                                                           &captured_requests);
+            }};
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(rt, {"POST", target, login.value, "{}"});
+            server_thread.join();
+
+            THEN("the slot was held during the exchange and is free afterwards")
+            {
+                CAPTURE(route, response.response.body);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(active_during_exchange == 1U);
+                REQUIRE(runtime.client_outbound_budget->active() == 0U);
             }
         }
     }
