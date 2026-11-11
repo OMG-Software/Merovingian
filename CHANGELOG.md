@@ -2,6 +2,11 @@
 
 Release-gate audit, medium findings
 
+### An application service cannot use an administrator's authority (ADR-0611)
+
+An application service asserting a user is now refused on every operator and admin route, whatever user it asserts. A
+namespace covering a server administrator used to give the service those routes.
+
 ### The release signing key is held by an environment, and a tag must be on main (ADR-0614)
 
 The job that signs now runs in the `release` environment, so the key can move out of the repository's secrets, and a

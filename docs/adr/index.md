@@ -530,4 +530,5 @@
 * [0604 - A federation key request is answered for local users only and is capped by entry count](0604-a-federation-key-request-is-answered-for-local-users-only-and-is-capped-by-entry-count.md)
 * [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
 * [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)
+* [0611 - An administrator route refuses an application service asserting a user](0611-an-administrator-route-refuses-an-application-service-asserting-a-user.md)
 * [0614 - The release signing key belongs to an environment, and a tag must name a commit on main](0614-the-release-signing-key-belongs-to-an-environment-and-a-tag-must-name-a-commit-on-main.md)

@@ -1422,6 +1422,10 @@ should win; check the startup log for `start.appservice_registration_rejected`
 events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
 never appear in logs or diagnostics.
 
+An application service is refused (`403`) on every operator and admin route,
+even when it asserts a server administrator: to use one, log in as that
+administrator.
+
 Identity assertion (`?user_id=` with the `as_token`) acts only as a user that
 exists and is not deactivated: a bridge must create each virtual user with
 `POST /register` (`type: m.login.application_service`) before asserting it,

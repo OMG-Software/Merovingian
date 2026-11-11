@@ -179,7 +179,10 @@ production-gated.
   recognise and re-validate — never a real DB-backed session row, and never
   sent or logged. A raw client-presented token already in that internal
   shape is rejected before any auth logic runs, so the format cannot be
-  forged from outside the process. `POST /register` and `POST /login` accept
+  forged from outside the process. `require_admin` and
+  `authenticated_admin_user` refuse a masquerade token whatever user it
+  asserts: an application service never holds an administrator's authority
+  (ADR-0611). `POST /register` and `POST /login` accept
   `type: m.login.application_service` (bearer-authenticated with `as_token`,
   restricted to the appservice's own namespace): registration is
   passwordless and bypasses UIA entirely per spec, and login mints an

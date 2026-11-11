@@ -156,6 +156,10 @@ directory network (appservice, protocol) it names without asking the appservice 
   paths under `/account/`). A new `/account/...` endpoint is covered
   automatically; do not add exceptions.
 
+- **Assertion never reaches an administrator route** (ADR-0611): `require_admin`
+  and `authenticated_admin_user` refuse a masquerade token whatever user it
+  asserts. A new administrator check goes through one of them.
+
 ## User and room-alias query hooks
 
 When an identifier inside an appservice's namespace is unknown locally, the
