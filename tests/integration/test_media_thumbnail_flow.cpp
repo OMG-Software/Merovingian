@@ -956,7 +956,9 @@ SCENARIO("a decoder that floods its output is cut off with no output cap configu
 
         WHEN("a 4x4 thumbnail is requested")
         {
-            auto const result = request_from_worker(response, "head -c 1048576 /dev/zero\nexit 0\n");
+            // dd, not `head -c`: OpenBSD's head has no -c, and a peer that writes nothing proves nothing here.
+            auto const result =
+                request_from_worker(response, "dd if=/dev/zero bs=65536 count=16 2>/dev/null\nexit 0\n");
 
             THEN("the parent stops reading and answers that the output was too large")
             {
