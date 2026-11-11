@@ -60,7 +60,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
             ccache \
@@ -153,9 +153,17 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          # Fail on any fetch error: plain `apt-get update` exits 0 when it reached
-          # nothing, and the install then fails with no sign of why (ADR-0650).
-          apt-get update --error-on=any
+          # As scripts/ci-apt-update.sh does, which is not on disk yet: git must be
+          # installed before the checkout. Keep the two in step (ADR-0650).
+          if ! apt-get update --error-on=any; then
+            echo "::warning::apt-get update failed; retrying through public DNS resolvers (ADR-0650)"
+            printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' > /etc/resolv.conf
+            for attempt in 1 2 3; do
+              if apt-get update --error-on=any; then break; fi
+              if [ "${attempt}" = 3 ]; then exit 1; fi
+              sleep $((15 * attempt))
+            done
+          fi
           apt-get install -y --no-install-recommends \
             bison \
             ca-certificates \
@@ -250,7 +258,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             binutils \
             bison \
