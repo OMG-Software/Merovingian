@@ -48,7 +48,8 @@ instead of being parsed again on each check (ADR-0640).
 ### The thumbnail response is bounded by default
 
 The parent no longer reads a thumbnail worker's output without limit when `max_decode_output_bytes` is 0 (its default):
-it reads at most twice the requested thumbnail's raw RGBA size plus 64 KiB (ADR-0641).
+it reads at most twice the requested thumbnail's raw RGBA size plus 64 KiB (ADR-0641). The test's flooding stand-in
+writes with `dd`, since OpenBSD's `head` has no `-c`.
 
 ### The decoder and worker filters refuse the commands that signal other processes
 
