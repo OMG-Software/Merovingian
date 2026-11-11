@@ -91,6 +91,9 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   it. Namespace matching runs per member per event under `runtime.mutex`, so
   never compile a pattern on a request path. `namespace_matches(pattern, value)`
   compiles per call and is for one-off checks only.
+- **Bound the input.** `std::regex` recurses on what it matches, so both matchers
+  answer false for an identifier over `max_namespace_match_input_bytes` (255)
+  before matching (ADR-0613). Never call `std::regex_match` anywhere else.
 
 ## Interest (R07)
 
@@ -155,6 +158,10 @@ directory network (appservice, protocol) it names without asking the appservice 
   `/account/*` path except `GET /account/whoami` (fail closed on unknown
   paths under `/account/`). A new `/account/...` endpoint is covered
   automatically; do not add exceptions.
+
+- **Assertion never reaches an administrator route** (ADR-0611): `require_admin`
+  and `authenticated_admin_user` refuse a masquerade token whatever user it
+  asserts. A new administrator check goes through one of them.
 
 ## User and room-alias query hooks
 

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.91
+Version:        0.12.92
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 0.12.92-1
+- Release-gate audit, medium findings
+
 * Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 0.12.91-1
 - Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
 

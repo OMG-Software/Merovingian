@@ -893,6 +893,13 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     database.persistent_store.max_to_device_message_bytes = config.server().client_api.max_to_device_message_bytes;
     database.persistent_store.max_to_device_bytes_per_user_device =
         config.server().client_api.max_to_device_bytes_per_user_device;
+    database.persistent_store.max_to_device_messages_per_user =
+        config.server().client_api.max_to_device_messages_per_user;
+    database.persistent_store.max_to_device_bytes_per_user = config.server().client_api.max_to_device_bytes_per_user;
+    // The stored invite limits (ADR-0619) charge a record by who is local, which only the configuration says, and
+    // hydration ran before this: the indexes are rebuilt now that the name is known.
+    database.persistent_store.local_server_name = config.server().server_name;
+    database::rebuild_invite_indexes(database.persistent_store);
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;

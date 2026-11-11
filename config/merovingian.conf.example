@@ -737,6 +737,10 @@ server.client_api.to_device_message_ttl_seconds=604800
 # 1..16777216 and 1..1073741824; the first must not exceed the second.
 server.client_api.max_to_device_message_bytes=65536
 server.client_api.max_to_device_bytes_per_user_device=16777216
+# Across all of one user's devices (ADR-0618): past either, the user's oldest rows go first, whichever device holds
+# them. 1..10000000 and 1..4294967295; the message size limit must not exceed the second.
+server.client_api.max_to_device_messages_per_user=50000
+server.client_api.max_to_device_bytes_per_user=67108864
 server.client_api.max_one_time_keys_per_device=1000
 # Fallback keys one device may hold (GHSA-3p9g-gpvx-2cx9, ADR-0594). A device keeps one per algorithm, so this
 # bounds the algorithms; replacing a held algorithm's key always succeeds. Range 1..1024.

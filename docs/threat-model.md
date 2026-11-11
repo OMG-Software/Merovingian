@@ -2579,7 +2579,9 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   the port, so they silently missed every event. **Mitigation:** first-`:` splitting everywhere.
 - **Outbound queue starvation.** One dead or hostile peer could fill the shared outbound queue.
   **Mitigation:** each destination holds a bounded share; refusals are counted and logged
-  (ADR-0177). Residual risk: sixteen or more dead destinations can still fill it together.
+  (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
+  most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
+  never-seen dead destinations counts as live until each has failed once.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create
@@ -2668,6 +2670,12 @@ nothing, all from trusting the worker's view or the hook's transport.
   room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
   by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
   the origin-in-room gate.
+- **Remote servers chose how much whole-room work this server did (release-gate audit).** A worker re-read a room for every
+  accepted PDU, now merged per room (ADR-0623). Every `send_join`, resent or refused for size, walked the room's state and
+  auth chain under `runtime.mutex`, now cached per room and state (ADR-0624). Residual risk: an accepted join still
+  builds once, and a delivered answer is still copied under the lock, up to `join_response_max_size`.
+- **A client's federated join, knock or leave held a request thread with no limit (release-gate audit).** Each now holds a
+  client-outbound slot (ADR-0622).
 - **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,
   and a window in which a room had no ACL (`room_server_acl_allows` answers true) while its rows were rewritten. Mitigated:
   the worker's store readers hold a shared lock for their own call, a reload takes the exclusive lock only for the
@@ -3033,6 +3041,35 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **Residual risk:** servers can reach different verdicts on one redaction, depending on when each sees a demotion. A
   redaction sent before a demotion and first judged after it stays withheld.
 
+### A release signed from any ref (0.12.92, ADR-0614)
+
+The GPG key was a repository secret, so a workflow on any pushed branch or tag could read it, and `release.yml` published
+any commit whose version matched the tag. The key is now a secret of the `release` environment, read by one job, and a tag
+must name a commit on `main`. Someone who can push to `main` is outside this control; the `main` ruleset covers them.
+
+### An application service asserting an administrator (0.12.92, ADR-0611)
+
+A registration whose `users` namespace covered a server administrator gave its `as_token` every administrator route.
+`require_admin` and `authenticated_admin_user` now refuse a masquerade token outright. The server-administrator override
+for redactions is judged by user ID and is not covered; the service could send as that user anyway.
+
+### A long identifier against a namespace regex (0.12.92, ADR-0613)
+
+`std::regex` recurses on its input, and two unauthenticated routes gave it a path segment of any length, so one request
+could end the process. The matcher now refuses anything over 255 bytes, the spec's limit for an identifier.
+
+### A forged join for a room's creator (0.12.92, ADR-0612)
+
+The spec's bootstrap clause allows a join for the creator before it looks at the sender. A remote server could use that to
+rejoin a creator who had left. `events::join_names_another_user` refuses such an event on every receipt path. The auth rule
+stays as written, since state resolution re-runs it.
+
+### State from a losing fork (0.12.92, ADR-0615)
+
+Current state was only ever overwritten, so a key that one fork set and the resolution dropped kept taking effect: a member
+stayed joined, a server ACL stayed applied. `recompute_current_state` now removes such keys and corrects the membership
+rows and the roster with them. Nothing is removed when the room has no tips or its resolution is refused.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes
@@ -3043,3 +3080,15 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **A deactivated account's pushers (F-80, ADR-0411).** Deactivation deletes them, and delivery skips a deactivated recipient.
 - **A device ID equal to a cross-signing key ID (F-85).** Login answers `403 M_FORBIDDEN` for one, and
   `POST /keys/device_signing/upload` refuses a key whose ID is one of the uploader's device IDs.
+
+## Release-gate audit: sync, to-device and stored invites (ADR-0616 to ADR-0620)
+
+- **A remote server's history cost every `/sync` of a joined user.** The timeline, unread counts and read markers read a
+  room's whole history under `runtime.mutex`. **Mitigation:** they read the newest rows only, with a fixed budget.
+- **One user's to-device rows cost every user's send and sync, and one user's queues had no joint bound.**
+  **Mitigation:** standing indexes by recipient and user, and per-user limits that evict the oldest row first.
+- **A remote server could store unbounded invites for a local user.** **Mitigation:** limits per user and per origin,
+  enforced by every writer before the write, answered 403 `M_FORBIDDEN`. Invites from local users are not counted, so a
+  remote server cannot starve them.
+- **A resident chose how much a knock stored and how many signatures it cost.** **Mitigation:** the answer is bounded in
+  bytes and the list in count and entry size before any signature check.

@@ -7,21 +7,21 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/core/BoundedParallel.hpp"
 #include "merovingian/core/PortableSemaphore.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/SemaphorePermit.hpp"
-#include "merovingian/core/BoundedParallel.hpp"
-#include "merovingian/core/QueryParams.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
 #include "merovingian/crypto/Ed25519Signature.hpp"
-#include "merovingian/crypto/SecretBoxCiphertext.hpp"
-#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/crypto/SecretBox.hpp"
+#include "merovingian/crypto/SecretBoxCiphertext.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -39,82 +39,84 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/RedactionView.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
-#include "merovingian/events/EventIdResult.hpp"
-#include "merovingian/events/EventSignature.hpp"
-#include "merovingian/events/SignedEventResult.hpp"
-#include "merovingian/events/SigningKeyId.hpp"
 #include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/Event.hpp"
 #include "merovingian/events/EventId.hpp"
+#include "merovingian/events/EventIdResult.hpp"
+#include "merovingian/events/EventSignature.hpp"
 #include "merovingian/events/EventSigner.hpp"
 #include "merovingian/events/Limits.hpp"
 #include "merovingian/events/Redaction.hpp"
+#include "merovingian/events/SignedEventResult.hpp"
+#include "merovingian/events/SigningKeyId.hpp"
 #include "merovingian/events/UnsignedData.hpp"
 #include "merovingian/federation/CachedServerDiscovery.hpp"
 #include "merovingian/federation/DiscoveryCachePolicy.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
-#include "merovingian/federation/OutboundCall.hpp"
-#include "merovingian/federation/OutboundTransaction.hpp"
-#include "merovingian/federation/ThirdPartyBindNotification.hpp"
-#include "merovingian/federation/ThirdPartyInviteExchange.hpp"
-#include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/InviteRoomState.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/OutboundMembership.hpp"
+#include "merovingian/federation/OutboundTransaction.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/federation/ServerDiscovery.hpp"
+#include "merovingian/federation/ThirdPartyBindNotification.hpp"
 #include "merovingian/federation/ThirdPartyInvite.hpp"
+#include "merovingian/federation/ThirdPartyInviteExchange.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/BoundedOutboundLimits.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
 #include "merovingian/homeserver/EventBookkeeping.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/FetchRelationsRequest.hpp"
 #include "merovingian/homeserver/FetchThreadsRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalRedactionCheck.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/NewEventBasis.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/homeserver/PersistOutcome.hpp"
+#include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
+#include "merovingian/homeserver/PushRetry.hpp"
 #include "merovingian/homeserver/PushRoomFacts.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
+#include "merovingian/homeserver/RedactionService.hpp"
 #include "merovingian/homeserver/RemoteInviteResult.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
+#include "merovingian/homeserver/RestrictedJoin.hpp"
 #include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
+#include "merovingian/homeserver/RoomPower.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
-#include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
-#include "merovingian/homeserver/StateContentRefusal.hpp"
-#include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
-#include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
-#include "merovingian/homeserver/EmailPush.hpp"
-#include "merovingian/homeserver/InvitePermission.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
-#include "merovingian/homeserver/LocalServices.hpp"
-#include "merovingian/homeserver/PresenceService.hpp"
-#include "merovingian/homeserver/PushRetry.hpp"
-#include "merovingian/homeserver/RedactionService.hpp"
-#include "merovingian/homeserver/RestrictedJoin.hpp"
-#include "merovingian/homeserver/RoomPower.hpp"
 #include "merovingian/homeserver/SendJoinAnswerAuthorization.hpp"
+#include "merovingian/homeserver/SendJoinStateIngestResult.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StateContentCheck.hpp"
+#include "merovingian/homeserver/StateContentRefusal.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/homeserver/ValidatedMakeJoinResponse.hpp"
+#include "merovingian/homeserver/ValidatedMakeLeaveResponse.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundResult.hpp"
+#include "merovingian/http/RequestLimits.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/identity/StoreInvitePublicKey.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
@@ -126,20 +128,20 @@
 #include "merovingian/push/PushGatewayDevice.hpp"
 #include "merovingian/push/PushGatewayNotification.hpp"
 #include "merovingian/push/PushRules.hpp"
+#include "merovingian/rooms/EncryptionPolicy.hpp"
 #include "merovingian/rooms/EventIdFormat.hpp"
 #include "merovingian/rooms/RedactionRules.hpp"
 #include "merovingian/rooms/RoomCreationEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomEncryptionRequest.hpp"
 #include "merovingian/rooms/RoomPreset.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
-#include "merovingian/rooms/EncryptionPolicy.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/RoomReadAccess.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
 #include "merovingian/sync/StreamToken.hpp"
-#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1321,6 +1323,16 @@ namespace
         }
         auto refused = make_operation_result(false, {}, "a membership change for this room is in progress", 429U);
         refused.retry_after_ms = membership_exchange_retry_after_ms;
+        return refused;
+    }
+
+    // The answer when a federated join, knock or leave finds no client-outbound slot (ADR-0622): the same as the
+    // other client-triggered outbound calls give (ADR-0079).
+    [[nodiscard]] auto client_outbound_limit_result(HomeserverRuntime const& runtime) -> OperationResult
+    {
+        auto refused = make_operation_result(false, {}, "too many concurrent remote requests, retry shortly", 429U);
+        refused.errcode = "M_LIMIT_EXCEEDED";
+        refused.retry_after_ms = runtime.client_outbound_proxy_policy.retry_after_ms;
         return refused;
     }
 
@@ -2525,17 +2537,14 @@ namespace
         }
 
         auto mapping = canonicaljson::Object{};
-        auto const& account_data = runtime.database.persistent_store.account_data;
-        auto const existing =
-            std::ranges::find_if(account_data, [user_id](database::PersistentAccountData const& entry) {
-                return entry.user_id == user_id && entry.room_id.empty() && entry.event_type == "m.direct";
-            });
-        if (existing != account_data.end())
+        auto const existing = database::find_account_data_content(runtime.database.persistent_store, user_id,
+                                                                  std::string_view{}, "m.direct");
+        if (existing.has_value())
         {
             // Client-owned account data may hold fractional numbers. The canonical parser
             // refused them, so the mapping started empty and the write below destroyed the
             // user's existing direct rooms.
-            auto const parsed = canonicaljson::parse_json(existing->content_json);
+            auto const parsed = canonicaljson::parse_json(*existing);
             if (parsed.error == canonicaljson::ParseError::none)
             {
                 if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()); obj != nullptr)
@@ -2757,6 +2766,58 @@ namespace
     // A make_join, make_leave or make_knock answer is one event plus `room_version`, so four times the 64 KiB event
     // limit is ample headroom; the 16 MiB outbound default is not (F-13).
     inline constexpr auto membership_template_max_response_bytes = std::uint64_t{4U * events::max_event_size_bytes};
+    // A send_knock answer holds a stripped state of at most `federation::max_invite_room_state_entries` PDUs, as the
+    // invite that comes the other way does, and is bounded as that invite's body is (ADR-0620).
+    inline constexpr auto knock_answer_max_response_bytes = std::uint64_t{http::RequestLimits{}.max_body_bytes};
+
+    // What may be kept of a resident's `knock_room_state`, before any signature is checked (ADR-0620): only the
+    // entries /sync could show the user (the summary types and their own membership), each within the event size
+    // limit, and no list longer than an invite's may be. Spec (Server-Server API, PUT /send_knock): "Entries which are
+    // improperly signed or formatted SHOULD be removed". A list over the count, or one of a room version whose list
+    // must hold the create event without it, is dropped whole: the knock stands, as it does with no list at all.
+    [[nodiscard]] auto bounded_knock_room_state(canonicaljson::Array const& entries, std::string_view user_id,
+                                                rooms::RoomVersionPolicy const& policy) -> canonicaljson::Array
+    {
+        auto kept = canonicaljson::Array{};
+        auto create_seen = false;
+        for (auto const& entry : entries)
+        {
+            auto const* event = std::get_if<canonicaljson::Object>(&entry.storage());
+            auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+            auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+            if (type == nullptr || state_key == nullptr)
+            {
+                continue;
+            }
+            auto const is_summary =
+                state_key->empty() && (*type == "m.room.create" || *type == "m.room.name" || *type == "m.room.avatar" ||
+                                       *type == "m.room.topic" || *type == "m.room.join_rules" ||
+                                       *type == "m.room.canonical_alias" || *type == "m.room.encryption");
+            if (!is_summary && !(*type == "m.room.member" && *state_key == user_id))
+            {
+                continue;
+            }
+            auto const serialized = canonicaljson::serialize_canonical(entry);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none ||
+                serialized.output.size() > events::max_event_size_bytes)
+            {
+                continue;
+            }
+            create_seen = create_seen || *type == "m.room.create";
+            kept.push_back(entry);
+        }
+        if (kept.size() > federation::max_invite_room_state_entries || (policy.create_event_is_room_id && !create_seen))
+        {
+            log_diagnostic("room.knock.state_list_dropped",
+                           {
+                               {"entries", std::to_string(kept.size()),                        false},
+                               {"reason",  "over the entry limit or missing the create event", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return {};
+        }
+        return kept;
+    }
 
     // Why a resident's template, completed as this server will hash, sign and store it, is outside the room version's
     // event format (size, `prev_events`, `auth_events`, `depth`); empty when it is within it.
@@ -5937,7 +5998,8 @@ namespace
 
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers,
-                             canonicaljson::Object const* third_party_signed) -> OperationResult
+                             canonicaljson::Object const* third_party_signed, std::string_view client_key)
+    -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -6137,6 +6199,12 @@ namespace
         // restores exactly what it released, on the throwing path too.
         // Read under the lock: the profile goes into the join event the released region signs.
         auto const joining_profile = database::find_profile(runtime.database.persistent_store, *user_id);
+        // Releasing the mutex frees it, not this request's thread: the exchange holds a slot until it returns.
+        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        if (!outbound_slot.has_value())
+        {
+            return client_outbound_limit_result(runtime);
+        }
         auto pending_join = PendingJoinLease{runtime, room_id};
         if (!pending_join.acquired())
         {
@@ -6600,6 +6668,11 @@ namespace
                             std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
                     if (!candidates.empty())
                     {
+                        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+                        if (!outbound_slot.has_value())
+                        {
+                            return client_outbound_limit_result(runtime);
+                        }
                         auto joined_elsewhere =
                             join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
                         if (joined_elsewhere.ok)
@@ -6719,8 +6792,8 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
-[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                              std::string_view client_key) -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     log_diagnostic("room.leave.started", {
@@ -6883,6 +6956,11 @@ namespace
         // template from one. The spec defines no other route, so the invite is dropped here, as a
         // leave in this server's own records, and nothing is sent.
         auto reject_locally = false;
+        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        if (!outbound_slot.has_value())
+        {
+            return client_outbound_limit_result(runtime);
+        }
         auto const exchange = MembershipExchangeClaim{runtime, room_id, *user_id};
 
         // The whole remote-leave exchange runs with runtime.mutex released:
@@ -8407,9 +8485,10 @@ namespace
         {
             return federated_knock_failure("knock deadline exceeded before send_knock", 502U);
         }
-        auto send = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, send_tx,
-                                          signing_key.key_id, core::SecretBuffer{secret_key.bytes()},
-                                          "room.knock.remote.send_knock_failed", call_timeout(), 0U, bounds);
+        auto send =
+            perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id, send_tx, signing_key.key_id,
+                                  core::SecretBuffer{secret_key.bytes()}, "room.knock.remote.send_knock_failed",
+                                  call_timeout(), knock_answer_max_response_bytes, bounds);
         if (!send.ok)
         {
             return federated_knock_failure("send_knock failed: " + send.body, send.remote_status == 403U ? 403U : 502U);
@@ -8426,8 +8505,10 @@ namespace
         auto const send_response = canonicaljson::parse_lossless(send.body);
         if (auto const* knock_state = knock_room_state_of(send_response.value); knock_state != nullptr)
         {
+            // The bounds come first, so a resident's list costs no signature check past them (ADR-0620).
+            auto const bounded = bounded_knock_room_state(*knock_state, user_id, *policy);
             auto const verified = filter_verified_send_join_events(
-                runtime, filter_send_join_events_for_room(*knock_state, room_id, *policy), *policy, our_server);
+                runtime, filter_send_join_events_for_room(bounded, room_id, *policy), *policy, our_server);
             for (auto const& entry : verified)
             {
                 if (auto serialized = canonicaljson::serialize_canonical(events::without_unsigned(entry));
@@ -8443,7 +8524,8 @@ namespace
 } // namespace
 
 [[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::vector<std::string> const& via_servers, std::string_view reason) -> OperationResult
+                              std::vector<std::string> const& via_servers, std::string_view reason,
+                              std::string_view client_key) -> OperationResult
 {
     auto guard = RuntimeLock{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -8480,8 +8562,20 @@ namespace
     {
         return make_operation_result(false, {}, "server signing key not available", 500U);
     }
+    // Past the user's limit the resident is never asked (ADR-0619): a knock it accepted could not be recorded here.
+    if (database::invite_is_over_store_caps(
+            runtime.database.persistent_store,
+            database::PersistentInvite{std::string{room_id}, *user_id, *user_id, {}, {}, {}, 0U, candidates.front()}))
+    {
+        return make_operation_result(false, {}, "too many knocks are pending for this user", 403U);
+    }
     auto const secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
     auto const user = *user_id;
+    auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+    if (!outbound_slot.has_value())
+    {
+        return client_outbound_limit_result(runtime);
+    }
     auto const exchange = MembershipExchangeClaim{runtime, room_id, user};
     auto knocked = [&] {
         auto const released = RuntimeLockRelease{guard};

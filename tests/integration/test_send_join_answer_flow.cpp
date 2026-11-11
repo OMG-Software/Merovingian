@@ -29,6 +29,7 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/EventId.hpp"
@@ -50,6 +51,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <catch2/generators/catch_generators.hpp>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -159,6 +161,8 @@ auto seed(HomeserverRuntime& runtime, std::string const& room_id, std::string co
     auto const after = homeserver::compute_state_after(before.state, event_id, type, state_key);
     REQUIRE(homeserver::record_event_state(store, room_id, event_id, prev_event_ids, after, true).has_value());
     REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
+    // `state` was pushed to directly above; this lets the acceptor trust the index and use its plan cache (ADR-0624).
+    database::rebuild_state_index(store);
     if (type == "m.room.member" && state_key.has_value())
     {
         auto const parsed = canonicaljson::parse_lossless(json);
@@ -1003,6 +1007,285 @@ SCENARIO("A join sent again after the room moved on is not answered with older s
             {
                 REQUIRE(second.accepted == first.accepted);
                 REQUIRE(holds_membership(second.state_json, "ban") == holds_membership(first.state_json, "ban"));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Release-gate audit, resource-exhaustion.send-join-acceptor.answer-plan-per-request-under-runtime-mutex (ADR-0624).
+SCENARIO("Resent and refused send_joins do not plan the room again",
+         "[homeserver][send_join_answer][send-join-plan-cache][security]")
+{
+    GIVEN("a public room, and the joins of two remote users already accepted")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, "64MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        install_unstarted_dispatch_worker(runtime);
+        auto room = seed_room(runtime, "!cached:local.example.org", R"({"join_rule":"public"})");
+        for (auto index = 0; index < 7; ++index)
+        {
+            auto const user = "@u" + std::to_string(index) + ":a.example.org";
+            seed_state_after(runtime, room, "$m" + std::to_string(index) + ":local.example.org", "m.room.member", user,
+                             user, R"({"membership":"join"})");
+            add_to_roster(runtime, room.room_id, user);
+        }
+        auto const bob_join =
+            join_envelope(room, std::string{bob}, "$bobjoin:remote.example.org", public_join_auth(room));
+        REQUIRE(accept(runtime, bob_join).accepted);
+        room.tip_id = bob_join.event_id;
+        room.depth = bob_join.depth;
+        auto const carol_join =
+            join_envelope(room, std::string{carol}, "$caroljoin:other.example.org", public_join_auth(room));
+        REQUIRE(accept(runtime, carol_join).accepted);
+        room.tip_id = carol_join.event_id;
+        room.depth = carol_join.depth;
+        auto const& cache = *runtime.send_join_plan_cache;
+        auto const builds_before = cache.builds();
+
+        WHEN("bob's join is sent five more times")
+        {
+            auto const first = accept(runtime, bob_join);
+            for (auto attempt = 0; attempt < 4; ++attempt)
+            {
+                auto const again = accept(runtime, bob_join);
+                REQUIRE(again.accepted);
+                REQUIRE(again.state_json == first.state_json);
+                REQUIRE(again.auth_chain_json == first.auth_chain_json);
+            }
+
+            THEN("the room was planned once, and the answer leaves out his own join")
+            {
+                REQUIRE(first.accepted);
+                REQUIRE(cache.builds() == builds_before + 1U);
+                REQUIRE_FALSE(described(first.state_json).contains("m.room.member|" + std::string{bob}));
+                REQUIRE(described(first.state_json).contains("m.room.member|" + std::string{carol}));
+            }
+        }
+
+        WHEN("each of them sends their join again")
+        {
+            auto const from_bob = accept(runtime, bob_join);
+            auto const from_carol = accept(runtime, carol_join);
+
+            THEN("one plan serves both, each answered without their own join")
+            {
+                REQUIRE(from_bob.accepted);
+                REQUIRE(from_carol.accepted);
+                REQUIRE(cache.builds() == builds_before + 1U);
+                REQUIRE_FALSE(described(from_bob.state_json).contains("m.room.member|" + std::string{bob}));
+                REQUIRE_FALSE(described(from_carol.state_json).contains("m.room.member|" + std::string{carol}));
+            }
+        }
+
+        WHEN("the room's state changes between two resends")
+        {
+            std::ignore = accept(runtime, bob_join);
+            auto const builds_after_first = cache.builds();
+            seed_state_after(runtime, room, "$topic:local.example.org", "m.room.topic", std::string{},
+                             std::string{admin}, R"({"topic":"later"})");
+            auto const after = accept(runtime, bob_join);
+
+            THEN("the room is planned again and the answer holds the change")
+            {
+                REQUIRE(cache.builds() == builds_after_first + 1U);
+                REQUIRE(described(after.state_json).contains("m.room.topic|"));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("a room whose answer is too large for the limit")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, "1MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        install_unstarted_dispatch_worker(runtime);
+        auto room = seed_room(runtime, "!toolarge:local.example.org", R"({"join_rule":"public"})");
+        seed_state_after(runtime, room, "$pad1:local.example.org", "org.example.pad", "one", std::string{admin},
+                         R"({"pad":")" + std::string(400U * 1024U, 'x') + R"("})");
+        seed_state_after(runtime, room, "$pad2:local.example.org", "org.example.pad", "two", std::string{admin},
+                         R"({"pad":")" + std::string(400U * 1024U, 'y') + R"("})");
+        auto const& cache = *runtime.send_join_plan_cache;
+
+        WHEN("five different users' joins are refused for size")
+        {
+            for (auto index = 0; index < 5; ++index)
+            {
+                auto const user = "@r" + std::to_string(index) + ":remote.example.org";
+                auto const refused =
+                    accept(runtime, join_envelope(room, user, "$r" + std::to_string(index) + ":remote.example.org",
+                                                  public_join_auth(room)));
+                REQUIRE_FALSE(refused.accepted);
+                REQUIRE(refused.status == 503U);
+            }
+
+            THEN("the room was planned once")
+            {
+                REQUIRE(cache.builds() == 1U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto sorted(std::vector<std::string> ids) -> std::vector<std::string>
+{
+    std::ranges::sort(ids);
+    return ids;
+}
+
+// The cached plan and the plan made from scratch hold the same answer. Only the order of the auth chain may differ.
+auto require_same_answer(merovingian::homeserver::SendJoinAnswerPlan const& cached,
+                         merovingian::homeserver::SendJoinAnswerPlan const& plain) -> void
+{
+    REQUIRE(sorted(cached.state_event_ids) == sorted(plain.state_event_ids));
+    REQUIRE(sorted(cached.auth_chain_event_ids) == sorted(plain.auth_chain_event_ids));
+    REQUIRE(cached.members_omitted == plain.members_omitted);
+    REQUIRE(sorted(cached.servers_in_room) == sorted(plain.servers_in_room));
+    REQUIRE(cached.event_count == plain.event_count);
+    REQUIRE(cached.event_json_bytes == plain.event_json_bytes);
+    REQUIRE(cached.projected_body_bytes == plain.projected_body_bytes);
+    REQUIRE(cached.projected_frame_bytes == plain.projected_frame_bytes);
+}
+
+} // namespace
+
+SCENARIO("A plan from the cached room plan is the plan made from scratch",
+         "[homeserver][send_join_answer][send-join-plan-cache]")
+{
+    namespace hs = merovingian::homeserver;
+    auto const omit = GENERATE(false, true);
+
+    GIVEN("an unnamed room with an invited joiner, members who cite their joins, and an old power level event")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = hs::start_runtime(config_with_sqlite(path, "64MiB"));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& store = runtime.database.persistent_store;
+        auto room = seed_room(runtime, "!same:local.example.org", R"({"join_rule":"public"})");
+        auto const old_power = room.pl_id;
+        seed_state_after(runtime, room, "$pl2:local.example.org", "m.room.power_levels", std::string{},
+                         std::string{admin}, R"({"users":{"@admin:local.example.org":100,"@m0:a.example.org":50}})");
+        for (auto index = 0; index < 7; ++index)
+        {
+            auto const user = "@m" + std::to_string(index) + ":" + (index % 2 == 0 ? "a" : "b") + ".example.org";
+            seed_state_after(runtime, room, "$m" + std::to_string(index) + ":local.example.org", "m.room.member", user,
+                             user, R"({"membership":"join"})");
+            add_to_roster(runtime, room.room_id, user);
+        }
+        // A state event that cites a member's join, so that join is in the chain though it is left out of the state.
+        seed(runtime, room.room_id, "$named:local.example.org", "org.example.note", std::string{}, "@m0:a.example.org",
+             R"({"note":"x"})", {room.tip_id}, {room.create_id, "$m0:local.example.org"}, ++room.depth);
+        room.tip_id = "$named:local.example.org";
+        auto const invited = std::string{"@invited:solo.example.org"};
+        auto const invite_id = std::string{"$invite:local.example.org"};
+        seed_state_after(runtime, room, invite_id, "m.room.member", invited, std::string{admin},
+                         R"({"membership":"invite"})");
+        auto const join_id = std::string{"$join:solo.example.org"};
+        seed_state_after(runtime, room, join_id, "m.room.member", invited, invited, R"({"membership":"join"})");
+        add_to_roster(runtime, room.room_id, invited);
+        auto const limits = hs::send_join_answer_limits(runtime.config);
+        auto const auth = std::vector<std::string>{room.create_id, old_power, room.join_rules_id};
+
+        WHEN("a user who is not in the room is planned for")
+        {
+            auto const user = std::string{"@fresh:new.example.org"};
+            auto const cached =
+                hs::plan_send_join_answer_cached(runtime, room.room_id, user, std::nullopt, auth, omit, limits);
+            auto const plain = hs::plan_send_join_answer(
+                runtime, room.room_id, user, hs::current_room_state_entries(store, room.room_id), auth, omit);
+
+            THEN("the answers are the same")
+            {
+                require_same_answer(cached, plain);
+            }
+        }
+
+        WHEN("the join already stored is planned for again")
+        {
+            auto const before = std::vector<merovingian::database::PersistentStateGroupStateEntry>{
+                {{}, "m.room.member", invited, invite_id}
+            };
+            auto const cached = hs::plan_send_join_answer_cached(
+                runtime, room.room_id, invited, hs::SendJoinResend{join_id, invite_id}, auth, omit, limits);
+            auto const plain = hs::plan_send_join_answer(
+                runtime, room.room_id, invited,
+                hs::resent_send_join_state(store, room.room_id, invited, join_id, before), auth, omit);
+
+            THEN("the answers are the same")
+            {
+                require_same_answer(cached, plain);
+            }
+        }
+
+        WHEN("a join with no membership before it is planned for again")
+        {
+            auto const cached = hs::plan_send_join_answer_cached(runtime, room.room_id, invited,
+                                                                 hs::SendJoinResend{join_id, {}}, auth, omit, limits);
+            auto const plain = hs::plan_send_join_answer(
+                runtime, room.room_id, invited, hs::resent_send_join_state(store, room.room_id, invited, join_id, {}),
+                auth, omit);
+
+            THEN("the answers are the same")
+            {
+                require_same_answer(cached, plain);
+            }
+        }
+
+        WHEN("a member's event is the one resent while another event cites it")
+        {
+            auto const member = std::string{"@m0:a.example.org"};
+            auto const member_join = std::string{"$m0:local.example.org"};
+            auto const cached = hs::plan_send_join_answer_cached(
+                runtime, room.room_id, member, hs::SendJoinResend{member_join, {}}, auth, omit, limits);
+            auto const plain = hs::plan_send_join_answer(
+                runtime, room.room_id, member, hs::resent_send_join_state(store, room.room_id, member, member_join, {}),
+                auth, omit);
+
+            THEN("the answers are the same, the join staying in the chain")
+            {
+                require_same_answer(cached, plain);
+                REQUIRE(std::ranges::find(cached.auth_chain_event_ids, member_join) !=
+                        cached.auth_chain_event_ids.end());
+            }
+        }
+
+        WHEN("an event the plan found missing arrives without changing the state")
+        {
+            seed(runtime, room.room_id, "$cites:local.example.org", "org.example.cites", std::string{},
+                 std::string{admin}, R"({})", {room.tip_id}, {room.create_id, "$late:local.example.org"}, ++room.depth);
+            auto const user = std::string{"@fresh:new.example.org"};
+            std::ignore =
+                hs::plan_send_join_answer_cached(runtime, room.room_id, user, std::nullopt, auth, omit, limits);
+            auto const builds_before = runtime.send_join_plan_cache->builds();
+            auto const json = event_json(room.room_id, "m.room.message", std::nullopt, std::string{admin}, R"({})", {},
+                                         {}, static_cast<std::int64_t>(room.depth));
+            store.events.push_back(
+                {"$late:local.example.org", room.room_id, std::string{admin}, json, room.depth, 0U, {}, {}, {}});
+            auto const cached =
+                hs::plan_send_join_answer_cached(runtime, room.room_id, user, std::nullopt, auth, omit, limits);
+
+            THEN("the room is planned again and the chain holds it")
+            {
+                REQUIRE(runtime.send_join_plan_cache->builds() == builds_before + 1U);
+                REQUIRE(std::ranges::find(cached.auth_chain_event_ids, "$late:local.example.org") !=
+                        cached.auth_chain_event_ids.end());
             }
         }
 

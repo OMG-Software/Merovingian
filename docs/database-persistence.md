@@ -186,6 +186,11 @@ value. Test fixtures that do not exercise persistence select it through
   (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
   no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
   vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
+- `room_state_revision` counts the changes to a room's current state rows, in memory only and from zero at each start.
+  A cache of something computed from those rows is valid for one revision (ADR-0624), so a writer that changes a
+  current state row calls `note_room_state_changed`.
+- `delete_federation_transactions` removes a list of queued transactions in one database transaction; the dispatch worker
+  uses it to drop what a failing destination holds past its share or its age (ADR-0621).
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names; the checked-in `migrations/` directory contains only
   `001_initial_schema.sql`, the frozen record of the v1 schema.
@@ -646,7 +651,10 @@ value. Test fixtures that do not exercise persistence select it through
     existing sync wake-up path (`SyncNotifier::publish`, called by the
     ingest caller on an accepted result) stay correct with no separate
     "state diff" plumbing. `current_state` is a cache of this result, never
-    an independent write target, from this path onward.
+    an independent write target, from this path onward. A key the resolution
+    does not hold is deleted with `remove_current_state_rows`, in one
+    transaction with the membership rows it corrects, unless its row's event
+    has no state group and no tip's state names it (ADR-0615).
 
   Wired into `ingest_pdu_event` (`src/homeserver/LocalHttpRouter.cpp`):
   state-before is computed before the event is persisted (a missing
@@ -916,6 +924,12 @@ value. Test fixtures that do not exercise persistence select it through
   (`allocate_sync_stream_id` persists the watermark itself); a failed commit
   skips them, it never reuses them. A request with no local recipient records
   the transaction alone through the same function.
+- `to_device_messages` is indexed by (user, device) and by user (`to_device_recipient_index`, `to_device_user_index`,
+  ADR-0618). An erase moves the last row into the gap, so the vector has no meaningful order. Send and sync read only the
+  recipient's rows, and the per-user limits evict a user's oldest row first, whichever device holds it.
+- `invites` is indexed by (room, user), by what a record is charged to and by origin (`invite_key_index`,
+  `invite_quota_index`, `invite_origin_index`, ADR-0619). `invite_is_over_store_caps` is asked by every writer before it
+  builds a statement. The runtime rebuilds the indexes once it has set `local_server_name`, which hydration runs before.
 - An inbound `m.direct_to_device` EDU writes all of its `to_device_messages` rows in ONE backend
   transaction (`database::enqueue_to_device_messages`, ADR-0166), through the same prepare/apply
   steps and evictions as the single-message and `/sendToDevice` writers. A failed commit stores

@@ -33,6 +33,15 @@ struct DispatchWorkerConfig final
     // fetches what it missed itself once it is reachable (prev_events, /get_missing_events).
     // Zero derives it from max_queue_depth: see effective_max_pending_per_destination.
     std::size_t max_pending_per_destination{0U};
+    // Bound on the slots that destinations which are failing may hold between them, so that many dead peers cannot
+    // fill what one cannot (ADR-0621). Past it a destination still backing off is refused, and the largest holders
+    // give up their newest transactions. Zero derives it from max_queue_depth: see effective_max_pending_failing.
+    std::size_t max_pending_failing_destinations{0U};
+    // A failing destination's transaction older than this leaves the queue and the database, however few retries it
+    // has used. The peer fetches what it missed itself. A destination that is not failing is never aged out.
+    std::uint64_t max_failing_transaction_age_ms{24U * 60U * 60U * 1000U};
+    // How often at most the queue is walked for that age.
+    std::uint64_t age_sweep_interval_ms{60U * 1000U};
     // Why the operator's policy excludes a destination, empty when it does not (ADR-0391). Enqueue refuses such a
     // transaction and replay drops its durable row, so nothing queued can reach one: the policy cannot change
     // while the process runs. Unset excludes nothing.

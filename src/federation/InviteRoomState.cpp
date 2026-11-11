@@ -98,24 +98,28 @@ auto validate_invite_room_state(std::string_view room_id, std::string_view room_
     {
         return {false, 500U, "room version policy is unavailable"};
     }
-    // Versions 1 through 11: the spec says servers MAY validate, and servers
-    // still migrating send stripped entries. Accept what arrives.
-    if (!policy->create_event_is_room_id)
-    {
-        return {true, 200U, {}};
-    }
+    // The count and each entry's size bound what is stored for the user, in every room version (ADR-0619).
     if (invite_room_state_json.size() > max_invite_room_state_entries)
     {
         return refuse("invite_room_state has more entries than a room's stripped state can");
     }
-
-    auto create_seen = false;
     for (auto const& entry_json : invite_room_state_json)
     {
         if (entry_json.size() > events::max_event_size_bytes)
         {
             return refuse("invite_room_state entry exceeds the event size limit");
         }
+    }
+    // Versions 1 through 11: the spec says servers MAY validate, and servers
+    // still migrating send stripped entries. Accept what arrives.
+    if (!policy->create_event_is_room_id)
+    {
+        return {true, 200U, {}};
+    }
+
+    auto create_seen = false;
+    for (auto const& entry_json : invite_room_state_json)
+    {
         auto const parsed = canonicaljson::parse_lossless(entry_json);
         auto const* event = parsed.error == canonicaljson::ParseError::none
                                 ? std::get_if<canonicaljson::Object>(&parsed.value.storage())

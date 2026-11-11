@@ -158,6 +158,9 @@ Implemented now:
   store — the ordinary `/send` transaction path above and the membership
   acceptor here — must enforce this gate: a rule enforced on only one of two
   paths into the same store is not enforced at all
+- an `m.room.member` join whose `sender` is not its `state_key` is refused at receipt by `events::join_names_another_user`
+  (`ingest_pdu_event`, backfill, the membership acceptor, a resident's `send_join` answer). The auth rules still allow one
+  for a room's creator, as the spec writes them: state resolution re-runs them (0.12.92, ADR-0612).
 - a resident's answer to this server's `send_join` passes the receipt checks before anything is stored (0.12.70, F-45,
   ADR-0369): a content hash mismatch is redacted, and `authorize_send_join_answer` judges `state` and `auth_chain` in
   dependency order from the answer's own events, dropping what fails and refusing a join the rest does not authorise;
@@ -735,6 +738,10 @@ with its own key's entry from that `prev_event`'s group. Only when no extremity 
 readable state is the event refused (500, `event.prev_events.unresolvable`).
 Before 0.12.48 the failed resolution refused every local event in the room,
 with no log above debug.
+
+`recompute_current_state` removes a key the resolution does not hold, and the membership row and roster follow a member
+key it removes or changes. A row from outside the graph (an event with no state group that no tip's state names, such as
+an outlier invite) is kept (ADR-0615).
 
 `recompute_current_state` returns a status (ADR-0375, F-49): `resolved`, `refused`
 or `write_failed`. A refusal (an extremity with no readable state, more distinct

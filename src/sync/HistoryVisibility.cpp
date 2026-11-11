@@ -300,15 +300,9 @@ auto HistoryVisibility::membership_timeline(std::string_view room_id)
         return cached->second;
     }
     auto timeline = std::optional<std::vector<MembershipStep>>{std::vector<MembershipStep>{}};
-    auto current = std::string_view{};
-    for (auto const& state : store_.state)
-    {
-        if (state.room_id == room_id && state.event_type == member_type && state.state_key == user_id_)
-        {
-            current = state.event_id;
-            break;
-        }
-    }
+    // Copied out: `current` below is a view, and the walk moves it on to rows of the store.
+    auto const current_member_event = database::find_current_state_event_id(store_, room_id, member_type, user_id_);
+    auto current = current_member_event.has_value() ? std::string_view{*current_member_event} : std::string_view{};
     constexpr auto max_chain = std::size_t{4096U};
     auto steps = std::size_t{0U};
     while (!current.empty())

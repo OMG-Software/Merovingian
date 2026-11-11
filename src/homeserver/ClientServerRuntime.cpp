@@ -12,34 +12,34 @@
 #include "merovingian/appservice/AppserviceClient.hpp"
 #include "merovingian/appservice/AppservicePingResult.hpp"
 #include "merovingian/appservice/AppserviceRegistration.hpp"
+#include "merovingian/appservice/MasqueradeToken.hpp"
+#include "merovingian/appservice/Registration.hpp"
 #include "merovingian/appservice/ThirdPartyLocation.hpp"
 #include "merovingian/appservice/ThirdPartyProtocol.hpp"
 #include "merovingian/appservice/ThirdPartyUser.hpp"
-#include "merovingian/appservice/MasqueradeToken.hpp"
-#include "merovingian/appservice/Registration.hpp"
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
-#include "merovingian/auth/KeyApiEndpoint.hpp"
-#include "merovingian/auth/KeyApiRoute.hpp"
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/auth/KeyApi.hpp"
+#include "merovingian/auth/KeyApiEndpoint.hpp"
+#include "merovingian/auth/KeyApiRoute.hpp"
 #include "merovingian/auth/OidcDiscovery.hpp"
 #include "merovingian/auth/Password.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Signable.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/FoldedSubstringMatcher.hpp"
+#include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/SyncRequest.hpp"
-#include "merovingian/core/QueryParams.hpp"
-#include "merovingian/crypto/Ed25519PublicKey.hpp"
-#include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/crypto/ConstantTime.hpp"
 #include "merovingian/crypto/Ed25519.hpp"
+#include "merovingian/crypto/Ed25519PublicKey.hpp"
+#include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/crypto/Encoding.hpp"
 #include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/crypto/Random.hpp"
@@ -67,83 +67,83 @@
 #include "merovingian/events/EventSigner.hpp"
 #include "merovingian/federation/DeviceDisplayNames.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
-#include "merovingian/federation/PublicRoomsFilter.hpp"
-#include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/EventQuery.hpp"
 #include "merovingian/federation/KeyQuery.hpp"
 #include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/federation/OutboundMembership.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/PublicRooms.hpp"
+#include "merovingian/federation/PublicRoomsFilter.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientApiLimits.hpp"
 #include "merovingian/homeserver/ClientDevice.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerStartOptions.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/CreateRoomOptions.hpp"
+#include "merovingian/homeserver/EmailPush.hpp"
 #include "merovingian/homeserver/FetchRelationsRequest.hpp"
 #include "merovingian/homeserver/FetchThreadsRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/PasswordReset.hpp"
 #include "merovingian/homeserver/PresenceReadStatus.hpp"
+#include "merovingian/homeserver/PresenceService.hpp"
+#include "merovingian/homeserver/PublicRooms.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
+#include "merovingian/homeserver/RemoteDeviceListScope.hpp"
 #include "merovingian/homeserver/RemoteInviteResult.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchScope.hpp"
 #include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 #include "merovingian/homeserver/RemoteTimestampEvent.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
+#include "merovingian/homeserver/RoomPower.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/SearchRoomIndex.hpp"
 #include "merovingian/homeserver/SlidingSyncRelevance.hpp"
-#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
-#include "merovingian/homeserver/TurnCredentials.hpp"
-#include "merovingian/homeserver/UiaSession.hpp"
-#include "merovingian/homeserver/UserDirectorySearchStats.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
-#include "merovingian/homeserver/EmailPush.hpp"
-#include "merovingian/homeserver/InvitePermission.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
-#include "merovingian/homeserver/LocalServices.hpp"
-#include "merovingian/homeserver/OperatorAdmin.hpp"
-#include "merovingian/homeserver/PasswordReset.hpp"
-#include "merovingian/homeserver/PresenceService.hpp"
-#include "merovingian/homeserver/PublicRooms.hpp"
-#include "merovingian/homeserver/RemoteDeviceListScope.hpp"
-#include "merovingian/homeserver/RoomPower.hpp"
-#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
+#include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
+#include "merovingian/homeserver/TurnCredentials.hpp"
+#include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/homeserver/UrlPreviewService.hpp"
 #include "merovingian/homeserver/UserDirectorySearch.hpp"
+#include "merovingian/homeserver/UserDirectorySearchStats.hpp"
 #include "merovingian/http/Header.hpp"
+#include "merovingian/http/RateLimit.hpp"
 #include "merovingian/http/RateLimitConfig.hpp"
 #include "merovingian/http/RateLimitDecision.hpp"
 #include "merovingian/http/RateLimitEngine.hpp"
-#include "merovingian/http/RequestErrorCode.hpp"
-#include "merovingian/http/RateLimit.hpp"
 #include "merovingian/http/Request.hpp"
+#include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/media/Security.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/push/PushRuleEditOutcome.hpp"
 #include "merovingian/push/PushRulePlacement.hpp"
@@ -157,34 +157,35 @@
 #include "merovingian/sync/NotificationCounts.hpp"
 #include "merovingian/sync/PreparedRoomEventFilter.hpp"
 #include "merovingian/sync/ReceiptContentBuilder.hpp"
+#include "merovingian/sync/ReceiptVisibility.hpp"
 #include "merovingian/sync/RoomAccess.hpp"
 #include "merovingian/sync/RoomFilter.hpp"
 #include "merovingian/sync/RoomListResult.hpp"
 #include "merovingian/sync/RoomReadAccess.hpp"
 #include "merovingian/sync/RoomReadKind.hpp"
+#include "merovingian/sync/SlidingSync.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncExtensionResponses.hpp"
+#include "merovingian/sync/SlidingSyncExtensions.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
+#include "merovingian/sync/SlidingSyncParser.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
+#include "merovingian/sync/SlidingSyncRoomList.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
+#include "merovingian/sync/StateGroupLookup.hpp"
 #include "merovingian/sync/StreamToken.hpp"
 #include "merovingian/sync/SyncFilter.hpp"
 #include "merovingian/sync/SyncNotifier.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
+#include "merovingian/sync/TimelineWindow.hpp"
 #include "merovingian/sync/ViewerEventUnsigned.hpp"
-#include "merovingian/sync/ReceiptVisibility.hpp"
-#include "merovingian/sync/SlidingSync.hpp"
-#include "merovingian/sync/SlidingSyncExtensions.hpp"
-#include "merovingian/sync/SlidingSyncParser.hpp"
-#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
-#include "merovingian/sync/SlidingSyncRoomList.hpp"
-#include "merovingian/sync/StateGroupLookup.hpp"
-#include "merovingian/trust_safety/ReviewTarget.hpp"
-#include "merovingian/trust_safety/SafetyAuditEvent.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/ReviewTarget.hpp"
+#include "merovingian/trust_safety/SafetyAuditEvent.hpp"
 
 #include <algorithm>
 #include <array>
@@ -5052,30 +5053,17 @@ namespace
     [[nodiscard]] auto room_tag_content(database::PersistentStore const& store, std::string_view user_id,
                                         std::string_view room_id) -> canonicaljson::Object
     {
-        for (auto const& data : store.account_data)
+        auto const content = database::find_account_data_content(store, user_id, room_id, "m.tag");
+        if (!content.has_value())
         {
-            if (data.user_id != user_id || data.room_id != room_id || data.event_type != "m.tag")
-            {
-                continue;
-            }
-            auto const parsed = canonicaljson::parse_json(data.content_json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                break;
-            }
-            auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (root == nullptr)
-            {
-                break;
-            }
-            auto const* tags = object_member_as_object(*root, "tags");
-            if (tags == nullptr)
-            {
-                break;
-            }
-            return *tags;
+            return canonicaljson::Object{};
         }
-        return canonicaljson::Object{};
+        auto const parsed = canonicaljson::parse_json(*content);
+        auto const* root = parsed.error == canonicaljson::ParseError::none
+                               ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                               : nullptr;
+        auto const* tags = root == nullptr ? nullptr : object_member_as_object(*root, "tags");
+        return tags == nullptr ? canonicaljson::Object{} : *tags;
     }
 
     // Stores the per-room m.tag account-data row for a user/room. If `tags`
@@ -5957,19 +5945,34 @@ namespace
         return {std::move(changed), std::move(left)};
     }
 
-    [[nodiscard]] auto build_account_data_events(database::PersistentStore const& store,
+    // One user's account-data rows by room (the empty key holds the global rows), read once per request.
+    using AccountDataByRoom = std::unordered_map<std::string_view, std::vector<database::PersistentAccountData const*>>;
+
+    [[nodiscard]] auto read_user_account_data(database::PersistentStore const& store, std::string_view user)
+        -> AccountDataByRoom
+    {
+        auto rows = AccountDataByRoom{};
+        database::for_each_user_account_data(store, user, [&rows](database::PersistentAccountData const& data) {
+            rows[data.room_id].push_back(&data);
+        });
+        return rows;
+    }
+
+    [[nodiscard]] auto build_account_data_events(AccountDataByRoom const& user_account_data,
                                                  sync::EventTypeFilter const& filter, std::string_view user,
                                                  std::string_view room_scope, std::uint64_t since_sync_stream_id,
                                                  std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
-        auto emitted = std::size_t{0U};
-        for (auto const& data : store.account_data)
+        auto const scoped = user_account_data.find(room_scope);
+        if (scoped == user_account_data.end())
         {
-            if (data.user_id != user || data.room_id != room_scope)
-            {
-                continue;
-            }
+            return events;
+        }
+        auto emitted = std::size_t{0U};
+        for (auto const* row : scoped->second)
+        {
+            auto const& data = *row;
             // Incremental /sync: only surface account-data rows whose
             // stream_id strictly exceeds the caller's since token. Initial
             // sync (since_sync_stream_id == 0) returns everything.
@@ -6009,14 +6012,10 @@ namespace
             // bootstrap cross-device sessions.
             counts.emplace("signed_curve25519", 0);
         }
-        for (auto const& key : store.one_time_keys)
-        {
-            if (key.user_id != user || key.device_id != device_id)
-            {
-                continue;
-            }
-            counts[otk_algorithm(key.key_id)] += 1;
-        }
+        database::for_each_device_one_time_key(store, user, device_id,
+                                               [&counts](database::PersistentOneTimeKey const& key) {
+                                                   counts[otk_algorithm(key.key_id)] += 1;
+                                               });
         auto out = canonicaljson::Object{};
         for (auto const& [algorithm, count] : counts)
         {
@@ -6029,18 +6028,14 @@ namespace
                                                 std::string_view device_id) -> canonicaljson::Array
     {
         auto types = std::vector<std::string>{};
-        for (auto const& key : store.fallback_keys)
-        {
-            if (key.user_id != user || key.device_id != device_id)
-            {
-                continue;
-            }
-            auto const algorithm = otk_algorithm(key.key_id);
-            if (std::ranges::find(types, algorithm) == types.end())
-            {
-                types.push_back(algorithm);
-            }
-        }
+        database::for_each_device_fallback_key(store, user, device_id,
+                                               [&types](database::PersistentFallbackKey const& key) {
+                                                   auto const algorithm = otk_algorithm(key.key_id);
+                                                   if (std::ranges::find(types, algorithm) == types.end())
+                                                   {
+                                                       types.push_back(algorithm);
+                                                   }
+                                               });
         auto out = canonicaljson::Array{};
         for (auto const& algorithm : types)
         {
@@ -6095,12 +6090,9 @@ namespace
                                        LeftRoomRequest const& request, LazySyncRequest& lazy) -> canonicaljson::Value
     {
         // The user's current m.room.member event is the one that ended their stay.
-        auto const member_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
-            return entry.room_id == request.room_id && entry.event_type == "m.room.member" &&
-                   entry.state_key == request.user_id;
-        });
-        auto const leave_event =
-            member_state == store.state.end() ? store.events.end() : store.events.find(member_state->event_id);
+        auto const member_event_id =
+            database::find_current_state_event_id(store, request.room_id, "m.room.member", request.user_id);
+        auto const leave_event = member_event_id.has_value() ? store.events.find(*member_event_id) : store.events.end();
         auto const leave_ordering =
             leave_event == store.events.end() ? request.membership_ordering : leave_event->stream_ordering;
         // ADR-0247: nothing above the response's position, or the next sync, starting from it,
@@ -6108,29 +6100,23 @@ namespace
         auto const upper_bound = std::min(leave_ordering, request.sync_position);
         auto const since_ordering = request.since_ordering.value_or(std::uint64_t{0U});
 
-        auto matched = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events.room_in_stream_order(request.room_id))
-        {
-            if (event.status == "rejected" || event.status == "soft_failed" || event.stream_ordering > upper_bound ||
-                (request.since_ordering.has_value() && event.stream_ordering <= since_ordering))
-            {
-                continue;
-            }
-            if (!passes_sync_timeline_filter(filter.room.timeline, event))
-            {
-                continue;
-            }
-            auto const is_leave = leave_event != store.events.end() && event.event_id == leave_event->event_id;
-            if (!is_leave && (withheld_as_ignored(ignored_senders, event) || !history_visibility.can_see(event)))
-            {
-                continue;
-            }
-            matched.push_back(&event);
-        }
+        // Newest first, stopping once the window is full (ADR-0616), as a joined room's timeline is built.
+        auto const window = sync::newest_timeline_window(
+            store, request.room_id, request.since_ordering, upper_bound, request.timeline_cap,
+            [&](database::PersistentEvent const& event) {
+                if (!passes_sync_timeline_filter(filter.room.timeline, event))
+                {
+                    return false;
+                }
+                auto const is_leave = leave_event != store.events.end() && event.event_id == leave_event->event_id;
+                return is_leave || (!withheld_as_ignored(ignored_senders, event) && history_visibility.can_see(event));
+            });
+        auto const& matched = window.matched;
 
-        auto const limited = matched.size() > request.timeline_cap;
+        auto const cut_by_cap = matched.size() > request.timeline_cap;
+        auto const limited = cut_by_cap || window.budget_ran_out;
         auto const window_begin =
-            limited ? matched.end() - static_cast<std::ptrdiff_t>(request.timeline_cap) : matched.begin();
+            cut_by_cap ? matched.end() - static_cast<std::ptrdiff_t>(request.timeline_cap) : matched.begin();
         auto timeline_events = canonicaljson::Array{};
         auto leave_in_timeline = false;
         auto aggregations =
@@ -6144,8 +6130,12 @@ namespace
         }
         // /messages?dir=b returns events strictly older than `from`: anchor it at the oldest event
         // returned, or at `since` when the window is empty, as a joined room's prev_batch is.
-        auto const prev_batch = window_begin != matched.end() ? std::to_string((*window_begin)->stream_ordering)
-                                                              : std::to_string(since_ordering);
+        // A walk that ran out of budget with nothing taken anchors where it stopped: there may be events below it.
+        auto const prev_batch =
+            window_begin != matched.end()
+                ? std::to_string((*window_begin)->stream_ordering)
+                : std::to_string(window.budget_ran_out ? window.oldest_examined.value_or(since_ordering)
+                                                       : since_ordering);
 
         auto state_events = canonicaljson::Array{};
         // ADR-0357: a user who never joined (`none`) was never entitled to any of the room's state, so an
@@ -6438,6 +6428,9 @@ namespace
                            {"rooms_total",             std::to_string(rt.homeserver.database.rooms.size()), false}
         });
 
+        // The user's account data, read once for every room below and the global section (ADR-0440).
+        auto const user_account_data = read_user_account_data(store, user);
+
         for (auto const& room : rt.homeserver.database.rooms)
         {
             if (join_count >= rt.limits.max_sync_rooms || !joined(room, user))
@@ -6452,52 +6445,21 @@ namespace
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
             // room's (or store's) total event count.
-            auto matched = std::vector<database::PersistentEvent const*>{};
-            // The room's own rows, already in stream order (ADR-0435): the walk costs this room's events,
-            // not the store's.
-            for (auto const& event : store.events.room_in_stream_order(room.room_id))
-            {
-                // ADR-0064 phase B2: a rejected or soft-failed event is
-                // never relayed to clients (spec "Rejection", "Soft
-                // failure"). current_state delivery (the sync response's
-                // `state` section, built separately from store.state) is
-                // untouched — a soft-failed *state* event that resolution
-                // later admits into current state is still delivered there.
-                if (event.status == "rejected" || event.status == "soft_failed")
-                {
-                    continue;
-                }
-                if (since_ordering > 0U && event.stream_ordering <= since_ordering)
-                {
-                    continue;
-                }
-                if (event.stream_ordering > sync_position)
-                {
-                    continue;
-                }
-                // The RoomEventFilter's types, not_types, senders, not_senders and contains_url.
-                if (!passes_sync_timeline_filter(filter.room.timeline, event))
-                {
-                    continue;
-                }
-                // Ignoring Users: non-state events from an ignored sender are
-                // withheld from the timeline; state events are still sent
-                // (spec: "Servers must still send state events sent by
-                // ignored users to clients") so the room's visible state
-                // never looks different just because the viewer ignored the
-                // sender.
-                if (withheld_as_ignored(ignored_senders, event))
-                {
-                    continue;
-                }
-                // Room History Visibility: the timeline, including the join snapshot of an
-                // initial sync, holds only events the user may see.
-                if (!history_visibility.can_see(event))
-                {
-                    continue;
-                }
-                matched.push_back(&event);
-            }
+            // The walk starts at the newest row and stops once the window is full (ADR-0616): it costs the window,
+            // not this room's history. A row that is not taken is one of:
+            //   - above the response's position or at or below `since`, which the walk never reaches;
+            //   - rejected or soft-failed, which are never relayed;
+            //   - refused by the RoomEventFilter's types, not_types, senders, not_senders and contains_url;
+            //   - a non-state event from an ignored sender. State events are still sent (spec: "Servers must still
+            //     send state events sent by ignored users to clients");
+            //   - an event the user may not see by Room History Visibility.
+            auto const window = sync::newest_timeline_window(
+                store, room.room_id, since_ordering > 0U ? std::optional<std::uint64_t>{since_ordering} : std::nullopt,
+                sync_position, timeline_cap, [&](database::PersistentEvent const& event) {
+                    return passes_sync_timeline_filter(filter.room.timeline, event) &&
+                           !withheld_as_ignored(ignored_senders, event) && history_visibility.can_see(event);
+                });
+            auto const& matched = window.matched;
 
             // Spec MUST: `limited` is true only when older events were dropped
             // from this window: it exceeded the page size, or (ADR-0289) it
@@ -6519,7 +6481,8 @@ namespace
             {
                 window_begin = hole;
             }
-            auto const limited = cut_by_cap || hole != matched.end();
+            // ADR-0616: a walk that ran out of budget did not read the whole window, so older events may be left out.
+            auto const limited = cut_by_cap || hole != matched.end() || window.budget_ran_out;
 
             auto timeline_events = canonicaljson::Array{};
             // Bundled aggregations ride a section only when it is `limited` (client-server-api.md,
@@ -6536,10 +6499,15 @@ namespace
             // events strictly older than the token. Anchor it at the oldest
             // event we return (or the `since` position when the window is empty)
             // so there is neither a gap nor an overlap with this batch.
-            auto const prev_batch = window_begin != matched.end() ? std::to_string((*window_begin)->stream_ordering)
-                                                                  : std::to_string(since_ordering);
-            auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
-                                                               since_sync_stream_id, max_observed_sync_stream_id);
+            // A walk that ran out of budget with nothing taken anchors where it stopped: there may be events below it.
+            auto const prev_batch =
+                window_begin != matched.end()
+                    ? std::to_string((*window_begin)->stream_ordering)
+                    : std::to_string(window.budget_ran_out ? window.oldest_examined.value_or(since_ordering)
+                                                           : since_ordering);
+            auto room_account_data =
+                build_account_data_events(user_account_data, filter.room.account_data, user, room.room_id,
+                                          since_sync_stream_id, max_observed_sync_stream_id);
 
             // Build the room's current state events. Initial sync always
             // includes the full state snapshot. Incremental sync also needs
@@ -6677,12 +6645,13 @@ namespace
         auto invite_room_state = std::optional<InviteRoomStateIndex>{};
         auto leave_count = std::size_t{0U};
         auto knock_count = std::size_t{0U};
-        for (auto const& membership : store.memberships)
+        auto user_memberships = std::vector<database::PersistentMembership const*>{};
+        database::for_each_user_membership_row(store, user, [&](database::PersistentMembership const& membership) {
+            user_memberships.push_back(&membership);
+        });
+        for (auto const* const membership_row : user_memberships)
         {
-            if (membership.user_id != user)
-            {
-                continue;
-            }
+            auto const& membership = *membership_row;
             if (filter.present && !sync::room_passes_filter(filter.room, membership.room_id))
             {
                 continue;
@@ -6774,8 +6743,9 @@ namespace
                                                                 since_sync_stream_id, since_ordering, sync_position,
                                                                 presence_now_ms(), max_observed_sync_stream_id)
                                    : canonicaljson::Array{};
-        auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
-                                                             since_sync_stream_id, max_observed_sync_stream_id);
+        auto global_account_data =
+            build_account_data_events(user_account_data, filter.account_data, user, std::string_view{},
+                                      since_sync_stream_id, max_observed_sync_stream_id);
         if (!since_token.has_value())
         {
             add_initial_push_rules_event(store, filter.account_data, user,
@@ -7445,15 +7415,15 @@ namespace
                     wants_e2ee && std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
                         return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
                     });
-                bool const has_relevant_tdm =
-                    wants_to_device && std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
-                        return m.target_user_id == user && m.target_device_id == device_id &&
-                               m.stream_id > since_sync_stream_id;
+                bool const has_relevant_tdm = wants_to_device && database::has_to_device_message_after(
+                                                                     store, user, device_id, since_sync_stream_id);
+                auto has_relevant_ad = false;
+                if (wants_account_data)
+                {
+                    database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& ad) {
+                        has_relevant_ad = has_relevant_ad || ad.stream_id > since_sync_stream_id;
                     });
-                bool const has_relevant_ad =
-                    wants_account_data && std::ranges::any_of(store.account_data, [&](auto const& ad) {
-                        return ad.user_id == user && ad.stream_id > since_sync_stream_id;
-                    });
+                }
                 bool const has_relevant_receipts =
                     wants_receipts &&
                     std::ranges::any_of(rt.homeserver.database.persistent_store.receipts, [&](auto const& r) {
@@ -11605,11 +11575,10 @@ namespace
         }
 
         auto account_data = canonicaljson::Array{};
-        for (auto const& row : store.account_data)
-        {
-            if (row.user_id != user_id || row.room_id != room_id)
+        database::for_each_user_account_data(store, user_id, [&](database::PersistentAccountData const& row) {
+            if (row.room_id != room_id)
             {
-                continue;
+                return;
             }
             // Account data is never signed: read it with the general parser, which keeps
             // fractional numbers such as m.tag's `order`.
@@ -11621,7 +11590,7 @@ namespace
                 json_member("type", json_str(row.event_type)),
                 json_member("content", std::move(content)),
             }));
-        }
+        });
 
         auto const join_rule = room_state_string(store, index, room_id, "m.room.join_rules", "join_rule");
         auto const visibility = (join_rule.has_value() && *join_rule == "public") ? std::string_view{"public"}
@@ -14357,6 +14326,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const encoded_alias = request_path.substr(directory_room_prefix.size());
         auto const room_alias = core::percent_decode_path_component(encoded_alias);
+        if (room_alias.size() > appservice::max_namespace_match_input_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room alias is too long"); // ADR-0613
+        }
         auto const& our_server = rt.homeserver.config.server().server_name;
         auto const alias_server = server_name_from_room_alias(room_alias);
         if (!alias_server.empty() && alias_server != our_server)
@@ -15671,6 +15644,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
+        if (target_user.size() > appservice::max_namespace_match_input_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user ID is too long"); // ADR-0613
+        }
         // Spec (CS API, Profiles): a profile is read from "the server the user is on"; for a user of
         // another server this one asks that server over federation (SS API GET /query/profile,
         // which is for "users that belong to the target server") and relays what it says.
@@ -20327,7 +20304,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // out of the federation round trip.
             auto const result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id,
+                                                           rate_limit_client_key(req, rt.homeserver.config.server()));
             }();
             if (!result.ok)
             {
@@ -20346,7 +20324,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 },
                                server_failure ? observability::LogEventSeverity::warning
                                               : observability::LogEventSeverity::debug);
-                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason);
+                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason,
+                                    result.retry_after_ms);
             }
             log_diagnostic("room.leave.accepted", {
                                                       {"actor",   *user,   false},
@@ -21156,10 +21135,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         auto const result =
-            merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id, *via_servers, reason);
+            merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id, *via_servers, reason,
+                                                rate_limit_client_key(req, rt.homeserver.config.server()));
         if (!result.ok)
         {
-            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
+            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason, result.retry_after_ms);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(result.value))})));
     }
@@ -21421,11 +21401,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // Spec (Client Config): "There is no inheritance mechanism here": a room
                     // read never falls back to the global row of the same type, nor the reverse.
                     auto const& store = rt.homeserver.database.persistent_store;
-                    auto const found = std::ranges::find_if(
-                        store.account_data, [&path_user, &path_room, &type](database::PersistentAccountData const& d) {
-                            return d.user_id == path_user && d.room_id == path_room && d.event_type == type;
-                        });
-                    if (found == store.account_data.end())
+                    auto const found = database::find_account_data_content(store, path_user, path_room, type);
+                    if (!found.has_value())
                     {
                         log_diagnostic("account_data.rejected", {
                                                                     {"actor",  *user,                    false},
@@ -21438,7 +21415,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"actor", *user, false},
                                                                  {"type",  type,  false}
                     });
-                    return dispatch_resp(req, rt, 200U, found->content_json);
+                    return dispatch_resp(req, rt, 200U, *found);
                 }
             }
         }

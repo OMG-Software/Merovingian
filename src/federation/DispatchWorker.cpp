@@ -14,7 +14,9 @@
 #include "merovingian/observability/StructuredLogField.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -79,6 +81,41 @@ namespace
     auto default_sleep_for(std::chrono::milliseconds duration) -> void
     {
         std::this_thread::sleep_for(duration);
+    }
+
+    // When a transaction was admitted, from the stamp `enqueue_batch` put in `origin_server_ts`; nullopt for a row
+    // without a usable one.
+    [[nodiscard]] auto admitted_at(OutboundTransaction const& transaction) noexcept -> std::optional<std::uint64_t>
+    {
+        auto const& text = transaction.origin_server_ts;
+        auto value = std::uint64_t{0U};
+        auto const parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+    // Removes the entries at `positions`, which are ascending, in one pass.
+    auto erase_positions(std::deque<OutboundTransaction>& entries, std::vector<std::size_t> const& positions) -> void
+    {
+        auto next = positions.begin();
+        auto kept = std::size_t{0U};
+        for (auto position = std::size_t{0U}; position < entries.size(); ++position)
+        {
+            if (next != positions.end() && *next == position)
+            {
+                ++next;
+                continue;
+            }
+            if (kept != position)
+            {
+                entries[kept] = std::move(entries[position]);
+            }
+            ++kept;
+        }
+        entries.resize(kept);
     }
 
 } // namespace
@@ -163,9 +200,11 @@ auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> st
         // The bounds count the batch's own earlier members, which are not in the queue yet.
         auto taken = std::vector<std::size_t>{};
         auto taken_per_destination = std::unordered_map<std::string, std::size_t>{};
+        auto taken_failing = std::size_t{0U};
+        auto const now = now_ms_();
         for (auto const position : admitted)
         {
-            auto const& transaction = batch[position];
+            auto& transaction = batch[position];
             if (config_.max_queue_depth != 0U && queue_.size() + taken.size() >= config_.max_queue_depth)
             {
                 log_diagnostic("enqueue.rejected",
@@ -190,6 +229,25 @@ auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> st
                 });
                 ++summary_.rejected;
                 continue;
+            }
+            if (failing_destinations_.contains(transaction.destination))
+            {
+                if (failing_share_reached_locked(transaction.destination, now, taken_failing))
+                {
+                    log_diagnostic("enqueue.rejected", {
+                                                           {"transaction_id", transaction.transaction_id,            false},
+                                                           {"destination",    transaction.destination,               false},
+                                                           {"reason",         "failing destinations' share reached", false}
+                    });
+                    ++summary_.rejected;
+                    continue;
+                }
+                ++taken_failing;
+            }
+            // The age limit reads this. The transaction's body carries its own timestamp, set when it is sent.
+            if (transaction.origin_server_ts.empty())
+            {
+                transaction.origin_server_ts = std::to_string(now);
             }
             ++taken_per_destination[transaction.destination];
             taken.push_back(position);
@@ -242,9 +300,28 @@ auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) n
     return std::max<std::size_t>(16U, config.max_queue_depth / 16U);
 }
 
+auto effective_max_pending_failing(DispatchWorkerConfig const& config) noexcept -> std::size_t
+{
+    if (config.max_pending_failing_destinations != 0U)
+    {
+        return config.max_pending_failing_destinations;
+    }
+    if (config.max_queue_depth == 0U)
+    {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    // Never below one destination's own share: this bound is against many dead peers together, and a single one that
+    // fails once must not lose what ADR-0177 lets it hold. Only a queue too small to divide is affected.
+    return std::max<std::size_t>(effective_max_pending_per_destination(config), config.max_queue_depth / 2U);
+}
+
 auto DispatchWorker::push_queue_locked(OutboundTransaction transaction) -> void
 {
     ++queued_per_destination_[transaction.destination];
+    if (failing_destinations_.contains(transaction.destination))
+    {
+        ++failing_slots_;
+    }
     queue_.push_back(std::move(transaction));
 }
 
@@ -268,12 +345,171 @@ auto DispatchWorker::release_destination_slot_locked(std::string const& destinat
     {
         return;
     }
+    if (failing_destinations_.contains(destination) && failing_slots_ > 0U)
+    {
+        --failing_slots_;
+    }
     if (held->second <= 1U)
     {
         queued_per_destination_.erase(held);
         return;
     }
     --held->second;
+}
+
+auto DispatchWorker::failing_share_reached_locked(std::string const& destination, std::uint64_t now,
+                                                  std::size_t taken) const -> bool
+{
+    auto const failing = failing_destinations_.find(destination);
+    if (failing == failing_destinations_.end() || now >= failing->second)
+    {
+        // Past its backoff a destination is due a try, and only a try can show it has recovered.
+        return false;
+    }
+    return failing_slots_ + taken >= effective_max_pending_failing(config_);
+}
+
+auto DispatchWorker::discard_locked(std::vector<std::size_t> const& queued, std::vector<std::size_t> const& parked,
+                                    std::string_view reason) -> void
+{
+    if (queued.empty() && parked.empty())
+    {
+        return;
+    }
+    if (persistent_store_ != nullptr)
+    {
+        auto ids = std::vector<std::string>{};
+        ids.reserve(queued.size() + parked.size());
+        for (auto const position : queued)
+        {
+            ids.push_back(queue_[position].transaction_id);
+        }
+        for (auto const position : parked)
+        {
+            ids.push_back(pending_replay_[position].transaction_id);
+        }
+        // Same rule as a single drop: a row that could not be deleted would come back at the next start, so the
+        // transactions stay, and the next pass tries again.
+        if (!database::delete_federation_transactions(*persistent_store_, ids))
+        {
+            summary_.failed += ids.size();
+            log_diagnostic("transaction.discard_failed",
+                           {
+                               {"count",  std::to_string(ids.size()), false},
+                               {"reason", std::string{reason},        false}
+            },
+                           observability::LogEventSeverity::warning);
+            return;
+        }
+    }
+    for (auto const position : queued)
+    {
+        release_destination_slot_locked(queue_[position].destination);
+    }
+    erase_positions(queue_, queued);
+    erase_positions(pending_replay_, parked);
+    summary_.dropped += queued.size() + parked.size();
+    summary_.pending -= std::min<std::size_t>(summary_.pending, queued.size());
+    log_diagnostic(
+        "transaction.discarded",
+        {
+            {"count",  std::to_string(queued.size() + parked.size()), false},
+            {"reason", std::string{reason},                           false}
+    },
+        observability::LogEventSeverity::warning);
+}
+
+auto DispatchWorker::shed_failing_over_share_locked() -> void
+{
+    auto const budget = effective_max_pending_failing(config_);
+    if (failing_slots_ <= budget)
+    {
+        return;
+    }
+    // The largest number each failing destination may keep so that all of them fit: the small holders keep
+    // everything, and the budget left is divided among the rest.
+    auto holdings = std::vector<std::size_t>{};
+    holdings.reserve(failing_destinations_.size());
+    for (auto const& [name, retry_after] : failing_destinations_)
+    {
+        if (auto const held = queued_per_destination_.find(name); held != queued_per_destination_.end())
+        {
+            holdings.push_back(held->second);
+        }
+    }
+    std::ranges::sort(holdings);
+    auto keep = std::size_t{0U};
+    auto left = budget;
+    for (auto index = std::size_t{0U}; index < holdings.size(); ++index)
+    {
+        auto const share = left / (holdings.size() - index);
+        if (holdings[index] > share)
+        {
+            keep = share;
+            break;
+        }
+        left -= holdings[index];
+    }
+    // Newest first, so each destination keeps the transactions it is retrying. What a peer misses it fetches itself
+    // once it is reachable (prev_events, /get_missing_events).
+    auto excess = failing_slots_ - budget;
+    auto held_now = std::unordered_map<std::string_view, std::size_t>{};
+    auto queued = std::vector<std::size_t>{};
+    for (auto position = queue_.size(); position > 0U && excess > 0U; --position)
+    {
+        auto const& candidate = queue_[position - 1U];
+        if (!failing_destinations_.contains(candidate.destination))
+        {
+            continue;
+        }
+        auto const [held, first_seen] = held_now.try_emplace(candidate.destination, std::size_t{0U});
+        if (first_seen)
+        {
+            held->second = queued_per_destination_.find(candidate.destination)->second;
+        }
+        if (held->second <= keep)
+        {
+            continue;
+        }
+        --held->second;
+        --excess;
+        queued.push_back(position - 1U);
+    }
+    std::ranges::reverse(queued);
+    discard_locked(queued, {}, "failing destinations' share exceeded");
+}
+
+auto DispatchWorker::sweep_aged_locked(std::uint64_t now) -> void
+{
+    if (now < next_age_sweep_ms_)
+    {
+        return;
+    }
+    next_age_sweep_ms_ = now + config_.age_sweep_interval_ms;
+    if (failing_destinations_.empty())
+    {
+        return;
+    }
+    auto const expired = [this, now](OutboundTransaction const& candidate) {
+        if (!failing_destinations_.contains(candidate.destination))
+        {
+            return false;
+        }
+        auto const since = admitted_at(candidate);
+        return since.has_value() && now > *since && now - *since > config_.max_failing_transaction_age_ms;
+    };
+    auto const positions_of = [&expired](std::deque<OutboundTransaction> const& entries) {
+        auto positions = std::vector<std::size_t>{};
+        for (auto position = std::size_t{0U}; position < entries.size(); ++position)
+        {
+            if (expired(entries[position]))
+            {
+                positions.push_back(position);
+            }
+        }
+        return positions;
+    };
+    discard_locked(positions_of(queue_), positions_of(pending_replay_), "past the failing transaction age limit");
 }
 
 auto DispatchWorker::start() -> void
@@ -417,6 +653,28 @@ auto DispatchWorker::remember_destination_locked(FederationDestination const& de
         std::ignore =
             database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
     }
+    auto const held = queued_per_destination_.find(destination.server_name);
+    auto const slots = held != queued_per_destination_.end() ? held->second : std::size_t{0U};
+    auto const failing = failing_destinations_.find(destination.server_name);
+    if (destination.consecutive_failures == 0U)
+    {
+        if (failing != failing_destinations_.end())
+        {
+            failing_slots_ -= std::min(failing_slots_, slots);
+            failing_destinations_.erase(failing);
+        }
+        return;
+    }
+    if (failing == failing_destinations_.end())
+    {
+        failing_slots_ += slots;
+        failing_destinations_.emplace(destination.server_name, destination.retry_after_ts);
+    }
+    else
+    {
+        failing->second = destination.retry_after_ts;
+    }
+    shed_failing_over_share_locked();
 }
 
 auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void
@@ -480,6 +738,10 @@ auto DispatchWorker::run_once() -> bool
 
 auto DispatchWorker::run_due(std::uint64_t due_by) -> bool
 {
+    {
+        auto lock = std::lock_guard{mutex_};
+        sweep_aged_locked(now_ms_());
+    }
     auto transaction = OutboundTransaction{};
     if (!take_next(transaction, due_by))
     {
@@ -643,6 +905,7 @@ auto DispatchWorker::attempt(OutboundTransaction transaction) -> void
 auto DispatchWorker::top_up_replay_locked() -> std::size_t
 {
     auto promoted = std::size_t{0U};
+    auto const now = now_ms_();
     // Look at each parked row at most once. A row whose destination is at its share goes to the
     // back, so it does not hold up rows for other destinations.
     for (auto remaining = pending_replay_.size(); remaining > 0U && !pending_replay_.empty(); --remaining)
@@ -653,7 +916,7 @@ auto DispatchWorker::top_up_replay_locked() -> std::size_t
         }
         auto row = std::move(pending_replay_.front());
         pending_replay_.pop_front();
-        if (destination_at_share_locked(row.destination))
+        if (destination_at_share_locked(row.destination) || failing_share_reached_locked(row.destination, now, 0U))
         {
             pending_replay_.push_back(std::move(row));
             continue;
@@ -688,6 +951,14 @@ auto DispatchWorker::replay_pending() -> std::size_t
             }
             destinations_.push_back({destination.server_name, to_federation_destination(destination)});
         }
+        for (auto const& destination : persistent_store_->federation_destinations)
+        {
+            if (destination.consecutive_failures > 0U)
+            {
+                failing_destinations_.insert_or_assign(destination.server_name, destination.retry_after_ts);
+            }
+        }
+        auto const now = now_ms_();
         // A row can outlive the policy it was queued under (ADR-0391). It will never be sent, so it goes.
         auto excluded_rows = std::vector<std::string>{};
         for (auto const& transaction : persistent_store_->federation_transactions)
@@ -702,8 +973,13 @@ auto DispatchWorker::replay_pending() -> std::size_t
                 excluded_rows.push_back(std::move(outbound.transaction_id));
                 continue;
             }
+            if (outbound.origin_server_ts.empty())
+            {
+                outbound.origin_server_ts = std::to_string(now);
+            }
             if ((config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth) ||
-                destination_at_share_locked(outbound.destination))
+                destination_at_share_locked(outbound.destination) ||
+                failing_share_reached_locked(outbound.destination, now, 0U))
             {
                 // Park overflow, and rows past their destination's share, in pending_replay_
                 // instead of stranding them in durable storage. top_up_replay_locked() pulls

@@ -71,12 +71,13 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
 
-11. **The to-device queue is bounded in rows, age and bytes, and a batch is prepared in one pass** (ADR-0335,
-    ADR-0336). `index_to_device_recipients` gathers the queue of every recipient a batch names with one pass over
-    `to_device_messages`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
-    recipient's queue only. The byte total of a queue is never stored: it is summed from the rows when the batch is
-    prepared, so it cannot drift from them. Remove in-memory rows with `erase_to_device_rows` (a hash of stream ids),
-    never `remove_if` over the victims. `store_account_data` and the capped writers refuse content over
+11. **The to-device queue is bounded in rows, age and bytes, per device and per user, and read through its indexes**
+    (ADR-0335, ADR-0336, ADR-0618). `index_to_device_recipients` gathers all the queues of every user a batch names through
+    `to_device_user_index`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
+    recipient's queue, then the user's oldest rows across devices. The byte totals are never stored: they are summed from
+    the rows when the batch is prepared, so they cannot drift from them. Remove in-memory rows with `erase_to_device_rows`,
+    which moves the last row into the gap, so the vector has no order; a writer calls `sync_to_device_indexes` first.
+    Never scan `to_device_messages` in a request. `store_account_data` and the capped writers refuse content over
     `max_account_data_row_bytes` (ADR-0339).
 
 12. **A client transaction record is keyed by its device, and only to-device records are pruned** (ADR-0380, ADR-0381).
@@ -84,6 +85,12 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     rebuilds both position indexes, and must never touch a room-send row (`unsigned.transaction_id` is served from it).
     A key backup version is created by `create_key_backup_version` and deleted by `delete_key_backup_version` with its
     sessions in one transaction (ADR-0384): never reissue a number, and never delete a version row on its own.
+
+13. **A stored invite is judged before it is written** (ADR-0619). `store_membership_projection`,
+    `prepare_store_event_with_state` and `upsert_invite` ask `invite_is_over_store_caps` before building a statement; a new
+    writer of `invites` does too. Change `invites` only through `append_invite_row`, `replace_invite_row` and
+    `erase_invite_row`, and look a record up with `find_invite` or `find_invite_row`. Rows are charged by
+    `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`.
 
 ## Reloading a room (F-27, ADR-0360)
 
@@ -99,7 +106,7 @@ change to what a reload rewrites goes in both the snapshot and the swap, and the
 `find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
 state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
-and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
+and both hydration paths) or, for a deletion, goes through `remove_current_state_rows` (ADR-0615); a new one must too. Do not scan `state` for one key or one room in a handler.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
 

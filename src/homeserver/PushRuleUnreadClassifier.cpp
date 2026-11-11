@@ -8,9 +8,11 @@
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/push/PushRules.hpp"
+#include "merovingian/sync/ReadMarkers.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,6 +38,56 @@ namespace
             return member.key == key;
         });
         return found == object.end() ? nullptr : std::get_if<canonicaljson::Object>(&found->value->storage());
+    }
+
+    // current_join_start's answer without a walk of the events (ADR-0617): the user's member events, from the current
+    // one back through their recorded predecessors, to the last that is not a join. At most the unread budget of
+    // events are read: a join older than that is older than any row a count reads.
+    //
+    // A room with no current member row for the user (a row store written without state) is read from its newest
+    // rows instead, with the same budget.
+    [[nodiscard]] auto join_start_of_member_chain(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view user) -> std::optional<std::uint64_t>
+    {
+        auto current = database::find_current_state_event_id(store, room_id, "m.room.member", user);
+        if (!current.has_value())
+        {
+            auto transitions = std::vector<std::pair<std::uint64_t, bool>>{};
+            auto const rows = store.events.room_in_stream_order(room_id);
+            auto examined = std::size_t{0U};
+            for (auto row = rows.end(); row != rows.begin() && examined < sync::max_unread_rows_examined;)
+            {
+                --row;
+                ++examined;
+                if (auto const transition = member_transition(*row, room_id, user); transition.has_value())
+                {
+                    transitions.push_back(*transition);
+                }
+            }
+            return join_start_from(std::move(transitions));
+        }
+        auto start = std::optional<std::uint64_t>{};
+        for (auto steps = std::size_t{0U}; current.has_value() && steps < sync::max_unread_rows_examined; ++steps)
+        {
+            auto const event = store.events.find(*current);
+            if (event == store.events.end())
+            {
+                break;
+            }
+            if (auto const transition = member_transition(*event, room_id, user); transition.has_value())
+            {
+                if (!transition->second)
+                {
+                    break;
+                }
+                start = transition->first;
+            }
+            auto const* const step = database::find_state_transition(store, room_id, "m.room.member", user, *current);
+            current = step == nullptr || step->previous_event_id.empty()
+                          ? std::nullopt
+                          : std::optional<std::string>{step->previous_event_id};
+        }
+        return start;
     }
 
 } // namespace
@@ -148,9 +200,7 @@ auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) -> std::o
     {
         return cached->second;
     }
-    ensure_join_transitions();
-    auto const transitions = join_transitions_.find(room_id);
-    auto start = transitions == join_transitions_.end() ? std::nullopt : join_start_from(transitions->second);
+    auto start = join_start_of_member_chain(store_.get(), room_id, user_);
     join_starts_.emplace(std::string{room_id}, start);
     return start;
 }
@@ -158,24 +208,6 @@ auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) -> std::o
 auto PushRuleUnreadClassifier::table_walks() const noexcept -> std::uint64_t
 {
     return table_walks_;
-}
-
-auto PushRuleUnreadClassifier::ensure_join_transitions() -> void
-{
-    if (join_transitions_built_)
-    {
-        return;
-    }
-    join_transitions_built_ = true;
-    // current_join_start's transitions, for every room at once.
-    for (auto const& event : store_.get().events)
-    {
-        if (auto transition = member_transition(event, event.room_id, user_); transition.has_value())
-        {
-            join_transitions_[event.room_id].push_back(*transition);
-        }
-    }
-    ++table_walks_;
 }
 
 auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson::Value const& event)

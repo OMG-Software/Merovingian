@@ -133,6 +133,11 @@ namespace merovingian::homeserver
 // existing sync-detection path stay correct; current_state is never written
 // to directly elsewhere.
 //
+// A key the resolution does not hold is removed (ADR-0615), unless its row's event has no state group and no tip's
+// state names it: such a row was written outside the graph (an outlier invite or leave). A membership row follows a
+// member key removed or changed here, stamped at least `causing_stream_ordering`; `membership_changes` lists what
+// changed.
+//
 // An empty extremity set has nothing to resolve and is `resolved`. Extremities held in one state
 // group are one state. A missing state group on an extremity, more distinct states than
 // `limits.max_state_groups`, the state budget or a resolution that fails closed is `refused`
@@ -147,7 +152,8 @@ namespace merovingian::homeserver
 // The caller holds runtime.mutex, as the memo has no lock of its own.
 [[nodiscard]] auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
                                            rooms::RoomVersionPolicy const& policy,
-                                           events::StateResolutionLimits const& limits = {}) -> CurrentStateRecompute;
+                                           events::StateResolutionLimits const& limits = {},
+                                           std::uint64_t causing_stream_ordering = 0U) -> CurrentStateRecompute;
 
 // Whether an accepted event that adds NO state (a message, a receipt-less event: no state_key) with
 // these prev_events may become one of `room_id`'s forward extremities without taking their

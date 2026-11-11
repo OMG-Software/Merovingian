@@ -841,9 +841,9 @@ jobs:
     with:
       source_artifact_name: unsigned-packages
       output_artifact_name: signed-packages
-    secrets:
-      gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-      gpg_passphrase: ${{ secrets.GPG_PASSPHRASE }}
+    # The key is a secret of the `release` environment, which the called job
+    # declares; a job that calls a reusable workflow cannot (ADR-0614).
+    secrets: inherit
 
   publish-latest:
     name: Publish rolling latest

@@ -217,7 +217,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    retried transaction back without taking another, and `release_destination_slot_locked` frees
    it only when the transaction leaves for good (delivered, dropped, or failed to persist), all
    under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
-   path that touches `queue_` uses these. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
+   path that touches `queue_` uses these. Destinations whose last attempt failed hold at most
+   `effective_max_pending_failing` slots between them (half the queue, never below one destination's own share, ADR-0621): `remember_destination_locked` is the
+   only place a destination starts or stops failing, and past the share it cuts the largest holders' newest
+   transactions. A failing destination past its backoff is always admitted: never refuse it, or it can never recover.
+   A failing destination's transaction past `max_failing_transaction_age_ms` is deleted by `sweep_aged_locked`. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
    A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
    `finished_clock`), never from its start: a timeout is longer than the early backoffs (ADR-0309). The
@@ -239,7 +243,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `ip_address_in_allowed_private_range`, which re-checks each range with
    `config::private_ip_range_is_allowable` so loopback and link-local can never open.
 
-14. **An invite's `invite_room_state` is validated for room versions 12 and up, and left alone below.**
+14. **An invite's `invite_room_state` is bounded in count and entry size in every room version (ADR-0619), validated
+   for room versions 12 and up, and otherwise left alone below.**
    Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
    full PDU of the room version, not a stripped event. `validate_invite_room_state`
    (`InviteRoomState.cpp`) refuses with 400 `M_INVALID_PARAM` a missing create event, an entry that is

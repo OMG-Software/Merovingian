@@ -103,6 +103,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace merovingian::database
@@ -304,6 +305,23 @@ struct PersistentStore final
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
+    // Indexes beside `invites` (ADR-0619), trusted as `membership_key_index` is (ADR-0603): by (room, user), by whom
+    // a remote invite or a knock is charged to, and by the server that sent a remote invite. An erase moves the last
+    // row into the gap, so `invites` has no meaningful order.
+    RowKeyIndex invite_key_index{};
+    RowGroupIndex invite_quota_index{};
+    RowGroupIndex invite_origin_index{};
+    ExaminedRows invite_rows_examined{};
+    // What the store will hold of what other servers choose (ADR-0619), enforced by every writer of `invites` before
+    // the write. An invite from a user of the invitee's own server is never counted and never refused. Zero disables
+    // a bound. One origin may hold at most `remote_invite_origin_share_divisor`th of one user's count and bytes.
+    // `local_server_name` says who is local; while it is empty (a store with no runtime) no invite is charged.
+    std::string local_server_name{};
+    std::uint32_t max_remote_invites_per_user{1024U};
+    std::uint64_t max_remote_invite_bytes_per_user{33554432U};
+    std::uint32_t max_remote_invites_per_origin{16384U};
+    std::uint32_t max_remote_knocks_per_user{128U};
+    std::uint32_t remote_invite_origin_share_divisor{8U};
     // Positions in `memberships` of each room's rows (ADR-0437), so a reader of one room's members does not scan
     // every room's. Maintained by every writer in PersistentStore.cpp and rebuilt after hydration and
     // `reload_room`; only trusted while `membership_indexed_rows == memberships.size()` and each position it
@@ -415,7 +433,12 @@ struct PersistentStore final
     // Read receipts, local and federated. Write through store_receipt and
     // remove_receipt so the database row and this mirror stay in step.
     std::vector<PersistentReceipt> receipts{};
+    // An erase moves the last row into the gap, so the vector has no meaningful order (ADR-0618).
     std::vector<PersistentToDeviceMessage> to_device_messages{};
+    // Positions in `to_device_messages` of each (user, device) queue and of each user's rows (ADR-0618), trusted as
+    // the other row indexes are (ADR-0603). Maintained by the writers in PersistentStore.cpp, rebuilt after hydration.
+    RowGroupIndex to_device_recipient_index{};
+    RowGroupIndex to_device_user_index{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
     std::vector<PersistentPresence> presence_states{};
     std::vector<PersistentFilter> filters{};
@@ -471,6 +494,9 @@ struct PersistentStore final
     ForwardExtremityTable forward_extremities{};
     // The last resolution of each room's forward extremities (ADR-0600). In memory only.
     ResolvedStateMemo resolved_state_memo{};
+    // How many times each room's current state, or the status or JSON of one of its events, has changed
+    // (`room_state_revision`, ADR-0624). In memory only.
+    std::unordered_map<std::string, std::uint64_t> room_state_revisions{};
     // Stored events parsed for state resolution, for tests that prove cost.
     ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
@@ -547,9 +573,16 @@ struct PersistentStore final
     // `max_to_device_bytes_per_user_device` loses its oldest rows to make room. Zero disables a bound.
     std::uint32_t max_to_device_message_bytes{65536U};
     std::uint32_t max_to_device_bytes_per_user_device{16777216U};
+    // The same two bounds across all of one user's queues (ADR-0618): past either, the user's oldest rows go first,
+    // whichever device holds them. Zero disables a bound.
+    std::uint32_t max_to_device_messages_per_user{50000U};
+    std::uint32_t max_to_device_bytes_per_user{67108864U};
     // Rows an enqueue or a drain looked at, summed over the store's life. A test reads the difference to
-    // prove that a batch of M messages costs one pass over the queue, not one per message (F-13).
-    std::uint64_t to_device_rows_examined{0U};
+    // prove that the cost is the recipients' own rows, not the table (F-13, ADR-0618).
+    ExaminedRows to_device_rows_examined{};
+    // Event rows a /sync timeline window read (ADR-0616), and rows unread counting and read markers read (ADR-0617).
+    ExaminedRows sync_timeline_rows_examined{};
+    ExaminedRows sync_unread_rows_examined{};
 };
 
 static_assert(std::is_nothrow_move_constructible_v<PersistentStore> &&
@@ -683,6 +716,9 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Brings `federation_transaction_index` in step with `federation_transactions`.
 auto rebuild_federation_transaction_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
+// Deletes the rows named, in one commit and one pass over the table (ADR-0621). If the commit fails, none is deleted.
+[[nodiscard]] auto delete_federation_transactions(PersistentStore& store, std::span<std::string const> transaction_ids)
+    -> bool;
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 // Persists a room's directory visibility before updating its in-memory mirror.
@@ -728,6 +764,15 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
 [[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool;
 [[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
     -> std::optional<PersistentInvite>;
+// The invite row of (room_id, user_id), or nullptr; valid until `invites` next changes.
+[[nodiscard]] auto find_invite_row(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> PersistentInvite const*;
+// True when storing `invite` would pass a bound of ADR-0619. Asked by every writer of `invites` before it writes, and
+// by a handler that wants to refuse before it does any work. Replacing the row of a held (room, user) is judged on
+// its net bytes only. Costs the invitee's own charged rows, which the bound itself limits.
+[[nodiscard]] auto invite_is_over_store_caps(PersistentStore const& store, PersistentInvite const& invite) -> bool;
+// Brings the `invites` indexes in step. Hydration and `apply_room_snapshot` call it; the writers keep them so.
+auto rebuild_invite_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
@@ -757,6 +802,11 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
 // holds). The in-memory mirror changes only after the commit.
 [[nodiscard]] auto store_membership_projection(PersistentStore& store, std::string_view room_id,
                                                MembershipProjection projection) -> bool;
+// Removes `keys` (event type, state key) from `room_id`'s current state and writes `memberships`, in one transaction,
+// then mirrors both, keeping the state indexes in step (ADR-0615). Costs the rows of the rooms that lose or move a row.
+[[nodiscard]] auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
+                                             std::vector<std::pair<std::string, std::string>> const& keys,
+                                             std::vector<MembershipProjection> const& memberships) -> bool;
 // DB-4: makes each `membership` row agree with its room's current m.room.member
 // state event, which is the user's membership (Matrix v1.19 "m.room.member").
 // A row is rewritten to the event's membership when the row is missing, when it
@@ -885,6 +935,9 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void;
 
 // The event ID of the current state event for (room_id, event_type, state_key), or nullopt when the
 // room has none. An index lookup (ADR-0344): no scan of `state` while the index is in step with it.
+// A number that moves whenever the room's current state, or the status or JSON of one of its events, changes
+// (ADR-0624). What it does not cover: a room's rows edited directly, and an event added without any state.
+[[nodiscard]] auto room_state_revision(PersistentStore const& store, std::string_view room_id) -> std::uint64_t;
 [[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
                                                std::string_view event_type, std::string_view state_key)
     -> std::optional<std::string>;
@@ -1019,7 +1072,13 @@ auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_v
 // Calls `visit` with each of the user's published device-key rows; stops when it returns false.
 auto for_each_user_device_key(PersistentStore const& store, std::string_view user_id,
                               std::function<bool(PersistentDeviceKey const&)> const& visit) -> void;
-// Rebuilds the user, device, device-key, one-time-key, fallback-key and key backup indexes from their vectors.
+// Calls `visit` with each one-time key, and each fallback key, of one device; reads that device's rows only.
+auto for_each_device_one_time_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
+                                  std::function<void(PersistentOneTimeKey const&)> const& visit) -> void;
+auto for_each_device_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
+                                  std::function<void(PersistentFallbackKey const&)> const& visit) -> void;
+// Rebuilds the user, device, device-key, one-time-key, fallback-key, key backup, to-device and invite indexes from
+// their vectors.
 // Called after SQLite/PostgreSQL hydration and by a writer that finds one stale.
 auto rebuild_key_indexes(PersistentStore& store) -> void;
 // Key backup reads by index (ADR-0606). The version of a user that was created last is their current one.
@@ -1224,6 +1283,10 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // from the rows, so it is right after any eviction, acknowledgement or hydration.
 [[nodiscard]] auto to_device_queue_bytes(PersistentStore const& store, std::string_view user_id,
                                          std::string_view device_id) -> std::uint64_t;
+// True when (user, device) has a queued row addressed to exactly that device after `since_stream_id`. Reads that
+// queue only (ADR-0618).
+[[nodiscard]] auto has_to_device_message_after(PersistentStore const& store, std::string_view user_id,
+                                               std::string_view device_id, std::uint64_t since_stream_id) -> bool;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;

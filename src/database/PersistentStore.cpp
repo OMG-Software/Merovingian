@@ -851,6 +851,211 @@ namespace
         }
     }
 
+    [[nodiscard]] auto to_device_recipient_group_of(PersistentToDeviceMessage const& row) -> std::string
+    {
+        return composite_key({row.target_user_id, row.target_device_id});
+    }
+    [[nodiscard]] auto to_device_user_group_of(PersistentToDeviceMessage const& row) -> std::string
+    {
+        return row.target_user_id;
+    }
+    auto sync_to_device_indexes(PersistentStore& store) -> void
+    {
+        if (!store.to_device_recipient_index.in_step(store.to_device_messages.size()))
+        {
+            store.to_device_recipient_index.rebuild(store.to_device_messages, to_device_recipient_group_of);
+        }
+        if (!store.to_device_user_index.in_step(store.to_device_messages.size()))
+        {
+            store.to_device_user_index.rebuild(store.to_device_messages, to_device_user_group_of);
+        }
+    }
+
+    // Erases the rows at `positions` (any order), each by moving the last row into its place, so
+    // `to_device_messages` has no meaningful order. Highest first, so the row moved into a gap is never one still
+    // to be erased. The indexes must be in step: every caller syncs them first.
+    auto erase_to_device_positions(PersistentStore& store, std::vector<std::size_t> positions) -> void
+    {
+        auto& rows = store.to_device_messages;
+        std::ranges::sort(positions, std::greater<>{});
+        for (auto const position : positions)
+        {
+            auto const old_count = rows.size();
+            auto const erased_recipient = to_device_recipient_group_of(rows[position]);
+            auto const last_recipient = to_device_recipient_group_of(rows.back());
+            auto const erased_user = to_device_user_group_of(rows[position]);
+            auto const last_user = to_device_user_group_of(rows.back());
+            if (position + 1U != old_count)
+            {
+                rows[position] = std::move(rows.back());
+            }
+            rows.pop_back();
+            store.to_device_recipient_index.erase_swap(position, erased_recipient, last_recipient, old_count);
+            store.to_device_user_index.erase_swap(position, erased_user, last_user, old_count);
+        }
+    }
+
+    // The part of a user ID after its first colon, which is the server name.
+    [[nodiscard]] auto server_of_user(std::string_view user_id) -> std::string_view
+    {
+        auto const colon = user_id.find(':');
+        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+    }
+
+    [[nodiscard]] auto invite_key_of(PersistentInvite const& invite) -> std::string
+    {
+        return composite_key({invite.room_id, invite.user_id});
+    }
+
+    // A local user's knock on a room elsewhere: the user is its own sender, and the record names the resident.
+    [[nodiscard]] auto invite_is_knock(PersistentInvite const& invite) noexcept -> bool
+    {
+        return invite.sender_user_id == invite.user_id && !invite.resident_server.empty();
+    }
+
+    // An invite another server sent to a user of this one. Not one this server's own user sent, whoever received it:
+    // an invite to a user elsewhere is recorded here too, and is this server's own to answer for (ADR-0619).
+    [[nodiscard]] auto invite_is_remote(std::string_view local_server, PersistentInvite const& invite) -> bool
+    {
+        return !local_server.empty() && !invite_is_knock(invite) && server_of_user(invite.user_id) == local_server &&
+               server_of_user(invite.sender_user_id) != local_server;
+    }
+
+    // What a record is charged to (ADR-0619): a user's knocks, a user's invites from other servers, or, as an empty
+    // key, nothing at all.
+    [[nodiscard]] auto invite_quota_group_of(std::string_view local_server, PersistentInvite const& invite)
+        -> std::string
+    {
+        if (local_server.empty())
+        {
+            return {};
+        }
+        if (invite_is_knock(invite))
+        {
+            return composite_key({"knock", invite.user_id});
+        }
+        return invite_is_remote(local_server, invite) ? composite_key({"remote", invite.user_id}) : std::string{};
+    }
+
+    [[nodiscard]] auto invite_origin_group_of(std::string_view local_server, PersistentInvite const& invite)
+        -> std::string
+    {
+        return invite_is_remote(local_server, invite) ? std::string{server_of_user(invite.sender_user_id)}
+                                                      : std::string{};
+    }
+
+    [[nodiscard]] auto invite_bytes(PersistentInvite const& invite) noexcept -> std::uint64_t
+    {
+        auto bytes = static_cast<std::uint64_t>(invite.signed_event_json.size());
+        for (auto const& entry : invite.invite_state_events_json)
+        {
+            bytes += entry.size();
+        }
+        return bytes;
+    }
+
+    auto sync_invite_indexes(PersistentStore& store) -> void
+    {
+        auto const& local = store.local_server_name;
+        auto const rows = store.invites.size();
+        if (!store.invite_key_index.in_step(rows))
+        {
+            store.invite_key_index.rebuild(store.invites, invite_key_of);
+        }
+        if (!store.invite_quota_index.in_step(rows))
+        {
+            store.invite_quota_index.rebuild(store.invites, [&local](PersistentInvite const& invite) {
+                return invite_quota_group_of(local, invite);
+            });
+        }
+        if (!store.invite_origin_index.in_step(rows))
+        {
+            store.invite_origin_index.rebuild(store.invites, [&local](PersistentInvite const& invite) {
+                return invite_origin_group_of(local, invite);
+            });
+        }
+    }
+
+    // The position of the (room, user) record, through the index while it is in step and by a scan otherwise.
+    [[nodiscard]] auto find_invite_position(PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::optional<std::size_t>
+    {
+        auto const matches = [&](PersistentInvite const& invite) {
+            return invite.room_id == room_id && invite.user_id == user_id;
+        };
+        if (store.invite_key_index.in_step(store.invites.size()))
+        {
+            store.invite_rows_examined.add(1U);
+            auto const position = store.invite_key_index.find(composite_key({room_id, user_id}));
+            if (!position.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*position < store.invites.size() && matches(store.invites[*position]))
+            {
+                return position;
+            }
+        }
+        store.invite_rows_examined.add(store.invites.size());
+        auto const found = std::ranges::find_if(store.invites, matches);
+        return found == store.invites.end()
+                   ? std::nullopt
+                   : std::optional<std::size_t>{static_cast<std::size_t>(found - store.invites.begin())};
+    }
+
+    // Appends a record and keeps the three indexes in step.
+    auto append_invite_row(PersistentStore& store, PersistentInvite invite) -> void
+    {
+        sync_invite_indexes(store);
+        auto const key = invite_key_of(invite);
+        auto const quota = invite_quota_group_of(store.local_server_name, invite);
+        auto const origin = invite_origin_group_of(store.local_server_name, invite);
+        store.invites.push_back(std::move(invite));
+        store.invite_key_index.note_appended(store.invites.size(), key);
+        store.invite_quota_index.note_appended(store.invites.size(), quota);
+        store.invite_origin_index.note_appended(store.invites.size(), origin);
+    }
+
+    // Erases a record by moving the last into its place, so `invites` has no meaningful order.
+    auto erase_invite_row(PersistentStore& store, std::size_t position) -> void
+    {
+        sync_invite_indexes(store);
+        auto const& local = store.local_server_name;
+        auto const old_count = store.invites.size();
+        auto const& erased = store.invites[position];
+        auto const& last = store.invites.back();
+        auto const erased_key = invite_key_of(erased);
+        auto const last_key = invite_key_of(last);
+        auto const erased_quota = invite_quota_group_of(local, erased);
+        auto const last_quota = invite_quota_group_of(local, last);
+        auto const erased_origin = invite_origin_group_of(local, erased);
+        auto const last_origin = invite_origin_group_of(local, last);
+        if (position + 1U != old_count)
+        {
+            store.invites[position] = std::move(store.invites.back());
+        }
+        store.invites.pop_back();
+        store.invite_key_index.erase_swap(position, erased_key, last_key, old_count);
+        store.invite_quota_index.erase_swap(position, erased_quota, last_quota, old_count);
+        store.invite_origin_index.erase_swap(position, erased_origin, last_origin, old_count);
+    }
+
+    // Replaces the record at `position`. A sender that changes can change what the record is charged to, and a row's
+    // group is fixed while it is indexed, so such a record is moved instead.
+    auto replace_invite_row(PersistentStore& store, std::size_t position, PersistentInvite invite) -> void
+    {
+        auto const& local = store.local_server_name;
+        auto const& held = store.invites[position];
+        if (invite_quota_group_of(local, held) == invite_quota_group_of(local, invite) &&
+            invite_origin_group_of(local, held) == invite_origin_group_of(local, invite))
+        {
+            store.invites[position] = std::move(invite);
+            return;
+        }
+        erase_invite_row(store, position);
+        append_invite_row(store, std::move(invite));
+    }
+
 } // namespace
 
 auto rebuild_key_indexes(PersistentStore& store) -> void
@@ -864,6 +1069,9 @@ auto rebuild_key_indexes(PersistentStore& store) -> void
     store.key_backup_session_index.rebuild(store.key_backup_sessions, backup_session_key_of);
     store.key_backup_version_session_index.rebuild(store.key_backup_sessions, backup_session_group_of);
     store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
+    store.to_device_recipient_index.rebuild(store.to_device_messages, to_device_recipient_group_of);
+    store.to_device_user_index.rebuild(store.to_device_messages, to_device_user_group_of);
+    rebuild_invite_indexes(store);
 }
 
 [[nodiscard]] auto find_user_row(PersistentStore const& store, std::string_view user_id) -> PersistentUser const*
@@ -928,6 +1136,28 @@ auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_v
         {
             return;
         }
+    }
+}
+
+auto for_each_device_one_time_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
+                                  std::function<void(PersistentOneTimeKey const&)> const& visit) -> void
+{
+    for (auto const position :
+         positions_in_group(store.one_time_key_device_index, store.one_time_keys, composite_key({user_id, device_id}),
+                            one_time_key_group_of, store.key_rows_examined))
+    {
+        visit(store.one_time_keys[position]);
+    }
+}
+
+auto for_each_device_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
+                                  std::function<void(PersistentFallbackKey const&)> const& visit) -> void
+{
+    for (auto const position :
+         positions_in_group(store.fallback_key_device_index, store.fallback_keys, composite_key({user_id, device_id}),
+                            fallback_key_group_of, store.key_rows_examined))
+    {
+        visit(store.fallback_keys[position]);
     }
 }
 
@@ -1644,9 +1874,10 @@ auto has_room_membership_row(PersistentStore const& store, std::string_view room
                      one_time_key_group_of, of_device, store.key_rows_examined);
     erase_from_group(store.fallback_keys, store.fallback_key_device_index, composite_key({user_id, device_id}),
                      fallback_key_group_of, of_device, store.key_rows_examined);
-    std::erase_if(store.to_device_messages, [user_id, device_id](PersistentToDeviceMessage const& message) {
-        return message.target_user_id == user_id && message.target_device_id == device_id;
-    });
+    sync_to_device_indexes(store);
+    erase_to_device_positions(store, positions_in_group(store.to_device_recipient_index, store.to_device_messages,
+                                                        composite_key({user_id, device_id}),
+                                                        to_device_recipient_group_of, store.to_device_rows_examined));
     return true;
 }
 
@@ -1989,6 +2220,33 @@ auto rebuild_federation_transaction_index(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto delete_federation_transactions(PersistentStore& store, std::span<std::string const> transaction_ids)
+    -> bool
+{
+    if (transaction_ids.empty())
+    {
+        return true;
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(transaction_ids.size());
+    for (auto const& transaction_id : transaction_ids)
+    {
+        statements.push_back(record_statement("delete_federation_transaction",
+                                              "DELETE FROM federation_transactions WHERE transaction_id = $1",
+                                              {public_value(transaction_id)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    auto const doomed = std::unordered_set<std::string_view>{transaction_ids.begin(), transaction_ids.end()};
+    std::erase_if(store.federation_transactions, [&doomed](PersistentFederationTransaction const& transaction) {
+        return doomed.contains(transaction.transaction_id);
+    });
+    rebuild_federation_transaction_index(store);
+    return true;
+}
+
 auto reconstruct_event_relations(PersistentStore& store) -> void
 {
     // Gathered by row position first, then written with one modify() per row.
@@ -2079,6 +2337,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     }
     auto const& room_id = snapshot.room_id;
     store.resolved_state_memo.forget_room(room_id);
+    ++store.room_state_revisions[room_id];
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -2169,6 +2428,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     // The erase above shifted every later row; a pushed row alone would not repair the indexes.
     rebuild_state_index(store);
     rebuild_membership_index(store);
+    rebuild_invite_indexes(store);
     for (auto& event : snapshot.events)
     {
         for (auto const& prev_id : event.prev_event_ids)
@@ -2275,6 +2535,21 @@ namespace
                (!projection.invite.has_value() || membership_records_invite(projection.membership));
     }
 
+    // Would the invite record `projection` writes pass the store's limits (ADR-0619)? A projection may leave the
+    // record's room and user for the writer to fill in, so they are filled in here as the writer will.
+    [[nodiscard]] auto projection_is_over_store_caps(PersistentStore const& store, std::string_view room_id,
+                                                     MembershipProjection const& projection) -> bool
+    {
+        if (!membership_records_invite(projection.membership) || !projection.invite.has_value())
+        {
+            return false;
+        }
+        auto candidate = *projection.invite;
+        candidate.room_id = std::string{room_id};
+        candidate.user_id = projection.user_id;
+        return invite_is_over_store_caps(store, candidate);
+    }
+
     // The statements that write `projection` for `room_id`. Upserts, so the
     // statements do not depend on what the in-memory mirror held when they were
     // built: prepare_store_event_with_state may commit with the lock released.
@@ -2357,26 +2632,25 @@ namespace
             row->stream_ordering = projection.stream_ordering;
         }
 
-        auto const invite = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
-            return current.room_id == room_id && current.user_id == projection.user_id;
-        });
+        sync_invite_indexes(store);
+        auto const invite = find_invite_position(store, room_id, projection.user_id);
         if (membership_records_invite(projection.membership) && projection.invite.has_value())
         {
             auto written = *projection.invite;
             written.room_id = std::string{room_id};
             written.user_id = projection.user_id;
-            if (invite == store.invites.end())
+            if (invite.has_value())
             {
-                store.invites.push_back(std::move(written));
+                replace_invite_row(store, *invite, std::move(written));
             }
             else
             {
-                *invite = std::move(written);
+                append_invite_row(store, std::move(written));
             }
         }
-        else if (membership_ends_invite(projection.membership) && invite != store.invites.end())
+        else if (membership_ends_invite(projection.membership) && invite.has_value())
         {
-            store.invites.erase(invite);
+            erase_invite_row(store, *invite);
         }
         log_diagnostic("membership.projected",
                        {
@@ -2431,6 +2705,7 @@ namespace
 {
     auto statements = std::vector<PreparedStatement>{};
     if (!sync_stream_has_write_reserve(store) || room_id.empty() || !membership_projection_is_valid(projection) ||
+        projection_is_over_store_caps(store, room_id, projection) ||
         !append_membership_projection_statements(statements, room_id, projection) ||
         !commit_persistent_transaction(store, statements))
     {
@@ -2674,6 +2949,15 @@ namespace
 
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool
 {
+    if (invite_is_over_store_caps(store, invite))
+    {
+        log_diagnostic("invite.rejected", {
+                                              {"room_id", invite.room_id,                          false},
+                                              {"user_id", invite.user_id,                          false},
+                                              {"reason",  "the user's stored invite limit is met", false}
+        });
+        return false;
+    }
     auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
     if (!invite_state_json.has_value())
     {
@@ -2685,11 +2969,10 @@ namespace
         return false;
     }
 
-    auto const existing = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
-        return current.room_id == invite.room_id && current.user_id == invite.user_id;
-    });
+    sync_invite_indexes(store);
+    auto const existing = find_invite_position(store, invite.room_id, invite.user_id);
 
-    if (existing == store.invites.end())
+    if (!existing.has_value())
     {
         if (!record_and_persist(
                 store, record_statement("insert_invite", "INSERT INTO invites VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -2712,7 +2995,7 @@ namespace
                                                {"event_id",        invite.event_id,                        false},
                                                {"stream_ordering", std::to_string(invite.stream_ordering), false}
         });
-        store.invites.push_back(std::move(invite));
+        append_invite_row(store, std::move(invite));
         return true;
     }
 
@@ -2735,21 +3018,20 @@ namespace
         return false;
     }
 
-    *existing = std::move(invite);
     log_diagnostic("invite.updated", {
-                                         {"room_id",  existing->room_id,  false},
-                                         {"user_id",  existing->user_id,  false},
-                                         {"event_id", existing->event_id, false}
+                                         {"room_id",  invite.room_id,  false},
+                                         {"user_id",  invite.user_id,  false},
+                                         {"event_id", invite.event_id, false}
     });
+    replace_invite_row(store, *existing, std::move(invite));
     return true;
 }
 
 [[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool
 {
-    auto const existing = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
-        return invite.room_id == room_id && invite.user_id == user_id;
-    });
-    if (existing == store.invites.end())
+    sync_invite_indexes(store);
+    auto const existing = find_invite_position(store, room_id, user_id);
+    if (!existing.has_value())
     {
         return true;
     }
@@ -2766,7 +3048,7 @@ namespace
         return false;
     }
 
-    store.invites.erase(existing);
+    erase_invite_row(store, *existing);
     log_diagnostic("invite.deleted",
                    {
                        {"room_id", std::string{room_id}, false},
@@ -2778,10 +3060,98 @@ namespace
 [[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
     -> std::optional<PersistentInvite>
 {
-    auto const it = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
-        return invite.room_id == room_id && invite.user_id == user_id;
-    });
-    return it == store.invites.end() ? std::nullopt : std::optional<PersistentInvite>{*it};
+    auto const* const row = find_invite_row(store, room_id, user_id);
+    return row == nullptr ? std::nullopt : std::optional<PersistentInvite>{*row};
+}
+
+[[nodiscard]] auto find_invite_row(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> PersistentInvite const*
+{
+    auto const position = find_invite_position(store, room_id, user_id);
+    return position.has_value() ? &store.invites[*position] : nullptr;
+}
+
+[[nodiscard]] auto invite_is_over_store_caps(PersistentStore const& store, PersistentInvite const& invite) -> bool
+{
+    auto const& local = store.local_server_name;
+    auto const quota_group = invite_quota_group_of(local, invite);
+    if (quota_group.empty())
+    {
+        return false;
+    }
+    auto const quota_of = [&local](PersistentInvite const& row) {
+        return invite_quota_group_of(local, row);
+    };
+    // The record this one would replace is not counted: a re-sent invite is not one more.
+    auto const held_position = find_invite_position(store, invite.room_id, invite.user_id);
+    auto const* const held = held_position.has_value() ? &store.invites[*held_position] : nullptr;
+    auto const charged =
+        positions_in_group(store.invite_quota_index, store.invites, quota_group, quota_of, store.invite_rows_examined);
+    if (invite_is_knock(invite))
+    {
+        auto const others = charged.size() - (held != nullptr && quota_of(*held) == quota_group ? 1U : 0U);
+        return store.max_remote_knocks_per_user > 0U && others + 1U > store.max_remote_knocks_per_user;
+    }
+
+    auto const origin_group = invite_origin_group_of(local, invite);
+    auto user_count = std::uint64_t{0U};
+    auto user_bytes = std::uint64_t{0U};
+    auto origin_count = std::uint64_t{0U};
+    auto origin_bytes = std::uint64_t{0U};
+    for (auto const position : charged)
+    {
+        auto const& row = store.invites[position];
+        if (&row == held)
+        {
+            continue;
+        }
+        auto const bytes = invite_bytes(row);
+        ++user_count;
+        user_bytes += bytes;
+        if (invite_origin_group_of(local, row) == origin_group)
+        {
+            ++origin_count;
+            origin_bytes += bytes;
+        }
+    }
+    auto const incoming_bytes = invite_bytes(invite);
+    auto const max_count = std::uint64_t{store.max_remote_invites_per_user};
+    auto const max_bytes = store.max_remote_invite_bytes_per_user;
+    if ((max_count > 0U && user_count + 1U > max_count) || (max_bytes > 0U && user_bytes + incoming_bytes > max_bytes))
+    {
+        return true;
+    }
+    auto const divisor = std::uint64_t{store.remote_invite_origin_share_divisor};
+    if (divisor > 0U && ((max_count > 0U && origin_count + 1U > std::max<std::uint64_t>(1U, max_count / divisor)) ||
+                         (max_bytes > 0U && origin_bytes + incoming_bytes > max_bytes / divisor)))
+    {
+        return true;
+    }
+    if (store.max_remote_invites_per_origin == 0U)
+    {
+        return false;
+    }
+    auto const origin_of = [&local](PersistentInvite const& row) {
+        return invite_origin_group_of(local, row);
+    };
+    auto origin_total = store.invite_origin_index.in_step(store.invites.size())
+                            ? store.invite_origin_index.count(origin_group)
+                            : positions_in_group(store.invite_origin_index, store.invites, origin_group, origin_of,
+                                                 store.invite_rows_examined)
+                                  .size();
+    if (held != nullptr && origin_of(*held) == origin_group)
+    {
+        --origin_total;
+    }
+    return origin_total + 1U > store.max_remote_invites_per_origin;
+}
+
+auto rebuild_invite_indexes(PersistentStore& store) -> void
+{
+    store.invite_key_index.clear();
+    store.invite_quota_index.clear();
+    store.invite_origin_index.clear();
+    sync_invite_indexes(store);
 }
 
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
@@ -2894,6 +3264,11 @@ namespace
     // Adds the row just appended to `state` to the indexes, if they were in step before it. If they
     // were not (something edited the vector behind the store's back) they stay out of step, so
     // lookups scan, until the next rebuild.
+    auto note_room_state_changed(PersistentStore& store, std::string const& room_id) -> void
+    {
+        ++store.room_state_revisions[room_id];
+    }
+
     auto note_state_row_appended(PersistentStore& store) -> void
     {
         if (store.state.empty() || store.state_indexed_rows + 1U != store.state.size())
@@ -2907,7 +3282,117 @@ namespace
         store.state_indexed_rows = store.state.size();
     }
 
+    // Takes `keys` out of `state`, filling each gap from the end, and leaves the indexes in step (ADR-0615). Only the
+    // rooms that lost or moved a row have their position lists rewritten.
+    auto remove_state_rows_from_mirror(PersistentStore& store, std::string_view room_id,
+                                       std::vector<std::pair<std::string, std::string>> const& keys) -> void
+    {
+        if (store.state_indexed_rows != store.state.size())
+        {
+            rebuild_state_index(store);
+        }
+        auto removed = std::set<std::size_t>{};
+        for (auto const& [event_type, state_key] : keys)
+        {
+            auto const entry = store.state_position_index.find(state_position_key(room_id, event_type, state_key));
+            if (entry != store.state_position_index.end())
+            {
+                removed.insert(entry->second);
+                store.state_position_index.erase(entry);
+            }
+        }
+        if (removed.empty())
+        {
+            return;
+        }
+
+        auto const kept_rows = store.state.size() - removed.size();
+        auto moved = std::unordered_map<std::size_t, std::size_t>{};
+        auto touched_rooms = std::unordered_set<std::string>{std::string{room_id}};
+        auto gap = removed.begin();
+        for (auto position = kept_rows; position < store.state.size(); ++position)
+        {
+            if (removed.contains(position))
+            {
+                continue;
+            }
+            auto& row = store.state[*gap];
+            row = std::move(store.state[position]);
+            store.state_position_index[state_position_key(row.room_id, row.event_type, row.state_key)] = *gap;
+            touched_rooms.insert(row.room_id);
+            moved.emplace(position, *gap);
+            ++gap;
+        }
+        store.state.erase(store.state.begin() + static_cast<std::ptrdiff_t>(kept_rows), store.state.end());
+
+        for (auto const& room : touched_rooms)
+        {
+            auto const entry = store.state_room_index.find(room);
+            if (entry == store.state_room_index.end())
+            {
+                continue;
+            }
+            auto& positions = entry->second;
+            std::erase_if(positions, [&removed](std::size_t position) {
+                return removed.contains(position);
+            });
+            for (auto& position : positions)
+            {
+                if (auto const to = moved.find(position); to != moved.end())
+                {
+                    position = to->second;
+                }
+            }
+            std::ranges::sort(positions);
+            if (positions.empty())
+            {
+                store.state_room_index.erase(entry);
+            }
+        }
+        store.state_indexed_rows = store.state.size();
+    }
+
 } // namespace
+
+auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
+                               std::vector<std::pair<std::string, std::string>> const& keys,
+                               std::vector<MembershipProjection> const& memberships) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    if (room_id.empty())
+    {
+        return false;
+    }
+    for (auto const& [event_type, state_key] : keys)
+    {
+        statements.push_back(
+            record_statement("delete_current_state",
+                             "DELETE FROM current_state WHERE room_id = $1 AND event_type = $2 AND state_key = $3",
+                             {public_value(room_id), public_value(event_type), public_value(state_key)}));
+    }
+    for (auto const& projection : memberships)
+    {
+        if (!membership_projection_is_valid(projection) ||
+            !append_membership_projection_statements(statements, room_id, projection))
+        {
+            return false;
+        }
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    remove_state_rows_from_mirror(store, room_id, keys);
+    if (!keys.empty())
+    {
+        note_room_state_changed(store, std::string{room_id});
+    }
+    for (auto const& projection : memberships)
+    {
+        apply_membership_projection(store, room_id, projection);
+    }
+    return true;
+}
 
 auto rebuild_state_index(PersistentStore& store) -> void
 {
@@ -2948,6 +3433,12 @@ auto rebuild_state_index(PersistentStore& store) -> void
         }
     }
     return std::nullopt;
+}
+
+auto room_state_revision(PersistentStore const& store, std::string_view room_id) -> std::uint64_t
+{
+    auto const found = store.room_state_revisions.find(std::string{room_id});
+    return found == store.room_state_revisions.end() ? 0U : found->second;
 }
 
 auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
@@ -3273,6 +3764,7 @@ namespace
 auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void
 {
     auto const& state = prepared.state;
+    note_room_state_changed(store, state.room_id);
     auto const& previous_event_id = prepared.previous_event_id;
     auto const existing = std::ranges::find_if(store.state, [&state](PersistentStateEvent const& current) {
         return current.room_id == state.room_id && current.event_type == state.event_type &&
@@ -3329,6 +3821,15 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
         });
         return std::nullopt;
     }
+    if (membership.has_value() && projection_is_over_store_caps(store, event.room_id, *membership))
+    {
+        log_diagnostic("event_state.rejected", {
+                                                   {"event_id", event.event_id,                          false},
+                                                   {"room_id",  event.room_id,                           false},
+                                                   {"reason",   "the user's stored invite limit is met", false}
+        });
+        return std::nullopt;
+    }
     if (event_exists(store, event.event_id) || (state.has_value() && !state_matches_event(event, *state)))
     {
         log_diagnostic("event_state.rejected", {
@@ -3360,6 +3861,7 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
 
     if (update.state.has_value())
     {
+        note_room_state_changed(store, update.state->room_id);
         auto const existing = std::ranges::find_if(store.state, [&update](PersistentStateEvent const& current) {
             return current.room_id == update.state->room_id && current.event_type == update.state->event_type &&
                    current.state_key == update.state->state_key;
@@ -3868,6 +4370,7 @@ auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
     }
     // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
     });
@@ -3930,6 +4433,7 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     }
     // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);
     });
@@ -5910,8 +6414,20 @@ namespace
     // total is right whatever happened to the rows before (eviction, acknowledgement, hydration).
     struct RecipientQueue final
     {
+        std::string key{};
+        std::string user_id{};
+        std::string device_id{};
         std::deque<QueuedRow> rows{};
         std::uint64_t bytes{0U};
+    };
+
+    // All of one user's queues together (ADR-0618), with each non-empty queue listed under its oldest row, so the
+    // user's oldest row is the first entry whichever device holds it.
+    struct RecipientUser final
+    {
+        std::uint64_t rows{0U};
+        std::uint64_t bytes{0U};
+        std::map<std::pair<std::uint64_t, std::string>, RecipientQueue*> oldest{};
     };
 
     // The rows one atomic to-device write adds and evicts, and the statements
@@ -5926,6 +6442,8 @@ namespace
         // The queue of every recipient the batch names, by `recipient_key`. Empty when the store applies no
         // bound, because nothing is then evicted.
         std::unordered_map<std::string, RecipientQueue> queues{};
+        // Every user the batch names, with the rows of all their devices, not only the devices named.
+        std::unordered_map<std::string, RecipientUser> users{};
     };
 
     // `out` is the key of a recipient; the user ID's length leads so no user ID can run into the device ID.
@@ -5940,7 +6458,24 @@ namespace
     [[nodiscard]] auto to_device_bounds_apply(PersistentStore const& store) noexcept -> bool
     {
         return store.to_device_message_ttl_seconds > 0U || store.max_to_device_messages_per_user_device > 0U ||
-               store.max_to_device_bytes_per_user_device > 0U;
+               store.max_to_device_bytes_per_user_device > 0U || store.max_to_device_messages_per_user > 0U ||
+               store.max_to_device_bytes_per_user > 0U;
+    }
+
+    auto list_queue(RecipientUser& user, RecipientQueue& queue) -> void
+    {
+        if (!queue.rows.empty())
+        {
+            user.oldest.insert_or_assign({queue.rows.front().stream_id, queue.key}, &queue);
+        }
+    }
+
+    auto unlist_queue(RecipientUser& user, RecipientQueue const& queue) -> void
+    {
+        if (!queue.rows.empty())
+        {
+            user.oldest.erase({queue.rows.front().stream_id, queue.key});
+        }
     }
 
     [[nodiscard]] auto to_device_message_is_valid(PersistentStore const& store,
@@ -5955,12 +6490,14 @@ namespace
         // content from a client or a remote server check it first, to answer precisely.
         return to_device_content_fits(store, message.content_json) &&
                (store.max_to_device_bytes_per_user_device == 0U ||
-                message.content_json.size() <= store.max_to_device_bytes_per_user_device);
+                message.content_json.size() <= store.max_to_device_bytes_per_user_device) &&
+               (store.max_to_device_bytes_per_user == 0U ||
+                message.content_json.size() <= store.max_to_device_bytes_per_user);
     }
 
-    // Gathers the queue of every recipient `messages` names with ONE pass over the store's rows (F-13): a
-    // batch of M messages costs the queue's length, not M times it. Rows of other recipients are never
-    // copied or compared beyond the recipient lookup.
+    // Gathers the rows of every user `messages` names through the per-user index (ADR-0618): the work is those
+    // users' own rows, each bounded by the per-user limits, and other users' rows are never read. All of a user's
+    // queues are gathered, not only the devices named, because the per-user limits count them all.
     auto index_to_device_recipients(PersistentStore& store, std::vector<PersistentToDeviceMessage> const& messages,
                                     ToDeviceBatch& batch) -> void
     {
@@ -5968,29 +6505,44 @@ namespace
         {
             return;
         }
-        auto key = std::string{};
+        sync_to_device_indexes(store);
+        auto const queue_of = [&batch](std::string_view user_id, std::string_view device_id) -> RecipientQueue& {
+            auto key = std::string{};
+            assign_recipient_key(key, user_id, device_id);
+            auto& queue = batch.queues[key];
+            if (queue.key.empty())
+            {
+                queue.key = std::move(key);
+                queue.user_id = std::string{user_id};
+                queue.device_id = std::string{device_id};
+            }
+            return queue;
+        };
         for (auto const& message : messages)
         {
-            assign_recipient_key(key, message.target_user_id, message.target_device_id);
-            batch.queues.try_emplace(key);
-        }
-        for (auto const& row : store.to_device_messages)
-        {
-            ++store.to_device_rows_examined;
-            assign_recipient_key(key, row.target_user_id, row.target_device_id);
-            auto const queue = batch.queues.find(key);
-            if (queue == batch.queues.end())
+            std::ignore = queue_of(message.target_user_id, message.target_device_id);
+            auto const [user, first_seen] = batch.users.try_emplace(message.target_user_id);
+            if (!first_seen)
             {
                 continue;
             }
-            auto const bytes = static_cast<std::uint64_t>(row.content_json.size());
-            queue->second.rows.push_back({row.stream_id, row.created_at_ms, bytes});
-            queue->second.bytes += bytes;
+            for (auto const position :
+                 positions_in_group(store.to_device_user_index, store.to_device_messages, message.target_user_id,
+                                    to_device_user_group_of, store.to_device_rows_examined))
+            {
+                auto const& row = store.to_device_messages[position];
+                auto const bytes = static_cast<std::uint64_t>(row.content_json.size());
+                auto& queue = queue_of(row.target_user_id, row.target_device_id);
+                queue.rows.push_back({row.stream_id, row.created_at_ms, bytes});
+                queue.bytes += bytes;
+                ++user->second.rows;
+                user->second.bytes += bytes;
+            }
         }
         for (auto& [recipient, queue] : batch.queues)
         {
             std::ranges::sort(queue.rows, {}, &QueuedRow::stream_id);
-            store.to_device_rows_examined += queue.rows.size();
+            list_queue(batch.users[queue.user_id], queue);
         }
     }
 
@@ -6016,16 +6568,20 @@ namespace
             auto key = std::string{};
             assign_recipient_key(key, message.target_user_id, message.target_device_id);
             auto& queue = batch.queues[key];
-            auto const evict = [&](QueuedRow const& row) {
+            auto& user = batch.users[message.target_user_id];
+            auto const evict = [&](RecipientQueue& from, QueuedRow const& row) {
                 batch.statements.push_back(
                     record_statement("delete_to_device_message",
                                      "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
                                      "target_device_id = $3",
-                                     {public_value(std::to_string(row.stream_id)), public_value(message.target_user_id),
-                                      public_value(message.target_device_id)}));
-                batch.evicted.push_back({row.stream_id, message.target_user_id, message.target_device_id});
-                queue.bytes -= row.bytes;
+                                     {public_value(std::to_string(row.stream_id)), public_value(from.user_id),
+                                      public_value(from.device_id)}));
+                batch.evicted.push_back({row.stream_id, from.user_id, from.device_id});
+                from.bytes -= row.bytes;
+                --user.rows;
+                user.bytes -= row.bytes;
             };
+            unlist_queue(user, queue);
             // created_at_ms == 0 is a row written before migration 019: its age is unknown, so it is not
             // expired here, as in the drain. The count and byte bounds still apply to it.
             if (ttl_ms > 0U)
@@ -6035,7 +6591,7 @@ namespace
                         row.created_at_ms > 0U && now_ms > row.created_at_ms && now_ms - row.created_at_ms >= ttl_ms;
                     if (expired)
                     {
-                        evict(row);
+                        evict(queue, row);
                     }
                     return expired;
                 });
@@ -6046,11 +6602,28 @@ namespace
                                            (store.max_to_device_bytes_per_user_device > 0U &&
                                             queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device)))
             {
-                evict(queue.rows.front());
+                evict(queue, queue.rows.front());
                 queue.rows.pop_front();
             }
+            list_queue(user, queue);
+            // Then the user as a whole: the user's oldest row goes first, whichever device holds it.
+            while (!user.oldest.empty() && ((store.max_to_device_messages_per_user > 0U &&
+                                             user.rows >= store.max_to_device_messages_per_user) ||
+                                            (store.max_to_device_bytes_per_user > 0U &&
+                                             user.bytes + message_bytes > store.max_to_device_bytes_per_user)))
+            {
+                auto* const from = user.oldest.begin()->second;
+                user.oldest.erase(user.oldest.begin());
+                evict(*from, from->rows.front());
+                from->rows.pop_front();
+                list_queue(user, *from);
+            }
+            unlist_queue(user, queue);
             queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes});
             queue.bytes += message_bytes;
+            ++user.rows;
+            user.bytes += message_bytes;
+            list_queue(user, queue);
         }
 
         batch.statements.push_back(record_statement(
@@ -6064,37 +6637,48 @@ namespace
         batch.added.push_back(std::move(message));
     }
 
-    // Removes `victims` from the in-memory queue in one pass over the rows (F-13), looking each row's stream id up
-    // in a hash rather than comparing it with every victim.
+    // Removes `victims` through the recipient index (ADR-0618): the work is the rows of the recipients named, with
+    // each row's stream id looked up in a hash rather than compared with every victim.
     auto erase_to_device_rows(PersistentStore& store, std::vector<ToDeviceRowKey> const& victims) -> void
     {
         if (victims.empty())
         {
             return;
         }
-        auto by_stream_id = std::unordered_multimap<std::uint64_t, std::size_t>{};
-        by_stream_id.reserve(victims.size());
-        for (auto position = std::size_t{0U}; position < victims.size(); ++position)
+        sync_to_device_indexes(store);
+        auto by_recipient = std::unordered_map<std::string, std::unordered_set<std::uint64_t>>{};
+        for (auto const& victim : victims)
         {
-            by_stream_id.emplace(victims[position].stream_id, position);
+            by_recipient[composite_key({victim.target_user_id, victim.target_device_id})].insert(victim.stream_id);
         }
-        std::erase_if(store.to_device_messages, [&](PersistentToDeviceMessage const& candidate) {
-            ++store.to_device_rows_examined;
-            auto const [first, last] = by_stream_id.equal_range(candidate.stream_id);
-            return std::any_of(first, last, [&](auto const& entry) {
-                auto const& victim = victims[entry.second];
-                return victim.target_user_id == candidate.target_user_id &&
-                       victim.target_device_id == candidate.target_device_id;
-            });
-        });
+        auto positions = std::vector<std::size_t>{};
+        positions.reserve(victims.size());
+        for (auto const& [recipient, stream_ids] : by_recipient)
+        {
+            for (auto const position :
+                 positions_in_group(store.to_device_recipient_index, store.to_device_messages, recipient,
+                                    to_device_recipient_group_of, store.to_device_rows_examined))
+            {
+                if (stream_ids.contains(store.to_device_messages[position].stream_id))
+                {
+                    positions.push_back(position);
+                }
+            }
+        }
+        erase_to_device_positions(store, std::move(positions));
     }
 
     // Mirrors a committed batch into memory. Call only after the commit succeeded.
     auto apply_to_device_batch(PersistentStore& store, ToDeviceBatch&& batch) -> void
     {
+        sync_to_device_indexes(store);
         for (auto& message : batch.added)
         {
             store.to_device_messages.push_back(std::move(message));
+            auto const& added = store.to_device_messages.back();
+            store.to_device_recipient_index.note_appended(store.to_device_messages.size(),
+                                                          to_device_recipient_group_of(added));
+            store.to_device_user_index.note_appended(store.to_device_messages.size(), to_device_user_group_of(added));
         }
         erase_to_device_rows(store, batch.evicted);
     }
@@ -6241,31 +6825,41 @@ namespace
                                          std::string_view device_id) -> std::uint64_t
 {
     auto bytes = std::uint64_t{0U};
-    for (auto const& row : store.to_device_messages)
+    for (auto const position : positions_in_group(store.to_device_recipient_index, store.to_device_messages,
+                                                  composite_key({user_id, device_id}), to_device_recipient_group_of,
+                                                  store.to_device_rows_examined))
     {
-        if (row.target_user_id == user_id && row.target_device_id == device_id)
-        {
-            bytes += row.content_json.size();
-        }
+        bytes += store.to_device_messages[position].content_json.size();
     }
     return bytes;
+}
+
+[[nodiscard]] auto has_to_device_message_after(PersistentStore const& store, std::string_view user_id,
+                                               std::string_view device_id, std::uint64_t since_stream_id) -> bool
+{
+    return std::ranges::any_of(positions_in_group(store.to_device_recipient_index, store.to_device_messages,
+                                                  composite_key({user_id, device_id}), to_device_recipient_group_of,
+                                                  store.to_device_rows_examined),
+                               [&](std::size_t position) {
+                                   return store.to_device_messages[position].stream_id > since_stream_id;
+                               });
 }
 
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>
 {
-    // Does this message address the requesting device? Empty target_device_id
-    // or "*" means broadcast to all of this user's devices; otherwise it is
-    // addressed to one specific device.
-    auto const addressed_to_device = [&](PersistentToDeviceMessage const& message) {
-        if (message.target_user_id != user_id)
+    // The queues that address the requesting device. Empty target_device_id or "*" means broadcast to all of this
+    // user's devices; otherwise a row is addressed to one specific device.
+    sync_to_device_indexes(store);
+    auto recipients = std::vector<std::string>{composite_key({user_id, device_id})};
+    for (auto const broadcast : {std::string_view{}, std::string_view{"*"}})
+    {
+        if (broadcast != device_id)
         {
-            return false;
+            recipients.push_back(composite_key({user_id, broadcast}));
         }
-        return message.target_device_id.empty() || message.target_device_id == "*" ||
-               message.target_device_id == device_id;
-    };
+    }
 
     // Delete-on-acknowledgement, not delete-on-read. The upper bound is the
     // response snapshot: newer rows stay pending so next_batch cannot
@@ -6274,34 +6868,35 @@ namespace
     auto to_purge = std::vector<ToDeviceRowKey>{};
     auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
     auto const now_ms = current_epoch_ms();
-    store.to_device_rows_examined += store.to_device_messages.size();
-    for (auto const& message : store.to_device_messages)
+    for (auto const& recipient : recipients)
     {
-        if (!addressed_to_device(message))
+        for (auto const position :
+             positions_in_group(store.to_device_recipient_index, store.to_device_messages, recipient,
+                                to_device_recipient_group_of, store.to_device_rows_examined))
         {
-            continue;
-        }
-        if (message.stream_id > upper_stream_id)
-        {
-            continue;
-        }
-        auto const expired = ttl_ms > 0U && message.created_at_ms > 0U && (now_ms > message.created_at_ms) &&
-                             (now_ms - message.created_at_ms >= ttl_ms);
-        auto const acknowledged = message.stream_id <= since_stream_id;
-        auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
-        if (expired || (acknowledged && targeted_device))
-        {
-            // Expired rows are removed regardless of device scope; acknowledged,
-            // device-targeted rows are removed as normal. Broadcast rows are
-            // shared across this user's devices and are not acknowledged
-            // per-device here, so they persist until TTL or a new broadcast
-            // replaces them under the per-recipient cap.
-            to_purge.push_back({message.stream_id, message.target_user_id, message.target_device_id});
-            continue;
-        }
-        if (!acknowledged)
-        {
-            drained.push_back(message);
+            auto const& message = store.to_device_messages[position];
+            if (message.stream_id > upper_stream_id)
+            {
+                continue;
+            }
+            auto const expired = ttl_ms > 0U && message.created_at_ms > 0U && (now_ms > message.created_at_ms) &&
+                                 (now_ms - message.created_at_ms >= ttl_ms);
+            auto const acknowledged = message.stream_id <= since_stream_id;
+            auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
+            if (expired || (acknowledged && targeted_device))
+            {
+                // Expired rows are removed regardless of device scope; acknowledged,
+                // device-targeted rows are removed as normal. Broadcast rows are
+                // shared across this user's devices and are not acknowledged
+                // per-device here, so they persist until TTL or a new broadcast
+                // replaces them under the per-recipient cap.
+                to_purge.push_back({message.stream_id, message.target_user_id, message.target_device_id});
+                continue;
+            }
+            if (!acknowledged)
+            {
+                drained.push_back(message);
+            }
         }
     }
     // Callers page through the result and acknowledge up to the last row they

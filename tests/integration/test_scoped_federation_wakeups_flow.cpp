@@ -156,10 +156,14 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     // tests/integration/test_pdu_ingestion_state_groups_flow.cpp.
     auto const* policy = rooms::find_room_version_policy("12");
     REQUIRE(policy != nullptr);
+    // The tip's state holds the local join: current state is the tip's state, so a join outside it would be removed.
+    auto const local_user = std::string{"@local_user:local.example.org"};
+    auto const local_member_id = std::string{room_id} + ":local_member";
     auto const genesis_state = std::vector<database::PersistentStateGroupStateEntry>{
-        {"", "m.room.create",       "",                          create_id},
-        {"", "m.room.power_levels", "",                          pl_id    },
-        {"", "m.room.member",       "@alice:remote.example.org", member_id},
+        {"", "m.room.create",       "",                          create_id      },
+        {"", "m.room.power_levels", "",                          pl_id          },
+        {"", "m.room.member",       "@alice:remote.example.org", member_id      },
+        {"", "m.room.member",       local_user,                  local_member_id},
     };
     auto const group_id = database::create_or_reuse_state_group(store, room_id, std::string{room_id} + ":genesis-group",
                                                                 std::nullopt, genesis_state);
@@ -170,27 +174,15 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     // FED-11 admission gate: the pdu_sink now rejects PDUs for rooms with no
     // local member. Seed a local join in every test room so remote messages
     // are admitted.
-    auto const local_user = std::string{"@local_user:local.example.org"};
     auto local_member_content = canonicaljson::Object{};
     local_member_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
-    auto const local_member_id = std::string{room_id} + ":local_member";
     auto const local_member_json =
         make_seed_event_json(room_id, "m.room.member", local_user, local_user, std::move(local_member_content), 3, 4);
     store.events.push_back({local_member_id, std::string{room_id}, local_user, local_member_json, 0U, 0U, {}, {}, {}});
     store.state.push_back({std::string{room_id}, "m.room.member", local_user, local_member_id});
     store.memberships.push_back({std::string{room_id}, local_user, "join", 0U});
 
-    auto const local_state = std::vector<database::PersistentStateGroupStateEntry>{
-        {"", "m.room.create",       "",                          create_id      },
-        {"", "m.room.power_levels", "",                          pl_id          },
-        {"", "m.room.member",       "@alice:remote.example.org", member_id      },
-        {"", "m.room.member",       local_user,                  local_member_id},
-    };
-    auto const local_group_id = database::create_or_reuse_state_group(
-        store, room_id, std::string{room_id} + ":local-member-group", std::nullopt, local_state);
-    REQUIRE(local_group_id.has_value());
-    REQUIRE(database::set_event_state_group(store, local_member_id, *local_group_id));
-    REQUIRE(database::update_forward_extremities(store, room_id, local_member_id, {member_id}, false));
+    REQUIRE(database::set_event_state_group(store, local_member_id, *group_id));
 }
 
 [[nodiscard]] auto make_message_pdu(std::string_view room_id, std::size_t seq)

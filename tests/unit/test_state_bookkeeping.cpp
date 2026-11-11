@@ -32,6 +32,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -951,6 +952,336 @@ SCENARIO("forward_extremities_stay_bounded refuses only an event that would add 
         THEN("an event citing only older events is allowed")
         {
             REQUIRE(merovingian::homeserver::forward_extremities_stay_bounded(store, room_id, {"$old"}, limits));
+        }
+    }
+}
+
+// ADR-0615. Spec: docs/matrix-v1.19-spec/server-server-api.md, "Room State Resolution": current state is the resolved
+// state, so a key the resolution does not hold is not in it.
+namespace
+{
+
+using merovingian::database::find_current_state_event_id;
+using merovingian::database::for_each_room_state_row;
+
+auto const carol = std::string{"@carol:example.org"};
+auto const bob = std::string{"@bob:example.org"};
+auto const demoting_pl_content = std::string{
+    R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,"users_default":0,"users":{"@alice:example.org":100}})"};
+
+[[nodiscard]] auto room_row_count(PersistentStore const& store, std::string const& room) -> std::size_t
+{
+    auto rows = std::size_t{0U};
+    for_each_room_state_row(store, room, [&rows](merovingian::database::PersistentStateEvent const&) {
+        ++rows;
+    });
+    return rows;
+}
+
+[[nodiscard]] auto row_membership(PersistentStore const& store, std::string const& user) -> std::string
+{
+    auto const row = std::ranges::find_if(store.memberships, [&user](auto const& candidate) {
+        return candidate.room_id == room_id && candidate.user_id == user;
+    });
+    return row == store.memberships.end() ? std::string{} : row->membership;
+}
+
+// Genesis, bob joined, then bob's m.room.name as the only tip: the name is current state. A demotion of bob on another
+// fork then outranks it.
+auto seed_name_set_on_a_fork(PersistentStore& store, merovingian::rooms::RoomVersionPolicy const& policy) -> void
+{
+    seed_genesis(store, policy);
+    ingest_test_event(store, "$bob_join", "m.room.member", bob, bob, 40, {"$create", "$pl0", "$join_rules"},
+                      R"({"membership":"join"})", {"$alice_join"}, 4U, policy);
+    ingest_test_event(store, "$name", "m.room.name", std::string{}, bob, 50, {"$create", "$pl0", "$bob_join"},
+                      R"({"name":"from the losing fork"})", {"$bob_join"}, 5U, policy);
+    REQUIRE(recompute_current_state(store, room_id, policy));
+    REQUIRE(find_current_state_event_id(store, room_id, "m.room.name", "") == "$name");
+}
+
+auto add_demotion_fork(PersistentStore& store, merovingian::rooms::RoomVersionPolicy const& policy) -> void
+{
+    ingest_test_event(store, "$pl1", "m.room.power_levels", std::string{}, "@alice:example.org", 60,
+                      {"$create", "$pl0", "$alice_join"}, demoting_pl_content, {"$bob_join"}, 5U, policy);
+}
+
+} // namespace
+
+SCENARIO("A key only a losing fork set leaves current state", "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("a room name set by a user another fork demotes")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_name_set_on_a_fork(store, *policy);
+        auto const rows_before = room_row_count(store, room_id);
+
+        WHEN("current state is recomputed over both forks")
+        {
+            add_demotion_fork(store, *policy);
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the name is gone and the demotion is current")
+            {
+                CHECK_FALSE(find_current_state_event_id(store, room_id, "m.room.name", "").has_value());
+                CHECK(find_current_state_event_id(store, room_id, "m.room.power_levels", "") == "$pl1");
+                CHECK(room_row_count(store, room_id) == rows_before - 1U);
+                CHECK(std::ranges::none_of(store.state, [](auto const& row) {
+                    return row.event_type == "m.room.name";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("A member key only a losing fork set leaves current state and its membership row follows",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("carol joined a public room on one fork, her row saying join")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$carol_join", "m.room.member", carol, carol, 40, {"$create", "$pl0", "$join_rules"},
+                          R"({"membership":"join"})", {"$alice_join"}, 4U, *policy, 7U);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        REQUIRE(find_current_state_event_id(store, room_id, "m.room.member", carol) == "$carol_join");
+        store.memberships.push_back({room_id, carol, "join", 7U});
+        merovingian::database::rebuild_membership_index(store);
+
+        WHEN("another fork makes the room invite-only and current state is recomputed")
+        {
+            ingest_test_event(store, "$invite_only", "m.room.join_rules", std::string{}, "@alice:example.org", 50,
+                              {"$create", "$pl0", "$alice_join"}, R"({"join_rule":"invite"})", {"$alice_join"}, 4U,
+                              *policy, 8U);
+            auto const recomputed = recompute_current_state(store, room_id, *policy);
+            REQUIRE(recomputed);
+
+            THEN("her key is gone and her row says leave")
+            {
+                CHECK_FALSE(find_current_state_event_id(store, room_id, "m.room.member", carol).has_value());
+                CHECK(row_membership(store, carol) == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("A membership row follows a member key the resolution changes",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("carol's join on one fork, her row saying join, and a ban of her on another")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$carol_join", "m.room.member", carol, carol, 40, {"$create", "$pl0", "$join_rules"},
+                          R"({"membership":"join"})", {"$alice_join"}, 4U, *policy, 7U);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        store.memberships.push_back({room_id, carol, "join", 7U});
+        merovingian::database::rebuild_membership_index(store);
+
+        WHEN("the ban arrives and current state is recomputed")
+        {
+            ingest_test_event(store, "$carol_ban", "m.room.member", carol, "@alice:example.org", 50,
+                              {"$create", "$pl0", "$alice_join"}, R"({"membership":"ban"})", {"$alice_join"}, 4U,
+                              *policy, 8U);
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the ban is current and her row says ban")
+            {
+                CHECK(find_current_state_event_id(store, room_id, "m.room.member", carol) == "$carol_ban");
+                CHECK(row_membership(store, carol) == "ban");
+            }
+        }
+    }
+}
+
+SCENARIO("A membership row written by an event that lost its resolution follows the key back",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("carol's join, and a ban by a user with no standing that wrote its own key and row on receipt")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$carol_join", "m.room.member", carol, carol, 40, {"$create", "$pl0", "$join_rules"},
+                          R"({"membership":"join"})", {"$alice_join"}, 4U, *policy, 7U);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        ingest_test_event(store, "$carol_ban", "m.room.member", carol, bob, 50, {"$create", "$pl0"},
+                          R"({"membership":"ban"})", {"$alice_join"}, 4U, *policy, 8U);
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", carol, "$carol_ban"}));
+        store.memberships.push_back({room_id, carol, "ban", 8U});
+        merovingian::database::rebuild_membership_index(store);
+
+        WHEN("current state is recomputed")
+        {
+            REQUIRE(recompute_current_state(store, room_id, *policy, {}, 8U));
+
+            THEN("the join is current and her row says join")
+            {
+                CHECK(find_current_state_event_id(store, room_id, "m.room.member", carol) == "$carol_join");
+                CHECK(row_membership(store, carol) == "join");
+            }
+        }
+    }
+}
+
+SCENARIO("A row written outside the room's graph survives a resolution that does not hold it",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("a room whose current state also holds an outlier invite with no state group")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        auto invite = PersistentEvent{};
+        invite.event_id = "$outlier_invite";
+        invite.room_id = room_id;
+        invite.sender_user_id = "@alice:example.org";
+        invite.json = make_event_json("m.room.member", carol, "$outlier_invite", "@alice:example.org", 45, {"$create"},
+                                      R"({"membership":"invite"})");
+        invite.status = "outlier";
+        store.events.push_back(invite);
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", carol, "$outlier_invite"}));
+        store.memberships.push_back({room_id, carol, "invite", 9U});
+        merovingian::database::rebuild_membership_index(store);
+
+        WHEN("current state is recomputed")
+        {
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the invite and its row stay")
+            {
+                CHECK(find_current_state_event_id(store, room_id, "m.room.member", carol) == "$outlier_invite");
+                CHECK(row_membership(store, carol) == "invite");
+            }
+        }
+    }
+}
+
+SCENARIO("A snapshot event a tip's state names leaves current state when the resolution drops it",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("a room name known only as an event with no state group of its own, held in one tip's state")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$bob_join", "m.room.member", bob, bob, 40, {"$create", "$pl0", "$join_rules"},
+                          R"({"membership":"join"})", {"$alice_join"}, 4U, *policy);
+        auto name = PersistentEvent{};
+        name.event_id = "$snapshot_name";
+        name.room_id = room_id;
+        name.sender_user_id = bob;
+        name.json = make_event_json("m.room.name", "", "$snapshot_name", bob, 45, {"$create", "$pl0", "$bob_join"},
+                                    R"({"name":"from a snapshot"})");
+        name.status = "outlier";
+        store.events.push_back(name);
+
+        auto tip = PersistentEvent{};
+        tip.event_id = "$tip";
+        tip.room_id = room_id;
+        tip.sender_user_id = bob;
+        tip.json = make_event_json("m.room.topic", "", "$tip", bob, 46, {"$create", "$pl0", "$bob_join"}, "{}");
+        tip.prev_event_ids = {"$bob_join"};
+        store.events.push_back(tip);
+        auto const before = compute_state_before(store, room_id, *policy, {"$bob_join"});
+        REQUIRE(before.ok);
+        auto after = compute_state_after(before.state, "$tip", "m.room.topic", std::string{});
+        after.push_back({{}, "m.room.name", "", "$snapshot_name"});
+        REQUIRE(record_event_state(store, room_id, "$tip", {"$bob_join"}, after).has_value());
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        REQUIRE(find_current_state_event_id(store, room_id, "m.room.name", "") == "$snapshot_name");
+
+        WHEN("a demotion on another fork outranks it")
+        {
+            add_demotion_fork(store, *policy);
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the name is gone")
+            {
+                CHECK_FALSE(find_current_state_event_id(store, room_id, "m.room.name", "").has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A room with no tips keeps the rows it holds", "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("a room with a current-state row and no forward extremities")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        auto event = PersistentEvent{};
+        event.event_id = "$held";
+        event.room_id = room_id;
+        event.sender_user_id = "@alice:example.org";
+        event.json = make_event_json("m.room.name", "", "$held", "@alice:example.org", 1, {}, "{}");
+        store.events.push_back(event);
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.name", "", "$held"}));
+
+        WHEN("current state is recomputed")
+        {
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the row stays: nothing was resolved")
+            {
+                CHECK(find_current_state_event_id(store, room_id, "m.room.name", "") == "$held");
+            }
+        }
+    }
+}
+
+SCENARIO("The state indexes stay right when a removal moves another room's row",
+         "[pdu_ingestion][state_groups][gate-m][state_retraction]")
+{
+    GIVEN("a room whose name will be dropped, and another room's row stored last")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_name_set_on_a_fork(store, *policy);
+        auto const other_room = std::string{"!other:example.org"};
+        auto other = PersistentEvent{};
+        other.event_id = "$other";
+        other.room_id = other_room;
+        other.sender_user_id = "@alice:example.org";
+        other.json = make_event_json("m.room.topic", "", "$other", "@alice:example.org", 1, {}, "{}");
+        store.events.push_back(other);
+        REQUIRE(merovingian::database::store_state(store, {other_room, "m.room.topic", "", "$other"}));
+        merovingian::database::rebuild_state_index(store);
+
+        WHEN("current state is recomputed over both forks")
+        {
+            add_demotion_fork(store, *policy);
+            REQUIRE(recompute_current_state(store, room_id, *policy));
+
+            THEN("the indexes are still trusted and every lookup agrees with the rows")
+            {
+                CHECK(store.state_indexed_rows == store.state.size());
+                CHECK_FALSE(find_current_state_event_id(store, room_id, "m.room.name", "").has_value());
+                CHECK(find_current_state_event_id(store, other_room, "m.room.topic", "") == "$other");
+                CHECK(room_row_count(store, other_room) == 1U);
+                for (auto const& row : store.state)
+                {
+                    CHECK(find_current_state_event_id(store, row.room_id, row.event_type, row.state_key) ==
+                          row.event_id);
+                }
+                auto seen = std::size_t{0U};
+                for_each_room_state_row(store, room_id, [&seen](auto const& row) {
+                    CHECK(row.room_id == room_id);
+                    ++seen;
+                });
+                CHECK(seen == store.state.size() - 1U);
+            }
         }
     }
 }

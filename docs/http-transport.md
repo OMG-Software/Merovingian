@@ -1117,6 +1117,7 @@ The paths under the budget:
 | `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
 | `POST /_matrix/client/v3/join/{roomIdOrAlias}` for a remote alias | federation `GET /query/directory`, 10 s directory deadline (F-17, ADR-0350) |
+| `POST .../join`, `POST .../knock` and `POST .../leave`, when this server must ask a resident | federation `make_*` and `send_*`: one slot for the whole exchange, taken at once, 429 when none is free (ADR-0622) |
 | `POST /_matrix/client/v3/keys/query` and `/keys/claim`, for a user of another server | federation `POST /user/keys/query` and `/user/keys/claim`: one slot and one 30 s deadline (`remote_keys_deadline_seconds`) for all of the request's remote servers, at most 16 distinct servers (`remote_keys_max_servers`); a server not asked is reported in `failures` and the local answer is still returned, so no slot is not a 429 (F-17, ADR-0350) |
 | `GET /_matrix/client/v3/profile/{userId}[/{keyName}]` for a user of another server | federation `GET /query/profile`, 10 s directory deadline |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy`, once a child room is not held locally | federation `GET /hierarchy/{roomId}` to the link's `via` servers: one slot and one 10 s deadline for the whole walk, at most 3 servers per room and 16 requests per walk; the slot is taken at the first such request and `429 M_LIMIT_EXCEEDED` answers the whole walk when it is refused |

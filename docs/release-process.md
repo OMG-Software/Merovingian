@@ -123,7 +123,11 @@ SQL file to match the build's v1 step statement for statement.
 
 Every release tarball and package is accompanied by a detached GPG signature
 (`.asc`). The signing key is an offline, long-lived maintainer key stored as a
-GitHub Actions secret. Operators can verify artifacts without the GitHub CLI.
+secret of the GitHub Actions `release` environment, which only the `sign` job of
+`sign-artifacts.yml` declares (ADR-0614). The environment admits only `main` and
+`v*` tags; without it the signing job has no key and fails. `release.yml` also
+refuses a tag whose commit is not an ancestor of `origin/main`. Operators can
+verify artifacts without the GitHub CLI.
 
 ```sh
 gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20

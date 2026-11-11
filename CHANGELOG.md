@@ -1,3 +1,82 @@
+## 0.12.92
+
+The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
+forged join, administrator authority through an application service, and release signing reachable from any ref.
+
+### A /sync reads a user's account data once
+
+The user's account data is read through its index once per request, not once per room.
+
+### A /sync timeline reads only the newest rows of a room (ADR-0616)
+
+The walk starts at the newest row and stops once the window is full, and after 1000 rows it did not take. The test of a
+sync that finds nothing new also checks that the reply carries a `next_batch`.
+
+### Unread counts read a bounded number of rows (ADR-0617)
+
+Unread counts and read markers read at most the newest 1000 rows of a room, and the start of a join comes from the user's
+member events instead of a walk of the event table.
+
+### The to-device queue is indexed and limited per user (ADR-0618)
+
+Send and sync read only the recipient's rows. Two options bound one user's queues across all devices:
+`server.client_api.max_to_device_messages_per_user` and `server.client_api.max_to_device_bytes_per_user`. One-time and
+fallback key counts read only the device's rows.
+
+### Stored invites are limited per user and per origin (ADR-0619)
+
+Past the limits an invite from another server is answered 403 `M_FORBIDDEN` before anything is signed or stored. Invites
+from local users are never counted. Knocks have a limit of their own.
+
+### A knock's room state is bounded (ADR-0620)
+
+Only what `/sync` could show is kept, at most 16 entries, each within the event size limit, from an answer of at most 1 MiB.
+
+### Dead destinations can no longer take the whole outbound queue (ADR-0621)
+
+Sixteen peers that stopped answering could hold every slot of the federation send queue for weeks, and every other server's transactions were then refused. Destinations that are failing now hold at most half of the queue between them, and a failing destination's transaction is dropped after 24 hours. A destination that is not failing is never cut, and a failing one past its backoff is always given a try, so recovery is still noticed.
+
+### A client's federated join, knock or leave takes an outbound slot (ADR-0622)
+
+These calls hold a request thread for their exchange with another server, with no limit. They now take a client-outbound slot and answer `429 M_LIMIT_EXCEEDED` with `Retry-After` when none is free, as the other client-triggered outbound calls do. A join, knock or leave decided locally takes no slot.
+
+### A burst of PDUs for one room no longer costs a reload each (ADR-0623)
+
+A federation worker re-read a whole room for every PDU main accepted. Reloads are now merged per room and run on their own thread: a burst costs at most one reload running and one after it, and the last PDU is always followed by a reload that sees it.
+
+### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
+
+Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ. `build_plan_base` explains each of its steps in comments.
+
+### Current state drops what the resolution does not hold (ADR-0615)
+
+A state key set only on a losing fork, such as a member, a server ACL or a room name, stayed in current state for good. It
+is now removed, on both database backends, and a membership row and the room's roster follow. A row written outside the
+room's graph, such as an invite to a room this server is not in, is kept.
+
+### A join sent by anyone but the user joining is refused (ADR-0612)
+
+The auth rules let any server write a join for a room's creator if it cites only the create event, which put the creator
+back in the room and lifted the limit on what a departed user may read. Such an event is now rejected wherever a remote
+event is admitted. The auth rule itself is unchanged, because it is the spec's and every server must agree on it.
+
+### A very long identifier cannot crash a namespace match (ADR-0613)
+
+`GET /directory/room/{roomAlias}` and `GET /profile/{userId}` passed an identifier of any length to an application
+service's namespace regex, which recursed until the stack ran out. An identifier over 255 bytes now matches no namespace,
+and those two routes answer it with `400 M_INVALID_PARAM`.
+
+### An application service cannot use an administrator's authority (ADR-0611)
+
+An application service asserting a user is now refused on every operator and admin route, whatever user it asserts. A
+namespace covering a server administrator used to give the service those routes.
+
+### The release signing key is held by an environment, and a tag must be on main (ADR-0614)
+
+The job that signs now runs in the `release` environment, so the key can move out of the repository's secrets, and a
+release tag is refused unless its commit is on `main`. Signing fails until the owner creates the environment and moves the
+secrets into it.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).

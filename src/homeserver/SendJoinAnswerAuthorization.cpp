@@ -7,6 +7,7 @@
 #include "merovingian/events/AuthEventSlots.hpp"
 #include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/EventId.hpp"
+#include "merovingian/events/MemberJoinSender.hpp"
 #include "merovingian/homeserver/AuthorizedSendJoinAnswer.hpp"
 
 #include <algorithm>
@@ -226,6 +227,10 @@ namespace
 
         [[nodiscard]] auto is_authorized(canonicaljson::Value const& event, AnswerEvent const& judged) const -> bool
         {
+            if (events::join_names_another_user(event))
+            {
+                return false; // ADR-0612
+            }
             auto const token = events::third_party_invite_token(event);
             auto const permitted =
                 events::permitted_auth_event_keys(event, policy_, judged.type, judged.sender, judged.state_key, token);

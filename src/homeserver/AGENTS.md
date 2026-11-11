@@ -39,6 +39,7 @@ This is the largest and most complex module — read this file carefully before 
 | `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
 | `RoomResidency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `InvitePermission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
+| `SendJoinPlanCache.cpp` | `SendJoinPlanCache`: the synchronised, bounded cache of the room-wide part of send_join answers and of the membership before a stored join (ADR-0624). Its own mutex, taken with `runtime.mutex` held; its callbacks never take `runtime.mutex` |
 | `SendJoinAnswerAuthorization.cpp` | `authorize_send_join_answer`: the auth rules over a resident's `send_join` answer, in dependency order, from the answer's own events, with `runtime.mutex` released (F-45, ADR-0369) |
 | `RestrictedJoin.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `RemoteTimestampEvent.cpp` | Asking other servers for `GET /rooms/{roomId}/timestamp_to_event` (ADR-0299): `timestamp_to_event_candidate_servers`, `parse_timestamp_to_event_answer`, `timestamp_is_closer`, `acquire_closer_timestamp_event` (the loop over at most 3 servers; releases `runtime.mutex` for each exchange and for the verified fetch, `fetch_remote_event_into_store` in `LocalHttpRouter.cpp`) |
@@ -333,7 +334,9 @@ held, and never take `runtime.mutex` while holding its mutex.
 
 ## One membership exchange per user and room (ADR-0252)
 
-A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident.
+A federated join, knock or leave releases `runtime.mutex` for its exchange with the resident. It frees the mutex, not the
+thread, so each takes a client-outbound slot on its federated branch first, before the claim, and holds it until it
+returns; none free is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` (ADR-0622). A route passes `rate_limit_client_key`.
 Before releasing it, take a `MembershipExchangeClaim` for the (room, user) pair; `join_room`,
 `knock_room` and `leave_room` refuse a claimed pair with 429 `M_LIMIT_EXCEEDED` before reading
 anything. A new path that changes a user's own membership over federation takes the claim, and a
@@ -469,7 +472,9 @@ default. The size limit does not count the `hashes` and `signatures` added after
 ## The answer to a send_join is planned before the join is stored (F-23, ADR-0366)
 
 `SendJoinAnswer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
-`plan_send_join_answer` (event IDs and JSON sizes, from the room's own state entries and one walk of its auth DAG) after
+`plan_send_join_answer_cached` (event IDs and JSON sizes: a room-wide base, cached until the room's state changes, and
+what this one request changes, ADR-0624; never plan a whole answer per request under the lock, and a new writer of a
+current state row moves `database::room_state_revision`) after
 it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
 `send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
 its size as the frame), and only after the store copies the events out, once, with `collect_send_join_answer`. Never build
@@ -541,6 +546,13 @@ missing-history fetch and before the ordering is reserved; that one is the race-
 applies its event to the in-memory store before it releases the stripe. Keep nothing between that check and
 `prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
 itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
+
+## A join sent by another user is refused at receipt (ADR-0612)
+
+The auth rules allow a join for a room's creator citing only the create event, whatever its `sender`, and they must stay
+as the spec writes them. So every path that admits a remote event asks `events::join_names_another_user` after them:
+`ingest_pdu_event` and `verify_and_store_backfilled_event` store a match `rejected`, the membership acceptor answers 403, and
+`authorize_send_join_answer` drops it. A new path that admits a remote event calls it too.
 
 ## Recovering a PDU whose history is missing (A8)
 
@@ -644,8 +656,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `PUT /sendToDevice` names at most `ClientApiLimits::max_send_to_device_deliveries` (1000) local devices, a `*`
   counting one per device, and every message is at most `max_to_device_message_bytes`: over either is 413
   `M_TOO_LARGE` with nothing queued (ADR-0335, ADR-0336). The devices of the named users come from one pass over
-  `store.devices`; never scan the device table per entry. The database layer gathers a batch's recipient queues in
-  one pass (`index_to_device_recipients`) and never walks the queue per message.
+  `store.devices`; never scan the device table per entry. The database layer reads a batch's recipient users through
+  the per-user index (`index_to_device_recipients`, ADR-0618) and never walks the queue per message.
+- The invite handler asks `database::invite_is_over_store_caps` before it signs and again on the signed record, and answers
+  403 `M_FORBIDDEN` past the limits (ADR-0619). `knock_room` asks it before the exchange. What a knock keeps of the
+  resident's answer goes through `bounded_knock_room_state` before any signature check (ADR-0620).
 - A client transaction ID is part of an idempotency key with the request's device (`authenticated_request_device_id`),
   never the user alone, on `/send`, `/redact` and `/sendToDevice` (ADR-0380); an `eventType` or `txnId` over 255 bytes
   is `400 M_INVALID_PARAM` before the lookup (`client_txn_part_is_too_long`). Only the to-device `client_txn_ids`
@@ -716,6 +731,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
   another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
   the same question.
+- `recompute_current_state` removes a key the resolution does not hold, except a row whose event has no state group and
+  that no tip's state names (ADR-0615). `membership_changes` lists the membership rows it corrected: a caller applies each
+  with `apply_membership_to_roster`, after the event's own membership. Pass the event's stream ordering, so `/sync` sees a
+  corrected row.
 - `recompute_current_state` and `store_event_with_bookkeeping` reuse the room's last resolved state while its distinct
   state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
   skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.

@@ -473,10 +473,19 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     {
         return counts;
     }
-    for (auto const& ev : store.events.room_in_stream_order(room_id))
+    // Newest first, down to the marker or the start of the join, for at most the budget of rows (ADR-0617): nothing
+    // at or below that floor can be unread, and the room's history is never read.
+    auto const rows = store.events.room_in_stream_order(room_id);
+    auto const floor = std::ranges::upper_bound(rows, std::max(markers.unthreaded, *counted_after), {},
+                                                &database::PersistentEvent::stream_ordering);
+    auto examined = std::size_t{0U};
+    for (auto row = rows.end(); row > floor && examined < max_unread_rows_examined;)
     {
-        if (ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
-            ev.stream_ordering <= *counted_after || ev.sender_user_id == user)
+        --row;
+        ++examined;
+        auto const& ev = *row;
+        store.sync_unread_rows_examined.add(1U);
+        if (ev.status != "accepted" || ev.sender_user_id == user)
         {
             continue;
         }
@@ -646,39 +655,30 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
 
     // ── is_dm ───────────────────────────────────────────────────────────────
     // Check m.direct global account-data.
-    for (auto const& ad : store.account_data)
+    if (auto const direct = database::find_account_data_content(store, user, std::string_view{}, "m.direct");
+        direct.has_value())
     {
-        if (ad.user_id != user || !ad.room_id.empty() || ad.event_type != "m.direct")
-        {
-            continue;
-        }
         // Account data is never signed and may hold fractional numbers: general parser.
-        auto const parsed = canonicaljson::parse_json(ad.content_json);
-        if (parsed.error != canonicaljson::ParseError::none)
+        auto const parsed = canonicaljson::parse_json(*direct);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        if (root != nullptr)
         {
-            continue;
-        }
-        auto const* root = as_object(parsed.value);
-        if (root == nullptr)
-        {
-            continue;
-        }
-        for (auto const& member : *root)
-        {
-            auto const* arr = std::get_if<canonicaljson::Array>(&member.value->storage());
-            if (arr == nullptr)
+            for (auto const& member : *root)
             {
-                continue;
-            }
-            for (auto const& item : *arr)
-            {
-                if (auto const* s = as_string(item); s != nullptr && *s == room_id)
+                auto const* arr = std::get_if<canonicaljson::Array>(&member.value->storage());
+                if (arr == nullptr)
                 {
-                    resp.is_dm = true;
+                    continue;
+                }
+                for (auto const& item : *arr)
+                {
+                    if (auto const* s = as_string(item); s != nullptr && *s == room_id)
+                    {
+                        resp.is_dm = true;
+                    }
                 }
             }
         }
-        break;
     }
 
     // ── Counts ──────────────────────────────────────────────────────────────

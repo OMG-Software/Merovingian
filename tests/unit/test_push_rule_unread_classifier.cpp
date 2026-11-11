@@ -167,7 +167,7 @@ SCENARIO("The unread classifier decides each room by that room's own push-rule f
     }
 }
 
-SCENARIO("The unread classifier finds each room's join start from one walk of the events", "[push][r15]")
+SCENARIO("The unread classifier finds each room's join start without walking the events table", "[push][r15]")
 {
     GIVEN("alice joined two rooms, and left and rejoined the second")
     {
@@ -193,18 +193,16 @@ SCENARIO("The unread classifier finds each room's join start from one walk of th
         WHEN("each room's counting start is asked for")
         {
             auto const first = classifier.counted_after("!a:x");
-            auto const walks_for_one_room = classifier.table_walks();
             auto const second = classifier.counted_after("!b:x");
             auto const unknown = classifier.counted_after("!c:x");
 
-            THEN("they match current_join_start, and the later rooms walked no table")
+            THEN("they match current_join_start, and no room walked the table (ADR-0617)")
             {
                 REQUIRE(first == merovingian::homeserver::current_join_start(store, "!a:x", alice));
                 REQUIRE(first == std::optional<std::uint64_t>{1U});
                 REQUIRE(second == std::optional<std::uint64_t>{4U});
                 REQUIRE_FALSE(unknown.has_value());
-                REQUIRE(walks_for_one_room > 0U);
-                REQUIRE(classifier.table_walks() == walks_for_one_room);
+                REQUIRE(classifier.table_walks() == 0U);
             }
         }
     }

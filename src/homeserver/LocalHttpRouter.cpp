@@ -32,6 +32,7 @@
 #include "merovingian/events/EventId.hpp"
 #include "merovingian/events/EventSigner.hpp"
 #include "merovingian/events/Limits.hpp"
+#include "merovingian/events/MemberJoinSender.hpp"
 #include "merovingian/events/Redaction.hpp"
 #include "merovingian/events/UnsignedData.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
@@ -708,6 +709,26 @@ namespace
              joined_local_members(runtime.database, room_id, runtime.config.server().server_name))
         {
             dispatch_device_list_update(runtime, destination, local_member, stream_id);
+        }
+    }
+
+    // The roster follows the membership rows a recomputation corrected (ADR-0615), after the event's own membership,
+    // which a correction may overrule.
+    auto apply_recomputed_memberships(HomeserverRuntime& runtime, std::string_view room_id,
+                                      std::vector<database::MembershipProjection> const& changes) -> void
+    {
+        for (auto const& change : changes)
+        {
+            if (!apply_membership_to_roster(runtime, room_id, change.user_id, change.membership))
+            {
+                LOG_WARNING("Device-list change persistence failed after a membership followed state resolution; "
+                            "room_id=" +
+                            std::string{room_id} + " user_id=" + change.user_id);
+            }
+            if (change.membership == "join")
+            {
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id);
+            }
         }
     }
 
@@ -2496,20 +2517,37 @@ namespace
                     {
                         return {false, 400U, "unknown room version", {}, {}};
                     }
-                    // A read: the sender decides how often it runs (ADR-0365).
-                    auto const state_before_join =
-                        compute_state_before(store, room_id, *resent_policy, stored_event->prev_event_ids,
-                                             federation::state_read_resolution_limits());
-                    if (!state_before_join.ok)
+                    auto const answer_limits = send_join_answer_limits(rt->config);
+                    // A resend must not pay for what no answer can use (ADR-0624).
+                    if (send_join_answer_known_not_to_fit(*rt, room_id, envelope.omit_members, answer_limits))
                     {
-                        return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                        return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
                     }
-                    auto resent_plan =
-                        plan_send_join_answer(*rt, room_id, envelope.sender,
-                                              resent_send_join_state(store, room_id, envelope.sender, envelope.event_id,
-                                                                     state_before_join.state),
-                                              stored_event->auth_event_ids, envelope.omit_members);
-                    if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
+                    auto before_join = rt->send_join_plan_cache->membership_before(room_id, envelope.event_id);
+                    if (!before_join.has_value())
+                    {
+                        // A read: the sender decides how often it runs (ADR-0365). The answer is remembered, because
+                        // the state before a stored event never changes.
+                        auto const state_before_join =
+                            compute_state_before(store, room_id, *resent_policy, stored_event->prev_event_ids,
+                                                 federation::state_read_resolution_limits());
+                        if (!state_before_join.ok)
+                        {
+                            return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                        }
+                        auto const before_row = std::ranges::find_if(
+                            state_before_join.state,
+                            [&envelope](database::PersistentStateGroupStateEntry const& entry) {
+                                return entry.event_type == "m.room.member" && entry.state_key == envelope.sender;
+                            });
+                        before_join =
+                            before_row != state_before_join.state.end() ? before_row->event_id : std::string{};
+                        rt->send_join_plan_cache->remember_membership_before(room_id, envelope.event_id, *before_join);
+                    }
+                    auto resent_plan = plan_send_join_answer_cached(
+                        *rt, room_id, envelope.sender, SendJoinResend{envelope.event_id, *before_join},
+                        stored_event->auth_event_ids, envelope.omit_members, answer_limits);
+                    if (!send_join_answer_fits(resent_plan, answer_limits))
                     {
                         return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
                     }
@@ -2695,6 +2733,11 @@ namespace
                     outcome = MembershipReceiptOutcome::rejected;
                     outcome_reason = "auth_events selection is not permitted for this event";
                 }
+                if (outcome == MembershipReceiptOutcome::accepted && events::join_names_another_user(effective_pdu))
+                {
+                    outcome = MembershipReceiptOutcome::rejected; // ADR-0612
+                    outcome_reason = "a join must be sent by the user joining";
+                }
                 if (outcome == MembershipReceiptOutcome::accepted)
                 {
                     auto auth_events_map = build_auth_event_map_from_entries(
@@ -2808,10 +2851,11 @@ namespace
             auto answer_plan = SendJoinAnswerPlan{};
             if (endpoint == federation::FederationEndpoint::send_join)
             {
+                auto const answer_limits = send_join_answer_limits(rt->config);
                 answer_plan =
-                    plan_send_join_answer(*rt, room_id, envelope.sender, current_room_state_entries(store, room_id),
-                                          envelope.auth_event_ids, envelope.omit_members);
-                if (!send_join_answer_fits(answer_plan, send_join_answer_limits(rt->config)))
+                    plan_send_join_answer_cached(*rt, room_id, envelope.sender, std::nullopt, envelope.auth_event_ids,
+                                                 envelope.omit_members, answer_limits);
+                if (!send_join_answer_fits(answer_plan, answer_limits))
                 {
                     LOG_WARNING("send_join refused: the answer cannot be delivered; room_id=" + std::string{room_id} +
                                 " event_id=" + envelope.event_id +
@@ -2871,6 +2915,7 @@ namespace
             // treatment: the raw event is already durably stored, so a
             // bookkeeping failure here is logged, not turned into a
             // rejection (which would only cause pointless retries).
+            auto recomputed_memberships = std::vector<database::MembershipProjection>{};
             {
                 auto const event_type = state.has_value() ? state->event_type : std::string{};
                 auto const state_key =
@@ -2884,9 +2929,10 @@ namespace
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
-                else if (auto const recomputed = recompute_current_state(
+                else if (auto recomputed = recompute_current_state(
                              store, room_id, *room_policy,
-                             state_resolution_limits(rt->config.security().federation.state_resolution));
+                             state_resolution_limits(rt->config.security().federation.state_resolution),
+                             event_stream_ordering);
                          recomputed.status == CurrentStateRecomputeStatus::write_failed)
                 {
                     LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
@@ -2899,9 +2945,13 @@ namespace
                     LOG_WARNING("Current state left unresolved after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
+                else
+                {
+                    recomputed_memberships = std::move(recomputed.membership_changes);
+                }
             }
-            auto const membership_changed = !membership.empty();
-            if (membership_changed)
+            auto const membership_changed = !membership.empty() || !recomputed_memberships.empty();
+            if (!membership.empty())
             {
                 // The roster and the device-list changes this membership causes (a remote
                 // user's join or leave is `changed` or `left` for the local members).
@@ -2915,6 +2965,7 @@ namespace
                     broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
                 }
             }
+            apply_recomputed_memberships(*rt, room_id, recomputed_memberships);
             auto sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
             if (membership_changed)
             {
@@ -3112,15 +3163,31 @@ namespace
             // Never replace a ban with an invite, whatever the room state says:
             // only an explicit unban (a leave) lifts a ban. Belt and braces for
             // rooms we do not hold state for, where the check above cannot run.
+            auto const* const held_membership =
+                database::find_membership_row(rt->database.persistent_store, invite.room_id, *target_user);
+            if (held_membership != nullptr && held_membership->membership == "ban")
             {
-                auto const& mems = rt->database.persistent_store.memberships;
-                auto const banned = std::ranges::any_of(mems, [&](database::PersistentMembership const& m) {
-                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "ban";
-                });
-                if (banned)
-                {
-                    return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
-                }
+                return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
+            }
+            auto const already_joined = held_membership != nullptr && held_membership->membership == "join";
+            // ADR-0619: past the user's stored invite limits nothing is signed. Spec (PUT /v2/invite, 403 M_FORBIDDEN):
+            // "The sender is not allowed to send invites to the target user/homeserver". The check is repeated on the
+            // signed record below, which is the one the writer would store.
+            auto const invite_limit_refusal = federation::InviteAcceptResult{
+                false,
+                403U,
+                matrix_error("M_FORBIDDEN", "the invited user holds too many invites from other servers"),
+                {}};
+            auto limit_candidate = database::PersistentInvite{invite.room_id,
+                                                              *target_user,
+                                                              *sender,
+                                                              invite.event_id,
+                                                              invite.invite_event_json,
+                                                              invite.invite_room_state_json,
+                                                              0U};
+            if (!already_joined && database::invite_is_over_store_caps(rt->database.persistent_store, limit_candidate))
+            {
+                return invite_limit_refusal;
             }
             auto signed_event = sign_invite_event(*rt, parsed.value, signing_room_version);
             if (!signed_event.has_value())
@@ -3132,16 +3199,15 @@ namespace
             // invite event (to remain cooperative) but MUST NOT overwrite the local
             // "join" membership with "invite": doing so corrupts sync — the room
             // disappears from rooms.join and the user enters an infinite invite loop.
+            if (already_joined)
             {
-                auto const& mems = rt->database.persistent_store.memberships;
-                auto const it = std::ranges::find_if(mems, [&](database::PersistentMembership const& m) {
-                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "join";
-                });
-                if (it != mems.end())
-                {
-                    // User is already joined: return the signed event without altering state.
-                    return {true, 200U, {}, std::move(*signed_event)};
-                }
+                // User is already joined: return the signed event without altering state.
+                return {true, 200U, {}, std::move(*signed_event)};
+            }
+            limit_candidate.signed_event_json = *signed_event;
+            if (database::invite_is_over_store_caps(rt->database.persistent_store, limit_candidate))
+            {
+                return invite_limit_refusal;
             }
             // Reserve the sync position before anything commits. At its ceiling the allocator throws
             // (ADR-0315): the invite is then refused whole, and the worker waiting on this answer is
@@ -4299,6 +4365,11 @@ namespace
         {
             outcome = BackfillOutcome::rejected;
             outcome_reason = "auth_events selection is not permitted for this event";
+        }
+        if (outcome == BackfillOutcome::accepted && events::join_names_another_user(effective_pdu))
+        {
+            outcome = BackfillOutcome::rejected; // ADR-0612
+            outcome_reason = "a join must be sent by the user joining";
         }
         auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
@@ -5593,6 +5664,11 @@ namespace
         outcome = ReceiptOutcome::rejected;
         outcome_reason = "auth_events selection is not permitted for this event";
     }
+    if (outcome == ReceiptOutcome::accepted && events::join_names_another_user(effective_pdu))
+    {
+        outcome = ReceiptOutcome::rejected; // ADR-0612
+        outcome_reason = "a join must be sent by the user joining";
+    }
 
     if (outcome == ReceiptOutcome::accepted)
     {
@@ -5786,6 +5862,7 @@ namespace
     // "Soft failure": a soft-failed event "participate[s] in state
     // resolution as normal", so its after-state is the normally-computed
     // compute_state_after result, same as an accepted event.
+    auto recomputed_memberships = std::vector<database::MembershipProjection>{};
     {
         auto const state_after =
             outcome == ReceiptOutcome::rejected
@@ -5798,9 +5875,9 @@ namespace
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
-        else if (auto const recomputed = recompute_current_state(
+        else if (auto recomputed = recompute_current_state(
                      runtime.database.persistent_store, room_id, *room_policy,
-                     state_resolution_limits(runtime.config.security().federation.state_resolution));
+                     state_resolution_limits(runtime.config.security().federation.state_resolution), stream_ordering);
                  recomputed.status == CurrentStateRecomputeStatus::write_failed)
         {
             LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
@@ -5812,6 +5889,10 @@ namespace
             // the room's forward extremities until one can be resolved.
             LOG_WARNING("Current state left unresolved after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
+        }
+        else
+        {
+            recomputed_memberships = std::move(recomputed.membership_changes);
         }
     }
 
@@ -5847,6 +5928,12 @@ namespace
             result.accepted_sync_stream_id =
                 std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
         }
+    }
+    if (!recomputed_memberships.empty())
+    {
+        apply_recomputed_memberships(runtime, room_id, recomputed_memberships);
+        result.accepted_sync_stream_id =
+            std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
     }
 
     return result;
@@ -6437,7 +6524,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
-            return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed);
+            return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed,
+                             rate_limit_client_key(request, runtime.config.server()));
         }();
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {

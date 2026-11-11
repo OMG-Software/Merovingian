@@ -1089,6 +1089,16 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_to_device_bytes_per_user_device");
     }
+    if (current.server().client_api.max_to_device_messages_per_user !=
+        next.server().client_api.max_to_device_messages_per_user)
+    {
+        add_change(plan, "server.client_api.max_to_device_messages_per_user");
+    }
+    if (current.server().client_api.max_to_device_bytes_per_user !=
+        next.server().client_api.max_to_device_bytes_per_user)
+    {
+        add_change(plan, "server.client_api.max_to_device_bytes_per_user");
+    }
     if (current.server().client_api.max_one_time_keys_per_device !=
         next.server().client_api.max_one_time_keys_per_device)
     {
