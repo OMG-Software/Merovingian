@@ -14,7 +14,8 @@ unchanged. Documentation-only changes do not require a version bump
 version that follows.
 
 **Project phase is declared in `README.md` and `CHANGELOG.md`, never encoded in
-the version number** ([ADR-0047](adr/0047-keep-project-phase-out-of-the-version-string.md)).
+the version number** ([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md), which restates the rule
+of the superseded [ADR-0047](adr/0047-keep-project-phase-out-of-the-version-string.md)).
 
 The version is a plain string. There is no pre-release suffix, build metadata,
 or epoch. All three numbers are always present (e.g. `1.0.1`, never `1.0`).
