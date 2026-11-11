@@ -20,7 +20,9 @@ Chosen option: remove both from the decoder allowlist and keep `fstat`. A seccom
 and an absolute path is resolved whatever descriptor and flags are passed, so no argument filter makes the path forms
 safe: a filter that required `AT_EMPTY_PATH` and a descriptor below 3 would still admit `newfstatat(0, "/etc/shadow", ..,
 AT_EMPTY_PATH)`. The decoder reads and writes its pipes with `read` and `write` and never calls `fstat` itself, which a
-run of the hardened worker under this filter confirms (the `[thumbnail]` integration tests).
+run of the hardened worker under this filter confirms (the `[thumbnail]` integration tests). A build with `fstat` removed
+as well completed `--version` and those tests on glibc 2.39, so the worker makes no stat call once hardened. That is
+what makes glibc 2.33 to 2.38 safe, where `fstat()` itself is `newfstatat`.
 
 ### Negative Consequences
 
