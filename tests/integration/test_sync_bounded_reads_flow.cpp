@@ -174,7 +174,7 @@ SCENARIO("a /sync timeline reads the newest rows of the room, and stops at the l
                 THEN("no row of the room was read")
                 {
                     REQUIRE(quiet_examined == 0U);
-                    std::ignore = quiet;
+                    REQUIRE(string_member(quiet, "next_batch") != nullptr);
                 }
             }
 
