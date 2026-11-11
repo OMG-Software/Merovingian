@@ -1,3 +1,7 @@
+## 0.12.91
+
+Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
+
 ## 0.12.90
 
 Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.
