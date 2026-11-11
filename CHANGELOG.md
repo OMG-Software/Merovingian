@@ -2,6 +2,10 @@
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
 
+### Push rules: glob conditions on every key share the step budget (ADR-0607)
+
+An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
+
 ## 0.12.90
 
 Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.
