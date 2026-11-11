@@ -1136,7 +1136,7 @@ private:
         append({"edge", row.event_id, row.prev_event_id});
     for (auto const& row : store.event_auth)
         append({"auth", row.event_id, row.auth_event_id});
-    for (auto const& row : store.forward_extremities)
+    for (auto const& row : store.forward_extremities.rows())
         append({"extremity", row.room_id, row.event_id});
     append({"watermark", std::to_string(store.event_stream_watermark)});
     std::sort(rows.begin(), rows.end());

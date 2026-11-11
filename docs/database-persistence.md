@@ -591,6 +591,15 @@ value. Test fixtures that do not exercise persistence select it through
   trivially, so unit tests exercise the in-memory bookkeeping directly —
   see `tests/unit/test_state_groups.cpp`).
 
+  **Forward extremities and the resolved-state memo (ADR-0600, ADR-0602).**
+  `PersistentStore::forward_extremities` is a `ForwardExtremityTable`, which counts
+  each room's tips by the server of their sender. Hydration reads the tips before
+  the events are indexed, so `rebuild_forward_extremity_servers` charges them
+  afterwards. `PersistentStore::resolved_state_memo` is a `ResolvedStateMemo`,
+  in memory only and never persisted: the last resolved state of at most 256
+  rooms and 131072 rows, keyed by each room's sorted distinct state groups.
+  `set_event_status`, `replace_event_json` and `apply_room_snapshot` forget the room.
+
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
   (`StateGroupTable.hpp`, `StateGroupEntryTable.hpp`, `EventStateGroupTable.hpp`), which own the rows and keep hash indexes by

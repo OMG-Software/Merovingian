@@ -59,6 +59,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.federation.state_resolution.max_state_tips_per_server")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_state_tips_per_server))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.federation.state_resolution.max_events_per_state_group")
         {
             if (!parse_u32_value(value, security.federation.state_resolution.max_events_per_state_group))

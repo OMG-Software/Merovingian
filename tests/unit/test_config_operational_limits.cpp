@@ -24,6 +24,7 @@ SCENARIO("Operational limits can be tuned together and require a restart", "[con
                                        "security.federation.state_resolution.max_conflicted_state_keys=80000\n"
                                        "security.federation.state_resolution.max_mainline_auth_chain_depth=20000\n"
                                        "security.federation.state_resolution.max_auth_chain_walk_events=200000\n"
+                                       "security.federation.state_resolution.max_state_tips_per_server=64\n"
                                        "server.client_api.max_body_size=2MiB\n"
                                        "server.client_api.sliding_sync_max_timeline_limit=750\n"
                                        "server.http.sync_threads=192\n"
@@ -58,14 +59,15 @@ SCENARIO("Operational limits can be tuned together and require a restart", "[con
                 REQUIRE(parsed.config.security().federation.state_resolution.max_events_per_state_group == 100000U);
                 REQUIRE(parsed.config.security().federation.state_resolution.max_total_state_events == 250000U);
                 REQUIRE(parsed.config.security().federation.state_resolution.max_auth_chain_walk_events == 200000U);
+                REQUIRE(parsed.config.security().federation.state_resolution.max_state_tips_per_server == 64U);
                 REQUIRE(parsed.config.server().client_api.sliding_sync_max_timeline_limit == 750U);
                 REQUIRE(parsed.config.server().http.sync_threads == 192U);
                 REQUIRE(parsed.config.security().federation.backfill.max_state_ids == 100000U);
                 REQUIRE(parsed.config.security().federation.backfill.max_snapshot_outbound_calls == 512U);
                 REQUIRE(parsed.config.server().push.max_pushers_per_delivery == 32U);
-                REQUIRE(plan.changes().size() == 20U);
+                REQUIRE(plan.changes().size() == 21U);
                 REQUIRE(plan.reloadable_change_count() == 0U);
-                REQUIRE(plan.restart_required_change_count() == 20U);
+                REQUIRE(plan.restart_required_change_count() == 21U);
             }
         }
     }
@@ -86,6 +88,8 @@ SCENARIO("Operational limits reject disabled bounds, malformed sizes and excessi
             "security.federation.state_resolution.max_conflicted_state_keys=0\n",
             "security.federation.state_resolution.max_mainline_auth_chain_depth=100001\n",
             "security.federation.state_resolution.max_auth_chain_walk_events=524289\n",
+            "security.federation.state_resolution.max_state_tips_per_server=0\n",
+            "security.federation.state_resolution.max_state_tips_per_server=4097\n",
             "server.client_api.sliding_sync_max_timeline_limit=-1\n", "server.client_api.max_body_size=0MiB\n",
             "server.http.sync_threads=0\n", "server.http.max_header_count=0\n", "server.http.max_header_count=201\n",
             "server.http.max_header_bytes=65537\n", "server.http.max_start_line_bytes=8193\n",

@@ -2,6 +2,18 @@
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
 
+### One state resolution reads each auth chain once (ADR-0599)
+
+State resolution walked the auth chain of every state event from the beginning, again for every power event, and again for every event it put on the mainline, so a room whose many state events cite one deep chain cost their product with the runtime lock held. It now reads the graph once, works out the auth difference with a bit per state group, and remembers mainline positions. The results and the refusals are unchanged.
+
+### A message no longer resolves a room's state again (ADR-0600, ADR-0601)
+
+Every accepted PDU resolved all of a room's distinct forward-extremity states again, and parsed each stored event once per state group naming it. Each recomputation now parses an event once, and each room remembers its last resolved state by its sorted distinct state groups. A PDU that leaves those groups unchanged, such as a message, reuses the result and still applies it through the normal write path. The memo is in memory only, holds at most 256 rooms and 131072 rows, keeps only successes, and forgets a room when an event's JSON or status changes or the room is reloaded. Folding a change into the previous result was rejected, because state resolution is not associative.
+
+### One server can hold only its share of a room's forward extremities (ADR-0602)
+
+An accepted event that cites no current tip no longer becomes a tip once its sender's server holds `security.federation.state_resolution.max_state_tips_per_server` (default 32) of the room's tips. It is still stored, delivered and given its state group, but it writes no `current_state` row or membership. An event citing a current tip replaces it and is never refused, and a server is charged only for its own events, so an honest server's ban or demotion still reaches resolution. A message past the limit stays a tip only if it adds no distinct state. A `send_join`, `send_leave` or `send_knock` past the limit is answered 503 with nothing stored, and a retry through a fresh `make_join` succeeds.
+
 ## 0.12.90
 
 Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.
