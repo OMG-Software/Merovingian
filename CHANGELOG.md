@@ -1,3 +1,7 @@
+## 0.12.92
+
+Release-gate audit, medium findings
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
