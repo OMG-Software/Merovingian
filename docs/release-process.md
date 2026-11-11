@@ -168,7 +168,11 @@ sh scripts/check-release-readiness.sh
 ```
 
 Then run Complement against the candidate (see "Complement" below). It must be green
-before the tag is created.
+before the tag is created. The one exception is 1.0.0: the owner waived this
+requirement for that release only, because it was tagged without a green run
+and the release-gate security audit was its gate instead
+([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)). The
+waiver does not apply to any later release.
 
 After that, create and push the release tag. It must be exactly `v` followed
 by the version in `meson.build`, or the workflow refuses it:
@@ -183,6 +187,10 @@ The scheduled dependency-triage workflow keeps a separate vulnerability report
 artifact.
 
 ## Complement
+
+The 1.0.0 release was tagged without a Complement run and carries no Complement
+evidence ([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
+Every later release follows the steps below.
 
 The external Complement suite runs against the candidate's Debian trixie package before
 the tag, and its signed result is attached to the release afterwards (ADR-0233, ADR-0234,

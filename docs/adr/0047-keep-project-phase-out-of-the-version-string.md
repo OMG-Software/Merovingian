@@ -1,6 +1,6 @@
 # Keep project phase out of the version string
 
-* Status: accepted
+* Status: superseded by [ADR-0647](0647-versions-from-1-0-0-are-major-minor-build.md)
 * Date: 2026-09-06
 
 ## Context and Problem Statement
