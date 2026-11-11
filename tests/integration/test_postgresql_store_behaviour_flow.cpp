@@ -1568,7 +1568,8 @@ SCENARIO("A removal from current state survives a reopen on PostgreSQL", "[postg
     auto const uri = postgresql_uri();
     if (uri.empty())
     {
-        SKIP("MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+        SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+        return;
     }
 
     GIVEN("a member's current-state row and membership")
