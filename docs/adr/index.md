@@ -526,3 +526,7 @@
 * [0607 - Glob conditions on every key share the per-evaluation step budget](0607-glob-conditions-on-every-key-share-the-per-evaluation-step-budget.md)
 * [0608 - The badges of one event share one row and call budget](0608-the-badges-of-one-event-share-one-row-and-call-budget.md)
 * [0609 - Sliding sync decides a long-poll wake from the caller's own rooms](0609-sliding-sync-decides-a-long-poll-wake-from-the-callers-own-rooms.md)
+* [0603 - Key and EDU lookups go through position indexes, and an EDU is read only so far](0603-key-and-edu-lookups-go-through-position-indexes-and-an-edu-is-read-only-so-far.md)
+* [0604 - A federation key request is answered for local users only and is capped by entry count](0604-a-federation-key-request-is-answered-for-local-users-only-and-is-capped-by-entry-count.md)
+* [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
+* [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)

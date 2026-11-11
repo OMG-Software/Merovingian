@@ -10,6 +10,7 @@
 #include "merovingian/federation/RemoteKeyClaimKeys.hpp"
 #include "merovingian/federation/RemoteKeyQueryKeys.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -28,8 +29,23 @@ namespace merovingian::federation
 // `device_keys`, `master_keys`, and `self_signing_keys`, each with the key
 // owner's own uploaded signatures merged in (KeySignatures.hpp). Returns an
 // empty string when the request body is not canonical-parseable.
+//
+// The request is refused whole (an empty string) when it names more than `max_key_request_entries` users and
+// devices, and users of other servers are skipped before any table is read: a server answers for its own users
+// (`local_server_name`) only, and an entry costs a lookup, not a scan (ADR-0604).
 [[nodiscard]] auto build_device_keys_query_response(database::PersistentStore const& store,
-                                                    std::string_view request_body) -> std::string;
+                                                    std::string_view request_body, std::string_view local_server_name)
+    -> std::string;
+
+// The most entries one `/user/keys/query` or `/user/keys/claim` request may name, counting each user and each
+// device or algorithm entry under it. A federated server batches by room, so a real request names the users it
+// shares rooms with, a few thousand at most; the 1 MiB body limit already stops a request near 25000 entries
+// (ADR-0604). A request over it is answered 413 `M_TOO_LARGE`.
+inline constexpr auto max_key_request_entries = std::size_t{25000U};
+
+// True when the body's `section` object (`device_keys` for a query, `one_time_keys` for a claim) names more than
+// `max_key_request_entries` entries. False for a body that does not parse: the builders refuse that as malformed.
+[[nodiscard]] auto key_request_exceeds_entry_cap(std::string_view request_body, std::string_view section) -> bool;
 
 // Accepts `origin`'s `/user/keys/query` response to a query for
 // `requested_users` (all of which are on `origin`). Keeps only entries for
@@ -94,8 +110,11 @@ namespace merovingian::federation
 // and consumes the claimed one-time keys from the store. `request_body` is the
 // `{"one_time_keys": {"@user": {"device": "algorithm"}}}` request. Returns an
 // empty string when the request body is not canonical-parseable.
-[[nodiscard]] auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body)
-    -> std::string;
+//
+// Refused whole (an empty string) over `max_key_request_entries`; a user of another server is skipped before any
+// table is read (ADR-0604).
+[[nodiscard]] auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body,
+                                                      std::string_view local_server_name) -> std::string;
 
 // Builds the response body for `GET /_matrix/federation/v1/user/devices/{userId}`.
 // Device keys and cross-signing keys carry the owner's own uploaded

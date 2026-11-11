@@ -124,6 +124,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `accept_remote_key_claim_response()` (`KeyQuery.hpp`, ADR-0337). Merge uploaded key
    signatures only through `KeySignatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
+   Inbound `/user/keys/query` and `/user/keys/claim` answer for this server's users only, read keys through the
+   store indexes (ADR-0603) and are refused whole, with 413, past `max_key_request_entries` (ADR-0604): never loop a
+   key table per name in the request.
 
 7. **Every room-scoped federation read checks the origin is in the room.** `/state`,
    `/state_ids`, `/event`, `/backfill` and `/get_missing_events` pass the X-Matrix-authenticated

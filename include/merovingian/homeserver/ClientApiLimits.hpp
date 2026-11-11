@@ -54,6 +54,9 @@ struct ClientApiLimits final
     // GHSA-3p9g-gpvx-2cx9 (ADR-0594): fallback keys, so algorithms, held per (user, device).
     std::uint32_t max_fallback_keys_per_device{16U};
     std::uint32_t max_key_signatures_per_user{10000U};
+    // ADR-0606: key backup sessions held across all of a user's versions, and the versions themselves.
+    std::uint32_t max_key_backup_sessions_per_user{500000U};
+    std::uint32_t max_key_backup_versions_per_user{100U};
     std::uint32_t max_filters_per_user{1000U};
     // Security audit run-1 (ADR-0173): global account-data types per user.
     std::uint32_t max_global_account_data_per_user{1000U};

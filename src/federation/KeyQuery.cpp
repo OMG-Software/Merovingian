@@ -6,13 +6,13 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/federation/DeviceDisplayNames.hpp"
+#include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/federation/RemoteKeyClaimKeys.hpp"
 #include "merovingian/federation/RemoteKeyQueryKeys.hpp"
-#include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -21,8 +21,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -104,11 +106,6 @@ namespace
         return text != nullptr && *text == expected;
     }
 
-    [[nodiscard]] auto has_member(canonicaljson::Object const& object, std::string_view key) -> bool
-    {
-        return member_value(object, key) != nullptr;
-    }
-
     // A remote cross-signing key is acceptable when it describes the user it
     // is filed under, names its role in `usage`, and holds one public key.
     [[nodiscard]] auto remote_cross_signing_key_is_valid(canonicaljson::Object const& key, std::string_view user_id,
@@ -130,7 +127,7 @@ namespace
     // Returns how many entries were dropped.
     [[nodiscard]] auto accept_remote_cross_signing_keys(canonicaljson::Object const& root, std::string_view section,
                                                         std::string_view usage,
-                                                        std::vector<std::string> const& requested_users,
+                                                        std::set<std::string_view> const& requested_users,
                                                         canonicaljson::Object& accepted) -> std::size_t
     {
         auto const* keys = as_object(member_value(root, section));
@@ -139,18 +136,21 @@ namespace
             return 0U;
         }
         auto dropped = std::size_t{0U};
+        // Set lookups, not a search of `requested_users` and `accepted` per key: the answer's size is the
+        // remote server's to choose (ADR-0604).
+        auto seen = std::set<std::string_view>{};
         for (auto const& user_member : *keys)
         {
             auto const* key = user_member.value == nullptr
                                   ? nullptr
                                   : std::get_if<canonicaljson::Object>(&user_member.value->storage());
-            if (key == nullptr || std::ranges::find(requested_users, user_member.key) == requested_users.end() ||
-                has_member(accepted, user_member.key) ||
+            if (key == nullptr || !requested_users.contains(user_member.key) || seen.contains(user_member.key) ||
                 !remote_cross_signing_key_is_valid(*key, user_member.key, usage))
             {
                 ++dropped;
                 continue;
             }
+            seen.insert(user_member.key);
             accepted.push_back(user_member);
         }
         return dropped;
@@ -293,8 +293,55 @@ namespace
 
 } // namespace
 
-auto build_device_keys_query_response(database::PersistentStore const& store, std::string_view request_body)
-    -> std::string
+namespace
+{
+
+    // The number of entries a request's `section` object names: each user, plus each device ID (a query) or
+    // device (a claim) under it, and at least one for a user whose value is neither.
+    [[nodiscard]] auto key_request_entry_count(canonicaljson::Object const& section) -> std::size_t
+    {
+        auto count = std::size_t{0U};
+        for (auto const& user_member : section)
+        {
+            ++count;
+            if (user_member.value == nullptr)
+            {
+                continue;
+            }
+            if (auto const* list = std::get_if<canonicaljson::Array>(&user_member.value->storage()); list != nullptr)
+            {
+                count += list->size();
+            }
+            else if (auto const* devices = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+                     devices != nullptr)
+            {
+                count += devices->size();
+            }
+        }
+        return count;
+    }
+
+    // True when `user_id` is `localpart:server_name` for this server. A user of another server is skipped before
+    // any table is read.
+    [[nodiscard]] auto user_is_on_server(std::string_view user_id, std::string_view server_name) -> bool
+    {
+        auto const colon = user_id.find(':');
+        return user_id.starts_with('@') && colon != std::string_view::npos && colon > 1U &&
+               user_id.substr(colon + 1U) == server_name;
+    }
+
+} // namespace
+
+auto key_request_exceeds_entry_cap(std::string_view request_body, std::string_view section) -> bool
+{
+    auto const request = parsed_value(request_body);
+    auto const* root = request.has_value() ? std::get_if<canonicaljson::Object>(&request->storage()) : nullptr;
+    auto const* entries = root == nullptr ? nullptr : as_object(member_value(*root, section));
+    return entries != nullptr && key_request_entry_count(*entries) > max_key_request_entries;
+}
+
+auto build_device_keys_query_response(database::PersistentStore const& store, std::string_view request_body,
+                                      std::string_view local_server_name) -> std::string
 {
     auto request = parsed_value(request_body);
     if (!request.has_value())
@@ -321,16 +368,28 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
         return {};
     }
 
+    if (key_request_entry_count(*requested) > max_key_request_entries)
+    {
+        log_diagnostic("key_query.rejected", {
+                                                 {"reason", "request names too many entries", false}
+        });
+        return {};
+    }
+
     auto device_keys = canonicaljson::Object{};
     auto master_keys = canonicaljson::Object{};
     auto self_signing_keys = canonicaljson::Object{};
-    // The display names of every queried user's devices, read from the device table once.
+    // The display names of every queried local user's devices, read through the per-user device index. A user of
+    // another server is not this server's to answer for and costs no lookup.
     auto const display_names = [&] {
         auto queried_users = std::vector<std::string_view>{};
         queried_users.reserve(requested->size());
         for (auto const& user_member : *requested)
         {
-            queried_users.emplace_back(user_member.key);
+            if (user_is_on_server(user_member.key, local_server_name))
+            {
+                queried_users.emplace_back(user_member.key);
+            }
         }
         return DeviceDisplayNames{store, queried_users};
     }();
@@ -348,7 +407,7 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
 
         // The requested device-id filter; an empty array selects every
         // published device for the user.
-        auto wanted = std::vector<std::string>{};
+        auto wanted = std::set<std::string, std::less<>>{};
         for (auto const& entry : *list)
         {
             auto const* id = std::get_if<std::string>(&entry.storage());
@@ -360,29 +419,31 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
                 });
                 return {};
             }
-            wanted.push_back(*id);
+            wanted.insert(*id);
         }
 
-        auto user_devices = canonicaljson::Object{};
-        for (auto const& device_key : store.device_keys)
+        // Only this server's own users have anything to publish.
+        if (!user_is_on_server(user_member.key, local_server_name))
         {
-            if (device_key.user_id != user_member.key)
-            {
-                continue;
-            }
-            if (!wanted.empty() && std::ranges::find(wanted, device_key.device_id) == wanted.end())
-            {
-                continue;
-            }
-            // Published with the owner's self-signing signature: without it
-            // the remote user cannot tell the device is trusted by its owner.
-            auto published = published_device_keys(store, device_key, std::nullopt, display_names);
-            if (published.has_value())
-            {
-                user_devices.push_back(
-                    canonicaljson::make_member(device_key.device_id, canonicaljson::Value{std::move(*published)}));
-            }
+            continue;
         }
+        auto user_devices = canonicaljson::Object{};
+        database::for_each_user_device_key(
+            store, user_member.key, [&](database::PersistentDeviceKey const& device_key) {
+                if (!wanted.empty() && !wanted.contains(device_key.device_id))
+                {
+                    return true;
+                }
+                // Published with the owner's self-signing signature: without it
+                // the remote user cannot tell the device is trusted by its owner.
+                auto published = published_device_keys(store, device_key, std::nullopt, display_names);
+                if (published.has_value())
+                {
+                    user_devices.push_back(
+                        canonicaljson::make_member(device_key.device_id, canonicaljson::Value{std::move(*published)}));
+                }
+                return true;
+            });
         if (!user_devices.empty())
         {
             device_keys.push_back(
@@ -421,20 +482,23 @@ auto accept_remote_key_query_response(std::string_view origin, std::string_view 
 
     auto accepted = RemoteKeyQueryKeys{};
     auto dropped = std::size_t{0U};
+    auto const requested = std::set<std::string_view>{requested_users.begin(), requested_users.end()};
     if (auto const* device_keys = as_object(member_value(*root, "device_keys")); device_keys != nullptr)
     {
+        auto seen_users = std::set<std::string_view>{};
         for (auto const& user_member : *device_keys)
         {
             auto const* devices = user_member.value == nullptr
                                       ? nullptr
                                       : std::get_if<canonicaljson::Object>(&user_member.value->storage());
-            if (devices == nullptr || std::ranges::find(requested_users, user_member.key) == requested_users.end() ||
-                has_member(accepted.device_keys, user_member.key))
+            if (devices == nullptr || !requested.contains(user_member.key) || seen_users.contains(user_member.key))
             {
                 ++dropped;
                 continue;
             }
+            seen_users.insert(user_member.key);
             auto user_devices = canonicaljson::Object{};
+            auto seen_devices = std::set<std::string_view>{};
             for (auto const& device_member : *devices)
             {
                 auto const* device = device_member.value == nullptr
@@ -442,21 +506,22 @@ auto accept_remote_key_query_response(std::string_view origin, std::string_view 
                                          : std::get_if<canonicaljson::Object>(&device_member.value->storage());
                 // Spec: device_id and user_id "Must match" the device and
                 // user the keys belong to.
-                if (device == nullptr || has_member(user_devices, device_member.key) ||
+                if (device == nullptr || seen_devices.contains(device_member.key) ||
                     !string_member_equals(*device, "user_id", user_member.key) ||
                     !string_member_equals(*device, "device_id", device_member.key))
                 {
                     ++dropped;
                     continue;
                 }
+                seen_devices.insert(device_member.key);
                 user_devices.push_back(device_member);
             }
             accepted.device_keys.push_back(
                 canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_devices)}));
         }
     }
-    dropped += accept_remote_cross_signing_keys(*root, "master_keys", "master", requested_users, accepted.master_keys);
-    dropped += accept_remote_cross_signing_keys(*root, "self_signing_keys", "self_signing", requested_users,
+    dropped += accept_remote_cross_signing_keys(*root, "master_keys", "master", requested, accepted.master_keys);
+    dropped += accept_remote_cross_signing_keys(*root, "self_signing_keys", "self_signing", requested,
                                                 accepted.self_signing_keys);
     if (dropped > 0U)
     {
@@ -490,20 +555,28 @@ auto accept_remote_key_claim_response(std::string_view origin, std::string_view 
 
     auto accepted = RemoteKeyClaimKeys{};
     auto dropped = std::size_t{0U};
+    // The users and devices asked for, and the users already answered, as sets: the answer's size is the remote
+    // server's to choose, so nothing here searches a list per key (ADR-0604).
+    auto asked = std::map<std::string_view, std::set<std::string_view>>{};
+    for (auto const& [user, devices_asked] : requested)
+    {
+        asked[user].insert(devices_asked.begin(), devices_asked.end());
+    }
+    auto answered_users = std::set<std::string_view>{};
     for (auto const& user_member : *claimed)
     {
-        auto const wanted = std::ranges::find_if(requested, [&user_member](auto const& entry) {
-            return entry.first == user_member.key;
-        });
+        auto const wanted = asked.find(user_member.key);
         auto const* devices =
             user_member.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&user_member.value->storage());
         // A user that was not asked of this server, or is named twice, is not this server's to speak for.
-        if (wanted == requested.end() || devices == nullptr || has_member(accepted.one_time_keys, user_member.key))
+        if (wanted == asked.end() || devices == nullptr || answered_users.contains(user_member.key))
         {
             ++dropped;
             continue;
         }
+        answered_users.insert(user_member.key);
         auto user_devices = canonicaljson::Object{};
+        auto answered_devices = std::set<std::string_view>{};
         for (auto const& device_member : *devices)
         {
             auto const* keys = device_member.value == nullptr
@@ -516,12 +589,13 @@ auto accept_remote_key_claim_response(std::string_view origin, std::string_view 
                                                 (std::get_if<std::string>(&key.value->storage()) != nullptr ||
                                                  std::get_if<canonicaljson::Object>(&key.value->storage()) != nullptr);
                                      });
-            if (!well_formed || std::ranges::find(wanted->second, device_member.key) == wanted->second.end() ||
-                has_member(user_devices, device_member.key))
+            if (!well_formed || !wanted->second.contains(device_member.key) ||
+                answered_devices.contains(device_member.key))
             {
                 ++dropped;
                 continue;
             }
+            answered_devices.insert(device_member.key);
             user_devices.push_back(device_member);
         }
         if (!user_devices.empty())
@@ -575,13 +649,9 @@ auto build_device_list_update_content(database::PersistentStore const& store, st
 {
     auto const owner = std::array<std::string_view, 1U>{user_id};
     auto const display_names = DeviceDisplayNames{store, owner};
-    store.device_table_rows_examined.add(store.device_keys.size());
-    auto const device_key =
-        std::ranges::find_if(store.device_keys, [user_id, device_id](database::PersistentDeviceKey const& key) {
-            return key.user_id == user_id && key.device_id == device_id;
-        });
+    auto const device_key = database::find_device_key(store, user_id, device_id);
     return device_list_update_content(store, user_id, device_id, stream_id, display_names,
-                                      device_key == store.device_keys.end() ? nullptr : &*device_key);
+                                      device_key.has_value() ? &*device_key : nullptr);
 }
 
 auto build_device_list_update_batch(database::PersistentStore const& store, std::string_view user_id,
@@ -594,21 +664,15 @@ auto build_device_list_update_batch(database::PersistentStore const& store, std:
     auto const display_names = DeviceDisplayNames{store, owner};
     // ... and one index of this user's published keys. The first row for a device wins, as `find_if` did.
     auto keys_by_device = std::map<std::string_view, database::PersistentDeviceKey const*>{};
-    store.device_table_rows_examined.add(store.device_keys.size());
-    for (auto const& key : store.device_keys)
-    {
-        if (key.user_id == user_id)
-        {
-            keys_by_device.emplace(std::string_view{key.device_id}, &key);
-        }
-    }
+    database::for_each_user_device_key(store, user_id, [&](database::PersistentDeviceKey const& key) {
+        keys_by_device.emplace(std::string_view{key.device_id}, &key);
+        return true;
+    });
     // The devices themselves, in table order (the order the per-device loop announced them in).
-    store.device_table_rows_examined.add(store.devices.size());
-    for (auto const& device : store.devices)
-    {
-        if (device.user_id != user_id || (only_device.has_value() && device.device_id != *only_device))
+    database::for_each_user_device(store, user_id, [&](database::PersistentDevice const& device) {
+        if (only_device.has_value() && device.device_id != *only_device)
         {
-            continue;
+            return true;
         }
         auto const found = keys_by_device.find(std::string_view{device.device_id});
         auto const* const key = found == keys_by_device.end() ? nullptr : found->second;
@@ -617,7 +681,8 @@ auto build_device_list_update_batch(database::PersistentStore const& store, std:
         {
             batch.entries.push_back({device.device_id, std::move(*content), key != nullptr});
         }
-    }
+        return true;
+    });
     return batch;
 }
 
@@ -646,7 +711,8 @@ auto build_device_deleted_update_content(std::string_view user_id, std::string_v
     return serialized;
 }
 
-auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body) -> std::string
+auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body,
+                                        std::string_view local_server_name) -> std::string
 {
     auto request = parsed_value(request_body);
     if (!request.has_value())
@@ -673,6 +739,14 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
         return {};
     }
 
+    if (key_request_entry_count(*requested) > max_key_request_entries)
+    {
+        log_diagnostic("otk_claim.rejected", {
+                                                 {"reason", "request names too many entries", false}
+        });
+        return {};
+    }
+
     auto one_time_keys = canonicaljson::Object{};
     for (auto const& user_member : *requested)
     {
@@ -684,6 +758,11 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
                                                      {"user_id", user_member.key,                             false}
             });
             return {};
+        }
+        // A key is claimed from this server's own users only; another server's user costs no lookup.
+        if (!user_is_on_server(user_member.key, local_server_name))
+        {
+            continue;
         }
 
         auto user_object = canonicaljson::Object{};
@@ -754,22 +833,18 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
     auto devices = canonicaljson::Array{};
     auto const owner = std::array<std::string_view, 1U>{user_id};
     auto const display_names = DeviceDisplayNames{store, owner};
-    for (auto const& device_key : store.device_keys)
-    {
-        if (device_key.user_id != user_id)
-        {
-            continue;
-        }
+    database::for_each_user_device_key(store, user_id, [&](database::PersistentDeviceKey const& device_key) {
         auto keys = published_device_keys(store, device_key, std::nullopt, display_names);
         if (!keys.has_value())
         {
-            continue;
+            return true;
         }
         auto device = canonicaljson::Object{};
         device.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device_key.device_id}));
         device.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
         devices.push_back(canonicaljson::Value{std::move(device)});
-    }
+        return true;
+    });
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
     response.push_back(canonicaljson::make_member(

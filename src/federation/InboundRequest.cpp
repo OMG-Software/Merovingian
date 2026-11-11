@@ -7,18 +7,18 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/BoundedParallel.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
 #include "merovingian/crypto/Ed25519SecretKeyHandle.hpp"
 #include "merovingian/crypto/Ed25519Signature.hpp"
 #include "merovingian/crypto/SignatureResult.hpp"
 #include "merovingian/crypto/VerificationResult.hpp"
-#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/Event.hpp"
 #include "merovingian/events/EventId.hpp"
@@ -39,33 +39,34 @@
 #include "merovingian/federation/FederationSigningKey.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
 #include "merovingian/federation/FederationTransaction.hpp"
-#include "merovingian/federation/InboundSignatureVerification.hpp"
-#include "merovingian/federation/KeyResolutionBucket.hpp"
-#include "merovingian/federation/KeyResolutionFailure.hpp"
-#include "merovingian/federation/MembershipEventTemplate.hpp"
-#include "merovingian/federation/PublicRoomsRefusal.hpp"
-#include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/VerifiedFederationIdentity.hpp"
-#include "merovingian/federation/XMatrixCredentials.hpp"
 #include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundRequestProviders.hpp"
+#include "merovingian/federation/InboundSignatureVerification.hpp"
 #include "merovingian/federation/InviteRoomState.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
+#include "merovingian/federation/KeyResolutionBucket.hpp"
+#include "merovingian/federation/KeyResolutionFailure.hpp"
 #include "merovingian/federation/MembershipEndpoints.hpp"
+#include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/PublicRooms.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/Transactions.hpp"
+#include "merovingian/federation/VerificationKeyResolution.hpp"
+#include "merovingian/federation/VerifiedFederationIdentity.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
+#include "merovingian/federation/XMatrixCredentials.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/media/LocalMediaDownloadResult.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/rooms/EventIdFormat.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
@@ -1846,6 +1847,11 @@ namespace
         {
             return {501U, "query_keys not implemented"};
         }
+        // Refused before the provider reads any table: a request names a bounded number of entries (ADR-0604).
+        if (key_request_exceeds_entry_cap(request.body, "device_keys"))
+        {
+            return {413U, homeserver::matrix_error("M_TOO_LARGE", "user/keys/query names too many users and devices")};
+        }
         auto body = runtime.device_keys_query_provider(request.body);
         if (body.empty())
         {
@@ -1860,6 +1866,10 @@ namespace
         if (!runtime.one_time_keys_claim_provider)
         {
             return {501U, "claim_keys not implemented"};
+        }
+        if (key_request_exceeds_entry_cap(request.body, "one_time_keys"))
+        {
+            return {413U, homeserver::matrix_error("M_TOO_LARGE", "user/keys/claim names too many users and devices")};
         }
         auto body = runtime.one_time_keys_claim_provider(request.body);
         if (body.empty())

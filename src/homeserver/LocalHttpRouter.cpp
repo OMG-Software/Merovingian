@@ -1237,10 +1237,7 @@ namespace
     // this server has never heard of, not to re-derive visibility rules.
     [[nodiscard]] auto room_has_local_membership(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
-        auto const& memberships = runtime.database.persistent_store.memberships;
-        return std::ranges::any_of(memberships, [room_id](database::PersistentMembership const& membership) {
-            return membership.room_id == room_id;
-        });
+        return database::has_room_membership_row(runtime.database.persistent_store, room_id);
     }
 
     // FED-8: a receipt's subject user must be joined to the room. Receipts for
@@ -1251,10 +1248,9 @@ namespace
     [[nodiscard]] auto user_is_joined_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
                                               std::string_view user_id) -> bool
     {
-        auto const& memberships = runtime.database.persistent_store.memberships;
-        return std::ranges::any_of(memberships, [&](database::PersistentMembership const& membership) {
-            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
-        });
+        auto const* const membership =
+            database::find_membership_row(runtime.database.persistent_store, room_id, user_id);
+        return membership != nullptr && membership->membership == "join";
     }
 
     // FED-11: a remote-only, departed or banned membership row does not make
@@ -1393,10 +1389,8 @@ namespace
         {
             return false;
         }
-        return std::ranges::any_of(runtime.database.persistent_store.users,
-                                   [user_id](database::PersistentUser const& user) {
-                                       return user.user_id == user_id && !user.deactivated;
-                                   });
+        auto const* const user = database::find_user_row(runtime.database.persistent_store, user_id);
+        return user != nullptr && !user->deactivated;
     }
 
     // The registered devices of `user_id` that a to-device `device_key`
@@ -1407,13 +1401,14 @@ namespace
                                                   std::string_view device_key) -> std::vector<std::string>
     {
         auto devices = std::vector<std::string>{};
-        for (auto const& device : runtime.database.persistent_store.devices)
-        {
-            if (device.user_id == user_id && (device_key == "*" || device.device_id == device_key))
-            {
-                devices.push_back(device.device_id);
-            }
-        }
+        database::for_each_user_device(runtime.database.persistent_store, user_id,
+                                       [&](database::PersistentDevice const& device) {
+                                           if (device_key == "*" || device.device_id == device_key)
+                                           {
+                                               devices.push_back(device.device_id);
+                                           }
+                                           return true;
+                                       });
         return devices;
     }
 
@@ -1531,8 +1526,18 @@ namespace
         // Build every message first. Nothing is stored (and so nothing can be
         // left half stored) until the whole EDU has been validated and capped.
         auto pending = std::vector<database::PersistentToDeviceMessage>{};
+        auto users_looked_at = std::size_t{0U};
+        auto device_keys_looked_at = std::size_t{0U};
         for (auto const& user_entry : *messages)
         {
+            // A peer chooses how many users and devices the EDU names; only so many are looked up (ADR-0603).
+            if (users_looked_at == max_inbound_direct_to_device_users ||
+                device_keys_looked_at >= max_inbound_direct_to_device_device_keys)
+            {
+                result.truncated = true;
+                break;
+            }
+            ++users_looked_at;
             auto const* device_map = std::get_if<canonicaljson::Object>(&user_entry.value->storage());
             if (device_map == nullptr)
             {
@@ -1549,6 +1554,12 @@ namespace
                 {
                     continue;
                 }
+                if (device_keys_looked_at == max_inbound_direct_to_device_device_keys)
+                {
+                    result.truncated = true;
+                    break;
+                }
+                ++device_keys_looked_at;
                 auto const devices = addressed_devices_for_user(runtime, user_entry.key, device_entry.key);
                 if (devices.empty())
                 {
@@ -1895,8 +1906,19 @@ namespace
                 {
                     return {federation::EduDispositionStatus::rejected_invalid, "receipt content must be an object"};
                 }
+                auto rooms_looked_at = std::size_t{0U};
+                auto users_looked_at = std::size_t{0U};
+                auto receipt_budget_spent = false;
                 for (auto const& room_member : *root)
                 {
+                    // A peer chooses how many rooms and users the EDU names; only so many are looked at, and the
+                    // rest dropped, as m.presence does (ADR-0603).
+                    if (receipt_budget_spent || rooms_looked_at == max_inbound_receipt_rooms_per_edu)
+                    {
+                        receipt_budget_spent = true;
+                        break;
+                    }
+                    ++rooms_looked_at;
                     // 0.12.5 audit, finding 13: skip rooms this server holds no
                     // membership in. Skipping rather than rejecting the whole
                     // EDU: a receipt transaction legitimately batches several
@@ -1935,6 +1957,12 @@ namespace
                         }
                         for (auto const& user_member : *users)
                         {
+                            if (users_looked_at == max_inbound_receipt_users_per_edu)
+                            {
+                                receipt_budget_spent = true;
+                                break;
+                            }
+                            ++users_looked_at;
                             // FED-8: the receipt subject must be a joined member
                             // of this room. Invited, knocked, left or banned users
                             // cannot legitimately update read receipts, so this
@@ -2044,6 +2072,16 @@ namespace
                             }
                         }
                     }
+                }
+                if (receipt_budget_spent)
+                {
+                    log_diagnostic("federation.edu.receipt.truncated",
+                                   {
+                                       {"origin", envelope.origin,                                   false},
+                                       {"rooms",  std::to_string(max_inbound_receipt_rooms_per_edu), false},
+                                       {"users",  std::to_string(max_inbound_receipt_users_per_edu), false}
+                    },
+                                   observability::LogEventSeverity::warning);
                 }
                 if (rt->sync_notifier != nullptr)
                 {
@@ -3233,11 +3271,13 @@ namespace
         };
 
         runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {
-            return federation::build_device_keys_query_response(rt->database.persistent_store, body);
+            return federation::build_device_keys_query_response(rt->database.persistent_store, body,
+                                                                rt->config.server().server_name);
         };
 
         runtime.federation.one_time_keys_claim_provider = [rt](std::string_view body) -> std::string {
-            return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body);
+            return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body,
+                                                                  rt->config.server().server_name);
         };
 
         runtime.federation.user_devices_provider = [rt](std::string_view user_id) -> std::string {

@@ -742,6 +742,11 @@ server.client_api.max_one_time_keys_per_device=1000
 # bounds the algorithms; replacing a held algorithm's key always succeeds. Range 1..1024.
 server.client_api.max_fallback_keys_per_device=16
 server.client_api.max_key_signatures_per_user=10000
+# Backed-up room-key sessions one user may hold across all their backup versions (ADR-0606). A PUT counts only the
+# sessions it would add, so replacing a held one always succeeds; real backups reach six figures. Range 1..100000000.
+server.client_api.max_key_backup_sessions_per_user=500000
+# Backup versions one user may hold; deleting a version makes room. Range 1..10000.
+server.client_api.max_key_backup_versions_per_user=100
 server.client_api.max_filters_per_user=1000
 server.client_api.max_global_account_data_per_user=1000
 server.client_api.max_room_account_data_per_room=100

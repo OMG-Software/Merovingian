@@ -146,24 +146,18 @@ auto cross_signing_key_ids(canonicaljson::Object const& key_object) -> std::vect
 auto device_id_names_cross_signing_key(database::PersistentStore const& store, std::string_view user_id,
                                        std::string_view device_id) -> bool
 {
-    for (auto const& key : store.cross_signing_keys)
-    {
-        if (key.user_id != user_id)
-        {
-            continue;
-        }
+    auto named = false;
+    database::for_each_user_cross_signing_key(store, user_id, [&](database::PersistentCrossSigningKey const& key) {
         auto const object = parsed_object(key.json);
         if (!object.has_value())
         {
-            continue;
-        }
-        auto const ids = cross_signing_key_ids(*object);
-        if (std::ranges::find(ids, device_id) != ids.end())
-        {
             return true;
         }
-    }
-    return false;
+        auto const ids = cross_signing_key_ids(*object);
+        named = std::ranges::find(ids, device_id) != ids.end();
+        return !named;
+    });
+    return named;
 }
 
 auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::PersistentStore const& store,
@@ -243,24 +237,25 @@ auto published_cross_signing_key(database::PersistentStore const& store, std::st
                                  std::string_view key_type, std::optional<std::string_view> viewer_user_id)
     -> std::optional<canonicaljson::Object>
 {
-    for (auto const& key : store.cross_signing_keys)
-    {
-        if (key.user_id != user_id || key.key_type != key_type)
+    auto result = std::optional<canonicaljson::Object>{};
+    database::for_each_user_cross_signing_key(store, user_id, [&](database::PersistentCrossSigningKey const& key) {
+        if (key.key_type != key_type)
         {
-            continue;
+            return true;
         }
         auto object = parsed_object(key.json);
         if (!object.has_value())
         {
-            return std::nullopt;
+            return false;
         }
         if (auto const key_id = cross_signing_key_id(*object); key_id.has_value())
         {
             merge_visible_key_signatures(*object, store, user_id, *key_id, viewer_user_id);
         }
-        return object;
-    }
-    return std::nullopt;
+        result = std::move(object);
+        return false;
+    });
+    return result;
 }
 
 } // namespace merovingian::federation

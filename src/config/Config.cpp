@@ -1056,6 +1056,10 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    config.server().client_api.max_fallback_keys_per_device, 1024U);
     validate_count("server.client_api.max_key_signatures_per_user",
                    config.server().client_api.max_key_signatures_per_user, 1000000U);
+    validate_count("server.client_api.max_key_backup_sessions_per_user",
+                   config.server().client_api.max_key_backup_sessions_per_user, 100000000U);
+    validate_count("server.client_api.max_key_backup_versions_per_user",
+                   config.server().client_api.max_key_backup_versions_per_user, 10000U);
     validate_count("server.client_api.max_filters_per_user", config.server().client_api.max_filters_per_user, 100000U);
     validate_count("server.client_api.max_global_account_data_per_user",
                    config.server().client_api.max_global_account_data_per_user, 100000U);
