@@ -4590,8 +4590,9 @@ namespace
 
 namespace
 {
-    // ADR-0630: whether a resident's snapshot may speak for a user of this server. It may when this server holds no
-    // row for the user in the room (nothing to contradict), or when the claimed event is the one held as current.
+    // ADR-0630: whether a resident's snapshot may replay this server's own event about one of its users. It may when
+    // this server holds no row for the user in the room (nothing to contradict), or when the event is the one held as
+    // current.
     // Otherwise this server's own record stands; `held_event_id` is the event it holds as current for the user.
     struct LocalMemberClaim final
     {
@@ -4759,11 +4760,13 @@ namespace
                 pe.status = "outlier";
                 auto candidate = SnapshotCandidate{};
                 candidate.state = std::move(state);
-                // ADR-0630: a claim about a user of this server is judged against this server's own record. A
-                // refused one is kept as an outlier like any event, writes no current_state row and no membership,
-                // and the state group takes this server's event for the key.
+                // ADR-0630: an event this server authored about one of its users is judged against this server's own
+                // record. A refused one is kept as an outlier like any event, writes no current_state row and no
+                // membership, and the state group takes this server's event for the key. A remote sender's event (a
+                // ban issued while this server was out of the room) can only be learned from the snapshot.
                 if (candidate.state.has_value() && parsed.event.event_type == "m.room.member" &&
-                    auth::user_id_server_name(candidate.state->state_key) == runtime.config.server().server_name)
+                    auth::user_id_server_name(candidate.state->state_key) == runtime.config.server().server_name &&
+                    auth::user_id_server_name(parsed.event.sender) == runtime.config.server().server_name)
                 {
                     auto verdict = judge_local_member_claim(runtime.database.persistent_store, room_id,
                                                             candidate.state->state_key, event_id);

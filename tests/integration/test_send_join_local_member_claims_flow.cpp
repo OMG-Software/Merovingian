@@ -207,3 +207,50 @@ SCENARIO("A resident's send_join snapshot does not move a local user's membershi
         std::filesystem::remove(path);
     }
 }
+
+// Only this server's own events can be judged against its own record. What a remote administrator did to a local user
+// while this server was out of the room arrives only in the snapshot, and refusing it would let a banned user back in.
+SCENARIO("A resident's send_join snapshot carries what a remote user did to a local user",
+         "[gate-l][send_join][membership][state_group]")
+{
+    GIVEN("a room zed left, and a snapshot in which a remote administrator has since banned zed")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto const room_id = std::string{"!snap-ban:local.example.org"};
+        {
+            auto started = homeserver::start_runtime(config_with_sqlite(path));
+            REQUIRE(started.started);
+            auto& runtime = started.runtime;
+            auto& store = runtime.database.persistent_store;
+            auto const* policy = rooms::find_room_version_policy("10");
+            REQUIRE(policy != nullptr);
+            auto const genesis = seed_room_genesis(runtime, room_id, admin);
+            auto const auth = std::vector<std::string>{genesis.create_id, genesis.pl_id, genesis.join_rules_id};
+
+            auto const zed_leave_id = room_id + ":zed-leave";
+            seed_member(runtime, room_id, zed_leave_id, zed, zed, "leave", {genesis.join_rules_id}, auth, 4);
+            database::rebuild_membership_index(store);
+
+            auto const ban_json = build_event_json(room_id, "m.room.member", zed, carol, member_content("ban"),
+                                                   {genesis.create_id}, {genesis.create_id}, 5, 7);
+            auto const ban_id = event_id_of(ban_json, *policy);
+
+            WHEN("the snapshot is ingested")
+            {
+                auto const ingested =
+                    homeserver::ingest_send_join_state(runtime, room_id, parsed_array({ban_json}), *policy);
+
+                THEN("the ban is current state and is in the snapshot's state group")
+                {
+                    REQUIRE(database::find_current_state_event_id(store, room_id, "m.room.member", zed) == ban_id);
+                    REQUIRE(std::ranges::any_of(ingested.state_entries, [&](auto const& entry) {
+                        return entry.event_type == "m.room.member" && entry.state_key == zed &&
+                               entry.event_id == ban_id;
+                    }));
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
