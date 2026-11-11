@@ -125,6 +125,20 @@ constexpr auto max_receipt_thread_id_bytes = std::size_t{255U};
 // without bound. A "*" device counts as one delivery.
 constexpr auto max_inbound_direct_to_device_deliveries = std::size_t{1000U};
 
+// What one inbound m.receipt EDU may make this server look at (ADR-0603). A peer chooses the keys of the EDU's
+// objects, and each one costs a lookup and, for a joined member, a write under runtime.mutex, so the EDU is read
+// only this far, the rest dropped and logged, as m.presence does with max_inbound_presence_entries. The limits
+// are generous for real traffic (an EDU names the rooms whose read position moved) and local policy, not
+// protocol limits.
+constexpr auto max_inbound_receipt_rooms_per_edu = std::size_t{512U};
+constexpr auto max_inbound_receipt_users_per_edu = std::size_t{256U};
+
+// What one inbound m.direct_to_device EDU may make this server look at (ADR-0603): the users named under
+// `messages`, and the device keys named under all of them. Each is an index lookup; the limits bound the lookups,
+// and max_inbound_direct_to_device_deliveries still bounds what is stored.
+constexpr auto max_inbound_direct_to_device_users = std::size_t{1024U};
+constexpr auto max_inbound_direct_to_device_device_keys = std::size_t{4096U};
+
 // Typing expiry (conformance audit R13, ADR-0199). Spec (PUT /rooms/{roomId}/typing/{userId}):
 // "the user is typing for the next N milliseconds where N is the value specified in the timeout
 // key". A request without a timeout gets the default; a longer one is cut to the ceiling, so no

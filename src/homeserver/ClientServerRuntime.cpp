@@ -7988,45 +7988,28 @@ namespace
                                                    std::optional<std::string_view> version = std::nullopt)
         -> database::PersistentKeyBackupVersion const*
     {
+        // Through the per-user version index (ADR-0606): the user's own versions, not every version held.
         if (version.has_value())
         {
-            auto const found = std::ranges::find_if(
-                store.key_backup_versions, [user_id, version](database::PersistentKeyBackupVersion const& candidate) {
-                    return candidate.user_id == user_id && candidate.version == *version;
-                });
-            return found == store.key_backup_versions.end() ? nullptr : &*found;
+            return database::find_key_backup_version(store, user_id, *version);
         }
-
-        for (auto it = store.key_backup_versions.rbegin(); it != store.key_backup_versions.rend(); ++it)
-        {
-            if (it->user_id == user_id)
-            {
-                return &*it;
-            }
-        }
-        return nullptr;
+        return database::latest_key_backup_version(store, user_id);
     }
 
     [[nodiscard]] auto key_backup_session_count(database::PersistentStore const& store, std::string_view user_id,
                                                 std::string_view version) -> std::int64_t
     {
-        return static_cast<std::int64_t>(std::ranges::count_if(
-            store.key_backup_sessions, [user_id, version](database::PersistentKeyBackupSession const& session) {
-                return session.user_id == user_id && session.version == version;
-            }));
+        return static_cast<std::int64_t>(database::count_key_backup_sessions(store, user_id, version));
     }
 
     [[nodiscard]] auto key_backup_etag(database::PersistentStore const& store, std::string_view user_id,
                                        std::string_view version) -> std::string
     {
         auto sessions = std::vector<database::PersistentKeyBackupSession const*>{};
-        for (auto const& session : store.key_backup_sessions)
-        {
-            if (session.user_id == user_id && session.version == version)
-            {
-                sessions.push_back(&session);
-            }
-        }
+        database::for_each_key_backup_session(store, user_id, version,
+                                              [&sessions](database::PersistentKeyBackupSession const& session) {
+                                                  sessions.push_back(&session);
+                                              });
         std::ranges::sort(sessions, [](database::PersistentKeyBackupSession const* lhs,
                                        database::PersistentKeyBackupSession const* rhs) {
             return std::tie(lhs->room_id, lhs->session_id, lhs->json) <
@@ -10208,12 +10191,9 @@ namespace
     [[nodiscard]] auto key_backup_session_is_kept(database::PersistentStore const& store,
                                                   database::PersistentKeyBackupSession const& session) -> bool
     {
-        auto const held =
-            std::ranges::find_if(store.key_backup_sessions, [&session](database::PersistentKeyBackupSession const& s) {
-                return s.user_id == session.user_id && s.version == session.version && s.room_id == session.room_id &&
-                       s.session_id == session.session_id;
-            });
-        return held != store.key_backup_sessions.end() && !key_backup_offer_replaces(held->json, session.json);
+        auto const* const held = database::find_key_backup_session(store, session.user_id, session.version,
+                                                                   session.room_id, session.session_id);
+        return held != nullptr && !key_backup_offer_replaces(held->json, session.json);
     }
 
     [[nodiscard]] auto store_key_backup_session_by_rules(database::PersistentStore& store,
@@ -12941,15 +12921,12 @@ namespace
             return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
         }
 
-        auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
         auto room_map = std::map<std::string, canonicaljson::Object>{};
-        for (auto const& s : all_sessions)
-        {
-            if (s.user_id == user && s.version == batch_ver)
-            {
-                room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
-            }
-        }
+        database::for_each_key_backup_session(rt.homeserver.database.persistent_store, user, batch_ver,
+                                              [&room_map](database::PersistentKeyBackupSession const& s) {
+                                                  room_map[s.room_id].push_back(
+                                                      json_member(s.session_id, json_embed_raw(s.json)));
+                                              });
         auto rooms = canonicaljson::Object{};
         for (auto& [room_id, sess_obj] : room_map)
         {
@@ -12984,29 +12961,26 @@ namespace
         {
             if (!path->session_id.has_value())
             {
-                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
                 auto sessions_obj = canonicaljson::Object{};
-                for (auto const& s : all_sessions)
-                {
-                    if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
-                    {
-                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                    }
-                }
+                database::for_each_key_backup_session(rt.homeserver.database.persistent_store, user, get_ver,
+                                                      [&](database::PersistentKeyBackupSession const& s) {
+                                                          if (s.room_id == path->room_id)
+                                                          {
+                                                              sessions_obj.push_back(
+                                                                  json_member(s.session_id, json_embed_raw(s.json)));
+                                                          }
+                                                      });
                 return resp(200U,
                             json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
             }
 
-            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
-                       s.session_id == *path->session_id;
-            });
-            if (it == sessions.end())
+            auto const* const found = database::find_key_backup_session(rt.homeserver.database.persistent_store, user,
+                                                                        get_ver, path->room_id, *path->session_id);
+            if (found == nullptr)
             {
                 return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
             }
-            return resp(200U, it->json);
+            return resp(200U, found->json);
         }
         auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
         auto const suffix = route_suffix(req.target, kbprefix);
@@ -13017,28 +12991,26 @@ namespace
         {
             // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
             auto const room_id = clean;
-            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
             auto sessions_obj = canonicaljson::Object{};
-            for (auto const& s : all_sessions)
-            {
-                if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
-                {
-                    sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
-                }
-            }
+            database::for_each_key_backup_session(rt.homeserver.database.persistent_store, user, get_ver,
+                                                  [&](database::PersistentKeyBackupSession const& s) {
+                                                      if (s.room_id == room_id)
+                                                      {
+                                                          sessions_obj.push_back(
+                                                              json_member(s.session_id, json_embed_raw(s.json)));
+                                                      }
+                                                  });
             return resp(200U, json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
         }
         auto const room_id = clean.substr(0U, separator);
         auto const session_id = clean.substr(separator + 1U);
-        auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
-        auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-            return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
-        });
-        if (it == sessions.end())
+        auto const* const found = database::find_key_backup_session(rt.homeserver.database.persistent_store, user,
+                                                                    get_ver, room_id, session_id);
+        if (found == nullptr)
         {
             return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
         }
-        return resp(200U, it->json);
+        return resp(200U, found->json);
     }
 
     // POST /_matrix/client/v3/keys/device_signing/upload: password-authenticated upload of the cross-signing keys.
@@ -13185,6 +13157,80 @@ namespace
         return resp(200U, "{}");
     }
 
+    // ADR-0606: true when a PUT of sessions would leave the user holding more than
+    // `max_key_backup_sessions_per_user`. Counts only the sessions the request would ADD: one already held in this
+    // version is replaced (or kept) in place, so re-uploading a backup is never refused. Each offered session costs
+    // one index lookup, and nothing has been written when this answers. A body that does not parse is left for the
+    // store step to refuse.
+    [[nodiscard]] auto key_backup_put_exceeds_cap(ClientServerRuntime const& rt, auth::KeyApiEndpoint endpoint,
+                                                  std::string_view user, std::string_view version,
+                                                  LocalHttpRequest const& req) -> bool
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto added = std::size_t{0U};
+        auto offered = std::set<std::pair<std::string, std::string>>{};
+        auto const count_room = [&](std::string const& room_id, canonicaljson::Object const& sessions) {
+            for (auto const& session : sessions)
+            {
+                if (database::find_key_backup_session(store, user, version, room_id, session.key) == nullptr &&
+                    offered.emplace(room_id, session.key).second)
+                {
+                    ++added;
+                }
+            }
+        };
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::put_room_key_backup: {
+            auto const path = room_key_backup_path_parts(req.target);
+            if (!path.has_value() || !path->session_id.has_value())
+            {
+                return false;
+            }
+            if (database::find_key_backup_session(store, user, version, path->room_id, *path->session_id) == nullptr)
+            {
+                added = 1U;
+            }
+            break;
+        }
+        case auth::KeyApiEndpoint::put_room_key_backup_room: {
+            auto const path = room_key_backup_path_parts(req.target);
+            auto const body = parsed_json_object(req.body);
+            auto const* sessions = body.has_value() ? object_member_as_object(*body, "sessions") : nullptr;
+            if (!path.has_value() || sessions == nullptr)
+            {
+                return false;
+            }
+            count_room(path->room_id, *sessions);
+            break;
+        }
+        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
+            auto const body = parsed_json_object(req.body);
+            auto const* rooms = body.has_value() ? object_member_as_object(*body, "rooms") : nullptr;
+            if (rooms == nullptr)
+            {
+                return false;
+            }
+            for (auto const& room : *rooms)
+            {
+                auto const* room_object =
+                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+                auto const* sessions =
+                    room_object == nullptr ? nullptr : object_member_as_object(*room_object, "sessions");
+                if (sessions != nullptr)
+                {
+                    count_room(room.key, *sessions);
+                }
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+        return added != 0U && database::count_user_key_backup_sessions(store, user) + added >
+                                  rt.limits.max_key_backup_sessions_per_user;
+    }
+
     // PUT and DELETE under /_matrix/client/v3/room_keys/keys: stores or deletes backed-up sessions in the current
     // version.
     [[nodiscard]] auto handle_room_key_backup_session_change(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
@@ -13216,6 +13262,12 @@ namespace
         if (current_version == nullptr || current_version->version != session_ver)
         {
             return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
+        }
+        if (key_backup_put_exceeds_cap(rt, route.endpoint, user, session_ver, req))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "a user may hold at most " + std::to_string(rt.limits.max_key_backup_sessions_per_user) +
+                           " key backup sessions");
         }
         if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
         {
@@ -13344,6 +13396,14 @@ namespace
                 return resp(200U, key_api_success_body(route.endpoint));
             }
         case auth::KeyApiEndpoint::create_key_backup_version: {
+            // ADR-0606: refused before anything is written.
+            if (database::count_key_backup_versions(rt.homeserver.database.persistent_store, user) >=
+                rt.limits.max_key_backup_versions_per_user)
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "a user may hold at most " + std::to_string(rt.limits.max_key_backup_versions_per_user) +
+                               " key backup versions");
+            }
             // A number is never issued twice to a user, even after its version was deleted (F-60, ADR-0384).
             auto const new_ver =
                 database::create_key_backup_version(rt.homeserver.database.persistent_store, user, req.body);
@@ -13787,6 +13847,8 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
     rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
     rt.limits.max_fallback_keys_per_device = client_api.max_fallback_keys_per_device;
+    rt.limits.max_key_backup_sessions_per_user = client_api.max_key_backup_sessions_per_user;
+    rt.limits.max_key_backup_versions_per_user = client_api.max_key_backup_versions_per_user;
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;

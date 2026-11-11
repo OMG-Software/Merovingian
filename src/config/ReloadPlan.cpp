@@ -1098,6 +1098,16 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_key_signatures_per_user");
     }
+    if (current.server().client_api.max_key_backup_sessions_per_user !=
+        next.server().client_api.max_key_backup_sessions_per_user)
+    {
+        add_change(plan, "server.client_api.max_key_backup_sessions_per_user");
+    }
+    if (current.server().client_api.max_key_backup_versions_per_user !=
+        next.server().client_api.max_key_backup_versions_per_user)
+    {
+        add_change(plan, "server.client_api.max_key_backup_versions_per_user");
+    }
     // Per-user stored data caps: filters, push rules and account data.
     if (current.server().client_api.max_filters_per_user != next.server().client_api.max_filters_per_user)
     {

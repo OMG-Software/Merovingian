@@ -58,6 +58,11 @@ struct ClientApiConfig final
     //     GHSA-3p9g-gpvx-2cx9, ADR-0594.
     //   - max_key_signatures_per_user: cross-signing signatures a user has
     //     uploaded, counted per (target user, target key).
+    //   - max_key_backup_sessions_per_user: backed-up room-key sessions a user
+    //     holds across all their backup versions; a PUT counts only the
+    //     sessions it would add, so replacing a held session is always
+    //     allowed. ADR-0606.
+    //   - max_key_backup_versions_per_user: backup versions a user holds.
     //   - max_filters_per_user: stored sync filters per user.
     //   - max_global_account_data_per_user: global (non-room) account-data
     //     types per user; updating a type the user holds is always allowed.
@@ -74,6 +79,8 @@ struct ClientApiConfig final
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_fallback_keys_per_device{16U};
     std::uint32_t max_key_signatures_per_user{10000U};
+    std::uint32_t max_key_backup_sessions_per_user{500000U};
+    std::uint32_t max_key_backup_versions_per_user{100U};
     std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_global_account_data_per_user{1000U};
     std::uint32_t max_room_account_data_per_room{100U};

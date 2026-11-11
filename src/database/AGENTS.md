@@ -118,6 +118,19 @@ memberships.size()` and each position names a row of the room; otherwise a reade
 to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
 creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
 and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
+## Row position indexes for keys, users and backups (ADR-0603, ADR-0605, ADR-0606)
+
+`RowKeyIndex` (unique key to position) and `RowGroupIndex` (rows sharing a key, as a linked list) sit beside `users`,
+`memberships` (by room and user), `devices`, `device_keys`, `cross_signing_keys`, `one_time_keys`, `fallback_keys` and the
+key backup tables. Same trust rule as the state index: used only while built for the vector's current row count, else a
+reader scans. A writer calls its `sync_*` first and `note_appended` after a push; an erase of `one_time_keys`,
+`key_backup_sessions` or rows of a key table moves the last row into the gap (`erase_row_swap`), so those vectors have no
+meaningful order; `devices` and `key_backup_versions` keep order and rebuild. Hydration calls `rebuild_key_indexes`.
+Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`,
+`for_each_user_device_key`, `find_device_key`, `find_key_backup_session`, `count_key_backup_sessions`, never by looping the
+vector in a request. Tests prove cost with `user_rows_examined`, `membership_rows_examined`, `key_rows_examined`,
+`key_backup_rows_examined` and `device_table_rows_examined`.
+
 ## The relation index (ADR-0430)
 
 `EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,

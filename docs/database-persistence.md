@@ -1412,3 +1412,12 @@ Rows are read-only through the table. The only ways to change it are:
 
 `modify()` puts `event_id` and `stream_ordering` back if a mutation changes them. The table has no lock
 of its own: like every other `PersistentStore` member, it is guarded by `runtime.mutex` in the homeserver.
+
+## Row position indexes for keys, users, memberships and key backup (ADR-0603, ADR-0606)
+
+`users`, `memberships` (by room and user), `devices`, `device_keys`, `cross_signing_keys`, `one_time_keys`,
+`fallback_keys`, `key_backup_versions` and `key_backup_sessions` each have a position index beside the vector
+(`RowKeyIndex`, `RowGroupIndex`). It is trusted only while its row count equals the vector's; a writer heals a stale one,
+hydration rebuilds all of them (`rebuild_key_indexes`), and a reader of a store edited directly scans. Deleting a one-time
+key, fallback key, device key or backup session moves the last row into the gap, so those vectors have no order
+(ADR-0605). See `src/database/AGENTS.md`.
