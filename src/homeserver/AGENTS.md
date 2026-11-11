@@ -853,8 +853,8 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 - `set_local_user_moderation` and `deactivate_user_account` commit the state change with its audit row
   (`commit_user_account_state_with_audit`, `commit_user_deactivation_with_audit`) and only then `remember_local_audit`
   (ADR-0629). Do not return to `append_local_audit` after the write.
-- `ingest_send_join_state` judges a `m.room.member` entry for a user of this server with `judge_local_member_claim`: it is
-  taken only when this server holds no row for the user in the room or holds that very event as current. A refused entry is
+- `ingest_send_join_state` judges a `m.room.member` entry this server authored about one of its users with
+  `judge_local_member_claim` (a remote sender's event, such as a ban, is always taken): it is taken only when this server holds no row for the user in the room or holds that very event as current. A refused entry is
   stored as an outlier, writes no `current_state` row and names no joined member, and the state group takes this server's
   current event for the key (ADR-0630). Never feed the raw snapshot to the state group.
 - The `GET /mutual_rooms` token is `MutualRoomsToken.cpp`'s `<offset>.<keyed hash>`; verification is one hash and a

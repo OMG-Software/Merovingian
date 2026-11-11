@@ -29,9 +29,10 @@ A bad token costs one hash instead of a search of every offset. Tokens issued by
 
 ### A send_join snapshot cannot move a local user's membership (ADR-0630)
 
-A resident's claim about a user of this server is taken only when this server holds no row for that user in the room or the
-claimed event is the one it holds as current. The snapshot's state group carries this server's own event instead, so a
-later recomputation cannot bring a stale join back.
+An old event this server authored about one of its users is taken from a resident's snapshot only when this server holds no
+row for that user in the room or the event is the one it holds as current. The snapshot's state group carries this server's
+own event instead, so a later recomputation cannot bring a stale join back. What a remote user did to a local user, such as a
+ban, is still taken.
 
 ### An administrator's account action and its audit row commit together (ADR-0629)
 
