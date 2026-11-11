@@ -1292,6 +1292,7 @@ SCENARIO("A glob on a key other than content.body shares the evaluation's step b
         auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
         auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
 
+        // The longest value the matcher accepts is the worst case the budget has to stop.
         WHEN("an event carries a value of the largest length the matcher accepts")
         {
             auto const event =
@@ -1307,6 +1308,7 @@ SCENARIO("A glob on a key other than content.body shares the evaluation's step b
             }
         }
 
+        // Over the size cap the matcher refuses before it starts, so no step is spent.
         WHEN("an event carries a 60000-byte value")
         {
             auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
@@ -1330,6 +1332,7 @@ SCENARIO("A glob on a key other than content.body shares the evaluation's step b
         auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
         auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
 
+        // The budget must not change an ordinary match.
         WHEN("an ordinary event is evaluated")
         {
             auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
@@ -1344,6 +1347,7 @@ SCENARIO("A glob on a key other than content.body shares the evaluation's step b
             }
         }
 
+        // The boundary of the cap: a value of exactly the cap is still read.
         WHEN("the value is exactly the cap, and then one byte over it")
         {
             auto at_cap = std::string{"m."};

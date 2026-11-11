@@ -730,6 +730,7 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
         });
         return {};
     }
+    // The request names users and, under each, a device and the algorithm wanted.
     auto const* requested = as_object(member_value(*root, "one_time_keys"));
     if (requested == nullptr)
     {
@@ -780,6 +781,7 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
                 return {};
             }
 
+            // A claimed one-time key is consumed: it is deleted here and never handed out again.
             auto const claimed = database::claim_one_time_key(store, user_member.key, device_member.key, *algorithm);
             if (claimed.has_value())
             {
@@ -795,6 +797,7 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
                 continue;
             }
 
+            // With no one-time key left, the fallback key answers. It stays stored and can be returned again.
             auto const fallback = database::find_fallback_key(store, user_member.key, device_member.key, *algorithm);
             if (!fallback.has_value())
             {
@@ -816,6 +819,7 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
                 canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_object)}));
         }
     }
+    // Counted before the object is moved into the response, for the log line.
     auto const otk_user_count = one_time_keys.size();
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("one_time_keys", canonicaljson::Value{std::move(one_time_keys)}));
