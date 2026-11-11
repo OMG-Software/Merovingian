@@ -511,6 +511,13 @@ fallback above, which is intentionally soft — an ancestor it cannot reach
 only fails that one candidate event's own auth check (as it already did
 before the fallback existed), not the whole resolution.
 
+One resolution reads each event's `auth_events` a constant number of times,
+however many state events cite it (ADR-0599): `AuthChainGraph` turns the
+reachable events into integers once, the auth difference is one pass of a bit
+per group over them, enlarging X is one traversal from every power event, and
+a mainline walk reuses what an earlier walk found. The cap still means one
+group's chain, and the mainline depth limit still counts every hop.
+
 As of 0.12.18, `security.federation.state_resolution` also configures group
 count, entries per group, aggregate submitted entries, distinct/conflicted
 keys and mainline depth. The aggregate entry limit is checked before indexing
@@ -739,8 +746,21 @@ messages citing one event costs one state, not one per message (ADR-0374). An
 accepted event with no `state_key` that cites no current tip does not become a
 tip once the room holds `max_state_groups` of them
 (`forward_extremities_stay_bounded`); it is stored, delivered and placed
-normally. A state event is always a tip. While a refusal lasts each accepted
-state event still writes its own `current_state` row, so a ban applies; the
+normally. An accepted event that cites no current tip also does not become a
+tip once its sender's server holds `max_state_tips_per_server` of the room's
+tips (`event_may_become_forward_extremity`, ADR-0602), and then writes no
+`current_state` row or membership, since no tip holds its state; a message past
+that limit stays a tip only in a state group a tip already holds. A server is
+charged only for its own events, so a ban or a demotion from another server
+still reaches resolution. `send_join`, `send_leave` and `send_knock` past the
+limit are answered 503 with nothing stored. Each room remembers its last
+resolved state by its sorted distinct state groups (`ResolvedStateMemo`,
+ADR-0600): a PDU that leaves those groups unchanged reuses the result and still
+applies it through the normal write path. A recomputation parses each stored
+event once however many groups name it. Folding a change into the previous
+result is not done, because state resolution is not associative (ADR-0601).
+While a refusal lasts each accepted
+state event that is a tip still writes its own `current_state` row, so a ban applies; the
 residual is that a state event resolution would have reverted can stay current
 until the tips are back within budget.
 

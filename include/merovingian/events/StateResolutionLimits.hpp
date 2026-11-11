@@ -17,6 +17,7 @@ struct StateResolutionLimits final
     std::size_t max_mainline_auth_chain_depth{merovingian::events::max_mainline_auth_chain_depth};
     std::size_t max_auth_chain_walk_events{merovingian::events::max_auth_chain_walk_events};
     std::size_t max_total_state_events{merovingian::events::max_total_state_events};
+    std::size_t max_state_tips_per_server{merovingian::events::max_state_tips_per_server};
 };
 
 } // namespace merovingian::events

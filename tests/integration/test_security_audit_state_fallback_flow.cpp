@@ -40,9 +40,11 @@
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -551,6 +553,301 @@ SCENARIO("The state read at a fallback state event agrees with the state recorde
             {
                 REQUIRE_FALSE(holds("$local_topic"));
                 REQUIRE(holds("$old_topic"));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+namespace
+{
+
+constexpr auto honest_op = "@op:honest.example.org";
+constexpr auto power_levels_with_op =
+    R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,"users_default":0,)"
+    R"("users":{"@admin:local.example.org":100,"@mod:remote.example.org":50,"@op:honest.example.org":100}})";
+constexpr auto message_content = R"({"body":"hello","msgtype":"m.text"})";
+
+// A room whose latest event is `$topic_b`, with `$topic_a` before it.
+auto seed_topics(Room& room, std::vector<std::string> const& members, std::string const& power_levels_json) -> void
+{
+    seed_history(room, members, power_levels_json);
+    room.seed("$topic_a", "m.room.topic", std::string{}, admin, R"({"topic":"a"})",
+              {"$join_" + (members.empty() ? std::string{"admin"} : members.back())},
+              {"$create", "$pl", "$join_admin"});
+    room.seed("$topic_b", "m.room.topic", std::string{}, admin, R"({"topic":"b"})", {"$topic_a"},
+              {"$create", "$pl", "$join_admin"});
+}
+
+// `count` state events of the admin, each on its own fork off `$topic_b`.
+auto ingest_standing_forks(Room& room, int count) -> void
+{
+    for (auto index = 0; index < count; ++index)
+    {
+        auto const fork = room.pdu("$fork" + std::to_string(index), "x.fork", std::to_string(index), admin, "{}",
+                                   {"$topic_b"}, {"$create", "$pl", "$join_admin"}, 100 + index);
+        REQUIRE(room.ingest(fork) == PduIngestionStatus::accepted);
+    }
+    REQUIRE(room.tips().size() == static_cast<std::size_t>(count));
+}
+
+[[nodiscard]] auto message_citing(Room& room, std::string const& event_id, std::string const& prev)
+    -> InboundPduEnvelope
+{
+    return room.pdu(event_id, "m.room.message", std::nullopt, admin, message_content, {prev},
+                    {"$create", "$pl", "$join_admin"}, 1000);
+}
+
+// Stored events parsed while `envelope` is ingested.
+[[nodiscard]] auto parses_during_ingest(Room& room, InboundPduEnvelope const& envelope) -> std::uint64_t
+{
+    auto const before = room.store().state_events_parsed.value();
+    REQUIRE(room.ingest(envelope) == PduIngestionStatus::accepted);
+    return room.store().state_events_parsed.value() - before;
+}
+
+} // namespace
+
+// ADR-0600. Counts the stored events a message's recomputation parses: none while the set of distinct state groups
+// is the one last resolved, however many forks stand.
+SCENARIO("A message that leaves the room's distinct state groups unchanged resolves nothing",
+         "[pdu_ingestion][state_groups][state_memo]")
+{
+    GIVEN("a room with few or with many standing state forks")
+    {
+        auto const forks = GENERATE(3, 24);
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(
+            config_with_sqlite(path, merovingian::config::FederationStateResolutionConfig{}));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto many = Room{started.runtime, "!many:local.example.org"};
+        seed_topics(many, {}, base_power_levels);
+        ingest_standing_forks(many, forks);
+
+        WHEN("a message citing one tip arrives")
+        {
+            auto const parsed = parses_during_ingest(many, message_citing(many, "$message", "$fork0"));
+
+            THEN("it parses no stored event, so the cost does not grow with the forks")
+            {
+                REQUIRE(parsed == 0U);
+            }
+
+            THEN("the forks all stand as they did")
+            {
+                auto const last = std::to_string(forks - 1);
+                REQUIRE(many.tips().size() == static_cast<std::size_t>(forks));
+                REQUIRE(many.current("x.fork", last) == std::optional<std::string>{"$fork" + last});
+                REQUIRE(many.current("m.room.topic", "") == std::optional<std::string>{"$topic_b"});
+            }
+        }
+
+        WHEN("a state event changes the set of state groups")
+        {
+            auto const topic = many.pdu("$topic_c", "m.room.topic", std::string{}, admin, R"({"topic":"c"})",
+                                        {"$fork0"}, {"$create", "$pl", "$join_admin"}, 900);
+            auto const parsed = parses_during_ingest(many, topic);
+
+            THEN("the room is resolved afresh and the event is current")
+            {
+                REQUIRE(parsed > 0U);
+                REQUIRE(many.current("m.room.topic", "") == std::optional<std::string>{"$topic_c"});
+            }
+
+            THEN("each stored event is parsed at most once for that recomputation")
+            {
+                // 25 groups of about 30 rows each, naming 34 distinct events.
+                REQUIRE(parsed <= 40U);
+            }
+        }
+
+        WHEN("something else wrote current state since the last resolution")
+        {
+            REQUIRE(merovingian::database::store_state(many.store(),
+                                                       {many.id(), "m.room.topic", std::string{}, "$topic_a"}));
+            auto const parsed = parses_during_ingest(many, message_citing(many, "$message", "$fork0"));
+
+            THEN("the remembered result is still applied through the write path")
+            {
+                REQUIRE(parsed == 0U);
+                REQUIRE(many.current("m.room.topic", "") == std::optional<std::string>{"$topic_b"});
+            }
+        }
+
+        WHEN("an event in the room is redacted")
+        {
+            auto const json = many.store().events.find("$fork1")->json;
+            REQUIRE(merovingian::database::replace_event_json(many.store(), "$fork1", json));
+            auto const parsed = parses_during_ingest(many, message_citing(many, "$message", "$fork0"));
+
+            THEN("the next recomputation resolves afresh")
+            {
+                REQUIRE(parsed > 0U);
+            }
+        }
+
+        WHEN("an event's status changes")
+        {
+            REQUIRE(merovingian::database::set_event_status(many.store(), "$fork1", "accepted"));
+            auto const parsed = parses_during_ingest(many, message_citing(many, "$message", "$fork0"));
+
+            THEN("the next recomputation resolves afresh")
+            {
+                REQUIRE(parsed > 0U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A refused resolution is not remembered", "[pdu_ingestion][state_groups][state_memo]")
+{
+    GIVEN("a room whose two forks exceed the state budget")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto resolution = merovingian::config::FederationStateResolutionConfig{};
+        resolution.max_total_state_events = 8U;
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, resolution));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        auto room = Room{started.runtime, "!refused:local.example.org"};
+        seed_topics(room, {}, base_power_levels);
+
+        WHEN("the forks are ingested")
+        {
+            ingest_standing_forks(room, 2);
+
+            THEN("the memo holds nothing for the room")
+            {
+                REQUIRE(room.store().resolved_state_memo.rooms() == 0U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// ADR-0602, refining ADR-0374 item 3.
+SCENARIO("A server past its cap adds no tip, and another server's demotion still reverts its state",
+         "[pdu_ingestion][state_groups][tip_cap]")
+{
+    GIVEN("a room where a moderator's server holds as many tips as its cap allows")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto resolution = merovingian::config::FederationStateResolutionConfig{};
+        resolution.max_state_tips_per_server = 2U;
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path, resolution));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto room = Room{started.runtime, "!capped:local.example.org"};
+        seed_history(room, {mod, honest_op}, power_levels_with_op);
+        auto const join_mod = std::string{"$join_"} + mod;
+        room.seed("$topic_admin", "m.room.topic", std::string{}, admin, R"({"topic":"admin"})",
+                  {std::string{"$join_"} + honest_op}, {"$create", "$pl", "$join_admin"});
+        auto const base = std::string{"$topic_admin"};
+        auto const mod_auth = std::vector<std::string>{"$create", "$pl", join_mod};
+
+        // The first replaces the only tip, the second stands beside it: the server's two.
+        REQUIRE(room.ingest(room.pdu("$topic_mod", "m.room.topic", std::string{}, mod, R"({"topic":"mod"})", {base},
+                                     mod_auth, 100)) == PduIngestionStatus::accepted);
+        REQUIRE(room.ingest(room.pdu("$name_mod", "m.room.name", std::string{}, mod, R"({"name":"mod"})", {base},
+                                     mod_auth, 101)) == PduIngestionStatus::accepted);
+        REQUIRE(room.tips() == std::vector<std::string>{"$name_mod", "$topic_mod"});
+
+        WHEN("the server sends a further state event citing no tip")
+        {
+            auto const status = room.ingest(room.pdu("$over", "m.room.avatar", std::string{}, mod,
+                                                     R"({"url":"mxc://a/b"})", {base}, mod_auth, 102));
+
+            THEN("it is accepted and stored with a state group, like a message")
+            {
+                REQUIRE(status == PduIngestionStatus::accepted);
+                REQUIRE(room.status_of("$over") == "accepted");
+                REQUIRE(merovingian::database::find_event_state_group(room.store(), "$over").has_value());
+            }
+
+            THEN("it does not become a tip and does not change current state")
+            {
+                REQUIRE(room.tips() == std::vector<std::string>{"$name_mod", "$topic_mod"});
+                REQUIRE_FALSE(room.current("m.room.avatar", "").has_value());
+            }
+        }
+
+        WHEN("the server sends a state event citing one of its tips")
+        {
+            auto const status = room.ingest(room.pdu("$on_tip", "m.room.avatar", std::string{}, mod,
+                                                     R"({"url":"mxc://a/b"})", {"$name_mod"}, mod_auth, 102));
+
+            THEN("it replaces that tip and takes effect")
+            {
+                REQUIRE(status == PduIngestionStatus::accepted);
+                REQUIRE(room.tips() == std::vector<std::string>{"$on_tip", "$topic_mod"});
+                REQUIRE(room.current("m.room.avatar", "") == std::optional<std::string>{"$on_tip"});
+            }
+        }
+
+        WHEN("the server tries a further fork, then an honest server demotes its moderator from an older event")
+        {
+            REQUIRE(room.ingest(room.pdu("$over", "m.room.topic", std::string{}, mod, R"({"topic":"over"})", {base},
+                                         mod_auth, 102)) == PduIngestionStatus::accepted);
+            auto const demotion =
+                room.pdu("$demotion", "m.room.power_levels", std::string{}, honest_op,
+                         R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,)"
+                         R"("users_default":0,"users":{"@admin:local.example.org":100,"@op:honest.example.org":100}})",
+                         {base}, {"$create", "$pl", std::string{"$join_"} + honest_op}, 200);
+            auto const status = room.ingest(demotion);
+
+            THEN("the fork past the cap never stood, and the demotion is a tip")
+            {
+                REQUIRE(status == PduIngestionStatus::accepted);
+                REQUIRE(room.tips() == std::vector<std::string>{"$demotion", "$name_mod", "$topic_mod"});
+                REQUIRE(room.current("m.room.power_levels", "") == std::optional<std::string>{"$demotion"});
+            }
+
+            THEN("the topic the demoted moderator set is reverted")
+            {
+                REQUIRE(room.current("m.room.topic", "") == std::optional<std::string>{"$topic_admin"});
+            }
+        }
+
+        WHEN("the server tries a further fork, then an honest server bans its moderator from an older event")
+        {
+            REQUIRE(room.ingest(room.pdu("$over", "m.room.topic", std::string{}, mod, R"({"topic":"over"})", {base},
+                                         mod_auth, 102)) == PduIngestionStatus::accepted);
+            auto const ban = room.pdu("$ban", "m.room.member", std::string{mod}, honest_op, R"({"membership":"ban"})",
+                                      {base}, {"$create", "$pl", std::string{"$join_"} + honest_op, join_mod}, 200);
+            auto const status = room.ingest(ban);
+
+            THEN("the ban is a tip and is current")
+            {
+                REQUIRE(status == PduIngestionStatus::accepted);
+                REQUIRE(room.tips() == std::vector<std::string>{"$ban", "$name_mod", "$topic_mod"});
+                REQUIRE(room.current("m.room.member", mod) == std::optional<std::string>{"$ban"});
+            }
+
+            THEN("the state the banned moderator set is reverted")
+            {
+                REQUIRE(room.current("m.room.topic", "") == std::optional<std::string>{"$topic_admin"});
+            }
+        }
+
+        WHEN("the server sends a message citing an old event in a state group of its own")
+        {
+            auto const status = room.ingest(room.pdu("$old_group", "m.room.message", std::nullopt, mod, message_content,
+                                                     {join_mod}, mod_auth, 103));
+
+            THEN("it is accepted but adds no distinct state to resolve")
+            {
+                REQUIRE(status == PduIngestionStatus::accepted);
+                REQUIRE(room.tips() == std::vector<std::string>{"$name_mod", "$topic_mod"});
             }
         }
 

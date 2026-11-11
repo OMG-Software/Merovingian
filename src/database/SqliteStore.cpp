@@ -1242,7 +1242,7 @@ namespace
                              store.event_state_groups.assign(column_text(row, 0), column_text(row, 1));
                          }) &&
                load_rows(connection, "SELECT room_id, event_id FROM forward_extremities", [&store](sqlite3_stmt& row) {
-                   store.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
+                   std::ignore = store.forward_extremities.insert({column_text(row, 0), column_text(row, 1)}, {});
                });
     }
 
@@ -1724,11 +1724,13 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     rebuild_state_transition_index(store);
     rebuild_state_index(store);
     rebuild_membership_index(store);
+    rebuild_key_indexes(store);
     rebuild_client_txn_index(store);
     rebuild_account_data_index(store);
     rebuild_notification_index(store);
     rebuild_federation_transaction_index(store);
     rebuild_redaction_state(store);
+    rebuild_forward_extremity_servers(store);
     rebuild_deferred_pdu_awaits(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);

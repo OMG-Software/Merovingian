@@ -15,6 +15,7 @@ struct FederationStateResolutionConfig final
     std::uint32_t max_conflicted_state_keys{65536U};
     std::uint32_t max_mainline_auth_chain_depth{10000U};
     std::uint32_t max_auth_chain_walk_events{131072U};
+    std::uint32_t max_state_tips_per_server{32U};
 };
 
 } // namespace merovingian::config

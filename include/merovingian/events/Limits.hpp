@@ -67,6 +67,11 @@ inline constexpr std::size_t max_auth_chain_walk_events = 131'072U;
 // across many fork snapshots while indexing and comparing their states.
 inline constexpr std::size_t max_total_state_events = 131'072U;
 
+// Maximum number of a room's forward extremities one server's events may hold before a further event of
+// that server that cites none of them stops becoming one (ADR-0602). A server cannot be charged for
+// another server's events, so an honest server's ban or demotion is unaffected by a hostile server's forks.
+inline constexpr std::size_t max_state_tips_per_server = 32U;
+
 // ---- Delta state group limits (ADR-0064) ----
 
 // Maximum number of parent hops a state group's delta chain may have before a

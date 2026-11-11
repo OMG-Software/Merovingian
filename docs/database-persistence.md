@@ -591,6 +591,15 @@ value. Test fixtures that do not exercise persistence select it through
   trivially, so unit tests exercise the in-memory bookkeeping directly —
   see `tests/unit/test_state_groups.cpp`).
 
+  **Forward extremities and the resolved-state memo (ADR-0600, ADR-0602).**
+  `PersistentStore::forward_extremities` is a `ForwardExtremityTable`, which counts
+  each room's tips by the server of their sender. Hydration reads the tips before
+  the events are indexed, so `rebuild_forward_extremity_servers` charges them
+  afterwards. `PersistentStore::resolved_state_memo` is a `ResolvedStateMemo`,
+  in memory only and never persisted: the last resolved state of at most 256
+  rooms and 131072 rows, keyed by each room's sorted distinct state groups.
+  `set_event_status`, `replace_event_json` and `apply_room_snapshot` forget the room.
+
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`
   (`StateGroupTable.hpp`, `StateGroupEntryTable.hpp`, `EventStateGroupTable.hpp`), which own the rows and keep hash indexes by
@@ -1412,3 +1421,12 @@ Rows are read-only through the table. The only ways to change it are:
 
 `modify()` puts `event_id` and `stream_ordering` back if a mutation changes them. The table has no lock
 of its own: like every other `PersistentStore` member, it is guarded by `runtime.mutex` in the homeserver.
+
+## Row position indexes for keys, users, memberships and key backup (ADR-0603, ADR-0606)
+
+`users`, `memberships` (by room and user), `devices`, `device_keys`, `cross_signing_keys`, `one_time_keys`,
+`fallback_keys`, `key_backup_versions` and `key_backup_sessions` each have a position index beside the vector
+(`RowKeyIndex`, `RowGroupIndex`). It is trusted only while its row count equals the vector's; a writer heals a stale one,
+hydration rebuilds all of them (`rebuild_key_indexes`), and a reader of a store edited directly scans. Deleting a one-time
+key, fallback key, device key or backup session moves the last row into the gap, so those vectors have no order
+(ADR-0605). See `src/database/AGENTS.md`.

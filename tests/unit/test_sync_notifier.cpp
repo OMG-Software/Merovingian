@@ -940,3 +940,68 @@ SCENARIO("A publish with an empty scope moves the positions and wakes no user", 
         }
     }
 }
+
+// ADR-0609: the per-user membership index follows every insert, update, delete and reload.
+SCENARIO("A user's membership rows are found through the per-user index", "[sync][notifier][membership-user-index]")
+{
+    GIVEN("memberships of several users written through the store, one updated in place and one deleted")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const write = [&store](char const* room, char const* user, char const* membership, std::uint64_t order) {
+            REQUIRE(merovingian::database::store_membership_projection(store, room, {user, membership, order, {}}));
+        };
+        write("!a:example.org", "@alice:example.org", "join", 1U);
+        write("!b:example.org", "@alice:example.org", "invite", 2U);
+        write("!a:example.org", "@bob:example.org", "join", 3U);
+        write("!b:example.org", "@alice:example.org", "join", 4U);
+        write("!c:example.org", "@alice:example.org", "join", 5U);
+        REQUIRE(merovingian::database::delete_membership(store, "!c:example.org", "@alice:example.org"));
+        auto const rows_of = [&store](char const* user) {
+            auto rooms = std::vector<std::string>{};
+            merovingian::database::for_each_user_membership_row(
+                store, user, [&rooms](merovingian::database::PersistentMembership const& row) {
+                    rooms.push_back(row.room_id + " " + row.membership);
+                });
+            return rooms;
+        };
+
+        WHEN("alice's rows are read")
+        {
+            auto const before = store.membership_rows_examined.value();
+            auto const rooms = rows_of("@alice:example.org");
+
+            THEN("only her two live rows are visited, and only they are examined")
+            {
+                REQUIRE(rooms == std::vector<std::string>{"!a:example.org join", "!b:example.org join"});
+                REQUIRE(store.membership_rows_examined.value() - before == 2U);
+                REQUIRE(rows_of("@nobody:example.org").empty());
+            }
+        }
+
+        WHEN("the index is dropped and rebuilt, as after a reload")
+        {
+            store.membership_user_index.clear();
+            merovingian::database::rebuild_membership_index(store);
+
+            THEN("it answers the same")
+            {
+                REQUIRE(rows_of("@alice:example.org") ==
+                        std::vector<std::string>{"!a:example.org join", "!b:example.org join"});
+                REQUIRE(rows_of("@bob:example.org") == std::vector<std::string>{"!a:example.org join"});
+            }
+        }
+
+        WHEN("a row is added behind the store's back")
+        {
+            store.memberships.push_back({"!d:example.org", "@alice:example.org", "join", 9U});
+            auto const before = store.membership_rows_examined.value();
+            auto const rooms = rows_of("@alice:example.org");
+
+            THEN("the reader falls back to a scan and still finds it")
+            {
+                REQUIRE(rooms.size() == 3U);
+                REQUIRE(store.membership_rows_examined.value() - before == store.memberships.size());
+            }
+        }
+    }
+}

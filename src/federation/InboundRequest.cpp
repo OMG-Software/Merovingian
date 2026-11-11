@@ -40,6 +40,7 @@
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
 #include "merovingian/federation/FederationTransaction.hpp"
 #include "merovingian/federation/InboundSignatureVerification.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
 #include "merovingian/federation/KeyResolutionBucket.hpp"
 #include "merovingian/federation/KeyResolutionFailure.hpp"
 #include "merovingian/federation/MembershipEventTemplate.hpp"
@@ -1846,6 +1847,11 @@ namespace
         {
             return {501U, "query_keys not implemented"};
         }
+        // Refused before the provider reads any table: a request names a bounded number of entries (ADR-0604).
+        if (key_request_exceeds_entry_cap(request.body, "device_keys"))
+        {
+            return {413U, homeserver::matrix_error("M_TOO_LARGE", "user/keys/query names too many users and devices")};
+        }
         auto body = runtime.device_keys_query_provider(request.body);
         if (body.empty())
         {
@@ -1860,6 +1866,10 @@ namespace
         if (!runtime.one_time_keys_claim_provider)
         {
             return {501U, "claim_keys not implemented"};
+        }
+        if (key_request_exceeds_entry_cap(request.body, "one_time_keys"))
+        {
+            return {413U, homeserver::matrix_error("M_TOO_LARGE", "user/keys/claim names too many users and devices")};
         }
         auto body = runtime.one_time_keys_claim_provider(request.body);
         if (body.empty())

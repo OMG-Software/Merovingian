@@ -10,6 +10,7 @@
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/ForwardExtremityTable.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
@@ -75,8 +76,11 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/RedactionState.hpp"
+#include "merovingian/database/ResolvedStateMemo.hpp"
 #include "merovingian/database/RoomAliasTable.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/RowGroupIndex.hpp"
+#include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
@@ -307,6 +311,15 @@ struct PersistentStore final
     // directly (a test) thereby loses speed, never correctness. A row's room never changes in place.
     std::unordered_map<std::string, std::vector<std::size_t>> membership_room_index{};
     std::size_t membership_indexed_rows{0U};
+    // Positions in `memberships` of each user's rows, kept and trusted exactly as `membership_room_index` is
+    // (ADR-0609), behind `for_each_user_membership_row`. `membership_rows_examined` counts the rows those
+    // readers looked at, so a test proves cost by count, not time.
+    std::unordered_map<std::string, std::vector<std::size_t>> membership_user_index{};
+    ExaminedRows membership_rows_examined{};
+    // Event rows the sliding-sync long-poll relevance check walked (ADR-0609).
+    ExaminedRows sync_relevance_rows_examined{};
+    // (room, user) -> position in `memberships` (ADR-0603), same trust rule as `membership_room_index`.
+    RowKeyIndex membership_key_index{};
     // The `events` table, indexed by event ID and by stream order (ADR-0215).
     EventTable events{};
     RedactionState redactions{};
@@ -334,6 +347,23 @@ struct PersistentStore final
     ExaminedRows device_table_rows_examined{};
     std::vector<PersistentOneTimeKey> one_time_keys{};
     std::vector<PersistentFallbackKey> fallback_keys{};
+    // Indexes beside `users`, `devices`, `device_keys`, `one_time_keys` and `fallback_keys` (ADR-0603), so the
+    // federation key and EDU paths look a user, a device or a device's keys up without scanning the table under
+    // the runtime lock. Same trust rule as `state_position_index` (ADR-0344): used only while built for exactly
+    // the vector's row count, otherwise the reader scans. Maintained by the writers in PersistentStore.cpp (a
+    // writer that finds one stale rebuilds it first) and rebuilt after hydration. A one-time key claim erases by
+    // moving the last row into the gap, so `one_time_keys` has no meaningful order.
+    RowKeyIndex user_index{};
+    RowGroupIndex device_user_index{};
+    RowGroupIndex device_key_user_index{};
+    RowGroupIndex one_time_key_device_index{};
+    RowGroupIndex fallback_key_device_index{};
+    RowGroupIndex cross_signing_key_user_index{};
+    // Rows of `users`, `one_time_keys`, `fallback_keys` and the key backup tables read by the indexed lookups,
+    // counted where they are read, so a test shows the cost does not grow with the table.
+    ExaminedRows user_rows_examined{};
+    ExaminedRows key_rows_examined{};
+    ExaminedRows key_backup_rows_examined{};
     std::vector<PersistentCrossSigningKey> cross_signing_keys{};
     std::vector<PersistentKeySignature> key_signatures{};
     // CSAZ-10: positions in `key_signatures` grouped by target_user_id, so
@@ -346,6 +376,12 @@ struct PersistentStore final
     std::size_t key_signature_indexed_rows{0U};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
+    // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
+    // version) and the versions of each user. Same trust rule as above. A deleted session or version erases by
+    // moving the last row into the gap, so `key_backup_sessions` has no meaningful order.
+    RowKeyIndex key_backup_session_index{};
+    RowGroupIndex key_backup_version_session_index{};
+    RowGroupIndex key_backup_user_version_index{};
     // The highest backup version number ever issued to each user, so a deleted version's number is
     // never issued again (F-60, ADR-0384). Persisted in `key_backup_version_counters`.
     std::unordered_map<std::string, std::uint64_t> key_backup_version_high_water{};
@@ -432,7 +468,11 @@ struct PersistentStore final
     StateGroupTable state_groups{};
     StateGroupEntryTable state_group_state{};
     EventStateGroupTable event_state_groups{};
-    std::vector<PersistentForwardExtremity> forward_extremities{};
+    ForwardExtremityTable forward_extremities{};
+    // The last resolution of each room's forward extremities (ADR-0600). In memory only.
+    ResolvedStateMemo resolved_state_memo{};
+    // Stored events parsed for state resolution, for tests that prove cost.
+    ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
     // called, so production retains no statement or bound parameter after it
@@ -858,12 +898,22 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
 // after `reload_room` and after any direct edit of the vector that should be fast again.
 auto rebuild_state_index(PersistentStore& store) -> void;
 
+// Charges each forward extremity to the server of its event's sender (ADR-0602). Called after hydration, which
+// reads the tips before the events are indexed.
+auto rebuild_forward_extremity_servers(PersistentStore& store) -> void;
+
 // Calls `visit` with every row of `memberships` that belongs to `room_id`, in storage order. Walks only that
 // room's rows while the index is in step with `memberships` (ADR-0437). `visit` must not change `memberships`.
 auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,
                                   std::function<void(PersistentMembership const&)> const& visit) -> void;
 
-// Rebuilds the per-room membership index from `memberships`. Called after SQLite/PostgreSQL hydration,
+// Calls `visit` with every row of `memberships` that belongs to `user_id`, in storage order. Walks only that
+// user's rows while the index is in step with `memberships` (ADR-0609), otherwise scans. Adds the rows it
+// looked at to `store.membership_rows_examined`. `visit` must not change `memberships`.
+auto for_each_user_membership_row(PersistentStore const& store, std::string_view user_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void;
+
+// Rebuilds the per-room and per-user membership indexes from `memberships`. Called after SQLite/PostgreSQL hydration,
 // after `reload_room`, after a row is erased, and after any direct edit of the vector that should be fast again.
 auto rebuild_membership_index(PersistentStore& store) -> void;
 
@@ -951,6 +1001,44 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool;
 [[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
                                      std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;
+// Lookups by index (ADR-0603). Each reads the index while it is in step with its vector and scans the vector
+// otherwise, and counts the rows it read in the matching `*_rows_examined`.
+// True when this server holds any membership row for the room, in any state.
+[[nodiscard]] auto has_room_membership_row(PersistentStore const& store, std::string_view room_id) -> bool;
+// The user's membership row for the room, or nullptr.
+[[nodiscard]] auto find_membership_row(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> PersistentMembership const*;
+// The account row for the user, or nullptr.
+[[nodiscard]] auto find_user_row(PersistentStore const& store, std::string_view user_id) -> PersistentUser const*;
+// Calls `visit` with each of the user's device rows; stops when it returns false.
+auto for_each_user_device(PersistentStore const& store, std::string_view user_id,
+                          std::function<bool(PersistentDevice const&)> const& visit) -> void;
+// Calls `visit` with each of the user's cross-signing key rows; stops when it returns false.
+auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
+                                     std::function<bool(PersistentCrossSigningKey const&)> const& visit) -> void;
+// Calls `visit` with each of the user's published device-key rows; stops when it returns false.
+auto for_each_user_device_key(PersistentStore const& store, std::string_view user_id,
+                              std::function<bool(PersistentDeviceKey const&)> const& visit) -> void;
+// Rebuilds the user, device, device-key, one-time-key, fallback-key and key backup indexes from their vectors.
+// Called after SQLite/PostgreSQL hydration and by a writer that finds one stale.
+auto rebuild_key_indexes(PersistentStore& store) -> void;
+// Key backup reads by index (ADR-0606). The version of a user that was created last is their current one.
+[[nodiscard]] auto find_key_backup_version(PersistentStore const& store, std::string_view user_id,
+                                           std::string_view version) -> PersistentKeyBackupVersion const*;
+[[nodiscard]] auto latest_key_backup_version(PersistentStore const& store, std::string_view user_id)
+    -> PersistentKeyBackupVersion const*;
+[[nodiscard]] auto count_key_backup_versions(PersistentStore const& store, std::string_view user_id) -> std::size_t;
+// Sessions held for one backup version, and for all of a user's versions.
+[[nodiscard]] auto count_key_backup_sessions(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view version) -> std::size_t;
+[[nodiscard]] auto count_user_key_backup_sessions(PersistentStore const& store, std::string_view user_id)
+    -> std::size_t;
+[[nodiscard]] auto find_key_backup_session(PersistentStore const& store, std::string_view user_id,
+                                           std::string_view version, std::string_view room_id,
+                                           std::string_view session_id) -> PersistentKeyBackupSession const*;
+// Calls `visit` with each session of the backup. The order is not meaningful.
+auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
+                                 std::function<void(PersistentKeyBackupSession const&)> const& visit) -> void;
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 // Stores every key in one transaction: all are written or, when the write fails or a key is refused,
 // none is and the held keys are unchanged. An empty list succeeds and writes nothing.

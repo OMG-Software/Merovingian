@@ -387,6 +387,7 @@ three transports run `long_poll_wait`: cursor, then the positions check, then th
 before the rerun, so a publish between the two costs one extra rerun, never a lost one. Do not erase a user's entry when
 its last waiter leaves: a publish between two slices must be seen. The audience reads the room's rows through
 `for_each_room_membership_row` (ADR-0437).
+- The sliding-sync relevance check (`has_relevant_event` and the receipt and typing predicates) tests rooms against one set of the caller's joined rooms built from `for_each_user_membership_row`, walks at most `sliding_sync_relevance_scan_rows` events, and treats reaching that cap as relevant (answer, never park, so no wake-up is lost and the next poll's walk is short). Never call a per-event `user_is_joined`-style scan of `memberships` there (ADR-0609).
 - A long-poll on the `sync_pool` path does not wait on a pool thread (ADR-0569): it parks in `ParkedPollRegistry`
   (owned by `SyncNotifier`) and is resumed on the pool by a publish for its user or by its deadline. Park with a cursor
   taken before the last rerun (`SyncNotifier::park` inserts, then compares the cursor), keep the registry mutex a leaf

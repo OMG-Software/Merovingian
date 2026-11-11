@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.90
+Version:        0.12.91
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 0.12.91-1
+- Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
+
 * Tue Nov 10 2026 James Chapman <claude@ping.me.uk> - 0.12.90-1
 - Publish releases from v<version> tags that name the meson.build version; ship both worker binaries in release tarballs; attach a signed SBOM to every release and latest build.
 

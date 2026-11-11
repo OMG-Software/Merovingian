@@ -667,7 +667,7 @@ namespace
             {
                 if (row.size() >= 2U)
                 {
-                    store.forward_extremities.push_back({row[0], row[1]});
+                    std::ignore = store.forward_extremities.insert({row[0], row[1]}, {});
                 }
             }
         }
@@ -2116,11 +2116,13 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     rebuild_state_transition_index(store);
     rebuild_state_index(store);
     rebuild_membership_index(store);
+    rebuild_key_indexes(store);
     rebuild_client_txn_index(store);
     rebuild_account_data_index(store);
     rebuild_notification_index(store);
     rebuild_federation_transaction_index(store);
     rebuild_redaction_state(store);
+    rebuild_forward_extremity_servers(store);
     rebuild_deferred_pdu_awaits(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);

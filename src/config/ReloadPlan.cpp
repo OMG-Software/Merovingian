@@ -1045,6 +1045,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.state_resolution.max_state_groups");
     }
+    if (current.security().federation.state_resolution.max_state_tips_per_server !=
+        next.security().federation.state_resolution.max_state_tips_per_server)
+    {
+        add_change(plan, "security.federation.state_resolution.max_state_tips_per_server");
+    }
     if (current.security().federation.state_resolution.max_events_per_state_group !=
         next.security().federation.state_resolution.max_events_per_state_group)
     {
@@ -1097,6 +1102,16 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.server().client_api.max_key_signatures_per_user != next.server().client_api.max_key_signatures_per_user)
     {
         add_change(plan, "server.client_api.max_key_signatures_per_user");
+    }
+    if (current.server().client_api.max_key_backup_sessions_per_user !=
+        next.server().client_api.max_key_backup_sessions_per_user)
+    {
+        add_change(plan, "server.client_api.max_key_backup_sessions_per_user");
+    }
+    if (current.server().client_api.max_key_backup_versions_per_user !=
+        next.server().client_api.max_key_backup_versions_per_user)
+    {
+        add_change(plan, "server.client_api.max_key_backup_versions_per_user");
     }
     // Per-user stored data caps: filters, push rules and account data.
     if (current.server().client_api.max_filters_per_user != next.server().client_api.max_filters_per_user)

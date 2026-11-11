@@ -1270,3 +1270,254 @@ SCENARIO("Only the first part of a long content.body is searched for a keyword",
         }
     }
 }
+
+// Security audit run-2 release gate (ADR-0607): an event_match on a key other than content.body, and
+// the array scan of event_property_contains, draw from the same per-evaluation step budget as the
+// body globs, and a whole-value glob refuses a value longer than max_push_glob_key_value_bytes.
+SCENARIO("A glob on a key other than content.body shares the evaluation's step budget", "[push][security][gate-h]")
+{
+    GIVEN("200 override rules, each an event_match on content.x with a 510-byte worst-case pattern")
+    {
+        auto pattern = std::string{"*"};
+        pattern += std::string(508U, 'a');
+        pattern += 'b';
+        auto rules = Array{};
+        for (auto i = 0; i < 200; ++i)
+        {
+            rules.push_back(make_rule("r" + std::to_string(i), true, Array{cond_event_match("content.x", pattern)},
+                                      Array{action_notify()}));
+        }
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member("override", Value{std::move(rules)}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+
+        // The longest value the matcher accepts is the worst case the budget has to stop.
+        WHEN("an event carries a value of the largest length the matcher accepts")
+        {
+            auto const event =
+                make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                           Object{str_member("x", std::string(merovingian::push::max_push_glob_key_value_bytes, 'a'))});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the matcher spent no more than the budget, said it ran out, and nothing matched")
+            {
+                REQUIRE(result.glob_steps_used <= merovingian::push::max_push_glob_steps_per_evaluation);
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+
+        // Over the size cap the matcher refuses before it starts, so no step is spent.
+        WHEN("an event carries a 60000-byte value")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("x", std::string(60000U, 'a'))});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the value is refused outright, without spending the budget")
+            {
+                REQUIRE_FALSE(result.notify);
+                REQUIRE(result.glob_steps_used < merovingian::push::max_push_glob_steps_per_evaluation / 100U);
+            }
+        }
+    }
+
+    GIVEN("an override rule that matches content.msgtype against 'M.*'")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member(
+            "override", Value{Array{make_rule("text", true, Array{cond_event_match("content.msgtype", "M.*")},
+                                              Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+
+        // The budget must not change an ordinary match.
+        WHEN("an ordinary event is evaluated")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("msgtype", "m.text")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule still matches, case-insensitively, for a small number of steps")
+            {
+                REQUIRE(result.notify);
+                REQUIRE_FALSE(result.glob_budget_exhausted);
+                REQUIRE(result.glob_steps_used < 100U);
+            }
+        }
+
+        // The boundary of the cap: a value of exactly the cap is still read.
+        WHEN("the value is exactly the cap, and then one byte over it")
+        {
+            auto at_cap = std::string{"m."};
+            at_cap.append(merovingian::push::max_push_glob_key_value_bytes - 2U, 'x');
+            auto const at_cap_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                                 Object{str_member("msgtype", at_cap)});
+            auto const over_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                               Object{str_member("msgtype", at_cap + "x")});
+
+            THEN("the one at the cap matches and the one over it does not")
+            {
+                REQUIRE(merovingian::push::evaluate_push_rules(ruleset, at_cap_event, context).notify);
+                REQUIRE_FALSE(merovingian::push::evaluate_push_rules(ruleset, over_event, context).notify);
+            }
+        }
+    }
+
+    GIVEN("a pattern with no wildcard")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("override", Value{Array{make_rule("exact", true, Array{cond_event_match("content.x", "abc")},
+                                                          Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+
+        WHEN("the value is 60000 bytes long, and then equal to the pattern in another case")
+        {
+            auto const long_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                               Object{str_member("x", std::string(60000U, 'a'))});
+            auto const equal_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                                Object{str_member("x", "ABC")});
+
+            THEN("only the equal one matches")
+            {
+                REQUIRE_FALSE(merovingian::push::evaluate_push_rules(ruleset, long_event, context).notify);
+                REQUIRE(merovingian::push::evaluate_push_rules(ruleset, equal_event, context).notify);
+            }
+        }
+    }
+}
+
+SCENARIO("An event_property_contains scan of a large array is charged to the step budget", "[push][security][gate-h]")
+{
+    GIVEN("200 override rules that each look for a string in content.list, and an array of 20000 other strings")
+    {
+        auto rules = Array{};
+        for (auto i = 0; i < 200; ++i)
+        {
+            rules.push_back(make_rule("r" + std::to_string(i), true,
+                                      Array{cond_event_property_contains("content.list", Value{std::string{"needle"}})},
+                                      Array{action_notify()}));
+        }
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member("override", Value{std::move(rules)}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        auto list = Array{};
+        for (auto i = 0; i < 20000; ++i)
+        {
+            list.push_back(Value{std::string{"x"}});
+        }
+
+        WHEN("an event carries the array")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{make_member("list", Value{std::move(list)})});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the scans stop at the budget and the evaluation says so")
+            {
+                REQUIRE(result.glob_steps_used <= merovingian::push::max_push_glob_steps_per_evaluation);
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+    }
+
+    GIVEN("a rule that looks for a string in a short array")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member(
+            "override",
+            Value{Array{make_rule("find", true,
+                                  Array{cond_event_property_contains("content.list", Value{std::string{"needle"}})},
+                                  Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+
+        WHEN("the array holds it")
+        {
+            auto const event = make_event(
+                "m.room.message", "@sender:example.org", "!room:example.org",
+                Object{
+                    make_member("list", Value{Array{Value{std::string{"a"}}, Value{std::string{"needle"}}}}
+                     )
+            });
+
+            THEN("it matches")
+            {
+                REQUIRE(merovingian::push::evaluate_push_rules(
+                            ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"})
+                            .notify);
+            }
+        }
+    }
+}
+
+// A sender who exhausts a recipient's glob budget must not silence the rules that need no glob
+// (ADR-0607): a pattern without a wildcard and an event_property_is condition cost constant work
+// bounded by the rule caps, so they always run, and the default `.m.rule.message` is one of them.
+SCENARIO("A spent glob budget does not stop wildcard-free conditions from matching", "[push][security][gate-h]")
+{
+    GIVEN("200 non-matching body globs that exhaust the budget, then a type rule and a property rule")
+    {
+        auto pattern = std::string(511U, '*');
+        pattern += 'z';
+        auto body = std::string{};
+        while (body.size() < 64U * 1024U)
+        {
+            body += "a ";
+        }
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                      Object{str_member("body", body), str_member("msgtype", "m.text")});
+
+        WHEN("the next rule is event_match on type with a wildcard-free pattern")
+        {
+            auto overrides = Array{};
+            for (auto i = 0; i < 200; ++i)
+            {
+                overrides.push_back(make_rule("exhaust" + std::to_string(i), true,
+                                              Array{cond_event_match("content.body", pattern)}, Array{}));
+            }
+            overrides.push_back(make_rule(".m.rule.message", true, Array{cond_event_match("type", "m.room.message")},
+                                          Array{action_notify()}));
+            auto object = Object{};
+            object.push_back(make_member("override", Value{std::move(overrides)}));
+            auto const result =
+                merovingian::push::evaluate_push_rules(merovingian::push::parse_push_ruleset(object), event, context);
+
+            THEN("the budget ran out, and the rule still matches")
+            {
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE(result.notify);
+                REQUIRE(result.matched_rule_id == ".m.rule.message");
+            }
+        }
+
+        WHEN("the next rule is event_property_is on content.msgtype")
+        {
+            auto overrides = Array{};
+            for (auto i = 0; i < 200; ++i)
+            {
+                overrides.push_back(make_rule("exhaust" + std::to_string(i), true,
+                                              Array{cond_event_match("content.body", pattern)}, Array{}));
+            }
+            overrides.push_back(make_rule(
+                "by-property", true, Array{cond_event_property_is("content.msgtype", Value{std::string{"m.text"}})},
+                Array{action_notify()}));
+            auto object = Object{};
+            object.push_back(make_member("override", Value{std::move(overrides)}));
+            auto const result =
+                merovingian::push::evaluate_push_rules(merovingian::push::parse_push_ruleset(object), event, context);
+
+            THEN("the budget ran out, and the rule still matches")
+            {
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE(result.notify);
+                REQUIRE(result.matched_rule_id == "by-property");
+            }
+        }
+    }
+}

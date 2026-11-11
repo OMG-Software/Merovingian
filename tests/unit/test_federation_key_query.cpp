@@ -77,7 +77,7 @@ SCENARIO("Federation device-key query returns published device and cross-signing
         WHEN("an all-devices query is built")
         {
             auto const body = merovingian::federation::build_device_keys_query_response(
-                store, R"({"device_keys":{"@alice:remote.example.org":[]}})");
+                store, R"({"device_keys":{"@alice:remote.example.org":[]}})", "remote.example.org");
 
             THEN("the response parses to a JSON object with all required key maps")
             {
@@ -116,7 +116,7 @@ SCENARIO("Federation device-key query returns published device and cross-signing
         WHEN("a query restricted to one device is built")
         {
             auto const body = merovingian::federation::build_device_keys_query_response(
-                store, R"({"device_keys":{"@alice:remote.example.org":["DEVICE1"]}})");
+                store, R"({"device_keys":{"@alice:remote.example.org":["DEVICE1"]}})", "remote.example.org");
 
             THEN("only the requested device appears under alice and DEVICE2 is absent")
             {
@@ -144,7 +144,8 @@ SCENARIO("Federation device-key query returns published device and cross-signing
 
         WHEN("a malformed request body is supplied")
         {
-            auto const body = merovingian::federation::build_device_keys_query_response(store, "not json");
+            auto const body =
+                merovingian::federation::build_device_keys_query_response(store, "not json", "example.org");
 
             THEN("an empty string signals the malformed request")
             {
@@ -155,7 +156,7 @@ SCENARIO("Federation device-key query returns published device and cross-signing
 
         WHEN("the request omits the required device_keys object")
         {
-            auto const body = merovingian::federation::build_device_keys_query_response(store, "{}");
+            auto const body = merovingian::federation::build_device_keys_query_response(store, "{}", "example.org");
 
             THEN("an empty string signals the malformed request")
             {
@@ -166,7 +167,7 @@ SCENARIO("Federation device-key query returns published device and cross-signing
         WHEN("the request supplies a non-array device list")
         {
             auto const body = merovingian::federation::build_device_keys_query_response(
-                store, R"({"device_keys":{"@alice:remote.example.org":{}}})");
+                store, R"({"device_keys":{"@alice:remote.example.org":{}}})", "remote.example.org");
 
             THEN("an empty string signals the malformed request")
             {
@@ -192,7 +193,8 @@ SCENARIO("Federation one-time-key claim consumes and returns a stored key", "[fe
         WHEN("the key is claimed")
         {
             auto const body = merovingian::federation::build_one_time_keys_claim_response(
-                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})");
+                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})",
+                "remote.example.org");
 
             THEN("the response contains the claimed key in the correct nested structure")
             {
@@ -242,7 +244,8 @@ SCENARIO("Federation one-time-key claim falls back to a matching fallback key wh
         WHEN("a signed_curve25519 key is claimed over federation")
         {
             auto const body = merovingian::federation::build_one_time_keys_claim_response(
-                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})");
+                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})",
+                "remote.example.org");
 
             THEN("the response returns the matching fallback key and leaves it reusable")
             {
@@ -276,7 +279,7 @@ SCENARIO("Federation one-time-key claim falls back to a matching fallback key wh
 
         WHEN("the request omits the required one_time_keys object")
         {
-            auto const body = merovingian::federation::build_one_time_keys_claim_response(store, "{}");
+            auto const body = merovingian::federation::build_one_time_keys_claim_response(store, "{}", "example.org");
 
             THEN("an empty string signals the malformed request")
             {
@@ -287,7 +290,7 @@ SCENARIO("Federation one-time-key claim falls back to a matching fallback key wh
         WHEN("the request supplies a non-string algorithm entry")
         {
             auto const body = merovingian::federation::build_one_time_keys_claim_response(
-                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":{}}}})");
+                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":{}}}})", "remote.example.org");
 
             THEN("an empty string signals the malformed request")
             {
@@ -543,8 +546,8 @@ SCENARIO("Federation device-key query publishes the owner's cross-signing signat
 
         WHEN("a remote server queries the user's keys")
         {
-            auto const root = parse_root(
-                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+            auto const root = parse_root(fed::build_device_keys_query_response(
+                store, R"({"device_keys":{"@alice:example.org":[]}})", "example.org"));
 
             THEN("the device carries the owner's self-signing signature as well as its own")
             {
@@ -990,7 +993,7 @@ SCENARIO("The display names of a query's users are read in one pass and keyed by
             store.device_keys.push_back(
                 {"@bob:example.org", "SHARED", R"({"device_id":"SHARED","user_id":"@bob:example.org"})"});
             auto const root = parse_root(fed::build_device_keys_query_response(
-                store, R"({"device_keys":{"@alice:example.org":[],"@bob:example.org":[]}})"));
+                store, R"({"device_keys":{"@alice:example.org":[],"@bob:example.org":[]}})", "example.org"));
 
             THEN("each user's device is published under that user's own name")
             {
@@ -1026,8 +1029,8 @@ SCENARIO("Federation publishes a device's current display name, not the one it h
 
         WHEN("a remote server queries the user's keys")
         {
-            auto const root = parse_root(
-                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+            auto const root = parse_root(fed::build_device_keys_query_response(
+                store, R"({"device_keys":{"@alice:example.org":[]}})", "example.org"));
 
             THEN("the device carries its current display name")
             {
@@ -1066,8 +1069,8 @@ SCENARIO("Federation publishes a device's current display name, not the one it h
 
         WHEN("a remote server queries the user's keys")
         {
-            auto const root = parse_root(
-                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+            auto const root = parse_root(fed::build_device_keys_query_response(
+                store, R"({"device_keys":{"@alice:example.org":[]}})", "example.org"));
 
             THEN("no display name is published, rather than the stale one")
             {

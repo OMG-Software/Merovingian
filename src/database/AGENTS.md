@@ -23,6 +23,8 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
 | `LibraryVersions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
+| `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
+| `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
@@ -118,6 +120,20 @@ memberships.size()` and each position names a row of the room; otherwise a reade
 to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
 creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
 and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
+`membership_user_index` is the same index keyed by user (`for_each_user_membership_row`, ADR-0609), maintained at the same points and counted in `membership_rows_examined`. Read a user's rows through it, not by scanning `memberships`.
+## Row position indexes for keys, users and backups (ADR-0603, ADR-0605, ADR-0606)
+
+`RowKeyIndex` (unique key to position) and `RowGroupIndex` (rows sharing a key, as a linked list) sit beside `users`,
+`memberships` (by room and user), `devices`, `device_keys`, `cross_signing_keys`, `one_time_keys`, `fallback_keys` and the
+key backup tables. Same trust rule as the state index: used only while built for the vector's current row count, else a
+reader scans. A writer calls its `sync_*` first and `note_appended` after a push; an erase of `one_time_keys`,
+`key_backup_sessions` or rows of a key table moves the last row into the gap (`erase_row_swap`), so those vectors have no
+meaningful order; `devices` and `key_backup_versions` keep order and rebuild. Hydration calls `rebuild_key_indexes`.
+Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`,
+`for_each_user_device_key`, `find_device_key`, `find_key_backup_session`, `count_key_backup_sessions`, never by looping the
+vector in a request. Tests prove cost with `user_rows_examined`, `membership_rows_examined`, `key_rows_examined`,
+`key_backup_rows_examined` and `device_table_rows_examined`.
+
 ## The relation index (ADR-0430)
 
 `EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,
@@ -173,6 +189,12 @@ Write only through `insert`, `erase`, `reassign` and `clear` (hydration uses `in
 the hole, so row order means nothing. The table has no lock: a reader needs exclusion from writers (`runtime.mutex`).
 
 ## Credential tables (F-08, ADR-0325, ADR-0488)
+
+`PersistentStore::forward_extremities` is a `ForwardExtremityTable`: it owns the tips and counts them per (room, server of
+the sender), so a writer cannot leave the counts wrong. A hydrating loader inserts each tip with no sender and calls
+`rebuild_forward_extremity_servers` once the events are indexed (ADR-0602). `PersistentStore::resolved_state_memo` is read
+under `runtime.mutex` only. Anything that changes a stored event's JSON or status calls `forget_room`, or a later resolution
+reuses a result that read the old value (ADR-0600).
 
 `PersistentStore::access_tokens` and `refresh_tokens` are `CredentialTable<Row>` (header-only,
 `include/merovingian/database/CredentialTable.hpp`), not vectors: they own their rows, show them read-only and index them

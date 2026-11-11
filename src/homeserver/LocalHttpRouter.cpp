@@ -1237,10 +1237,7 @@ namespace
     // this server has never heard of, not to re-derive visibility rules.
     [[nodiscard]] auto room_has_local_membership(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
-        auto const& memberships = runtime.database.persistent_store.memberships;
-        return std::ranges::any_of(memberships, [room_id](database::PersistentMembership const& membership) {
-            return membership.room_id == room_id;
-        });
+        return database::has_room_membership_row(runtime.database.persistent_store, room_id);
     }
 
     // FED-8: a receipt's subject user must be joined to the room. Receipts for
@@ -1251,10 +1248,9 @@ namespace
     [[nodiscard]] auto user_is_joined_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
                                               std::string_view user_id) -> bool
     {
-        auto const& memberships = runtime.database.persistent_store.memberships;
-        return std::ranges::any_of(memberships, [&](database::PersistentMembership const& membership) {
-            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
-        });
+        auto const* const membership =
+            database::find_membership_row(runtime.database.persistent_store, room_id, user_id);
+        return membership != nullptr && membership->membership == "join";
     }
 
     // FED-11: a remote-only, departed or banned membership row does not make
@@ -1393,10 +1389,8 @@ namespace
         {
             return false;
         }
-        return std::ranges::any_of(runtime.database.persistent_store.users,
-                                   [user_id](database::PersistentUser const& user) {
-                                       return user.user_id == user_id && !user.deactivated;
-                                   });
+        auto const* const user = database::find_user_row(runtime.database.persistent_store, user_id);
+        return user != nullptr && !user->deactivated;
     }
 
     // The registered devices of `user_id` that a to-device `device_key`
@@ -1407,13 +1401,14 @@ namespace
                                                   std::string_view device_key) -> std::vector<std::string>
     {
         auto devices = std::vector<std::string>{};
-        for (auto const& device : runtime.database.persistent_store.devices)
-        {
-            if (device.user_id == user_id && (device_key == "*" || device.device_id == device_key))
-            {
-                devices.push_back(device.device_id);
-            }
-        }
+        database::for_each_user_device(runtime.database.persistent_store, user_id,
+                                       [&](database::PersistentDevice const& device) {
+                                           if (device_key == "*" || device.device_id == device_key)
+                                           {
+                                               devices.push_back(device.device_id);
+                                           }
+                                           return true;
+                                       });
         return devices;
     }
 
@@ -1531,8 +1526,18 @@ namespace
         // Build every message first. Nothing is stored (and so nothing can be
         // left half stored) until the whole EDU has been validated and capped.
         auto pending = std::vector<database::PersistentToDeviceMessage>{};
+        auto users_looked_at = std::size_t{0U};
+        auto device_keys_looked_at = std::size_t{0U};
         for (auto const& user_entry : *messages)
         {
+            // A peer chooses how many users and devices the EDU names; only so many are looked up (ADR-0603).
+            if (users_looked_at == max_inbound_direct_to_device_users ||
+                device_keys_looked_at >= max_inbound_direct_to_device_device_keys)
+            {
+                result.truncated = true;
+                break;
+            }
+            ++users_looked_at;
             auto const* device_map = std::get_if<canonicaljson::Object>(&user_entry.value->storage());
             if (device_map == nullptr)
             {
@@ -1549,6 +1554,12 @@ namespace
                 {
                     continue;
                 }
+                if (device_keys_looked_at == max_inbound_direct_to_device_device_keys)
+                {
+                    result.truncated = true;
+                    break;
+                }
+                ++device_keys_looked_at;
                 auto const devices = addressed_devices_for_user(runtime, user_entry.key, device_entry.key);
                 if (devices.empty())
                 {
@@ -1895,8 +1906,19 @@ namespace
                 {
                     return {federation::EduDispositionStatus::rejected_invalid, "receipt content must be an object"};
                 }
+                auto rooms_looked_at = std::size_t{0U};
+                auto users_looked_at = std::size_t{0U};
+                auto receipt_budget_spent = false;
                 for (auto const& room_member : *root)
                 {
+                    // A peer chooses how many rooms and users the EDU names; only so many are looked at, and the
+                    // rest dropped, as m.presence does (ADR-0603).
+                    if (receipt_budget_spent || rooms_looked_at == max_inbound_receipt_rooms_per_edu)
+                    {
+                        receipt_budget_spent = true;
+                        break;
+                    }
+                    ++rooms_looked_at;
                     // 0.12.5 audit, finding 13: skip rooms this server holds no
                     // membership in. Skipping rather than rejecting the whole
                     // EDU: a receipt transaction legitimately batches several
@@ -1935,6 +1957,12 @@ namespace
                         }
                         for (auto const& user_member : *users)
                         {
+                            if (users_looked_at == max_inbound_receipt_users_per_edu)
+                            {
+                                receipt_budget_spent = true;
+                                break;
+                            }
+                            ++users_looked_at;
                             // FED-8: the receipt subject must be a joined member
                             // of this room. Invited, knocked, left or banned users
                             // cannot legitimately update read receipts, so this
@@ -2044,6 +2072,16 @@ namespace
                             }
                         }
                     }
+                }
+                if (receipt_budget_spent)
+                {
+                    log_diagnostic("federation.edu.receipt.truncated",
+                                   {
+                                       {"origin", envelope.origin,                                   false},
+                                       {"rooms",  std::to_string(max_inbound_receipt_rooms_per_edu), false},
+                                       {"users",  std::to_string(max_inbound_receipt_users_per_edu), false}
+                    },
+                                   observability::LogEventSeverity::warning);
                 }
                 if (rt->sync_notifier != nullptr)
                 {
@@ -2747,6 +2785,19 @@ namespace
                 return membership_outcome_refusal(outcome_reason);
             }
 
+            // A membership that could not become a tip would be stored and take no effect, and a resend
+            // would be refused as not being current (ADR-0602). Refused here it is retryable with nothing
+            // stored: a fresh make_join cites the current tips, and an event citing a tip is never refused.
+            if (!event_may_become_forward_extremity(
+                    store, room_id, envelope.sender, envelope.prev_event_ids, true,
+                    state_resolution_limits(rt->config.security().federation.state_resolution)))
+            {
+                LOG_WARNING("Membership PDU refused: its server holds its share of the room's forward extremities; "
+                            "room_id=" +
+                            std::string{room_id} + " event_id=" + envelope.event_id);
+                return {false, 503U, "the sending server holds too many of this room's forward extremities", {}, {}};
+            }
+
             // What the answer to a send_join will hold, and whether it can be delivered, are
             // settled BEFORE the join is stored (F-23): a join stored and sent on to the room's
             // servers whose answer is then too big for the worker channel is committed but lost
@@ -3220,11 +3271,13 @@ namespace
         };
 
         runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {
-            return federation::build_device_keys_query_response(rt->database.persistent_store, body);
+            return federation::build_device_keys_query_response(rt->database.persistent_store, body,
+                                                                rt->config.server().server_name);
         };
 
         runtime.federation.one_time_keys_claim_provider = [rt](std::string_view body) -> std::string {
-            return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body);
+            return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body,
+                                                                  rt->config.server().server_name);
         };
 
         runtime.federation.user_devices_provider = [rt](std::string_view user_id) -> std::string {
@@ -5621,25 +5674,26 @@ namespace
         }
     }
 
-    // F-49, ADR-0374: an accepted event that adds no state and would take the room past the most forward
-    // extremities that can be resolved is stored, delivered and placed by its own prev_events as
-    // usual, but it is not made a tip. A state event is always a tip: it is what a ban or a demotion
-    // looks like, and it must reach resolution whatever the room's message forks.
+    // F-49, ADR-0374, ADR-0602: an accepted event that would take the room past the most forward extremities
+    // that can be resolved, or its sender's server past its share of them, is stored, delivered and placed by
+    // its own prev_events as usual, but it is not made a tip. A server is charged only for its own events, so
+    // a ban or a demotion from an honest server reaches resolution whatever another server's forks.
     auto const becomes_forward_extremity =
         outcome == ReceiptOutcome::accepted &&
-        (envelope.state_key.has_value() ||
-         forward_extremities_stay_bounded(
-             runtime.database.persistent_store, room_id, envelope.prev_event_ids,
-             state_resolution_limits(runtime.config.security().federation.state_resolution)));
+        event_may_become_forward_extremity(
+            runtime.database.persistent_store, room_id, envelope.sender, envelope.prev_event_ids,
+            envelope.state_key.has_value(),
+            state_resolution_limits(runtime.config.security().federation.state_resolution));
 
     // The naive immediate current_state write (see recompute_current_state's
     // doc comment on why this is safe: it is always reconciled against the
     // forward-extremity resolution right below) only ever applies to an
     // accepted event. A rejected event must never update state at all; a
     // soft-failed one only enters current_state if resolution later admits
-    // it via recompute_current_state, never through this shortcut.
+    // it via recompute_current_state, never through this shortcut. Neither does an accepted event
+    // that is not a tip (ADR-0602): no tip holds its state, so nothing would reconcile the row.
     auto state = std::optional<database::PersistentStateEvent>{};
-    if (envelope.state_key.has_value() && outcome == ReceiptOutcome::accepted)
+    if (envelope.state_key.has_value() && becomes_forward_extremity)
     {
         state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
     }
@@ -5677,7 +5731,7 @@ namespace
     // invite change commit in the event's own transaction, so a ban is never
     // durable while the row still says join.
     auto membership = std::string{};
-    if (outcome == ReceiptOutcome::accepted && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    if (becomes_forward_extremity && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
     {
         auto const* mem_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
         auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;

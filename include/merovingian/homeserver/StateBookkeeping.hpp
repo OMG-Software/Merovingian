@@ -141,6 +141,10 @@ namespace merovingian::homeserver
 // state budget), so a caller must not read it as success: until the next recomputation resolves,
 // current state is the cache it was plus each accepted event's own row. `write_failed` is a
 // backend write failure.
+//
+// While the room's distinct state groups are the ones last resolved, the remembered result is
+// applied instead of resolving again (ADR-0600); the diff and the writes below it are the same.
+// The caller holds runtime.mutex, as the memo has no lock of its own.
 [[nodiscard]] auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
                                            rooms::RoomVersionPolicy const& policy,
                                            events::StateResolutionLimits const& limits = {}) -> CurrentStateRecompute;
@@ -150,13 +154,27 @@ namespace merovingian::homeserver
 // number past `limits.max_state_groups` (F-49, ADR-0374). An event that cites a current
 // extremity replaces it and never grows the set, so it is always allowed; one that cites only
 // older events adds a tip, and past the limit it is refused. The caller still stores, delivers
-// and places such an event by its own prev_events; it only does not make it a tip. A state event
-// is always a tip (a ban or a demotion must reach resolution), and a local event retires the tips
-// it cites, so neither asks. recompute_current_state resolves extremities that share a state
-// group as one state, so the tips this bounds cost resolution nothing.
+// and places such an event by its own prev_events; it only does not make it a tip. A local event
+// retires the tips it cites, so it does not ask. recompute_current_state resolves extremities that
+// share a state group as one state, so the tips this bounds cost resolution nothing.
 [[nodiscard]] auto forward_extremities_stay_bounded(database::PersistentStore const& store, std::string_view room_id,
                                                     std::vector<std::string> const& prev_event_ids,
                                                     events::StateResolutionLimits const& limits) -> bool;
+
+// Whether an accepted inbound event may become one of `room_id`'s forward extremities (ADR-0602, refining
+// ADR-0374). One that cites a current tip replaces it and always may. Otherwise it may while the server of
+// `sender_user_id` holds fewer than `limits.max_state_tips_per_server` of the room's tips, and a message also while the
+// room holds fewer than `limits.max_state_groups`. Past its server's cap a message may still become a tip if its one
+// prev_event's state group is held by a tip, since it then adds no state to resolve. A server is only ever charged for
+// its own events, so a ban or a demotion from an honest server is unaffected by another server's forks.
+//
+// An event refused here is stored, delivered and given its state group, but writes no `current_state` row and no
+// membership: nothing would ever reconcile either, since no tip holds its state.
+[[nodiscard]] auto event_may_become_forward_extremity(database::PersistentStore const& store, std::string_view room_id,
+                                                      std::string_view sender_user_id,
+                                                      std::vector<std::string> const& prev_event_ids,
+                                                      bool is_state_event, events::StateResolutionLimits const& limits)
+    -> bool;
 
 // ---- Local event-creation choke point (ADR-0064 phase B1, continued) ----
 //

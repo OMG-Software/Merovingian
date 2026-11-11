@@ -2806,8 +2806,10 @@ nothing, all from trusting the worker's view or the hook's transport.
   reverted, such as a demoted moderator's, stayed current. **Mitigation:** extremities that share a state group resolve as
   one, so message floods cost one state; an accepted event with no `state_key` is not made a tip once the room holds
   `max_state_groups` of them (ADR-0374); a refusal is a distinct status, logged at warning level, and callers handle it
-  (ADR-0375). Tests: `[f49]`. **Residual risk:** more than `max_state_groups` distinct state tips (one accepted state event
-  each, such as profile changes) or a room whose state exceeds `max_total_state_events` still refuses; current state is then
+  (ADR-0375). One server holds at most `max_state_tips_per_server` tips unless an event cites a current tip (ADR-0602), and
+  a PDU that leaves the distinct state groups unchanged reuses the last result (ADR-0600). Tests: `[f49]`, `[tip_cap]`,
+  `[state_memo]`. **Residual risk:** many colluding servers can still approach `max_state_groups` distinct state tips
+  between them, and more than that or a room whose state exceeds `max_total_state_events` still refuses; current state is then
   the cache plus each accepted event's own row, and a state event resolution would revert can stay current until the tips
   are back within budget. Freezing current state instead would drop a ban, so it is not done.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,
@@ -2824,7 +2826,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   tree for every page, `/threads` parsed every event on the server and looked roots up linearly, and one long message
   multiplied body length, pattern length and rule count in push matching. **Mitigation:** a state index and a set
   (ADR-0344); a page-bounded walk of at most 4096 rooms and a 10000-event, per-room, hash-keyed thread scan
-  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343).
+  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343); globs on other keys draw from the same budget and refuse a wildcard match on a value over 4096 bytes (ADR-0607).
   **Residual risk:** past those bounds a very large space or busy room is answered from its first rooms or newest
   events, and `/members` still walks the server-wide `memberships` vector once. Tests: `[f10]`, `[f32]`, `[f33]`,
   `[f39]`.

@@ -932,7 +932,7 @@ SCENARIO("signed federation user/keys/query returns device and cross-signing map
 
         auto const store = store_with_alice_e2ee_keys();
         runtime.device_keys_query_provider = [store](std::string_view body) {
-            return merovingian::federation::build_device_keys_query_response(store, body);
+            return merovingian::federation::build_device_keys_query_response(store, body, "remote.example.org");
         };
 
         WHEN("a signed user/keys/query request is dispatched")
@@ -990,7 +990,7 @@ SCENARIO("signed federation user/keys/claim returns the claimed nested one-time 
         store.one_time_keys.push_back(
             {"@alice:remote.example.org", "DEVICE1", "signed_curve25519:AAAABBBB", "{\"key\":\"otk-payload\"}"});
         runtime.one_time_keys_claim_provider = [store](std::string_view body) mutable {
-            return merovingian::federation::build_one_time_keys_claim_response(store, body);
+            return merovingian::federation::build_one_time_keys_claim_response(store, body, "remote.example.org");
         };
 
         WHEN("a signed user/keys/claim request is dispatched")

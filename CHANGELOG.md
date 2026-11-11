@@ -1,3 +1,43 @@
+## 0.12.91
+
+Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
+
+### One state resolution reads each auth chain once (ADR-0599)
+
+State resolution walked the auth chain of every state event from the beginning, again for every power event, and again for every event it put on the mainline, so a room whose many state events cite one deep chain cost their product with the runtime lock held. It now reads the graph once, works out the auth difference with a bit per state group, and remembers mainline positions. The results and the refusals are unchanged.
+
+### A message no longer resolves a room's state again (ADR-0600, ADR-0601)
+
+Every accepted PDU resolved all of a room's distinct forward-extremity states again, and parsed each stored event once per state group naming it. Each recomputation now parses an event once, and each room remembers its last resolved state by its sorted distinct state groups. A PDU that leaves those groups unchanged, such as a message, reuses the result and still applies it through the normal write path. The memo is in memory only, holds at most 256 rooms and 131072 rows, keeps only successes, and forgets a room when an event's JSON or status changes or the room is reloaded. Folding a change into the previous result was rejected, because state resolution is not associative.
+
+### One server can hold only its share of a room's forward extremities (ADR-0602)
+
+An accepted event that cites no current tip no longer becomes a tip once its sender's server holds `security.federation.state_resolution.max_state_tips_per_server` (default 32) of the room's tips. It is still stored, delivered and given its state group, but it writes no `current_state` row or membership. An event citing a current tip replaces it and is never refused, and a server is charged only for its own events, so an honest server's ban or demotion still reaches resolution. A message past the limit stays a tip only if it adds no distinct state. A `send_join`, `send_leave` or `send_knock` past the limit is answered 503 with nothing stored, and a retry through a fresh `make_join` succeeds.
+
+### Push rules: glob conditions on every key share the step budget (ADR-0607)
+
+An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans; a wildcard-free pattern and `event_property_is` are never charged or refused, so the default rules still run when the budget is spent. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
+
+### Push badge: the recipients of one event share a budget (ADR-0608)
+
+The unread badge walked up to 10,000 events per recipient with an http pusher, under the runtime lock, so one message to a busy room cost recipients times a full walk. The recipients of one event now share 10,000 rows and 16 badge computations. A badge that ends uncapped is exact as before. A recipient past the budget is sent the notification without an `unread` count, so the client keeps its last badge, and recipients draw on the budget from a point that moves with the event so the same members are not always the ones skipped. Tests: `[push-badge][gate-h]` in `tests/unit/test_push_badge_count.cpp` and `[push-gateway][gate-h]` in `tests/unit/test_push_gateway_client.cpp`.
+
+### Sliding sync: the long-poll relevance check is bounded (ADR-0609)
+
+A sliding-sync request with a timeout checked each newer event with a scan of every membership row, before it parked, so an account with no room could hold the runtime lock for seconds. The check now builds the caller's joined-room set once, through a new per-user membership index (`for_each_user_membership_row`, also used by `room_access_index` and the push badge), answers at once for an account with no room, and walks at most 2048 events; reaching that cap answers the poll rather than parking it, and the next poll parks. The receipt and typing checks use the same set. Tests: `[gate-h]` in `tests/integration/test_sliding_sync_flow.cpp` and `[membership-user-index]` in `tests/unit/test_sync_notifier.cpp`.
+
+### A federation EDU can no longer make the EDU sink scan whole tables (ADR-0603)
+
+One signed `/send` transaction could name up to 65536 rooms or users in an `m.receipt` EDU, or users and devices in an `m.direct_to_device` EDU, and each name made the sink scan the whole membership, user or device table with the runtime lock held. Rooms, memberships, users and devices are now found through indexes beside their tables, so a name costs the rows it names. An EDU is also read only so far: 512 rooms and 256 users of a receipt, 1024 users and 4096 device keys of a to-device EDU. The rest is dropped and logged, as presence already does. Tests: `tests/integration/test_federation_edu_sink_cost_flow.cpp` (new), `tests/unit/test_key_row_indexes.cpp` (new).
+
+### Federation key queries and claims cost the entries they name (ADR-0604, ADR-0605)
+
+`/user/keys/query` and `/user/keys/claim` scanned a whole key table per user and device named, for users that need not exist and need not be ours. They now answer for this server's own users only, look keys up through indexes of one-time keys, fallback keys, device keys, devices and cross-signing keys, and refuse a request naming more than 25000 users and devices with 413 `M_TOO_LARGE` before any key is claimed. The checks on a remote server's answer to our own queries use sets instead of a search per key. A claimed one-time key is removed by moving the last row into its place. Tests: `tests/unit/test_federation_key_request_cost.cpp` (new), `tests/unit/test_key_row_indexes.cpp` (new); `tests/unit/test_federation_key_query.cpp` and `tests/conformance/test_federation_conformance.cpp` pass the local server name.
+
+### Key backup is indexed and capped per user (ADR-0606)
+
+One `PUT /room_keys/keys` of 100000 small sessions took quadratic time under the runtime lock, and a user could store any number of sessions and versions. Sessions are now indexed by backup and by session, so a batch costs its own size and the count and etag come from the index. New `server.client_api.max_key_backup_sessions_per_user` (default 500000) and `max_key_backup_versions_per_user` (default 100) refuse, with 400 `M_TOO_LARGE` and before any write, a request that would take a user over them, counting only the sessions the request adds, so re-uploading a held backup always works. Tests: `tests/integration/test_key_backup_quota_flow.cpp` (new), `tests/unit/test_key_row_indexes.cpp`, `tests/unit/test_config_operational_limits.cpp`.
+
 ## 0.12.90
 
 Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.

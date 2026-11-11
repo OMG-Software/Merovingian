@@ -70,6 +70,8 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/RedactionState.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/RowGroupIndex.hpp"
+#include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/events/Limits.hpp"
@@ -87,6 +89,7 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -218,9 +221,7 @@ namespace
 
     [[nodiscard]] auto membership_exists(PersistentStore const& store, PersistentMembership const& membership) -> bool
     {
-        return std::ranges::any_of(store.memberships, [&membership](PersistentMembership const& existing) {
-            return existing.room_id == membership.room_id && existing.user_id == membership.user_id;
-        });
+        return find_membership_row(store, membership.room_id, membership.user_id) != nullptr;
     }
 
     [[nodiscard]] auto serialize_invite_state_events_json(std::vector<std::string> const& event_json)
@@ -330,9 +331,12 @@ namespace
 
     [[nodiscard]] auto device_exists(PersistentStore const& store, PersistentDevice const& device) -> bool
     {
-        return std::ranges::any_of(store.devices, [&device](PersistentDevice const& existing) {
-            return existing.user_id == device.user_id && existing.device_id == device.device_id;
+        auto found = false;
+        for_each_user_device(store, device.user_id, [&](PersistentDevice const& existing) {
+            found = existing.device_id == device.device_id;
+            return !found;
         });
+        return found;
     }
 
     [[nodiscard]] auto access_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
@@ -577,12 +581,453 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     return true;
 }
 
+namespace
+{
+
+    // A key made of several parts, separated by NUL (which no Matrix identifier may hold).
+    [[nodiscard]] auto composite_key(std::initializer_list<std::string_view> parts) -> std::string
+    {
+        auto key = std::string{};
+        for (auto const part : parts)
+        {
+            key.append(part);
+            key.push_back('\0');
+        }
+        return key;
+    }
+
+    // The positions the index lists under `group`, when it is in step with `rows` and every position names a row
+    // that `matches`; nullopt when the caller must scan instead (ADR-0603).
+    template <typename Row, typename Matches>
+    [[nodiscard]] auto indexed_positions(RowGroupIndex const& index, std::vector<Row> const& rows,
+                                         std::string const& group, Matches matches)
+        -> std::optional<std::vector<std::size_t>>
+    {
+        if (!index.in_step(rows.size()))
+        {
+            return std::nullopt;
+        }
+        auto positions = std::vector<std::size_t>{};
+        auto consistent = true;
+        index.for_each(group, [&](std::size_t position) {
+            if (position >= rows.size() || !matches(rows[position]))
+            {
+                consistent = false;
+                return false;
+            }
+            positions.push_back(position);
+            return true;
+        });
+        if (!consistent)
+        {
+            return std::nullopt;
+        }
+        return positions;
+    }
+
+    // Erases the row at `position` by moving the last row into its place, and keeps the index in step. An index
+    // that was already stale is rebuilt, not patched: a stale index whose count happens to match the vector again
+    // would otherwise be trusted.
+    template <typename Row, typename GroupOf>
+    auto erase_row_swap(std::vector<Row>& rows, RowGroupIndex& index, std::size_t position, GroupOf group_of) -> void
+    {
+        auto const old_count = rows.size();
+        auto const was_in_step = index.in_step(old_count);
+        auto const erased_group = was_in_step ? group_of(rows[position]) : std::string{};
+        auto const last_group = was_in_step ? group_of(rows.back()) : std::string{};
+        if (position + 1U != old_count)
+        {
+            rows[position] = std::move(rows.back());
+        }
+        rows.pop_back();
+        if (was_in_step)
+        {
+            index.erase_swap(position, erased_group, last_group, old_count);
+        }
+        else
+        {
+            index.rebuild(rows, group_of);
+        }
+    }
+
+    // Erases every position in `positions` (any order) with `erase_row_swap`. Highest first, so the row moved
+    // into a gap is never one still to be erased.
+    template <typename Row, typename GroupOf>
+    auto erase_rows_swap(std::vector<Row>& rows, RowGroupIndex& index, std::vector<std::size_t> positions,
+                         GroupOf group_of) -> void
+    {
+        std::ranges::sort(positions, std::greater<>{});
+        for (auto const position : positions)
+        {
+            erase_row_swap(rows, index, position, group_of);
+        }
+    }
+
+    // The positions of the rows whose key is `group`, through the index while it is in step and by a scan of every
+    // row otherwise. `counter` gets the rows read.
+    template <typename Row, typename GroupOf>
+    [[nodiscard]] auto positions_in_group(RowGroupIndex const& index, std::vector<Row> const& rows,
+                                          std::string const& group, GroupOf group_of, ExaminedRows const& counter)
+        -> std::vector<std::size_t>
+    {
+        auto indexed = indexed_positions(index, rows, group, [&](Row const& row) {
+            return group_of(row) == group;
+        });
+        if (indexed.has_value())
+        {
+            counter.add(indexed->size());
+            return std::move(*indexed);
+        }
+        counter.add(rows.size());
+        auto positions = std::vector<std::size_t>{};
+        for (auto position = std::size_t{0U}; position < rows.size(); ++position)
+        {
+            if (group_of(rows[position]) == group)
+            {
+                positions.push_back(position);
+            }
+        }
+        return positions;
+    }
+
+    // The first row under `group` that satisfies `wanted`.
+    template <typename Row, typename GroupOf, typename Wanted>
+    [[nodiscard]] auto find_in_group(RowGroupIndex const& index, std::vector<Row> const& rows, std::string const& group,
+                                     GroupOf group_of, Wanted wanted, ExaminedRows const& counter)
+        -> std::optional<std::size_t>
+    {
+        if (index.in_step(rows.size()))
+        {
+            auto found = std::optional<std::size_t>{};
+            auto consistent = true;
+            index.for_each(group, [&](std::size_t position) {
+                counter.add(1U);
+                if (position >= rows.size() || group_of(rows[position]) != group)
+                {
+                    consistent = false;
+                    return false;
+                }
+                if (wanted(rows[position]))
+                {
+                    found = position;
+                    return false;
+                }
+                return true;
+            });
+            if (consistent)
+            {
+                return found;
+            }
+        }
+        counter.add(rows.size());
+        for (auto position = std::size_t{0U}; position < rows.size(); ++position)
+        {
+            if (group_of(rows[position]) == group && wanted(rows[position]))
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Erases every row under `group` that satisfies `wanted`.
+    template <typename Row, typename GroupOf, typename Wanted>
+    auto erase_from_group(std::vector<Row>& rows, RowGroupIndex& index, std::string const& group, GroupOf group_of,
+                          Wanted wanted, ExaminedRows const& counter) -> void
+    {
+        auto positions = positions_in_group(index, rows, group, group_of, counter);
+        std::erase_if(positions, [&](std::size_t position) {
+            return !wanted(rows[position]);
+        });
+        erase_rows_swap(rows, index, std::move(positions), group_of);
+    }
+
+    [[nodiscard]] auto user_key_of(PersistentUser const& user) -> std::string
+    {
+        return user.user_id;
+    }
+    [[nodiscard]] auto device_group_of(PersistentDevice const& device) -> std::string
+    {
+        return device.user_id;
+    }
+    [[nodiscard]] auto device_key_group_of(PersistentDeviceKey const& key) -> std::string
+    {
+        return key.user_id;
+    }
+    [[nodiscard]] auto one_time_key_group_of(PersistentOneTimeKey const& key) -> std::string
+    {
+        return composite_key({key.user_id, key.device_id});
+    }
+    [[nodiscard]] auto fallback_key_group_of(PersistentFallbackKey const& key) -> std::string
+    {
+        return composite_key({key.user_id, key.device_id});
+    }
+    [[nodiscard]] auto cross_signing_key_group_of(PersistentCrossSigningKey const& key) -> std::string
+    {
+        return key.user_id;
+    }
+    [[nodiscard]] auto backup_session_key_of(PersistentKeyBackupSession const& session) -> std::string
+    {
+        return composite_key({session.user_id, session.version, session.room_id, session.session_id});
+    }
+    [[nodiscard]] auto backup_session_group_of(PersistentKeyBackupSession const& session) -> std::string
+    {
+        return composite_key({session.user_id, session.version});
+    }
+    [[nodiscard]] auto backup_version_group_of(PersistentKeyBackupVersion const& version) -> std::string
+    {
+        return version.user_id;
+    }
+
+    // Each writer calls its `sync_*` first, so an index a direct edit of the vector left stale is rebuilt before
+    // the writer relies on it, and its `note_*` after appending a row.
+    auto sync_user_index(PersistentStore& store) -> void
+    {
+        if (!store.user_index.in_step(store.users.size()))
+        {
+            store.user_index.rebuild(store.users, user_key_of);
+        }
+    }
+    auto sync_device_index(PersistentStore& store) -> void
+    {
+        if (!store.device_user_index.in_step(store.devices.size()))
+        {
+            store.device_user_index.rebuild(store.devices, device_group_of);
+        }
+    }
+    auto sync_device_key_index(PersistentStore& store) -> void
+    {
+        if (!store.device_key_user_index.in_step(store.device_keys.size()))
+        {
+            store.device_key_user_index.rebuild(store.device_keys, device_key_group_of);
+        }
+    }
+    auto sync_one_time_key_index(PersistentStore& store) -> void
+    {
+        if (!store.one_time_key_device_index.in_step(store.one_time_keys.size()))
+        {
+            store.one_time_key_device_index.rebuild(store.one_time_keys, one_time_key_group_of);
+        }
+    }
+    auto sync_fallback_key_index(PersistentStore& store) -> void
+    {
+        if (!store.fallback_key_device_index.in_step(store.fallback_keys.size()))
+        {
+            store.fallback_key_device_index.rebuild(store.fallback_keys, fallback_key_group_of);
+        }
+    }
+    auto sync_cross_signing_key_index(PersistentStore& store) -> void
+    {
+        if (!store.cross_signing_key_user_index.in_step(store.cross_signing_keys.size()))
+        {
+            store.cross_signing_key_user_index.rebuild(store.cross_signing_keys, cross_signing_key_group_of);
+        }
+    }
+    auto sync_key_backup_session_indexes(PersistentStore& store) -> void
+    {
+        if (!store.key_backup_session_index.in_step(store.key_backup_sessions.size()))
+        {
+            store.key_backup_session_index.rebuild(store.key_backup_sessions, backup_session_key_of);
+        }
+        if (!store.key_backup_version_session_index.in_step(store.key_backup_sessions.size()))
+        {
+            store.key_backup_version_session_index.rebuild(store.key_backup_sessions, backup_session_group_of);
+        }
+    }
+    auto sync_key_backup_version_index(PersistentStore& store) -> void
+    {
+        if (!store.key_backup_user_version_index.in_step(store.key_backup_versions.size()))
+        {
+            store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
+        }
+    }
+    auto sync_membership_key_index(PersistentStore& store) -> void
+    {
+        if (!store.membership_key_index.in_step(store.memberships.size()))
+        {
+            store.membership_key_index.rebuild(store.memberships, [](PersistentMembership const& membership) {
+                return composite_key({membership.room_id, membership.user_id});
+            });
+        }
+    }
+
+} // namespace
+
+auto rebuild_key_indexes(PersistentStore& store) -> void
+{
+    store.user_index.rebuild(store.users, user_key_of);
+    store.device_user_index.rebuild(store.devices, device_group_of);
+    store.device_key_user_index.rebuild(store.device_keys, device_key_group_of);
+    store.one_time_key_device_index.rebuild(store.one_time_keys, one_time_key_group_of);
+    store.fallback_key_device_index.rebuild(store.fallback_keys, fallback_key_group_of);
+    store.cross_signing_key_user_index.rebuild(store.cross_signing_keys, cross_signing_key_group_of);
+    store.key_backup_session_index.rebuild(store.key_backup_sessions, backup_session_key_of);
+    store.key_backup_version_session_index.rebuild(store.key_backup_sessions, backup_session_group_of);
+    store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
+}
+
+[[nodiscard]] auto find_user_row(PersistentStore const& store, std::string_view user_id) -> PersistentUser const*
+{
+    if (store.user_index.in_step(store.users.size()))
+    {
+        store.user_rows_examined.add(1U);
+        auto const position = store.user_index.find(std::string{user_id});
+        if (!position.has_value())
+        {
+            return nullptr;
+        }
+        if (*position < store.users.size() && store.users[*position].user_id == user_id)
+        {
+            return &store.users[*position];
+        }
+    }
+    store.user_rows_examined.add(store.users.size());
+    auto const found = std::ranges::find_if(store.users, [user_id](PersistentUser const& user) {
+        return user.user_id == user_id;
+    });
+    return found == store.users.end() ? nullptr : &*found;
+}
+
+auto for_each_user_device(PersistentStore const& store, std::string_view user_id,
+                          std::function<bool(PersistentDevice const&)> const& visit) -> void
+{
+    auto const matches = [user_id](PersistentDevice const& device) {
+        return device.user_id == user_id;
+    };
+    if (auto const positions = indexed_positions(store.device_user_index, store.devices, std::string{user_id}, matches);
+        positions.has_value())
+    {
+        for (auto const position : *positions)
+        {
+            store.device_table_rows_examined.add(1U);
+            if (!visit(store.devices[position]))
+            {
+                return;
+            }
+        }
+        return;
+    }
+    store.device_table_rows_examined.add(store.devices.size());
+    for (auto const& device : store.devices)
+    {
+        if (matches(device) && !visit(device))
+        {
+            return;
+        }
+    }
+}
+
+auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
+                                     std::function<bool(PersistentCrossSigningKey const&)> const& visit) -> void
+{
+    for (auto const position :
+         positions_in_group(store.cross_signing_key_user_index, store.cross_signing_keys, std::string{user_id},
+                            cross_signing_key_group_of, store.key_rows_examined))
+    {
+        if (!visit(store.cross_signing_keys[position]))
+        {
+            return;
+        }
+    }
+}
+
+auto for_each_user_device_key(PersistentStore const& store, std::string_view user_id,
+                              std::function<bool(PersistentDeviceKey const&)> const& visit) -> void
+{
+    auto const matches = [user_id](PersistentDeviceKey const& key) {
+        return key.user_id == user_id;
+    };
+    if (auto const positions =
+            indexed_positions(store.device_key_user_index, store.device_keys, std::string{user_id}, matches);
+        positions.has_value())
+    {
+        for (auto const position : *positions)
+        {
+            store.device_table_rows_examined.add(1U);
+            if (!visit(store.device_keys[position]))
+            {
+                return;
+            }
+        }
+        return;
+    }
+    store.device_table_rows_examined.add(store.device_keys.size());
+    for (auto const& key : store.device_keys)
+    {
+        if (matches(key) && !visit(key))
+        {
+            return;
+        }
+    }
+}
+
+namespace
+{
+
+    // The position of the user's membership row in the room, through the (room, user) index while it is in step.
+    [[nodiscard]] auto find_membership_position(PersistentStore const& store, std::string_view room_id,
+                                                std::string_view user_id) -> std::optional<std::size_t>
+    {
+        if (store.membership_key_index.in_step(store.memberships.size()))
+        {
+            store.membership_rows_examined.add(1U);
+            auto const position = store.membership_key_index.find(composite_key({room_id, user_id}));
+            if (!position.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*position < store.memberships.size() && store.memberships[*position].room_id == room_id &&
+                store.memberships[*position].user_id == user_id)
+            {
+                return position;
+            }
+        }
+        store.membership_rows_examined.add(store.memberships.size());
+        for (auto position = std::size_t{0U}; position < store.memberships.size(); ++position)
+        {
+            if (store.memberships[position].room_id == room_id && store.memberships[position].user_id == user_id)
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto find_membership_row(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> PersistentMembership const*
+{
+    auto const position = find_membership_position(store, room_id, user_id);
+    return position.has_value() ? &store.memberships[*position] : nullptr;
+}
+
+auto has_room_membership_row(PersistentStore const& store, std::string_view room_id) -> bool
+{
+    if (store.membership_indexed_rows == store.memberships.size())
+    {
+        store.membership_rows_examined.add(1U);
+        auto const entry = store.membership_room_index.find(std::string{room_id});
+        if (entry == store.membership_room_index.end() || entry->second.empty())
+        {
+            return false;
+        }
+        auto const first = entry->second.front();
+        if (first < store.memberships.size() && store.memberships[first].room_id == room_id)
+        {
+            return true;
+        }
+    }
+    store.membership_rows_examined.add(store.memberships.size());
+    return std::ranges::any_of(store.memberships, [room_id](PersistentMembership const& membership) {
+        return membership.room_id == room_id;
+    });
+}
+
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool
 {
-    auto const duplicate = std::ranges::any_of(store.users, [&user](PersistentUser const& existing) {
-        return existing.user_id == user.user_id;
-    });
-    if (duplicate)
+    sync_user_index(store);
+    if (find_user_row(store, user.user_id) != nullptr)
     {
         return false;
     }
@@ -604,16 +1049,15 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         return false;
     }
     store.users.push_back(std::move(user));
+    store.user_index.note_appended(store.users.size(), store.users.back().user_id);
     return true;
 }
 
 [[nodiscard]] auto store_user_with_profile(PersistentStore& store, PersistentUser user, PersistentProfile profile)
     -> bool
 {
-    if (profile.user_id.empty() || profile.user_id != user.user_id ||
-        std::ranges::any_of(store.users, [&user](PersistentUser const& existing) {
-            return existing.user_id == user.user_id;
-        }))
+    sync_user_index(store);
+    if (profile.user_id.empty() || profile.user_id != user.user_id || find_user_row(store, user.user_id) != nullptr)
     {
         return false;
     }
@@ -640,6 +1084,7 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         return false;
     }
     store.users.push_back(std::move(user));
+    store.user_index.note_appended(store.users.size(), store.users.back().user_id);
     auto const existing = std::ranges::find_if(store.profiles, [&profile](PersistentProfile const& p) {
         return p.user_id == profile.user_id;
     });
@@ -771,7 +1216,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     {
         return false;
     }
+    sync_device_index(store);
     store.devices.push_back(std::move(device));
+    store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
     return true;
 }
 
@@ -888,7 +1335,9 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
     }
     if (device.has_value())
     {
+        sync_device_index(store);
         store.devices.push_back(std::move(*device));
+        store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
     }
     std::ignore = store.access_tokens.insert(std::move(token));
     return true;
@@ -1181,12 +1630,20 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
         return false;
     }
     store.devices.erase(existing);
+    store.device_user_index.rebuild(store.devices, device_group_of);
     auto const of_device = [user_id, device_id](auto const& key) {
         return key.user_id == user_id && key.device_id == device_id;
     };
-    std::erase_if(store.device_keys, of_device);
-    std::erase_if(store.one_time_keys, of_device);
-    std::erase_if(store.fallback_keys, of_device);
+    // Each key table drops the device's rows through its index (ADR-0603): the work is the device's own rows.
+    sync_device_key_index(store);
+    sync_one_time_key_index(store);
+    sync_fallback_key_index(store);
+    erase_from_group(store.device_keys, store.device_key_user_index, std::string{user_id}, device_key_group_of,
+                     of_device, store.device_table_rows_examined);
+    erase_from_group(store.one_time_keys, store.one_time_key_device_index, composite_key({user_id, device_id}),
+                     one_time_key_group_of, of_device, store.key_rows_examined);
+    erase_from_group(store.fallback_keys, store.fallback_key_device_index, composite_key({user_id, device_id}),
+                     fallback_key_group_of, of_device, store.key_rows_examined);
     std::erase_if(store.to_device_messages, [user_id, device_id](PersistentToDeviceMessage const& message) {
         return message.target_user_id == user_id && message.target_device_id == device_id;
     });
@@ -1621,6 +2078,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
         return;
     }
     auto const& room_id = snapshot.room_id;
+    store.resolved_state_memo.forget_room(room_id);
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -1863,12 +2321,19 @@ namespace
     // the next rebuild.
     auto note_membership_row_appended(PersistentStore& store) -> void
     {
+        if (!store.memberships.empty())
+        {
+            store.membership_key_index.note_appended(
+                store.memberships.size(),
+                composite_key({store.memberships.back().room_id, store.memberships.back().user_id}));
+        }
         if (store.memberships.empty() || store.membership_indexed_rows + 1U != store.memberships.size())
         {
             return;
         }
         auto const position = store.memberships.size() - 1U;
         store.membership_room_index[store.memberships[position].room_id].push_back(position);
+        store.membership_user_index[store.memberships[position].user_id].push_back(position);
         store.membership_indexed_rows = store.memberships.size();
     }
 
@@ -1876,9 +2341,10 @@ namespace
     auto apply_membership_projection(PersistentStore& store, std::string_view room_id,
                                      MembershipProjection const& projection) -> void
     {
-        auto const row = std::ranges::find_if(store.memberships, [&](PersistentMembership const& membership) {
-            return membership.room_id == room_id && membership.user_id == projection.user_id;
-        });
+        sync_membership_key_index(store);
+        auto const position = find_membership_position(store, room_id, projection.user_id);
+        auto const row = position.has_value() ? store.memberships.begin() + static_cast<std::ptrdiff_t>(*position)
+                                              : store.memberships.end();
         if (row == store.memberships.end())
         {
             store.memberships.push_back(
@@ -2075,6 +2541,7 @@ namespace
     {
         return MembershipStoreResult::error;
     }
+    sync_membership_key_index(store);
     if (membership_exists(store, membership))
     {
         log_diagnostic("membership.rejected", {
@@ -2517,11 +2984,49 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
 auto rebuild_membership_index(PersistentStore& store) -> void
 {
     store.membership_room_index.clear();
+    store.membership_user_index.clear();
     for (auto position = std::size_t{0U}; position < store.memberships.size(); ++position)
     {
         store.membership_room_index[store.memberships[position].room_id].push_back(position);
+        store.membership_user_index[store.memberships[position].user_id].push_back(position);
     }
     store.membership_indexed_rows = store.memberships.size();
+    store.membership_key_index.rebuild(store.memberships, [](PersistentMembership const& membership) {
+        return composite_key({membership.room_id, membership.user_id});
+    });
+}
+
+auto for_each_user_membership_row(PersistentStore const& store, std::string_view user_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void
+{
+    if (store.membership_indexed_rows == store.memberships.size())
+    {
+        auto const entry = store.membership_user_index.find(std::string{user_id});
+        if (entry == store.membership_user_index.end())
+        {
+            return;
+        }
+        auto const names_the_user = [&](std::size_t position) {
+            return position < store.memberships.size() && store.memberships[position].user_id == user_id;
+        };
+        if (std::ranges::all_of(entry->second, names_the_user))
+        {
+            store.membership_rows_examined.add(entry->second.size());
+            for (auto const position : entry->second)
+            {
+                visit(store.memberships[position]);
+            }
+            return;
+        }
+    }
+    store.membership_rows_examined.add(store.memberships.size());
+    for (auto const& row : store.memberships)
+    {
+        if (row.user_id == user_id)
+        {
+            visit(row);
+        }
+    }
 }
 
 auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,
@@ -3322,32 +3827,26 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 {
     for (auto const& replaced_event_id : replaced_event_ids)
     {
-        std::erase_if(store.forward_extremities,
-                      [room_id, &replaced_event_id](PersistentForwardExtremity const& extremity) {
-                          return extremity.room_id == room_id && extremity.event_id == replaced_event_id;
-                      });
+        std::ignore = store.forward_extremities.erase(room_id, replaced_event_id);
     }
-    if (!std::ranges::any_of(store.forward_extremities,
-                             [room_id, event_id](PersistentForwardExtremity const& extremity) {
-                                 return extremity.room_id == room_id && extremity.event_id == event_id;
-                             }))
-    {
-        store.forward_extremities.push_back({std::string{room_id}, std::string{event_id}});
-    }
+    auto const event = store.events.find(event_id);
+    std::ignore =
+        store.forward_extremities.insert({std::string{room_id}, std::string{event_id}},
+                                         event == store.events.end() ? std::string_view{} : event->sender_user_id);
+}
+
+auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
+{
+    store.forward_extremities.recount_servers([&store](std::string_view event_id) {
+        auto const event = store.events.find(event_id);
+        return event == store.events.end() ? std::string{} : event->sender_user_id;
+    });
 }
 
 [[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
     -> std::vector<std::string>
 {
-    auto result = std::vector<std::string>{};
-    for (auto const& extremity : store.forward_extremities)
-    {
-        if (extremity.room_id == room_id)
-        {
-            result.push_back(extremity.event_id);
-        }
-    }
-    return result;
+    return store.forward_extremities.tips_of_room(room_id);
 }
 
 [[nodiscard]] auto set_event_status(PersistentStore& store, std::string_view event_id, std::string_view status) -> bool
@@ -3367,6 +3866,8 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
     {
         return false;
     }
+    // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
+    store.resolved_state_memo.forget_room(existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
     });
@@ -3427,6 +3928,8 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
+    // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
+    store.resolved_state_memo.forget_room(existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);
     });
@@ -3455,25 +3958,33 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.device_keys, [&key](PersistentDeviceKey const& current) {
-        return current.user_id == key.user_id && current.device_id == key.device_id;
-    });
-    if (existing != store.device_keys.end())
+    sync_device_key_index(store);
+    if (auto const existing = find_in_group(
+            store.device_key_user_index, store.device_keys, key.user_id, device_key_group_of,
+            [&key](PersistentDeviceKey const& current) {
+                return current.device_id == key.device_id;
+            },
+            store.device_table_rows_examined);
+        existing.has_value())
     {
-        existing->json = std::move(key.json);
+        store.device_keys[*existing].json = std::move(key.json);
         return true;
     }
     store.device_keys.push_back(std::move(key));
+    store.device_key_user_index.note_appended(store.device_keys.size(), store.device_keys.back().user_id);
     return true;
 }
 
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>
 {
-    auto const existing = std::ranges::find_if(store.device_keys, [user_id, device_id](PersistentDeviceKey const& key) {
-        return key.user_id == user_id && key.device_id == device_id;
-    });
-    return existing == store.device_keys.end() ? std::nullopt : std::optional<PersistentDeviceKey>{*existing};
+    auto const existing = find_in_group(
+        store.device_key_user_index, store.device_keys, std::string{user_id}, device_key_group_of,
+        [device_id](PersistentDeviceKey const& key) {
+            return key.device_id == device_id;
+        },
+        store.device_table_rows_examined);
+    return existing.has_value() ? std::optional<PersistentDeviceKey>{store.device_keys[*existing]} : std::nullopt;
 }
 
 [[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool
@@ -3491,15 +4002,21 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.one_time_keys, [&key](PersistentOneTimeKey const& current) {
-        return current.user_id == key.user_id && current.device_id == key.device_id && current.key_id == key.key_id;
-    });
-    if (existing != store.one_time_keys.end())
+    sync_one_time_key_index(store);
+    if (auto const existing = find_in_group(
+            store.one_time_key_device_index, store.one_time_keys, one_time_key_group_of(key), one_time_key_group_of,
+            [&key](PersistentOneTimeKey const& current) {
+                return current.key_id == key.key_id;
+            },
+            store.key_rows_examined);
+        existing.has_value())
     {
-        existing->json = std::move(key.json);
+        store.one_time_keys[*existing].json = std::move(key.json);
         return true;
     }
     store.one_time_keys.push_back(std::move(key));
+    store.one_time_key_device_index.note_appended(store.one_time_keys.size(),
+                                                  one_time_key_group_of(store.one_time_keys.back()));
     return true;
 }
 
@@ -3507,16 +4024,19 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
                                       std::string_view algorithm) -> std::optional<PersistentOneTimeKey>
 {
     auto const prefix = std::string{algorithm} + ':';
-    auto const existing = std::ranges::find_if(
-        store.one_time_keys, [user_id, device_id, algorithm, &prefix](PersistentOneTimeKey const& key) {
-            return key.user_id == user_id && key.device_id == device_id &&
-                   (algorithm.empty() || key.key_id.starts_with(prefix));
-        });
-    if (existing == store.one_time_keys.end())
+    sync_one_time_key_index(store);
+    auto const position = find_in_group(
+        store.one_time_key_device_index, store.one_time_keys, composite_key({user_id, device_id}),
+        one_time_key_group_of,
+        [algorithm, &prefix](PersistentOneTimeKey const& key) {
+            return algorithm.empty() || key.key_id.starts_with(prefix);
+        },
+        store.key_rows_examined);
+    if (!position.has_value())
     {
         return std::nullopt;
     }
-    auto claimed = *existing;
+    auto claimed = store.one_time_keys[*position];
     if (!record_and_persist(store, record_statement("delete_one_time_key",
                                                     "DELETE FROM one_time_keys WHERE user_id = $1 AND device_id = $2 "
                                                     "AND key_id = $3",
@@ -3525,7 +4045,8 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return std::nullopt;
     }
-    store.one_time_keys.erase(existing);
+    // The last row moves into the gap, so a claim costs the device's own keys however many the server holds.
+    erase_row_swap(store.one_time_keys, store.one_time_key_device_index, *position, one_time_key_group_of);
     return claimed;
 }
 
@@ -3554,8 +4075,12 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
                fallback_key_algorithm(current.key_id) == algorithm_prefix;
     };
     auto statements = std::vector<PreparedStatement>{};
-    for (auto const& current : store.fallback_keys)
+    sync_fallback_key_index(store);
+    auto const device_group = composite_key({key.user_id, key.device_id});
+    for (auto const position : positions_in_group(store.fallback_key_device_index, store.fallback_keys, device_group,
+                                                  fallback_key_group_of, store.key_rows_examined))
     {
+        auto const& current = store.fallback_keys[position];
         if (same_algorithm(current) && current.key_id != key.key_id)
         {
             statements.push_back(record_statement(
@@ -3574,18 +4099,26 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    std::erase_if(store.fallback_keys, [&](PersistentFallbackKey const& current) {
-        return same_algorithm(current) && current.key_id != key.key_id;
-    });
-    auto const existing = std::ranges::find_if(store.fallback_keys, [&key](PersistentFallbackKey const& current) {
-        return current.user_id == key.user_id && current.device_id == key.device_id && current.key_id == key.key_id;
-    });
-    if (existing != store.fallback_keys.end())
+    erase_from_group(
+        store.fallback_keys, store.fallback_key_device_index, device_group, fallback_key_group_of,
+        [&](PersistentFallbackKey const& current) {
+            return same_algorithm(current) && current.key_id != key.key_id;
+        },
+        store.key_rows_examined);
+    if (auto const existing = find_in_group(
+            store.fallback_key_device_index, store.fallback_keys, device_group, fallback_key_group_of,
+            [&key](PersistentFallbackKey const& current) {
+                return current.key_id == key.key_id;
+            },
+            store.key_rows_examined);
+        existing.has_value())
     {
-        existing->json = std::move(key.json);
+        store.fallback_keys[*existing].json = std::move(key.json);
         return true;
     }
     store.fallback_keys.push_back(std::move(key));
+    store.fallback_key_device_index.note_appended(store.fallback_keys.size(),
+                                                  fallback_key_group_of(store.fallback_keys.back()));
     return true;
 }
 
@@ -3593,12 +4126,14 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
                                      std::string_view algorithm) -> std::optional<PersistentFallbackKey>
 {
     auto const prefix = std::string{algorithm} + ':';
-    auto const existing = std::ranges::find_if(
-        store.fallback_keys, [user_id, device_id, algorithm, &prefix](PersistentFallbackKey const& key) {
-            return key.user_id == user_id && key.device_id == device_id &&
-                   (algorithm.empty() || key.key_id.starts_with(prefix));
-        });
-    return existing == store.fallback_keys.end() ? std::nullopt : std::optional<PersistentFallbackKey>{*existing};
+    auto const existing = find_in_group(
+        store.fallback_key_device_index, store.fallback_keys, composite_key({user_id, device_id}),
+        fallback_key_group_of,
+        [algorithm, &prefix](PersistentFallbackKey const& key) {
+            return algorithm.empty() || key.key_id.starts_with(prefix);
+        },
+        store.key_rows_examined);
+    return existing.has_value() ? std::optional<PersistentFallbackKey>{store.fallback_keys[*existing]} : std::nullopt;
 }
 
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool
@@ -3617,16 +4152,21 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    auto const existing =
-        std::ranges::find_if(store.cross_signing_keys, [&key](PersistentCrossSigningKey const& current) {
-            return current.user_id == key.user_id && current.key_type == key.key_type;
-        });
-    if (existing != store.cross_signing_keys.end())
+    sync_cross_signing_key_index(store);
+    if (auto const existing = find_in_group(
+            store.cross_signing_key_user_index, store.cross_signing_keys, key.user_id, cross_signing_key_group_of,
+            [&key](PersistentCrossSigningKey const& current) {
+                return current.key_type == key.key_type;
+            },
+            store.key_rows_examined);
+        existing.has_value())
     {
-        existing->json = std::move(key.json);
+        store.cross_signing_keys[*existing].json = std::move(key.json);
         return true;
     }
     store.cross_signing_keys.push_back(std::move(key));
+    store.cross_signing_key_user_index.note_appended(store.cross_signing_keys.size(),
+                                                     store.cross_signing_keys.back().user_id);
     return true;
 }
 
@@ -3650,19 +4190,24 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
+    sync_cross_signing_key_index(store);
     for (auto& key : keys)
     {
-        auto const existing =
-            std::ranges::find_if(store.cross_signing_keys, [&key](PersistentCrossSigningKey const& current) {
-                return current.user_id == key.user_id && current.key_type == key.key_type;
-            });
-        if (existing != store.cross_signing_keys.end())
+        if (auto const existing = find_in_group(
+                store.cross_signing_key_user_index, store.cross_signing_keys, key.user_id, cross_signing_key_group_of,
+                [&key](PersistentCrossSigningKey const& current) {
+                    return current.key_type == key.key_type;
+                },
+                store.key_rows_examined);
+            existing.has_value())
         {
-            existing->json = std::move(key.json);
+            store.cross_signing_keys[*existing].json = std::move(key.json);
         }
         else
         {
             store.cross_signing_keys.push_back(std::move(key));
+            store.cross_signing_key_user_index.note_appended(store.cross_signing_keys.size(),
+                                                             store.cross_signing_keys.back().user_id);
         }
     }
     return true;
@@ -3764,6 +4309,181 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // The position of one backed-up session, through the (user, version, room, session) index while it is in step.
+    [[nodiscard]] auto find_backup_session_position(PersistentStore const& store, std::string_view user_id,
+                                                    std::string_view version, std::string_view room_id,
+                                                    std::string_view session_id) -> std::optional<std::size_t>
+    {
+        auto const matches = [&](PersistentKeyBackupSession const& session) {
+            return session.user_id == user_id && session.version == version && session.room_id == room_id &&
+                   session.session_id == session_id;
+        };
+        if (store.key_backup_session_index.in_step(store.key_backup_sessions.size()))
+        {
+            store.key_backup_rows_examined.add(1U);
+            auto const position =
+                store.key_backup_session_index.find(composite_key({user_id, version, room_id, session_id}));
+            if (!position.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*position < store.key_backup_sessions.size() && matches(store.key_backup_sessions[*position]))
+            {
+                return position;
+            }
+        }
+        store.key_backup_rows_examined.add(store.key_backup_sessions.size());
+        for (auto position = std::size_t{0U}; position < store.key_backup_sessions.size(); ++position)
+        {
+            if (matches(store.key_backup_sessions[position]))
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // The positions of a backup's sessions, optionally only those of one room.
+    [[nodiscard]] auto backup_session_positions(PersistentStore const& store, std::string_view user_id,
+                                                std::string_view version, std::optional<std::string_view> room_id)
+        -> std::vector<std::size_t>
+    {
+        auto positions = positions_in_group(store.key_backup_version_session_index, store.key_backup_sessions,
+                                            composite_key({user_id, version}), backup_session_group_of,
+                                            store.key_backup_rows_examined);
+        if (room_id.has_value())
+        {
+            std::erase_if(positions, [&](std::size_t position) {
+                return store.key_backup_sessions[position].room_id != *room_id;
+            });
+        }
+        return positions;
+    }
+
+    // Erases the session at `position` by moving the last session into its place, keeping both indexes in step.
+    auto erase_backup_session_at(PersistentStore& store, std::size_t position) -> void
+    {
+        auto& rows = store.key_backup_sessions;
+        auto const old_count = rows.size();
+        auto const in_step = store.key_backup_session_index.in_step(old_count) &&
+                             store.key_backup_version_session_index.in_step(old_count);
+        auto const erased_key = in_step ? backup_session_key_of(rows[position]) : std::string{};
+        auto const erased_group = in_step ? backup_session_group_of(rows[position]) : std::string{};
+        auto const last_key = in_step ? backup_session_key_of(rows.back()) : std::string{};
+        auto const last_group = in_step ? backup_session_group_of(rows.back()) : std::string{};
+        if (position + 1U != old_count)
+        {
+            rows[position] = std::move(rows.back());
+        }
+        rows.pop_back();
+        if (in_step)
+        {
+            store.key_backup_session_index.erase_swap(position, erased_key, last_key, old_count);
+            store.key_backup_version_session_index.erase_swap(position, erased_group, last_group, old_count);
+        }
+        else
+        {
+            store.key_backup_session_index.rebuild(rows, backup_session_key_of);
+            store.key_backup_version_session_index.rebuild(rows, backup_session_group_of);
+        }
+    }
+
+    // Erases the sessions at `positions` (any order), highest first so a row moved into a gap is never one still
+    // to be erased.
+    auto erase_backup_sessions_at(PersistentStore& store, std::vector<std::size_t> positions) -> void
+    {
+        std::ranges::sort(positions, std::greater<>{});
+        for (auto const position : positions)
+        {
+            erase_backup_session_at(store, position);
+        }
+    }
+
+    // Appends `session` and records it in both indexes.
+    auto append_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> void
+    {
+        store.key_backup_sessions.push_back(std::move(session));
+        auto const& added = store.key_backup_sessions.back();
+        store.key_backup_session_index.note_appended(store.key_backup_sessions.size(), backup_session_key_of(added));
+        store.key_backup_version_session_index.note_appended(store.key_backup_sessions.size(),
+                                                             backup_session_group_of(added));
+    }
+
+    [[nodiscard]] auto backup_version_positions(PersistentStore const& store, std::string_view user_id)
+        -> std::vector<std::size_t>
+    {
+        return positions_in_group(store.key_backup_user_version_index, store.key_backup_versions, std::string{user_id},
+                                  backup_version_group_of, store.key_backup_rows_examined);
+    }
+
+} // namespace
+
+auto find_key_backup_version(PersistentStore const& store, std::string_view user_id, std::string_view version)
+    -> PersistentKeyBackupVersion const*
+{
+    for (auto const position : backup_version_positions(store, user_id))
+    {
+        if (store.key_backup_versions[position].version == version)
+        {
+            return &store.key_backup_versions[position];
+        }
+    }
+    return nullptr;
+}
+
+auto latest_key_backup_version(PersistentStore const& store, std::string_view user_id)
+    -> PersistentKeyBackupVersion const*
+{
+    auto const positions = backup_version_positions(store, user_id);
+    return positions.empty() ? nullptr : &store.key_backup_versions[positions.back()];
+}
+
+auto count_key_backup_versions(PersistentStore const& store, std::string_view user_id) -> std::size_t
+{
+    return backup_version_positions(store, user_id).size();
+}
+
+auto count_key_backup_sessions(PersistentStore const& store, std::string_view user_id, std::string_view version)
+    -> std::size_t
+{
+    auto const group = composite_key({user_id, version});
+    if (store.key_backup_version_session_index.in_step(store.key_backup_sessions.size()))
+    {
+        store.key_backup_rows_examined.add(1U);
+        return store.key_backup_version_session_index.count(group);
+    }
+    return backup_session_positions(store, user_id, version, std::nullopt).size();
+}
+
+auto count_user_key_backup_sessions(PersistentStore const& store, std::string_view user_id) -> std::size_t
+{
+    auto total = std::size_t{0U};
+    for (auto const position : backup_version_positions(store, user_id))
+    {
+        total += count_key_backup_sessions(store, user_id, store.key_backup_versions[position].version);
+    }
+    return total;
+}
+
+auto find_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
+                             std::string_view room_id, std::string_view session_id) -> PersistentKeyBackupSession const*
+{
+    auto const position = find_backup_session_position(store, user_id, version, room_id, session_id);
+    return position.has_value() ? &store.key_backup_sessions[*position] : nullptr;
+}
+
+auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
+                                 std::function<void(PersistentKeyBackupSession const&)> const& visit) -> void
+{
+    for (auto const position : backup_session_positions(store, user_id, version, std::nullopt))
+    {
+        visit(store.key_backup_sessions[position]);
+    }
+}
+
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool
 {
     if (!key_payload_is_valid(version.json) || version.version.empty())
@@ -3780,16 +4500,18 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const existing =
-        std::ranges::find_if(store.key_backup_versions, [&version](PersistentKeyBackupVersion const& current) {
-            return current.user_id == version.user_id && current.version == version.version;
-        });
-    if (existing != store.key_backup_versions.end())
+    sync_key_backup_version_index(store);
+    for (auto const position : backup_version_positions(store, version.user_id))
     {
-        existing->json = std::move(version.json);
-        return true;
+        if (store.key_backup_versions[position].version == version.version)
+        {
+            store.key_backup_versions[position].json = std::move(version.json);
+            return true;
+        }
     }
     store.key_backup_versions.push_back(std::move(version));
+    store.key_backup_user_version_index.note_appended(store.key_backup_versions.size(),
+                                                      store.key_backup_versions.back().user_id);
     return true;
 }
 
@@ -3810,12 +4532,10 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         highest = issued->second;
     }
-    for (auto const& held : store.key_backup_versions)
+    sync_key_backup_version_index(store);
+    for (auto const position : backup_version_positions(store, user_id))
     {
-        if (held.user_id != user_id)
-        {
-            continue;
-        }
+        auto const& held = store.key_backup_versions[position];
         auto number = std::uint64_t{0U};
         auto const* const end = held.version.data() + held.version.size();
         if (auto const parsed = std::from_chars(held.version.data(), end, number);
@@ -3842,17 +4562,25 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     }
     store.key_backup_version_high_water[std::string{user_id}] = highest + 1U;
     store.key_backup_versions.push_back({std::string{user_id}, next, std::move(json)});
+    store.key_backup_user_version_index.note_appended(store.key_backup_versions.size(),
+                                                      store.key_backup_versions.back().user_id);
     return next;
 }
 
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool
 {
-    auto const existing =
-        std::ranges::find_if(store.key_backup_versions, [user_id, version](PersistentKeyBackupVersion const& v) {
-            return v.user_id == user_id && v.version == version;
-        });
-    if (existing == store.key_backup_versions.end())
+    sync_key_backup_version_index(store);
+    auto version_position = std::optional<std::size_t>{};
+    for (auto const position : backup_version_positions(store, user_id))
+    {
+        if (store.key_backup_versions[position].version == version)
+        {
+            version_position = position;
+            break;
+        }
+    }
+    if (!version_position.has_value())
     {
         return true; // Already absent — treat as idempotent success.
     }
@@ -3870,10 +4598,12 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    std::erase_if(store.key_backup_sessions, [user_id, version](PersistentKeyBackupSession const& session) {
-        return session.user_id == user_id && session.version == version;
-    });
-    store.key_backup_versions.erase(existing);
+    sync_key_backup_session_indexes(store);
+    erase_backup_sessions_at(store, backup_session_positions(store, user_id, version, std::nullopt));
+    // Versions keep their order (the current one is the user's last), so this erase shifts and the version index,
+    // which holds at most the versions, is rebuilt.
+    store.key_backup_versions.erase(store.key_backup_versions.begin() + static_cast<std::ptrdiff_t>(*version_position));
+    store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
     return true;
 }
 
@@ -3895,17 +4625,15 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const existing =
-        std::ranges::find_if(store.key_backup_sessions, [&session](PersistentKeyBackupSession const& current) {
-            return current.user_id == session.user_id && current.version == session.version &&
-                   current.room_id == session.room_id && current.session_id == session.session_id;
-        });
-    if (existing != store.key_backup_sessions.end())
+    sync_key_backup_session_indexes(store);
+    if (auto const existing =
+            find_backup_session_position(store, session.user_id, session.version, session.room_id, session.session_id);
+        existing.has_value())
     {
-        existing->json = std::move(session.json);
+        store.key_backup_sessions[*existing].json = std::move(session.json);
         return true;
     }
-    store.key_backup_sessions.push_back(std::move(session));
+    append_backup_session(store, std::move(session));
     return true;
 }
 
@@ -3932,20 +4660,19 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
+    sync_key_backup_session_indexes(store);
+    // One lookup and one append or replace per session: a batch costs its own size (ADR-0606).
     for (auto& session : sessions)
     {
-        auto const existing =
-            std::ranges::find_if(store.key_backup_sessions, [&session](PersistentKeyBackupSession const& current) {
-                return current.user_id == session.user_id && current.version == session.version &&
-                       current.room_id == session.room_id && current.session_id == session.session_id;
-            });
-        if (existing != store.key_backup_sessions.end())
+        if (auto const existing = find_backup_session_position(store, session.user_id, session.version, session.room_id,
+                                                               session.session_id);
+            existing.has_value())
         {
-            existing->json = std::move(session.json);
+            store.key_backup_sessions[*existing].json = std::move(session.json);
         }
         else
         {
-            store.key_backup_sessions.push_back(std::move(session));
+            append_backup_session(store, std::move(session));
         }
     }
     return true;
@@ -3954,11 +4681,9 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
 [[nodiscard]] auto delete_key_backup_room_sessions(PersistentStore& store, std::string_view user_id,
                                                    std::string_view version, std::string_view room_id) -> bool
 {
-    auto const existing = std::ranges::find_if(
-        store.key_backup_sessions, [user_id, version, room_id](PersistentKeyBackupSession const& session) {
-            return session.user_id == user_id && session.version == version && session.room_id == room_id;
-        });
-    if (existing == store.key_backup_sessions.end())
+    sync_key_backup_session_indexes(store);
+    auto const positions = backup_session_positions(store, user_id, version, room_id);
+    if (positions.empty())
     {
         return true;
     }
@@ -3970,21 +4695,16 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    std::erase_if(store.key_backup_sessions, [user_id, version, room_id](PersistentKeyBackupSession const& session) {
-        return session.user_id == user_id && session.version == version && session.room_id == room_id;
-    });
+    erase_backup_sessions_at(store, positions);
     return true;
 }
 
 [[nodiscard]] auto delete_key_backup_session(PersistentStore& store, std::string_view user_id, std::string_view version,
                                              std::string_view room_id, std::string_view session_id) -> bool
 {
-    auto const existing = std::ranges::find_if(
-        store.key_backup_sessions, [user_id, version, room_id, session_id](PersistentKeyBackupSession const& session) {
-            return session.user_id == user_id && session.version == version && session.room_id == room_id &&
-                   session.session_id == session_id;
-        });
-    if (existing == store.key_backup_sessions.end())
+    sync_key_backup_session_indexes(store);
+    auto const existing = find_backup_session_position(store, user_id, version, room_id, session_id);
+    if (!existing.has_value())
     {
         return true;
     }
@@ -3997,7 +4717,7 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    store.key_backup_sessions.erase(existing);
+    erase_backup_session_at(store, *existing);
     return true;
 }
 
@@ -4015,9 +4735,8 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     {
         return false;
     }
-    std::erase_if(store.key_backup_sessions, [user_id, version](auto const& s) {
-        return s.user_id == user_id && s.version == version;
-    });
+    sync_key_backup_session_indexes(store);
+    erase_backup_sessions_at(store, backup_session_positions(store, user_id, version, std::nullopt));
     return true;
 }
 

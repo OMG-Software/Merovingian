@@ -15,6 +15,8 @@
 #include <cctype>
 #include <charconv>
 #include <cstddef>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -92,13 +94,13 @@ namespace
         return current;
     }
 
-    // Returns the leaf value as a string. Returns nullopt when the path is
-    // unresolvable (see resolve_event_property) or the leaf is not a
-    // string — matching the spec's "If the property ... is completely
-    // absent ... or does not have a string value, then the condition will
-    // not match" rule for event_match.
+    // Returns the leaf value as a view into `event`, which must outlive it, so a value the sender
+    // chose is never copied before a bound applies (ADR-0607). Returns nullopt when the path is
+    // unresolvable (see resolve_event_property) or the leaf is not a string — matching the spec's
+    // "If the property ... is completely absent ... or does not have a string value, then the
+    // condition will not match" rule for event_match.
     [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key)
-        -> std::optional<std::string>
+        -> std::optional<std::string_view>
     {
         auto const* current = resolve_event_property(event, key);
         if (current == nullptr)
@@ -106,7 +108,7 @@ namespace
             return std::nullopt;
         }
         auto const* value = std::get_if<std::string>(&current->storage());
-        return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
+        return value == nullptr ? std::nullopt : std::optional<std::string_view>{*value};
     }
 
     // Exact-value, exact-type comparison for the `value` parameter of
@@ -158,58 +160,6 @@ namespace
         return pattern.find_first_of("*?") != std::string_view::npos;
     }
 
-    // Glob-style match per docs/matrix-v1.19-spec/appendices.md#glob-style-matching:
-    // '*' matches zero or more characters, '?' matches exactly one. Matching
-    // is against the *entire* value. Both inputs are already lowercased by the
-    // caller, so this is effectively case-insensitive.
-    //
-    // Evaluation runs per recipient, per event, under runtime.mutex, on values
-    // the sender controls (security audit run-1), so this allocates nothing: a
-    // pattern without wildcards is a plain comparison, and otherwise the
-    // standard greedy matcher backtracks only to the last '*' seen.
-    [[nodiscard]] auto glob_matches_full(std::string_view value, std::string_view pattern) noexcept -> bool
-    {
-        if (!has_glob_wildcard(pattern))
-        {
-            return value == pattern;
-        }
-        auto value_index = std::size_t{0U};
-        auto pattern_index = std::size_t{0U};
-        auto star_index = std::string_view::npos;
-        auto star_value_index = std::size_t{0U};
-        while (value_index < value.size())
-        {
-            // '*' is checked first: a value may itself contain '*', and the pattern's '*' must
-            // still be a wildcard there, not a literal match.
-            if (pattern_index < pattern.size() && pattern[pattern_index] == '*')
-            {
-                star_index = pattern_index++;
-                star_value_index = value_index;
-            }
-            else if (pattern_index < pattern.size() &&
-                     (pattern[pattern_index] == '?' || pattern[pattern_index] == value[value_index]))
-            {
-                ++value_index;
-                ++pattern_index;
-            }
-            else if (star_index != std::string_view::npos)
-            {
-                // Let the last '*' absorb one more character and retry after it.
-                pattern_index = star_index + 1U;
-                value_index = ++star_value_index;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        while (pattern_index < pattern.size() && pattern[pattern_index] == '*')
-        {
-            ++pattern_index;
-        }
-        return pattern_index == pattern.size();
-    }
-
     [[nodiscard]] auto is_word_character(char character) noexcept -> bool
     {
         return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
@@ -238,6 +188,88 @@ namespace
             return true;
         }
     };
+
+    [[nodiscard]] auto fold_ascii(char character) noexcept -> char
+    {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+
+    // Glob-style match per docs/matrix-v1.19-spec/appendices.md#glob-style-matching:
+    // '*' matches zero or more characters, '?' matches exactly one. Matching is against the
+    // *entire* value, compared ASCII case-insensitively without copying either side.
+    //
+    // Evaluation runs per recipient, per event, under runtime.mutex, on values the sender
+    // controls, so it allocates nothing and draws from the evaluation's `budget` (ADR-0607):
+    // a pattern without wildcards is a length check and then one pass over equal lengths, never charged; a
+    // pattern with one refuses a value over max_push_glob_key_value_bytes (the spec matches the
+    // whole value, so a prefix cannot be judged) and otherwise takes one step per turn of the
+    // standard greedy matcher, which backtracks only to the last '*' seen. A glob that runs out
+    // of budget does not match.
+    [[nodiscard]] auto glob_matches_full(std::string_view value, std::string_view pattern, GlobBudget& budget) noexcept
+        -> bool
+    {
+        if (!has_glob_wildcard(pattern))
+        {
+            // Never charged and never refused: constant work bounded by the pattern, which the rule
+            // caps bound, so the default rules (`type` equals `m.room.message`) run however spent
+            // the budget is.
+            if (value.size() != pattern.size())
+            {
+                return false;
+            }
+            return std::ranges::equal(value, pattern, [](char lhs, char rhs) {
+                return fold_ascii(lhs) == fold_ascii(rhs);
+            });
+        }
+        if (value.size() > max_push_glob_key_value_bytes)
+        {
+            return false;
+        }
+        auto value_index = std::size_t{0U};
+        auto pattern_index = std::size_t{0U};
+        auto star_index = std::string_view::npos;
+        auto star_value_index = std::size_t{0U};
+        while (value_index < value.size())
+        {
+            if (!budget.charge(1U))
+            {
+                return false;
+            }
+            // '*' is checked first: a value may itself contain '*', and the pattern's '*' must
+            // still be a wildcard there, not a literal match.
+            if (pattern_index < pattern.size() && pattern[pattern_index] == '*')
+            {
+                star_index = pattern_index++;
+                star_value_index = value_index;
+            }
+            else if (pattern_index < pattern.size() &&
+                     (pattern[pattern_index] == '?' ||
+                      fold_ascii(pattern[pattern_index]) == fold_ascii(value[value_index])))
+            {
+                ++value_index;
+                ++pattern_index;
+            }
+            else if (star_index != std::string_view::npos)
+            {
+                // Let the last '*' absorb one more character and retry after it.
+                pattern_index = star_index + 1U;
+                value_index = ++star_value_index;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        while (pattern_index < pattern.size() && pattern[pattern_index] == '*')
+        {
+            if (!budget.charge(1U))
+            {
+                return false;
+            }
+            ++pattern_index;
+        }
+        return pattern_index == pattern.size();
+    }
 
     // content.body matching per spec: the pattern must match "any substring
     // of the value ... which starts and ends at a word boundary." Tries
@@ -480,7 +512,7 @@ namespace
             }
             return condition.key == "content.body"
                        ? glob_matches_word_boundary_substring(*value, condition.pattern, budget)
-                       : glob_matches_full(ascii_lower(*value), ascii_lower(condition.pattern));
+                       : glob_matches_full(*value, condition.pattern, budget);
         }
         case PushConditionKind::contains_display_name: {
             if (context.receiving_user_display_name.empty())
@@ -527,7 +559,9 @@ namespace
             }
             auto const* actual = resolve_event_property(event, condition.key);
             auto const* array = actual == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&actual->storage());
-            if (array == nullptr)
+            // The sender chooses the array and the recipient the conditions, so the scan is
+            // charged to the evaluation's budget before it runs (ADR-0607).
+            if (array == nullptr || !budget.charge(static_cast<std::uint64_t>(array->size()) + 1U))
             {
                 return false;
             }
@@ -810,7 +844,7 @@ namespace
                                               PushEvaluationContext const& context, GlobBudget& budget)
         -> PushEvaluationResult
     {
-        auto const sender = event_property_as_string(event, "sender").value_or(std::string{});
+        auto const sender = event_property_as_string(event, "sender").value_or(std::string_view{});
         // "Homeservers MUST NOT notify the Push Gateway for events that the
         // user has sent themselves."
         if (!sender.empty() && sender == context.receiving_user_id)

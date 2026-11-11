@@ -18,6 +18,19 @@ DeviceDisplayNames::DeviceDisplayNames(database::PersistentStore const& store, s
         return;
     }
     auto const wanted = std::set<std::string_view>{users.begin(), users.end()};
+    if (store.device_user_index.in_step(store.devices.size()))
+    {
+        // Through the per-user device index (ADR-0603): the devices of the users named, not every device.
+        for (auto const user : wanted)
+        {
+            database::for_each_user_device(store, user, [&](database::PersistentDevice const& device) {
+                names_.emplace(std::pair<std::string_view, std::string_view>{device.user_id, device.device_id},
+                               std::string_view{device.display_name});
+                return true;
+            });
+        }
+        return;
+    }
     store.device_table_rows_examined.add(store.devices.size());
     for (auto const& device : store.devices)
     {

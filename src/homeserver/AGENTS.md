@@ -711,8 +711,15 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `recompute_current_state` returns a `CurrentStateRecompute`, not a bool: `refused` (the extremities could not be
   resolved) is logged and is not success (ADR-0375, F-49). Extremities in one state group are resolved as one state,
   and `ingest_pdu_event` does not make an accepted event with no `state_key` a tip once the room holds
-  `max_state_groups` of them (`forward_extremities_stay_bounded`, ADR-0374). A state event is always a tip: a
-  ban or demotion must reach resolution. A new path that adds a tip for an inbound event asks the same question.
+  `max_state_groups` of them (ADR-0374). An accepted event citing no current tip is not made a tip once its sender's
+  server holds `max_state_tips_per_server` of the room's tips (`event_may_become_forward_extremity`, ADR-0602), and then
+  writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
+  another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
+  the same question.
+- `recompute_current_state` and `store_event_with_bookkeeping` reuse the room's last resolved state while its distinct
+  state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
+  skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.
+  Resolution is over all tips and is never folded into the previous result: it is not associative (ADR-0601).
 - A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
   Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
@@ -766,6 +773,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (1000) (ADR-0207); do not replace it with a per-room or unbounded count. Its setup walks each
   table a fixed number of times (`PushBadgeCount::table_walks`), whatever the number of rooms:
   nothing per room may walk a whole table.
+  The badges of one event share a `PushBadgeBudget` (10000 rows, 16 calls; ADR-0608): pass the
+  `badge_budget` built per event to every `push_badge_unread_count`; a recipient past it gets `nullopt` and
+  its notification omits `unread` (never a made-up count, which would overwrite the client's real badge).
+  Recipients draw from `push_badge_draw_start(stream_ordering, n)`, so the skipped ones rotate. Never give each recipient a budget of its own.
 
 ### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
 
