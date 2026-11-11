@@ -12,7 +12,6 @@
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
-#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -74,11 +73,12 @@
 #include "merovingian/database/RowGroupIndex.hpp"
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/events/Limits.hpp"
-#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 
 #include <algorithm>
 #include <cerrno>
