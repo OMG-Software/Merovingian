@@ -14,6 +14,10 @@ These calls hold a request thread for their exchange with another server, with n
 
 A federation worker re-read a whole room for every PDU main accepted. Reloads are now merged per room and run on their own thread: a burst costs at most one reload running and one after it, and the last PDU is always followed by a reload that sees it.
 
+### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
+
+Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).

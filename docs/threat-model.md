@@ -2670,6 +2670,10 @@ nothing, all from trusting the worker's view or the hook's transport.
   room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
   by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
   the origin-in-room gate.
+- **Remote servers chose how much whole-room work this server did (release-gate audit).** A worker re-read a room for every
+  accepted PDU, now merged per room (ADR-0623). Every `send_join`, resent or refused for size, walked the room's state and
+  auth chain under `runtime.mutex`, now cached per room and state (ADR-0624). Residual risk: an accepted join still
+  builds once, and a delivered answer is still copied under the lock, up to `join_response_max_size`.
 - **A client's federated join, knock or leave held a request thread with no limit (release-gate audit).** Each now holds a
   client-outbound slot (ADR-0622).
 - **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,

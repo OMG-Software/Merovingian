@@ -1552,6 +1552,12 @@ media-fetch-pool task.
   size of the server, not the request (CWE-400, CWE-407; security audit run-2 F-19, F-23, ADR-0366, ADR-0367, ADR-0368).
   Source: `src/homeserver/AGENTS.md`, `src/federation/AGENTS.md`, `src/ipc/AGENTS.md`.
 
+- **A `send_join` never plans the room's whole answer per request.** The acceptor uses `plan_send_join_answer_cached`:
+  a room-wide base cached per room until `database::room_state_revision` moves, and only what the request changes. A
+  writer of a current state row moves the revision.
+  Why: a resend or a join refused for size cost a walk of the room under the runtime lock, at a rate a remote server
+  chooses (CWE-407; release-gate audit, ADR-0624). Source: `src/homeserver/AGENTS.md`.
+
 - **Failing outbound destinations share a bounded part of the dispatch queue, and a client's federated membership
   exchange holds a client-outbound slot.** Neither limit is per peer alone: a per-peer bound does not bound the number of
   peers, and a released mutex still holds a request thread.

@@ -54,6 +54,7 @@ homeserver_sources = files(
   'RemoteDeviceListScope.cpp',
   'SendJoinAnswer.cpp',
   'SendJoinAnswerAuthorization.cpp',
+  'SendJoinPlanCache.cpp',
   'PublicRooms.cpp',
   'HomeserverRuntime.cpp',
   'RoomPositionIndex.cpp',

@@ -2106,6 +2106,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     }
     auto const& room_id = snapshot.room_id;
     store.resolved_state_memo.forget_room(room_id);
+    ++store.room_state_revisions[room_id];
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -2921,6 +2922,11 @@ namespace
     // Adds the row just appended to `state` to the indexes, if they were in step before it. If they
     // were not (something edited the vector behind the store's back) they stay out of step, so
     // lookups scan, until the next rebuild.
+    auto note_room_state_changed(PersistentStore& store, std::string const& room_id) -> void
+    {
+        ++store.room_state_revisions[room_id];
+    }
+
     auto note_state_row_appended(PersistentStore& store) -> void
     {
         if (store.state.empty() || store.state_indexed_rows + 1U != store.state.size())
@@ -2975,6 +2981,12 @@ auto rebuild_state_index(PersistentStore& store) -> void
         }
     }
     return std::nullopt;
+}
+
+auto room_state_revision(PersistentStore const& store, std::string_view room_id) -> std::uint64_t
+{
+    auto const found = store.room_state_revisions.find(std::string{room_id});
+    return found == store.room_state_revisions.end() ? 0U : found->second;
 }
 
 auto for_each_room_state_row(PersistentStore const& store, std::string_view room_id,
@@ -3300,6 +3312,7 @@ namespace
 auto apply_current_state(PersistentStore& store, PreparedCurrentState const& prepared) -> void
 {
     auto const& state = prepared.state;
+    note_room_state_changed(store, state.room_id);
     auto const& previous_event_id = prepared.previous_event_id;
     auto const existing = std::ranges::find_if(store.state, [&state](PersistentStateEvent const& current) {
         return current.room_id == state.room_id && current.event_type == state.event_type &&
@@ -3387,6 +3400,7 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
 
     if (update.state.has_value())
     {
+        note_room_state_changed(store, update.state->room_id);
         auto const existing = std::ranges::find_if(store.state, [&update](PersistentStateEvent const& current) {
             return current.room_id == update.state->room_id && current.event_type == update.state->event_type &&
                    current.state_key == update.state->state_key;
@@ -3895,6 +3909,7 @@ auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
     }
     // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
     });
@@ -3957,6 +3972,7 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     }
     // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);
     });

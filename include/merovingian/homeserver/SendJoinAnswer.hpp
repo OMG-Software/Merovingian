@@ -7,9 +7,11 @@
 #include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
 #include "merovingian/homeserver/SendJoinAnswerLimits.hpp"
 #include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
+#include "merovingian/homeserver/SendJoinResend.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -54,6 +56,21 @@ struct HomeserverRuntime;
                                          std::vector<database::PersistentStateGroupStateEntry> const& state,
                                          std::span<std::string const> join_auth_event_ids, bool omit_members)
     -> SendJoinAnswerPlan;
+
+// The plan the acceptor uses (ADR-0624): the same answer as `plan_send_join_answer` over current state, or for a
+// `resend` over `resent_send_join_state`, with the room-wide part taken from `runtime.send_join_plan_cache`, so
+// a request pays only for what it changes. An answer that does not fit comes back with its sizes and empty lists.
+// `runtime.mutex` held.
+[[nodiscard]] auto plan_send_join_answer_cached(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                std::string_view joining_user,
+                                                std::optional<SendJoinResend> const& resend,
+                                                std::span<std::string const> join_auth_event_ids, bool omit_members,
+                                                SendJoinAnswerLimits const& limits) -> SendJoinAnswerPlan;
+
+// True when the cache already knows the room's answer cannot fit, whoever asks. Lets a resend be refused before it
+// looks for the state before its join. `runtime.mutex` held.
+[[nodiscard]] auto send_join_answer_known_not_to_fit(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                     bool omit_members, SendJoinAnswerLimits const& limits) -> bool;
 
 // Whether the planned answer fits both caps.
 [[nodiscard]] auto send_join_answer_fits(SendJoinAnswerPlan const& plan, SendJoinAnswerLimits const& limits) noexcept

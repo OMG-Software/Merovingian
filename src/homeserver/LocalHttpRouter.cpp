@@ -2496,20 +2496,37 @@ namespace
                     {
                         return {false, 400U, "unknown room version", {}, {}};
                     }
-                    // A read: the sender decides how often it runs (ADR-0365).
-                    auto const state_before_join =
-                        compute_state_before(store, room_id, *resent_policy, stored_event->prev_event_ids,
-                                             federation::state_read_resolution_limits());
-                    if (!state_before_join.ok)
+                    auto const answer_limits = send_join_answer_limits(rt->config);
+                    // A resend must not pay for what no answer can use (ADR-0624).
+                    if (send_join_answer_known_not_to_fit(*rt, room_id, envelope.omit_members, answer_limits))
                     {
-                        return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                        return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
                     }
-                    auto resent_plan =
-                        plan_send_join_answer(*rt, room_id, envelope.sender,
-                                              resent_send_join_state(store, room_id, envelope.sender, envelope.event_id,
-                                                                     state_before_join.state),
-                                              stored_event->auth_event_ids, envelope.omit_members);
-                    if (!send_join_answer_fits(resent_plan, send_join_answer_limits(rt->config)))
+                    auto before_join = rt->send_join_plan_cache->membership_before(room_id, envelope.event_id);
+                    if (!before_join.has_value())
+                    {
+                        // A read: the sender decides how often it runs (ADR-0365). The answer is remembered, because
+                        // the state before a stored event never changes.
+                        auto const state_before_join =
+                            compute_state_before(store, room_id, *resent_policy, stored_event->prev_event_ids,
+                                                 federation::state_read_resolution_limits());
+                        if (!state_before_join.ok)
+                        {
+                            return {false, 503U, "the state before the join is not available here; retry", {}, {}};
+                        }
+                        auto const before_row = std::ranges::find_if(
+                            state_before_join.state,
+                            [&envelope](database::PersistentStateGroupStateEntry const& entry) {
+                                return entry.event_type == "m.room.member" && entry.state_key == envelope.sender;
+                            });
+                        before_join =
+                            before_row != state_before_join.state.end() ? before_row->event_id : std::string{};
+                        rt->send_join_plan_cache->remember_membership_before(room_id, envelope.event_id, *before_join);
+                    }
+                    auto resent_plan = plan_send_join_answer_cached(
+                        *rt, room_id, envelope.sender, SendJoinResend{envelope.event_id, *before_join},
+                        stored_event->auth_event_ids, envelope.omit_members, answer_limits);
+                    if (!send_join_answer_fits(resent_plan, answer_limits))
                     {
                         return {false, 503U, std::string{send_join_answer_too_large_reason}, {}, {}};
                     }
@@ -2808,10 +2825,11 @@ namespace
             auto answer_plan = SendJoinAnswerPlan{};
             if (endpoint == federation::FederationEndpoint::send_join)
             {
+                auto const answer_limits = send_join_answer_limits(rt->config);
                 answer_plan =
-                    plan_send_join_answer(*rt, room_id, envelope.sender, current_room_state_entries(store, room_id),
-                                          envelope.auth_event_ids, envelope.omit_members);
-                if (!send_join_answer_fits(answer_plan, send_join_answer_limits(rt->config)))
+                    plan_send_join_answer_cached(*rt, room_id, envelope.sender, std::nullopt, envelope.auth_event_ids,
+                                                 envelope.omit_members, answer_limits);
+                if (!send_join_answer_fits(answer_plan, answer_limits))
                 {
                     LOG_WARNING("send_join refused: the answer cannot be delivered; room_id=" + std::string{room_id} +
                                 " event_id=" + envelope.event_id +

@@ -345,6 +345,7 @@ shell = find_program('sh')
       'unit/test_remote_timestamp_event.cpp',
       'unit/test_restricted_join_resident.cpp',
       'unit/test_send_join_answer.cpp',
+      'unit/test_send_join_plan_cache.cpp',
       'unit/test_federation_invite_join.cpp',
       'unit/test_federation_key_query.cpp',
       'unit/test_federation_key_signatures.cpp',

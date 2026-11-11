@@ -533,3 +533,4 @@
 * [0621 - Failing destinations share half the dispatch queue, and their transactions age out](0621-failing-destinations-share-half-the-dispatch-queue-and-their-transactions-age-out.md)
 * [0622 - A client's federated join, knock or leave holds a client-outbound slot](0622-a-clients-federated-join-knock-or-leave-holds-a-client-outbound-slot.md)
 * [0623 - A worker's room reloads are coalesced per room, on one thread](0623-a-workers-room-reloads-are-coalesced-per-room-on-one-thread.md)
+* [0624 - Send_join answers are planned from a cached room-wide base](0624-send-join-answers-are-planned-from-a-cached-room-wide-base.md)
