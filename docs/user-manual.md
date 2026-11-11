@@ -2908,6 +2908,8 @@ shows a password, a password hash or a token.
 | `suspend` / `unsuspend` | A suspended user can read but not act (`M_USER_SUSPENDED`). |
 | `deactivate` | Closes the account for good: every token and pusher is removed, login is refused, and the name is never reissued. It needs `"confirm": true` in the body; without it the request is refused and nothing happens. It does not unbind identity-server addresses. |
 
+Each action and its audit row are written in one transaction (ADR-0629): if the audit row cannot be written the action is refused with `500` and nothing changes. A deactivated account's access token is refused as unknown (`401`) even if revoking it failed (ADR-0626); repeat the deactivation to finish revoking.
+
 The answer to a successful action is the same summary, after the change. Asking again for something already in effect
 is not an error (`200`). Once an account is deactivated, the four other actions are refused with `409`. You cannot act on
 your own account or on another administrator (`403`), and a user who is not on this server is `400`; an unknown local

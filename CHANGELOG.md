@@ -2,6 +2,43 @@
 
 Release-gate audit, low and informational findings
 
+### A third-party invite no longer invites a user who blocks invites
+
+`PUT /_matrix/federation/v1/3pid/onbind` and the exchange path now refuse a local invitee whose `m.invite_permission_config`
+blocks invites (403 `M_INVITE_BLOCKED`) before an event is composed or signed, as every other invite path already did.
+
+### A deactivated account's access token is refused (ADR-0626)
+
+The access-token gate, and so every administrator route, now treats a token of a deactivated account as unknown (401
+`M_UNKNOWN_TOKEN`), even when revoking its credentials failed part way.
+
+### A room upgrade keeps `m.federate: false` (ADR-0627)
+
+The replacement of a local-only room is local-only. A federated room's replacement is made as before.
+
+### An application service cannot redact as a server administrator (ADR-0628)
+
+An application service asserting an administrator no longer gets the server administrator's right to redact another local
+user's event. Every other administrator check already refused an asserted identity (ADR-0611), so no operator action is
+recorded under an identity an application service asserted.
+
+### `GET /mutual_rooms` checks its page token in one step (ADR-0631)
+
+The token now carries its offset with a keyed check over the caller, the target and the offset, verified in constant time.
+A bad token costs one hash instead of a search of every offset. Tokens issued by an earlier version are refused.
+
+### A send_join snapshot cannot move a local user's membership (ADR-0630)
+
+A resident's claim about a user of this server is taken only when this server holds no row for that user in the room or the
+claimed event is the one it holds as current. The snapshot's state group carries this server's own event instead, so a
+later recomputation cannot bring a stale join back.
+
+### An administrator's account action and its audit row commit together (ADR-0629)
+
+Locking, suspending and deactivating an account write the state change and its audit row in one transaction. If the audit
+row cannot be written the action fails with 500 and changes nothing. Deactivation writes its row when the account is first
+closed, before the credentials are revoked, and a repeat adds none.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a

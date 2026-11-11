@@ -1429,6 +1429,83 @@ auto has_room_membership_row(PersistentStore const& store, std::string_view room
     return true;
 }
 
+namespace
+{
+    // The audit row of a state change that commits with it: bounded as `append_audit_event` bounds it and stamped, so
+    // the statement and the in-memory copy agree.
+    [[nodiscard]] auto stamped_audit_event(PersistentAuditEvent audit) -> PersistentAuditEvent
+    {
+        audit.actor = observability::bounded_utf8(audit.actor, observability::max_audit_field_bytes);
+        audit.target = observability::bounded_utf8(audit.target, observability::max_audit_field_bytes);
+        audit.reason = observability::bounded_utf8(audit.reason, observability::max_audit_field_bytes);
+        if (audit.created_at_ms == 0U)
+        {
+            audit.created_at_ms = current_epoch_ms();
+        }
+        return audit;
+    }
+
+    [[nodiscard]] auto audit_insert_statement(std::string name, PersistentAuditEvent const& audit) -> PreparedStatement
+    {
+        return record_statement(std::move(name),
+                                "INSERT INTO audit_log (category, event_type, actor, target, reason, created_at_ms) "
+                                "VALUES ($1, $2, $3, $4, $5, $6)",
+                                {public_value(audit.category), public_value(audit.event_type),
+                                 public_value(audit.actor), public_value(audit.target), public_value(audit.reason),
+                                 public_value(std::to_string(audit.created_at_ms))});
+    }
+} // namespace
+
+[[nodiscard]] auto commit_user_account_state_with_audit(PersistentStore& store, std::string_view user_id,
+                                                        bool suspended, bool locked, PersistentAuditEvent audit) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("update_user_account_state", "UPDATE users SET suspended = $2, locked = $3 WHERE user_id = $1",
+                         {public_value(user_id), public_value(suspended ? "true" : "false"),
+                          public_value(locked ? "true" : "false")}),
+        audit_insert_statement("moderate_user_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    it->suspended = suspended;
+    it->locked = locked;
+    remember_audit_event(store, std::move(audit));
+    return true;
+}
+
+[[nodiscard]] auto commit_user_deactivation_with_audit(PersistentStore& store, std::string_view user_id,
+                                                       PersistentAuditEvent audit) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("update_user_deactivated", "UPDATE users SET deactivated = 'true' WHERE user_id = $1",
+                         {public_value(user_id)}),
+        audit_insert_statement("deactivate_user_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    it->deactivated = true;
+    remember_audit_event(store, std::move(audit));
+    return true;
+}
+
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
 {
     if (device_exists(store, device))

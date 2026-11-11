@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/RoomService.hpp"
 
+#include "merovingian/appservice/MasqueradeToken.hpp"
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
@@ -4587,6 +4588,28 @@ namespace
     return kept;
 }
 
+namespace
+{
+    // ADR-0630: whether a resident's snapshot may speak for a user of this server. It may when this server holds no
+    // row for the user in the room (nothing to contradict), or when the claimed event is the one held as current.
+    // Otherwise this server's own record stands; `held_event_id` is the event it holds as current for the user.
+    struct LocalMemberClaim final
+    {
+        bool taken{false};
+        std::optional<std::string> held_event_id{};
+    };
+
+    [[nodiscard]] auto judge_local_member_claim(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view user_id, std::string_view claimed_event_id)
+        -> LocalMemberClaim
+    {
+        auto held = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        auto const agrees = held.has_value() && *held == claimed_event_id;
+        auto const holds_a_row = held.has_value() || !current_membership_of(store, room_id, user_id).empty();
+        return {agrees || !holds_a_row, std::move(held)};
+    }
+} // namespace
+
 // Persists the `state` array from a send_join response. Each event is stored to
 // the persistent event graph. Events that carry a "state_key" field in their raw
 // JSON (even when that value is "") are also written to the state table. That is
@@ -4621,14 +4644,20 @@ namespace
     {
         database::PersistentEvent event{};
         std::optional<database::PersistentStateEvent> state{};
+        // A refused claim about a local user: the event this server holds as current for the key, which the
+        // snapshot's state group carries in its place (ADR-0630).
+        std::optional<database::PersistentStateGroupStateEntry> held_entry{};
         std::string joined_member{};
+        bool refused_claim{false};
         bool repeated{false};
     };
     struct SnapshotEntry final
     {
         std::optional<database::PreparedStateUpdate> prepared{};
         std::optional<database::PersistentStateEvent> state{};
+        std::optional<database::PersistentStateGroupStateEntry> held_entry{};
         std::string joined_member{};
+        bool refused_claim{false};
     };
     auto candidates = std::vector<SnapshotCandidate>{};
     auto batch_event_ids = std::set<std::string, std::less<>>{};
@@ -4730,6 +4759,33 @@ namespace
                 pe.status = "outlier";
                 auto candidate = SnapshotCandidate{};
                 candidate.state = std::move(state);
+                // ADR-0630: a claim about a user of this server is judged against this server's own record. A
+                // refused one is kept as an outlier like any event, writes no current_state row and no membership,
+                // and the state group takes this server's event for the key.
+                if (candidate.state.has_value() && parsed.event.event_type == "m.room.member" &&
+                    auth::user_id_server_name(candidate.state->state_key) == runtime.config.server().server_name)
+                {
+                    auto verdict = judge_local_member_claim(runtime.database.persistent_store, room_id,
+                                                            candidate.state->state_key, event_id);
+                    if (!verdict.taken)
+                    {
+                        log_diagnostic("room.join.local_member_claim_refused",
+                                       {
+                                           {"room_id",  std::string{room_id},                            false},
+                                           {"event_id", event_id,                                        false},
+                                           {"user_id",  candidate.state->state_key,                      false},
+                                           {"reason",   "this server holds its own record for the user", false}
+                        },
+                                       observability::LogEventSeverity::warning);
+                        if (verdict.held_event_id.has_value())
+                        {
+                            candidate.held_entry = database::PersistentStateGroupStateEntry{
+                                {}, "m.room.member", candidate.state->state_key, std::move(*verdict.held_event_id)};
+                        }
+                        candidate.state.reset();
+                        candidate.refused_claim = true;
+                    }
+                }
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
                 if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
@@ -4766,7 +4822,9 @@ namespace
         auto const event_id = candidate.event.event_id;
         auto entry = SnapshotEntry{};
         entry.state = candidate.state;
-        entry.joined_member = std::move(candidate.joined_member);
+        entry.held_entry = candidate.held_entry;
+        entry.refused_claim = candidate.refused_claim;
+        entry.joined_member = candidate.state.has_value() ? std::move(candidate.joined_member) : std::string{};
         if (candidate.repeated)
         {
             // Recorded again only when its first copy was kept.
@@ -4826,7 +4884,29 @@ namespace
         {
             database::apply_store_event_with_state(runtime.database.persistent_store, *entry.prepared);
         }
-        if (entry.state.has_value())
+        if (entry.held_entry.has_value())
+        {
+            // A refused claim counts as recorded: the snapshot was read in full, and the group carries this server's
+            // event for the key.
+            ++result.recorded_state_events;
+            if (auto const [position, inserted] = recorded_keys.try_emplace(
+                    std::pair{entry.held_entry->event_type, entry.held_entry->state_key}, result.state_entries.size());
+                inserted)
+            {
+                result.state_entries.push_back(*entry.held_entry);
+                recorded_members.emplace_back();
+            }
+            else
+            {
+                result.state_entries[position->second] = *entry.held_entry;
+                recorded_members[position->second].clear();
+            }
+        }
+        else if (entry.refused_claim)
+        {
+            ++result.recorded_state_events;
+        }
+        else if (entry.state.has_value())
         {
             ++result.recorded_state_events;
             // One entry per key: the state group rejects a key twice. A later
@@ -7757,6 +7837,12 @@ auto exchange_third_party_invite(HomeserverRuntime& runtime, federation::ThirdPa
     {
         return make_operation_result(false, {}, "the invited user is not a user of this server", 404U);
     }
+    // A local invitee who blocks invites (SS7, ADR-0552) is refused here as on every other invite path, before an
+    // event is composed or signed.
+    if (target_is_local && invite_permission_blocks(store, exchange.target_user_id))
+    {
+        return invite_blocked_result();
+    }
     auto const event_json =
         third_party_member_event_json(exchange.target_user_id, *display_name, exchange.signed_invite.json);
     if (!event_json.has_value())
@@ -9386,9 +9472,12 @@ namespace
     }
 
     // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
+    // `via_appservice` is set when an application service asserted the sender: the server-administrator override of
+    // a redaction is then not applied (ADR-0628).
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
-                                          std::optional<std::int64_t> origin_server_ts) -> OperationResult
+                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false)
+        -> OperationResult
     {
         auto* room = find_room(runtime.database, room_id);
         if (room == nullptr)
@@ -9471,7 +9560,7 @@ namespace
         if (composed->event_type == "m.room.redaction")
         {
             auto const sender_is_server_admin = [&] {
-                return std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
+                return !via_appservice && std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
                     return user.user_id == user_id && user.admin;
                 });
             };
@@ -9587,7 +9676,8 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
-    return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts);
+    return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts,
+                              appservice::decode_masquerade_token(access_token).has_value());
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

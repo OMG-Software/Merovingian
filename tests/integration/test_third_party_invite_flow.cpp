@@ -100,3 +100,50 @@ SCENARIO("An identity server's bind notification invites the bound user to the r
         }
     }
 }
+
+// Invite permission (SS7, ADR-0552): every path that creates an invite for a local user refuses one whose
+// m.invite_permission_config blocks, the exchange included.
+SCENARIO("A third-party invite exchange does not invite a local user who blocks invites",
+         "[federation][3pid][exchange][invite-permission]")
+{
+    GIVEN("bob blocks every invite and alice's room holds a third-party invite signed with a key alice holds")
+    {
+        auto started = merovingian::homeserver::start_client_server(exchange_config());
+        REQUIRE(started.started);
+        auto const identity_key = fed::test::keypair_from_seed("exchange-identity-server");
+        auto const room = room_with_third_party_invite(started.runtime, "tok6", identity_key);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},)"
+             R"("password":"CorrectHorse7!","device_id":"BOBDEV"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const login_body = parse_object(login.response.body);
+        auto const* bob_token = string_member(login_body, "access_token");
+        REQUIRE(bob_token != nullptr);
+        auto const blocked = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"PUT", "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.invite_permission_config", *bob_token,
+             R"({"default_action":"block"})"});
+        REQUIRE(blocked.response.status == 200U);
+
+        WHEN("the exchange names bob")
+        {
+            auto const result = merovingian::homeserver::exchange_third_party_invite(
+                started.runtime.homeserver,
+                exchange_of(room.room_id, "@alice:example.org", "@bob:example.org",
+                            signed_object("@bob:example.org", "tok6", identity_key)),
+                "test");
+
+            THEN("it is refused with M_INVITE_BLOCKED and bob has no membership")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 403U);
+                REQUIRE(result.errcode == "M_INVITE_BLOCKED");
+                REQUIRE(membership_of(started.runtime, room.room_id, "@bob:example.org").empty());
+            }
+        }
+    }
+}

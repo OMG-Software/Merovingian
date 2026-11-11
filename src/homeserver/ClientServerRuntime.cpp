@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/MutualRoomsToken.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
@@ -4940,44 +4941,6 @@ namespace
             return {};
         }
         return rt.homeserver.database.mutual_rooms_token_key->bytes();
-    }
-
-    [[nodiscard]] auto encode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
-                                                 std::size_t offset, std::span<std::uint8_t const> key)
-        -> std::optional<std::string>
-    {
-        if (key.empty())
-        {
-            return std::nullopt;
-        }
-        auto const offset_str = std::to_string(offset);
-        auto const pieces = std::array<std::string_view, 3U>{caller, target_user, offset_str};
-        return crypto::generic_hash(pieces, key);
-    }
-
-    [[nodiscard]] auto decode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
-                                                 std::string_view token, std::span<std::uint8_t const> key,
-                                                 std::size_t total) -> std::optional<std::size_t>
-    {
-        if (key.empty() || token.empty())
-        {
-            return std::nullopt;
-        }
-        auto constexpr max_overrun = std::size_t{1000U};
-        auto const upper_bound = total + max_overrun;
-        for (auto offset = std::size_t{0U}; offset <= upper_bound; ++offset)
-        {
-            auto const candidate = encode_mutual_rooms_token(caller, target_user, offset, key);
-            if (!candidate.has_value())
-            {
-                return std::nullopt;
-            }
-            if (*candidate == token)
-            {
-                return offset;
-            }
-        }
-        return std::nullopt;
     }
 
     // Spec: Matrix Client-Server API v1.19 — GET /_matrix/client/v1/mutual_rooms
@@ -10325,6 +10288,11 @@ namespace
             if (auto const* type = string_member(*old_create, "type"); type != nullptr)
             {
                 options.creation_content.push_back(json_member("type", json_str(*type)));
+            }
+            // ADR-0627: `m.federate: false` can never change in a room, so the replacement is no more federated.
+            if (auto const* federate = boolean_member(*old_create, "m.federate"); federate != nullptr && !*federate)
+            {
+                options.creation_content.push_back(json_member("m.federate", json_bool(false)));
             }
         }
         auto creators = std::vector<std::string>{upgrader};
@@ -18887,8 +18855,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (from_supplied)
         {
             auto const decoded =
-                decode_mutual_rooms_token(*user, *target_user_param, *from_param, mutual_rooms_token_key(rt),
-                                          rt.homeserver.database.rooms.size());
+                decode_mutual_rooms_token(*user, *target_user_param, *from_param, mutual_rooms_token_key(rt));
             if (!decoded.has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "invalid from pagination token");

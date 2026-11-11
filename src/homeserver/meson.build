@@ -42,6 +42,7 @@ homeserver_sources = files(
   'StateContentCheck.cpp',
   'RoomResidency.cpp',
   'InvitePermission.cpp',
+  'MutualRoomsToken.cpp',
   'SearchRoomIndex.cpp',
   'UserDirectorySearch.cpp',
   'StoredRoomVersion.cpp',
