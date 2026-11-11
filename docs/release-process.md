@@ -106,15 +106,15 @@ Then add scenarios to `tests/integration/test_database_upgrade_flow.cpp` that op
 fixture and serve it, and remove the previous fixture directory. Never regenerate a fixture from current code: it is
 evidence only because the old release wrote it.
 
-A pre-1.0 series start (such as 0.13.0) adds no fixture and no upgrade test. The
+A pre-1.0 series start added no fixture and no upgrade test. The
 migrations were collapsed into one initial schema in 0.12.47
 ([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)), so a
-pre-1.0 database can no longer be opened: that change removed the 0.11.13 fixture and
+pre-1.0 database cannot be opened: that change removed the 0.11.13 fixture and
 its scenarios, and there is no fixture until the 1.1 series starts.
 
 ### The v1 schema is frozen from 1.0.0
 
-From 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
+Since 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
 and `migrations/001_initial_schema.sql` never change. A schema change is a new numbered
 migration (v2 onwards) that keeps deployed databases compatible. A unit test requires the
 SQL file to match the build's v1 step statement for statement.

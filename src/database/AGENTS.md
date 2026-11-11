@@ -159,7 +159,7 @@ All higher-level modules receive a `PersistentStore&` — they must not downcast
 
 See `migrations/AGENTS.md` for the migration file format.
 Migrations run automatically at startup via `Migration.hpp`; the runner is idempotent. The whole schema is one
-v1 step (ADR-0224), frozen from 1.0.0. Both stores refuse a ledger that names a migration this build does not have
+v1 step (ADR-0224), frozen since 1.0.0: a schema change is a new numbered migration. Both stores refuse a ledger that names a migration this build does not have
 (`schema_ledger_is_known`) before migrating or hydrating anything, and the PostgreSQL bootstrap, like every migration,
 runs as `database.migration_role` when one is configured.
 

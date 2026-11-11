@@ -2,7 +2,7 @@
 
 **Latest release: [latest](https://github.com/OMG-Software/Merovingian/releases/tag/latest)** · **Documentation: [omg-software.github.io/Merovingian](https://omg-software.github.io/Merovingian/)**
 
-**Note: Merovingian is now in beta. It is suitable for evaluation and testing, but is not yet ready for production use. Do not deploy it as a production Matrix homeserver.**
+**Note: Merovingian 1.0.0 is the first production release. Read its known limitations in [CHANGELOG.md](CHANGELOG.md) before you deploy it.**
 
 [![Build](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml)
 [![Static analysis](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml)
@@ -49,9 +49,9 @@ Most homeservers are large, single-process applications where security is largel
 
 These controls reduce the impact of hostile input and constrain sensitive operations. They do not establish memory safety or production readiness. For the boundaries and remaining limits, see [docs/threat-model.md](docs/threat-model.md), [docs/hardening.md](docs/hardening.md), [docs/crypto-boundary.md](docs/crypto-boundary.md), and [docs/security-coding-rules.md](docs/security-coding-rules.md).
 
-Merovingian has been in **beta** since v0.10.59. Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
+Merovingian has been in production since 1.0.0. Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. 1.0.0 followed a release-gate security audit and was tagged without a green Complement run; the known limitations are listed in the 1.0.0 section of [CHANGELOG.md](CHANGELOG.md).
 
-Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/): [capability-gaps.md](docs/todos/capability-gaps.md) for per-area gaps and their status on the `not-started → … → production-gated` ladder, and [production-milestone.md](docs/todos/production-milestone.md) for the gates that must close before a `1.0.0` production release.
+Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/): [capability-gaps.md](docs/todos/capability-gaps.md) for per-area gaps and their status on the `not-started → … → production-gated` ladder, and [production-milestone.md](docs/todos/production-milestone.md) for the production milestone, including the Complement blocker that stays open after 1.0.0.
 
 ## Why C++ and not Rust?
 

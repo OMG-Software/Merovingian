@@ -32,7 +32,7 @@ Requires:       libpng
 Requires:       libjpeg-turbo
 
 %description
-Merovingian is a beta Matrix Protocol homeserver focused on secure
+Merovingian is a Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
 
 %prep

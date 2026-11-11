@@ -47,7 +47,7 @@ Requires:       libturbojpeg0
 %global optflags %(echo %{optflags} | sed 's/-D_FORTIFY_SOURCE=[^ ]*//g')
 
 %description
-Merovingian is a beta Matrix Protocol homeserver focused on secure
+Merovingian is a Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
 
 %prep

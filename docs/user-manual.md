@@ -5,11 +5,10 @@ Merovingian Matrix homeserver. It is written for server administrators and
 assumes basic familiarity with POSIX systems, networking, and the Matrix
 protocol.
 
-> **Beta status.** Merovingian is suitable for evaluation and testing. It is not
-> yet production-ready. Do not deploy it as a production Matrix homeserver until
-> the blocking items in
-> [`docs/todos/production-milestone.md`](todos/production-milestone.md) are
-> closed.
+> **Production status.** Merovingian 1.0.0 is the first production release. Its
+> known limitations are listed in the 1.0.0 section of the changelog. The
+> Complement blocker stays open for later releases; see
+> [`docs/todos/production-milestone.md`](todos/production-milestone.md).
 
 For developer-oriented documentation — build internals, testing conventions, and
 contribution rules — see [`docs/dev-environment.md`](dev-environment.md) and the

@@ -47,11 +47,11 @@ value. Test fixtures that do not exercise persistence select it through
   `drop_initial_schema`, which drops every table).
   `migrations/001_initial_schema.sql` is the frozen record of v1; a unit test
   requires it to match the build's v1 step statement for statement.
-- Schema change policy. Until `v1.0.0` there is nothing to upgrade from: a
+- Schema change policy. Before `v1.0.0` there was nothing to upgrade from: a
   database whose `schema_migrations` ledger holds an upgrade row this build does
   not have (for example the rows 2 to 26 written by every build up to 0.12.46)
   is refused at open, before any migration or hydration
-  (`schema_ledger_is_known`), and must be recreated. From `v1.0.0` the v1
+  (`schema_ledger_is_known`), and must be recreated. Since `v1.0.0` the v1
   migration and `migrations/001_initial_schema.sql` never change; every schema
   change is a new numbered migration (v2 onwards) that keeps deployed databases
   compatible, and upgrade compatibility is promised from that release.

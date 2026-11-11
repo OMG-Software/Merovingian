@@ -21,9 +21,8 @@ C++ step `initial_schema_migration()` in `src/database/Migration.cpp`, generated
 test "Checked-in migrations hold exactly the v1 step this build runs" requires the two
 to match statement for statement.
 
-- **Until 1.0.0 is cut**, a schema change edits `core_tables`/`core_indexes` and this
-  file together, in the same commit. Regenerate the file rather than hand-editing it.
-- **From 1.0.0, v1 is frozen.** Never edit `001_initial_schema.sql`, and never change
+- **v1 is frozen (1.0.0 is cut).** The pre-1.0 rule, that a schema change edited
+  `core_tables`/`core_indexes` and this file together, no longer applies. Never edit `001_initial_schema.sql`, and never change
   `core_tables`/`core_indexes` in a way that changes what v1 creates. A schema change is
   a new migration: `002_<name>.sql`, plus its upgrade step in `upgrade_migration_catalog()`
   and its downgrade at the front of `downgrade_migration_catalog()`. The first one must
@@ -70,9 +69,8 @@ table is classified in the commit that adds it.
 
 ## Safety rules
 
-1. **Never modify an existing production migration.** Write a new one instead. Before
-   `v1.0.0` the only migration is `001_initial_schema.sql`, which changes in place
-   (see above); from `v1.0.0` it is frozen like any other.
+1. **Never modify an existing production migration.** Write a new one instead. `001_initial_schema.sql`
+   is frozen like any other migration (see above).
 2. **Never drop a column or table** without explicit user approval — data loss is irreversible.
 3. **Always provide a DEFAULT when adding NOT NULL columns** to existing tables — both SQLite
    and PostgreSQL require this for non-empty tables.

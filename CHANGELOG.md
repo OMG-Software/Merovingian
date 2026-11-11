@@ -1,6 +1,33 @@
 ## 1.0.0
 
-Merovingian 1.0.0
+Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
+279d4a0b): 39 confirmed findings (8 high, 14 medium, 15 low, 2 informational) and 3 that needed validation, all fixed in
+0.12.91 to 0.12.93.
+
+### Known limitations
+
+* There is no Complement evidence. 1.0.0 is tagged without a green Complement run. The owner waived that blocker for this
+  release only (ADR-0648). Later releases follow `docs/release-process.md` as written.
+* SSO login can start, but no route completes it: `complete_sso_login` has no caller. SSO cannot be used.
+* `POST /account/deactivate` ignores `erase`.
+* The aarch64 branch of the seccomp filters was not run on a real kernel.
+* The release signing key is read through the `release` environment. The repository owner must restrict that
+  environment to `main` and `v*` tags and hold the GPG secrets in it. Until then repository secrets remain readable by
+  it.
+
+### Documentation
+
+* `docs/versioning.md`: the scheme from 1.0.0 is `MAJOR.MINOR.BUILD`. `BUILD` is bumped once per branch as `PATCH` was.
+  `MINOR` and `MAJOR` change only when the owner decides. The 0.x rules are kept as a short history note. A tag now
+  publishes a full release from 1.0.0 (ADR-0647, which supersedes ADR-0047).
+* `docs/release-process.md` and `docs/todos/production-milestone.md`: the Complement blocker is waived for 1.0.0, not
+  closed, and stays open for later releases (ADR-0648).
+* `README.md`, `docs/index.md` and `docs/user-manual.md`: the beta notices now say that 1.0.0 is the first production
+  release and point to the known limitations.
+* `SECURITY.md`: the latest 1.x release is supported; 0.x releases are not.
+* `migrations/AGENTS.md`, `src/database/AGENTS.md`, `docs/database-persistence.md`, `docs/release-process.md` and
+  `tests/fixtures/upgrade/README.md`: the v1 schema is frozen now, and a schema change is a new numbered migration.
+* `packaging/` RPM spec descriptions and the FreeBSD manifest no longer call the project beta.
 
 ## 0.12.93
 
