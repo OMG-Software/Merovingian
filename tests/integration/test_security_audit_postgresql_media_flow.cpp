@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentAuditEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -108,8 +109,10 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
         auto const first_media_id = "db5-first-" + suffix;
         auto const final_media_id = "db5-final-" + suffix;
         auto const digest = "db5digest" + suffix;
-        auto const storage_id = "db5blob_" + suffix;
         auto const bytes = std::string{"payload\0bytes", 13U};
+        // Moderation finds a record's blob by the storage ID the media repository derives from its digest and size
+        // (ADR-0633), so the shared blob is named that way here, as every upload names it.
+        auto const storage_id = merovingian::media::make_local_media_storage_id(digest, bytes.size());
 
         WHEN("handle B commits removal of the first reference, then the final reference")
         {

@@ -84,7 +84,8 @@ can be uploaded again afterwards.
 
 Eviction no longer moves every later record, rebuilds the record index or scans every blob and thumbnail. The record, byte and
 holder counts, the live blob count and the store's media row positions are kept as rows change, and a row is erased by swapping the
-last into its place.
+last into its place. Moderating a record now finds its blob by the storage ID derived from its digest and size, so the PostgreSQL
+media moderation test names its shared blob that way, as every upload does.
 
 ### A share of the push delivery budget is kept for gateways that answer (ADR-0634)
 
