@@ -287,6 +287,58 @@ SCENARIO("namespace regex matching", "[appservice][registration]")
     }
 }
 
+// ADR-0613: std::regex recurses per character on libstdc++, so a matcher handed an identifier of any length could
+// run out of stack. Matrix identifiers are at most 255 bytes.
+SCENARIO("A namespace matches an identifier of at most 255 bytes, and no longer one",
+         "[appservice][registration][security][gate-m]")
+{
+    GIVEN("a namespace claiming every identifier with a prefix")
+    {
+        auto const pattern = std::string{"@_irc_.*"};
+        auto const namespaces = std::vector<merovingian::appservice::Namespace>{
+            merovingian::appservice::Namespace{true, pattern}
+        };
+        auto const of_length = [](std::size_t bytes) {
+            return std::string{"@_irc_"} + std::string(bytes - 6U, 'a');
+        };
+
+        WHEN("an identifier is exactly 255 bytes")
+        {
+            auto const value = of_length(255U);
+
+            THEN("it matches through every matcher")
+            {
+                CHECK(namespace_matches(pattern, value));
+                CHECK(merovingian::appservice::any_namespace_matches(namespaces, value));
+                CHECK(merovingian::appservice::any_exclusive_namespace_matches(namespaces, value));
+            }
+        }
+
+        WHEN("an identifier is 256 bytes")
+        {
+            auto const value = of_length(256U);
+
+            THEN("no matcher matches it")
+            {
+                CHECK_FALSE(namespace_matches(pattern, value));
+                CHECK_FALSE(merovingian::appservice::any_namespace_matches(namespaces, value));
+                CHECK_FALSE(merovingian::appservice::any_exclusive_namespace_matches(namespaces, value));
+            }
+        }
+
+        WHEN("an identifier is far longer than any request should carry")
+        {
+            auto const value = of_length(4U * 1024U * 1024U);
+
+            THEN("it is refused without being matched")
+            {
+                CHECK_FALSE(namespace_matches(pattern, value));
+                CHECK_FALSE(merovingian::appservice::any_namespace_matches(namespaces, value));
+            }
+        }
+    }
+}
+
 SCENARIO("appservice_owns_user rejects foreign users before namespace matching",
          "[appservice][registration][security][auth-6]")
 {

@@ -2,6 +2,12 @@
 
 Release-gate audit, medium findings
 
+### A very long identifier cannot crash a namespace match (ADR-0613)
+
+`GET /directory/room/{roomAlias}` and `GET /profile/{userId}` passed an identifier of any length to an application
+service's namespace regex, which recursed until the stack ran out. An identifier over 255 bytes now matches no namespace,
+and those two routes answer it with `400 M_INVALID_PARAM`.
+
 ### An application service cannot use an administrator's authority (ADR-0611)
 
 An application service asserting a user is now refused on every operator and admin route, whatever user it asserts. A

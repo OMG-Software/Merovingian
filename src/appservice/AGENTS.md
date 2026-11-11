@@ -91,6 +91,9 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   it. Namespace matching runs per member per event under `runtime.mutex`, so
   never compile a pattern on a request path. `namespace_matches(pattern, value)`
   compiles per call and is for one-off checks only.
+- **Bound the input.** `std::regex` recurses on what it matches, so both matchers
+  answer false for an identifier over `max_namespace_match_input_bytes` (255)
+  before matching (ADR-0613). Never call `std::regex_match` anywhere else.
 
 ## Interest (R07)
 

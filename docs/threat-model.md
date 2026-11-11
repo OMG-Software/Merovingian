@@ -3045,6 +3045,11 @@ A registration whose `users` namespace covered a server administrator gave its `
 `require_admin` and `authenticated_admin_user` now refuse a masquerade token outright. The server-administrator override
 for redactions is judged by user ID and is not covered; the service could send as that user anyway.
 
+### A long identifier against a namespace regex (0.12.92, ADR-0613)
+
+`std::regex` recurses on its input, and two unauthenticated routes gave it a path segment of any length, so one request
+could end the process. The matcher now refuses anything over 255 bytes, the spec's limit for an identifier.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes

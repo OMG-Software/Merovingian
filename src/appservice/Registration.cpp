@@ -113,6 +113,11 @@ namespace
 
 auto namespace_matches(std::string_view pattern, std::string_view value) noexcept -> bool
 {
+    // ADR-0613: std::regex recurses on its input, so what reaches it is bounded.
+    if (value.size() > max_namespace_match_input_bytes)
+    {
+        return false;
+    }
     try
     {
         auto const compiled = std::regex{pattern.begin(), pattern.end(), std::regex::extended};
@@ -143,7 +148,7 @@ namespace
     // regex_match, not regex_search).
     [[nodiscard]] auto compiled_namespace_matches(Namespace const& ns, std::string_view value) noexcept -> bool
     {
-        if (ns.compiled() == nullptr)
+        if (ns.compiled() == nullptr || value.size() > max_namespace_match_input_bytes)
         {
             return false;
         }

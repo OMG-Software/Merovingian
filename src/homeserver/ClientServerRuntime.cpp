@@ -14357,6 +14357,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const encoded_alias = request_path.substr(directory_room_prefix.size());
         auto const room_alias = core::percent_decode_path_component(encoded_alias);
+        if (room_alias.size() > appservice::max_namespace_match_input_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room alias is too long"); // ADR-0613
+        }
         auto const& our_server = rt.homeserver.config.server().server_name;
         auto const alias_server = server_name_from_room_alias(room_alias);
         if (!alias_server.empty() && alias_server != our_server)
@@ -15671,6 +15675,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
+        if (target_user.size() > appservice::max_namespace_match_input_bytes)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user ID is too long"); // ADR-0613
+        }
         // Spec (CS API, Profiles): a profile is read from "the server the user is on"; for a user of
         // another server this one asks that server over federation (SS API GET /query/profile,
         // which is for "users that belong to the target server") and relays what it says.
