@@ -437,6 +437,7 @@ shell = find_program('sh')
       'unit/test_shutdown_signal.cpp',
       'unit/test_state_resolution.cpp',
       'unit/test_state_resolution_auth_diff.cpp',
+      'unit/test_state_resolution_work.cpp',
       'unit/test_stream_token.cpp',
       'unit/test_to_device_position.cpp',
       'unit/test_sliding_sync.cpp',

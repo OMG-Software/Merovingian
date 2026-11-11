@@ -511,6 +511,13 @@ fallback above, which is intentionally soft — an ancestor it cannot reach
 only fails that one candidate event's own auth check (as it already did
 before the fallback existed), not the whole resolution.
 
+One resolution reads each event's `auth_events` a constant number of times,
+however many state events cite it (ADR-0599): `AuthChainGraph` turns the
+reachable events into integers once, the auth difference is one pass of a bit
+per group over them, enlarging X is one traversal from every power event, and
+a mainline walk reuses what an earlier walk found. The cap still means one
+group's chain, and the mainline depth limit still counts every hop.
+
 As of 0.12.18, `security.federation.state_resolution` also configures group
 count, entries per group, aggregate submitted entries, distinct/conflicted
 keys and mainline depth. The aggregate entry limit is checked before indexing

@@ -5,6 +5,8 @@
 
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateGroup.hpp"
 #include "merovingian/events/StateKey.hpp"
@@ -12,8 +14,6 @@
 #include "merovingian/events/StateResolutionLimits.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/events/StateResolutionResult.hpp"
-#include "merovingian/events/Authorization.hpp"
-#include "merovingian/events/Limits.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -21,8 +21,11 @@
 #include "merovingian/rooms/StateResolutionAlgorithm.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
@@ -186,6 +189,17 @@ namespace
             return missing_;
         }
 
+        // Counts one read of an event's auth_events by a traversal.
+        auto note_walk_visit() noexcept -> void
+        {
+            ++walk_visits_;
+        }
+
+        [[nodiscard]] auto walk_visits() const noexcept -> std::size_t
+        {
+            return walk_visits_;
+        }
+
     private:
         static constexpr std::size_t not_found = static_cast<std::size_t>(-1);
 
@@ -225,6 +239,7 @@ namespace
         EventLookupFn const& lookup_;
         std::size_t budget_;
         std::size_t used_{0U};
+        std::size_t walk_visits_{0U};
         bool missing_{false};
         std::deque<StateEventReference> fetched_{};
         std::unordered_map<std::string, std::size_t> fetched_index_{};
@@ -329,140 +344,264 @@ namespace
         return std::nullopt;
     }
 
-    // BFS over `start_json`'s auth_events, following ancestors transitively via
-    // `source`. Returns the chain (excluding the starting event itself) or
-    // nullopt if an ancestor could not be fetched (source.missing() is then
-    // true) or the walk exceeded `cap` distinct events.
-    // Spec: rooms/v10.md — Definitions, "Auth chain": "the set containing all
-    // of E's auth events, all of their auth events, and so on recursively".
-    [[nodiscard]] auto walk_auth_chain(canonicaljson::Value const& start_json, AuthChainEventSource& source,
-                                       std::size_t cap) -> std::optional<std::unordered_set<std::string>>
+    // The auth_events graph one resolution reaches, read once (ADR-0599). Every event's auth_events are
+    // read when it first becomes a node; after that a chain is a walk over small integers, so the cost
+    // of the auth chains of many state events is the distinct events they reach, not their sum.
+    //
+    // Spec: rooms/v10.md — Definitions, "Auth chain": "the set containing all of E's auth events, all of
+    // their auth events, and so on recursively".
+    class AuthChainGraph final
     {
-        auto chain = std::unordered_set<std::string>{};
-        auto const* start_obj = value_is_object(start_json);
-        if (start_obj == nullptr)
+    public:
+        using Node = std::uint32_t;
+
+        explicit AuthChainGraph(AuthChainEventSource& source) noexcept
+            : source_{source}
         {
-            return chain;
-        }
-        auto const* start_auth = array_member(*start_obj, "auth_events");
-        if (start_auth == nullptr)
-        {
-            return chain;
         }
 
-        auto frontier = std::vector<std::string>{};
-        for (auto const& entry : *start_auth)
+        // The nodes of the events `event_json` names in its auth_events, every ancestor read. An event
+        // that is not an object, or has no auth_events, has an empty chain. nullopt when an ancestor
+        // could not be fetched (source.missing() is then true).
+        [[nodiscard]] auto citations(canonicaljson::Value const& event_json) -> std::optional<std::vector<Node>>
         {
-            if (auto const* id = auth_entry_event_id(entry); id != nullptr)
-            {
-                frontier.push_back(*id);
-            }
-        }
-
-        while (!frontier.empty())
-        {
-            auto id = std::move(frontier.back());
-            frontier.pop_back();
-            if (!chain.insert(id).second)
-            {
-                continue; // already visited
-            }
-            if (chain.size() > cap)
-            {
-                return std::nullopt;
-            }
-            auto const* json = source.find_required(id);
-            if (json == nullptr)
-            {
-                return std::nullopt;
-            }
-            auto const* obj = value_is_object(*json);
-            if (obj == nullptr)
-            {
-                continue;
-            }
-            auto const* auth = array_member(*obj, "auth_events");
+            auto cited = std::vector<Node>{};
+            auto const* object = value_is_object(event_json);
+            auto const* auth = object != nullptr ? array_member(*object, "auth_events") : nullptr;
             if (auth == nullptr)
             {
-                continue;
+                return cited;
             }
+            source_.note_walk_visit();
+            cited.reserve(auth->size());
             for (auto const& entry : *auth)
             {
-                if (auto const* nid = auth_entry_event_id(entry); nid != nullptr && !chain.contains(*nid))
+                auto const* id = auth_entry_event_id(entry);
+                if (id == nullptr)
                 {
-                    frontier.push_back(*nid);
+                    continue;
+                }
+                auto const node = expanded_node(*id);
+                if (!node.has_value())
+                {
+                    return std::nullopt;
+                }
+                cited.push_back(*node);
+            }
+            return cited;
+        }
+
+        [[nodiscard]] auto size() const noexcept -> std::size_t
+        {
+            return ids_.size();
+        }
+
+        [[nodiscard]] auto id_of(Node node) const -> std::string const&
+        {
+            return ids_[node].get();
+        }
+
+        [[nodiscard]] auto auth_of(Node node) const -> std::vector<Node> const&
+        {
+            return auth_[node];
+        }
+
+        // Every node, each after everything it cites: a node's ancestors come before it.
+        [[nodiscard]] auto ancestors_first() const -> std::vector<Node> const&
+        {
+            return finished_;
+        }
+
+    private:
+        struct Frame final
+        {
+            Node node{0U};
+            std::size_t next_edge{0U};
+        };
+
+        [[nodiscard]] auto intern(std::string const& id) -> Node
+        {
+            auto const next = static_cast<Node>(ids_.size());
+            auto const [position, added] = index_.try_emplace(id, next);
+            if (added)
+            {
+                ids_.emplace_back(position->first);
+                auth_.emplace_back();
+                read_.push_back(false);
+            }
+            return position->second;
+        }
+
+        // Reads `node`'s auth_events into its edges. False when the event could not be fetched.
+        [[nodiscard]] auto read_node(Node node) -> bool
+        {
+            read_[node] = true;
+            source_.note_walk_visit();
+            auto const* json = source_.find_required(ids_[node].get());
+            if (json == nullptr)
+            {
+                return false;
+            }
+            auto const* object = value_is_object(*json);
+            auto const* auth = object != nullptr ? array_member(*object, "auth_events") : nullptr;
+            if (auth == nullptr)
+            {
+                return true;
+            }
+            auto edges = std::vector<Node>{};
+            edges.reserve(auth->size());
+            for (auto const& entry : *auth)
+            {
+                if (auto const* id = auth_entry_event_id(entry); id != nullptr)
+                {
+                    edges.push_back(intern(*id));
+                }
+            }
+            auth_[node] = std::move(edges);
+            return true;
+        }
+
+        // The node of `id`, it and every ancestor read. An explicit stack: a chain may be as deep as
+        // the walk's cap, far deeper than the thread's stack allows a recursion to go.
+        [[nodiscard]] auto expanded_node(std::string const& id) -> std::optional<Node>
+        {
+            auto const root = intern(id);
+            if (read_[root])
+            {
+                return root;
+            }
+            if (!read_node(root))
+            {
+                return std::nullopt;
+            }
+            auto stack = std::vector<Frame>{
+                Frame{root, 0U}
+            };
+            while (!stack.empty())
+            {
+                auto const node = stack.back().node;
+                if (stack.back().next_edge == auth_[node].size())
+                {
+                    finished_.push_back(node);
+                    stack.pop_back();
+                    continue;
+                }
+                auto const child = auth_[node][stack.back().next_edge];
+                ++stack.back().next_edge;
+                if (read_[child])
+                {
+                    continue;
+                }
+                if (!read_node(child))
+                {
+                    return std::nullopt;
+                }
+                stack.push_back(Frame{child, 0U});
+            }
+            return root;
+        }
+
+        AuthChainEventSource& source_;
+        // The keys of index_ do not move when it rehashes, so ids_ can refer to them.
+        std::unordered_map<std::string, Node> index_{};
+        std::vector<std::reference_wrapper<std::string const>> ids_{};
+        std::vector<std::vector<Node>> auth_{};
+        std::vector<bool> read_{};
+        std::vector<Node> finished_{};
+    };
+
+    // Auth difference = ∪Ci − ∩Ci, where Ci is the full auth chain of state group i: the union of the
+    // auth chains of every event in the group's state. Spec: rooms/v10.md — Definitions, "Auth
+    // difference". One bit per group on each node records which Ci hold it, pushed from each event to
+    // its ancestors in one pass, so nothing is walked per state event (ADR-0599). nullopt, as ever,
+    // when an ancestor cannot be fetched or any one Ci holds more than `cap` events.
+    [[nodiscard]] auto compute_auth_difference(std::vector<StateGroup> const& groups, AuthChainGraph& graph,
+                                               std::size_t cap) -> std::optional<std::unordered_set<std::string>>
+    {
+        auto difference = std::unordered_set<std::string>{};
+        if (groups.empty())
+        {
+            return difference;
+        }
+        constexpr auto bits_per_word = std::size_t{64U};
+        auto const words = (groups.size() + bits_per_word - 1U) / bits_per_word;
+        auto holders = std::vector<std::uint64_t>{};
+        for (std::size_t group = 0U; group < groups.size(); ++group)
+        {
+            for (auto const& event : groups[group].state)
+            {
+                if (!value_has_content(event.event_json))
+                {
+                    continue;
+                }
+                auto const cited = graph.citations(event.event_json);
+                if (!cited.has_value())
+                {
+                    return std::nullopt;
+                }
+                holders.resize(graph.size() * words, 0U);
+                for (auto const node : *cited)
+                {
+                    holders[(node * words) + (group / bits_per_word)] |= std::uint64_t{1U} << (group % bits_per_word);
                 }
             }
         }
-        return chain;
-    }
 
-    // Full auth chain of a state group: the union of the auth chains of every
-    // event in the group's state. Spec: rooms/v10.md — Definitions, "Auth
-    // difference": "the full auth chain for each state Si, that is the union
-    // of the auth chains for each event in Si".
-    [[nodiscard]] auto full_auth_chain_of_group(StateGroup const& group, AuthChainEventSource& source, std::size_t cap)
-        -> std::optional<std::unordered_set<std::string>>
-    {
-        auto result = std::unordered_set<std::string>{};
-        for (auto const& event : group.state)
+        // Dependants before ancestors, so one pass carries every bit all the way down. An auth graph
+        // has no cycle (an event's ID is a hash over its auth_events); were one supplied, the loop
+        // runs until nothing changes, and a cycle's members all end up in one another's chains.
+        auto const& order = graph.ancestors_first();
+        for (auto changed = true; changed;)
         {
-            if (!value_has_content(event.event_json))
+            changed = false;
+            for (auto position = order.rbegin(); position != order.rend(); ++position)
             {
-                continue;
-            }
-            auto chain = walk_auth_chain(event.event_json, source, cap);
-            if (!chain.has_value())
-            {
-                return std::nullopt;
-            }
-            result.insert(chain->begin(), chain->end());
-            if (result.size() > cap)
-            {
-                return std::nullopt;
+                auto const from = *position * words;
+                for (auto const ancestor : graph.auth_of(*position))
+                {
+                    auto const to = ancestor * words;
+                    for (std::size_t word = 0U; word < words; ++word)
+                    {
+                        auto const merged = holders[to + word] | holders[from + word];
+                        changed = changed || merged != holders[to + word];
+                        holders[to + word] = merged;
+                    }
+                }
             }
         }
-        return result;
-    }
 
-    // Auth difference = ∪Ci − ∩Ci, where Ci is the full auth chain of state
-    // group i. Spec: rooms/v10.md — Definitions, "Auth difference".
-    [[nodiscard]] auto compute_auth_difference(std::vector<StateGroup> const& groups, AuthChainEventSource& source,
-                                               std::size_t cap) -> std::optional<std::unordered_set<std::string>>
-    {
-        auto chains = std::vector<std::unordered_set<std::string>>{};
-        chains.reserve(groups.size());
-        for (auto const& group : groups)
+        // No group can hold more events than the graph has.
+        if (graph.size() > cap)
         {
-            auto chain = full_auth_chain_of_group(group, source, cap);
-            if (!chain.has_value())
+            auto sizes = std::vector<std::size_t>(groups.size(), 0U);
+            for (std::size_t node = 0U; node < graph.size(); ++node)
             {
-                return std::nullopt;
+                for (std::size_t word = 0U; word < words; ++word)
+                {
+                    for (auto bits = holders[(node * words) + word]; bits != 0U; bits &= bits - 1U)
+                    {
+                        auto const group = (word * bits_per_word) + static_cast<std::size_t>(std::countr_zero(bits));
+                        if (++sizes[group] > cap)
+                        {
+                            return std::nullopt;
+                        }
+                    }
+                }
             }
-            chains.push_back(std::move(*chain));
-        }
-        if (chains.empty())
-        {
-            return std::unordered_set<std::string>{};
         }
 
-        auto union_set = std::unordered_set<std::string>{};
-        for (auto const& chain : chains)
+        auto all_groups = std::vector<std::uint64_t>(words, ~std::uint64_t{0U});
+        if (auto const spare = groups.size() % bits_per_word; spare != 0U)
         {
-            union_set.insert(chain.begin(), chain.end());
+            all_groups.back() = (std::uint64_t{1U} << spare) - 1U;
         }
-        auto intersection = chains.front();
-        for (std::size_t i = 1U; i < chains.size(); ++i)
+        for (std::size_t node = 0U; node < graph.size(); ++node)
         {
-            std::erase_if(intersection, [&chains, i](std::string const& id) {
-                return !chains[i].contains(id);
-            });
-        }
-
-        auto difference = std::move(union_set);
-        for (auto const& id : intersection)
-        {
-            difference.erase(id);
+            if (!std::equal(all_groups.begin(), all_groups.end(),
+                            holders.begin() + static_cast<std::ptrdiff_t>(node * words)))
+            {
+                difference.insert(graph.id_of(static_cast<AuthChainGraph::Node>(node)));
+            }
         }
         return difference;
     }
@@ -977,6 +1116,77 @@ namespace
         }
 
         auto const infinity = std::numeric_limits<std::size_t>::max();
+        // The position each power_levels event off the mainline leads to, and how many events a walk
+        // starting at it reads, so each is read once however many events cite it (ADR-0599). The reads
+        // are kept so the depth limit still counts every hop a walk would have made.
+        struct PowerPosition final
+        {
+            std::size_t position{0U};
+            std::size_t reads{0U};
+        };
+        auto power_positions = std::unordered_map<std::string, PowerPosition>{};
+        auto const position_of = [&](canonicaljson::Object const& start) -> std::optional<std::size_t> {
+            auto path = std::vector<std::string>{};
+            auto on_path = std::unordered_set<std::string>{};
+            auto const* current = &start;
+            auto position = infinity;
+            auto reads_after_path = std::size_t{0U};
+            for (;;)
+            {
+                if (path.size() >= limits.max_mainline_auth_chain_depth)
+                {
+                    return std::nullopt;
+                }
+                source.note_walk_visit();
+                auto const ancestor = power_levels_auth_ancestor(*current, source);
+                if (!ancestor.valid)
+                {
+                    return std::nullopt;
+                }
+                if (!ancestor.event_id.has_value())
+                {
+                    break;
+                }
+                if (auto const position_it = mainline_depth.find(*ancestor.event_id);
+                    position_it != mainline_depth.end())
+                {
+                    position = position_it->second;
+                    break;
+                }
+                if (auto const known = power_positions.find(*ancestor.event_id); known != power_positions.end())
+                {
+                    position = known->second.position;
+                    reads_after_path = known->second.reads;
+                    if (path.size() + 1U + reads_after_path > limits.max_mainline_auth_chain_depth)
+                    {
+                        return std::nullopt;
+                    }
+                    break;
+                }
+                if (!on_path.insert(*ancestor.event_id).second)
+                {
+                    return std::nullopt;
+                }
+                auto const* json = source.find_required(*ancestor.event_id);
+                auto const* object = json != nullptr ? value_is_object(*json) : nullptr;
+                auto const* type = object != nullptr ? string_member(*object, "type") : nullptr;
+                auto const* state_key = object != nullptr ? string_member(*object, "state_key") : nullptr;
+                if (object == nullptr || type == nullptr || *type != "m.room.power_levels" || state_key == nullptr ||
+                    !state_key->empty())
+                {
+                    return std::nullopt;
+                }
+                path.push_back(*ancestor.event_id);
+                current = object;
+            }
+            for (std::size_t index = 0U; index < path.size(); ++index)
+            {
+                power_positions.insert_or_assign(path[index],
+                                                 PowerPosition{position, path.size() - index + reads_after_path});
+            }
+            return position;
+        };
+
         auto position_by_event_id = std::unordered_map<std::string, std::size_t>{};
         position_by_event_id.reserve(events.size());
         for (auto const& event : events)
@@ -984,51 +1194,17 @@ namespace
             auto position = infinity;
             if (!mainline.empty())
             {
-                auto const* current = value_is_object(event.event_json);
-                if (current == nullptr)
+                auto const* object = value_is_object(event.event_json);
+                if (object == nullptr)
                 {
                     return false;
                 }
-                auto visited = std::unordered_set<std::string>{};
-                auto found_position = false;
-                for (std::size_t hop = 0; hop < limits.max_mainline_auth_chain_depth; ++hop)
-                {
-                    auto const ancestor = power_levels_auth_ancestor(*current, source);
-                    if (!ancestor.valid)
-                    {
-                        return false;
-                    }
-                    if (!ancestor.event_id.has_value())
-                    {
-                        found_position = true;
-                        break;
-                    }
-                    if (auto const position_it = mainline_depth.find(*ancestor.event_id);
-                        position_it != mainline_depth.end())
-                    {
-                        position = position_it->second;
-                        found_position = true;
-                        break;
-                    }
-                    if (!visited.insert(*ancestor.event_id).second)
-                    {
-                        return false;
-                    }
-                    auto const* json = source.find_required(*ancestor.event_id);
-                    auto const* object = json != nullptr ? value_is_object(*json) : nullptr;
-                    auto const* type = object != nullptr ? string_member(*object, "type") : nullptr;
-                    auto const* state_key = object != nullptr ? string_member(*object, "state_key") : nullptr;
-                    if (object == nullptr || type == nullptr || *type != "m.room.power_levels" ||
-                        state_key == nullptr || !state_key->empty())
-                    {
-                        return false;
-                    }
-                    current = object;
-                }
-                if (!found_position)
+                auto const found = position_of(*object);
+                if (!found.has_value())
                 {
                     return false;
                 }
+                position = *found;
             }
             position_by_event_id.emplace(event.event_id, position);
         }
@@ -1557,8 +1733,9 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 
     // Spec (rooms/v10.md — Definitions, "Auth difference"): "∪Ci − ∩Ci",
     // where Ci is the full auth chain of state group i.
+    auto graph = AuthChainGraph{source};
     auto const auth_difference =
-        compute_auth_difference(request.state_groups, source, request.limits.max_auth_chain_walk_events);
+        compute_auth_difference(request.state_groups, graph, request.limits.max_auth_chain_walk_events);
     if (!auth_difference.has_value() || source.missing())
     {
         log_diagnostic("resolve_state_v2.rejected",
@@ -1737,14 +1914,15 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         }
     }
 
-    auto enlarge_queue = std::vector<std::string>{selected_ids.begin(), selected_ids.end()};
-    while (!enlarge_queue.empty())
+    // One walk from every power event at once: each event of their auth chains is visited once
+    // (ADR-0599). Every such chain is part of a group's chain, which the auth difference already
+    // held within the cap. An ancestor added to X needs no walk of its own, since its chain is
+    // reached through it.
+    auto enlarge_frontier = std::vector<AuthChainGraph::Node>{};
+    for (auto const& event : power_events)
     {
-        auto const id = std::move(enlarge_queue.back());
-        enlarge_queue.pop_back();
-        auto const& event = full_conflicted_by_id.at(id);
-        auto const chain = walk_auth_chain(event.event_json, source, request.limits.max_auth_chain_walk_events);
-        if (!chain.has_value() || source.missing())
+        auto cited = graph.citations(event.event_json);
+        if (!cited.has_value() || source.missing())
         {
             log_diagnostic("resolve_state_v2.rejected", {
                                                             {"room_version", request.room_version,               false},
@@ -1752,19 +1930,25 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
             });
             return {false, {}, "state-res v2: enlarge-X auth chain walk failed"};
         }
-        for (auto const& ancestor_id : *chain)
+        enlarge_frontier.insert(enlarge_frontier.end(), cited->begin(), cited->end());
+    }
+    auto enlarge_visited = std::vector<bool>(graph.size(), false);
+    while (!enlarge_frontier.empty())
+    {
+        auto const node = enlarge_frontier.back();
+        enlarge_frontier.pop_back();
+        if (enlarge_visited[node])
         {
-            auto const it = full_conflicted_by_id.find(ancestor_id);
-            if (it == full_conflicted_by_id.end())
-            {
-                continue;
-            }
-            if (selected_ids.insert(ancestor_id).second)
-            {
-                power_events.push_back(it->second);
-                enlarge_queue.push_back(ancestor_id);
-            }
+            continue;
         }
+        enlarge_visited[node] = true;
+        auto const& ancestor_id = graph.id_of(node);
+        if (auto const it = full_conflicted_by_id.find(ancestor_id);
+            it != full_conflicted_by_id.end() && selected_ids.insert(ancestor_id).second)
+        {
+            power_events.push_back(it->second);
+        }
+        enlarge_frontier.insert(enlarge_frontier.end(), graph.auth_of(node).begin(), graph.auth_of(node).end());
     }
 
     auto remaining_events = std::vector<StateEventReference>{};
@@ -1835,7 +2019,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
                                                     {"room_version", request.room_version,                false},
                                                     {"events",       std::to_string(result_state.size()), false}
     });
-    return {true, std::move(result_state), {}};
+    return {true, std::move(result_state), {}, source.walk_visits()};
 }
 
 auto state_resolution_summary(StateResolutionResult const& result) -> std::string

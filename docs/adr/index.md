@@ -519,3 +519,4 @@
 * [0596 - Every module file is named in PascalCase, including function-only headers](0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md)
 * [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
 * [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)
+* [0599 - One resolution reads its auth graph once, with a bit per group, not a closure per event](0599-one-resolution-reads-its-auth-graph-once-with-a-bit-per-group-not-a-closure-per-event.md)
