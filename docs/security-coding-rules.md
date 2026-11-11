@@ -606,6 +606,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   see a room with no ACL (F-27, ADR-0360).
   Source: `src/federation_worker/AGENTS.md`, `src/database/AGENTS.md`.
 
+- **An inbound event's tip status is asked of `homeserver::event_may_become_forward_extremity`, and its limit is per sender's
+  server, never per room.** An event that cites a current tip is never refused. An accepted event that is not a tip writes
+  no `current_state` row or membership.
+  Why: a limit one server can fill would let its forks keep out another server's ban or demotion (ADR-0374, ADR-0602).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied
+  through the normal write path.**
+  Why: a resolution reads both, and `current_state` has other writers, so a stale or skipped result leaves state a
+  resolution would have reverted (ADR-0600).
+  Source: `src/database/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
 - **A call to the external policy server resolves its operator-configured host itself, in the lock-release scope, takes a place
   in `policy_server_budget` first, and treats a refusal as "no decision".** Never call `OutboundClient::perform` without
   pinned addresses; never run the call under `runtime.mutex`.

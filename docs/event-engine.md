@@ -746,8 +746,21 @@ messages citing one event costs one state, not one per message (ADR-0374). An
 accepted event with no `state_key` that cites no current tip does not become a
 tip once the room holds `max_state_groups` of them
 (`forward_extremities_stay_bounded`); it is stored, delivered and placed
-normally. A state event is always a tip. While a refusal lasts each accepted
-state event still writes its own `current_state` row, so a ban applies; the
+normally. An accepted event that cites no current tip also does not become a
+tip once its sender's server holds `max_state_tips_per_server` of the room's
+tips (`event_may_become_forward_extremity`, ADR-0602), and then writes no
+`current_state` row or membership, since no tip holds its state; a message past
+that limit stays a tip only in a state group a tip already holds. A server is
+charged only for its own events, so a ban or a demotion from another server
+still reaches resolution. `send_join`, `send_leave` and `send_knock` past the
+limit are answered 503 with nothing stored. Each room remembers its last
+resolved state by its sorted distinct state groups (`ResolvedStateMemo`,
+ADR-0600): a PDU that leaves those groups unchanged reuses the result and still
+applies it through the normal write path. A recomputation parses each stored
+event once however many groups name it. Folding a change into the previous
+result is not done, because state resolution is not associative (ADR-0601).
+While a refusal lasts each accepted
+state event that is a tip still writes its own `current_state` row, so a ban applies; the
 residual is that a state event resolution would have reverted can stay current
 until the tips are back within budget.
 

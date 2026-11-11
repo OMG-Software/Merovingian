@@ -10,6 +10,7 @@
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/ForwardExtremityTable.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
@@ -75,6 +76,7 @@
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/RedactionState.hpp"
+#include "merovingian/database/ResolvedStateMemo.hpp"
 #include "merovingian/database/RoomAliasTable.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/database/SchemaState.hpp"
@@ -432,7 +434,11 @@ struct PersistentStore final
     StateGroupTable state_groups{};
     StateGroupEntryTable state_group_state{};
     EventStateGroupTable event_state_groups{};
-    std::vector<PersistentForwardExtremity> forward_extremities{};
+    ForwardExtremityTable forward_extremities{};
+    // The last resolution of each room's forward extremities (ADR-0600). In memory only.
+    ResolvedStateMemo resolved_state_memo{};
+    // Stored events parsed for state resolution, for tests that prove cost.
+    ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
     // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
     // called, so production retains no statement or bound parameter after it
@@ -857,6 +863,10 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
 // Rebuilds the in-memory state indexes from `state`. Called after SQLite/PostgreSQL hydration,
 // after `reload_room` and after any direct edit of the vector that should be fast again.
 auto rebuild_state_index(PersistentStore& store) -> void;
+
+// Charges each forward extremity to the server of its event's sender (ADR-0602). Called after hydration, which
+// reads the tips before the events are indexed.
+auto rebuild_forward_extremity_servers(PersistentStore& store) -> void;
 
 // Calls `visit` with every row of `memberships` that belongs to `room_id`, in storage order. Walks only that
 // room's rows while the index is in step with `memberships` (ADR-0437). `visit` must not change `memberships`.

@@ -649,3 +649,82 @@ SCENARIO("send_join at the sync stream counter's limit is refused and stores not
         std::filesystem::remove(path);
     }
 }
+
+// ADR-0602. A membership event is a state event, so a send_join is judged by its server's tips too. Stored without
+// becoming a tip it would take no effect, and a resend would be refused, so it is refused before anything is stored:
+// a fresh make_join names the current tips and is never refused.
+SCENARIO("send_join is refused, with nothing stored, past its server's forward-extremity cap",
+         "[pdu_ingestion][state_groups][tip_cap]")
+{
+    GIVEN("a room where one server holds tips and a join citing none of them")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto const room_id = std::string{"!tipcap:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
+        auto& store = started.runtime.database.persistent_store;
+        store.forward_extremities.erase_room(room_id);
+
+        auto const join_from = [&](std::string const& user, std::string const& event_id) {
+            auto content = merovingian::canonicaljson::Object{};
+            content.push_back(merovingian::canonicaljson::make_member(
+                "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+            auto const auth = std::vector<std::string>{genesis.create_id, genesis.pl_id, genesis.join_rules_id};
+            auto const json = build_event_json(room_id, "m.room.member", user, user, std::move(content),
+                                               {genesis.join_rules_id}, auth, 4, 5);
+            auto const envelope =
+                make_envelope(room_id, event_id, "m.room.member", user, user, {genesis.join_rules_id}, auth, 4, json);
+            return started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+        };
+        auto const fill_tips = [&](int count) {
+            for (auto index = 0; index < count; ++index)
+            {
+                REQUIRE(store.forward_extremities.insert({room_id, "$tip" + std::to_string(index)},
+                                                         "@x:remote.example.org"));
+            }
+        };
+
+        WHEN("the joining server holds exactly its cap")
+        {
+            fill_tips(32);
+            auto const result = join_from("@bob:remote.example.org", "$over:remote.example.org");
+
+            THEN("the join is refused as retryable and nothing is stored")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.status == 503U);
+                REQUIRE(store.events.find("$over:remote.example.org") == store.events.end());
+            }
+        }
+
+        WHEN("the joining server holds one tip fewer than its cap")
+        {
+            fill_tips(31);
+            auto const result = join_from("@bob:remote.example.org", "$under:remote.example.org");
+
+            THEN("the join is accepted")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(store.forward_extremities.contains(room_id, "$under:remote.example.org"));
+            }
+        }
+
+        WHEN("another server holds those tips")
+        {
+            fill_tips(32);
+            auto const result = join_from("@carol:honest.example.org", "$honest:honest.example.org");
+
+            THEN("this server's join is not charged for them")
+            {
+                REQUIRE(result.accepted);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}

@@ -520,3 +520,6 @@
 * [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
 * [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)
 * [0599 - One resolution reads its auth graph once, with a bit per group, not a closure per event](0599-one-resolution-reads-its-auth-graph-once-with-a-bit-per-group-not-a-closure-per-event.md)
+* [0600 - A room remembers its last resolved state by its distinct state groups](0600-a-room-remembers-its-last-resolved-state-by-its-distinct-state-groups.md)
+* [0601 - Current state is resolved over all tips, never incrementally](0601-current-state-is-resolved-over-all-tips-never-incrementally.md)
+* [0602 - A server is limited to its own share of a room's forward extremities](0602-a-server-is-limited-to-its-own-share-of-a-rooms-forward-extremities.md)

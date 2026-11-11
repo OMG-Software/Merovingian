@@ -23,6 +23,8 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `PostgresqlConnectionDeleter.cpp`, `SqliteConnectionDeleter.cpp` | The `PQfinish` and `sqlite3_close` deleters for the owning connection pointers |
 | `LibraryVersions.cpp` | Reports the SQLite and libpq versions (running and build-time) for the start-up log |
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
+| `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
+| `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
@@ -173,6 +175,12 @@ Write only through `insert`, `erase`, `reassign` and `clear` (hydration uses `in
 the hole, so row order means nothing. The table has no lock: a reader needs exclusion from writers (`runtime.mutex`).
 
 ## Credential tables (F-08, ADR-0325, ADR-0488)
+
+`PersistentStore::forward_extremities` is a `ForwardExtremityTable`: it owns the tips and counts them per (room, server of
+the sender), so a writer cannot leave the counts wrong. A hydrating loader inserts each tip with no sender and calls
+`rebuild_forward_extremity_servers` once the events are indexed (ADR-0602). `PersistentStore::resolved_state_memo` is read
+under `runtime.mutex` only. Anything that changes a stored event's JSON or status calls `forget_room`, or a later resolution
+reuses a result that read the old value (ADR-0600).
 
 `PersistentStore::access_tokens` and `refresh_tokens` are `CredentialTable<Row>` (header-only,
 `include/merovingian/database/CredentialTable.hpp`), not vectors: they own their rows, show them read-only and index them

@@ -1933,7 +1933,7 @@ private:
         append({"auth", row.event_id, row.auth_event_id});
     for (auto const& row : store.event_signatures)
         append({"signature", row.event_id, row.server_name, row.key_id, row.signature});
-    for (auto const& row : store.forward_extremities)
+    for (auto const& row : store.forward_extremities.rows())
         append({"extremity", row.room_id, row.event_id});
     append({"event-watermark", std::to_string(store.event_stream_watermark)});
     append({"sync-watermark", std::to_string(store.next_sync_stream_id)});

@@ -136,9 +136,7 @@ SCENARIO("A resident with no tips for a room offers no membership template",
 
         WHEN("the room's tips are gone and GET /" + endpoint + " is asked")
         {
-            std::erase_if(store.forward_extremities, [&](auto const& extremity) {
-                return extremity.room_id == room.value;
-            });
+            store.forward_extremities.erase_room(room.value);
             REQUIRE(merovingian::homeserver::forward_extremities_for_new_event(store, room.value).empty());
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime.federation, signed_get(template_target(endpoint, room.value)));

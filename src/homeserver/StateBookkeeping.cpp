@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
+#include "merovingian/database/ResolvedStateMemo.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateKey.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
@@ -40,6 +41,7 @@ auto state_resolution_limits(config::FederationStateResolutionConfig const& conf
     limits.max_mainline_auth_chain_depth = static_cast<std::size_t>(config.max_mainline_auth_chain_depth);
     limits.max_auth_chain_walk_events = static_cast<std::size_t>(config.max_auth_chain_walk_events);
     limits.max_total_state_events = static_cast<std::size_t>(config.max_total_state_events);
+    limits.max_state_tips_per_server = static_cast<std::size_t>(config.max_state_tips_per_server);
     return limits;
 }
 
@@ -126,6 +128,23 @@ namespace
         return refs;
     }
 
+    using ParsedEvents = std::unordered_map<std::string, std::optional<events::StateEventReference>>;
+
+    // `lookup`, parsing each event at most once however many state groups name it. The result refers to `parsed`,
+    // which must outlive it: one resolution, never longer, since a stored event can be redacted between resolutions.
+    [[nodiscard]] auto parse_once(events::EventLookupFn lookup, ParsedEvents& parsed) -> events::EventLookupFn
+    {
+        return
+            [lookup = std::move(lookup), &parsed](std::string_view id) -> std::optional<events::StateEventReference> {
+                auto const key = std::string{id};
+                if (auto const held = parsed.find(key); held != parsed.end())
+                {
+                    return held->second;
+                }
+                return parsed.emplace(key, lookup(id)).first->second;
+            };
+    }
+
     [[nodiscard]] auto to_state_group_entries(std::vector<events::StateEventReference> const& refs)
         -> std::vector<database::PersistentStateGroupStateEntry>
     {
@@ -163,6 +182,7 @@ auto make_store_event_lookup(database::PersistentStore const& store) -> events::
         {
             return std::nullopt;
         }
+        store.state_events_parsed.add(1U);
         auto ref = parse_state_event_reference(found->event_id, found->json, found->depth);
         if (ref.has_value())
         {
@@ -221,7 +241,8 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         return {true, std::move(*full_state)};
     }
 
-    auto const lookup = make_store_event_lookup(store);
+    auto parsed = ParsedEvents{};
+    auto const lookup = parse_once(make_store_event_lookup(store), parsed);
     auto groups = std::vector<events::StateGroup>{};
     groups.reserve(prev_event_ids.size());
     for (auto const& prev_event_id : prev_event_ids)
@@ -363,11 +384,29 @@ namespace
         // Why the extremities could not be resolved (F-49); nullopt when they were, or when there
         // were none.
         std::optional<std::string> refusal{};
+        // What a fresh resolution is to be remembered under (ADR-0600); empty when nothing was resolved, or when
+        // the result came from the memo. The caller remembers it once what it resolved is what the store holds.
+        std::vector<std::string> sorted_group_ids{};
     };
 
     [[nodiscard]] auto refused_resolution(std::string reason) -> ExtremityResolution
     {
-        return {{}, std::move(reason)};
+        return {{}, std::move(reason), {}};
+    }
+
+    // Everything besides the state groups that can change what a resolution comes to (ADR-0600).
+    [[nodiscard]] auto resolution_context(rooms::RoomVersionPolicy const& policy,
+                                          events::StateResolutionLimits const& limits) -> std::string
+    {
+        auto context = std::string{policy.id};
+        for (auto const limit :
+             {limits.max_state_groups, limits.max_events_per_state_group, limits.max_conflicted_state_keys,
+              limits.max_mainline_auth_chain_depth, limits.max_auth_chain_walk_events, limits.max_total_state_events})
+        {
+            context.push_back('|');
+            context.append(std::to_string(limit));
+        }
+        return context;
     }
 
     // The resolution of the extremities' after-states, which current state is a
@@ -379,7 +418,11 @@ namespace
     // Extremities held in one state group are one state (ADR-0374): a message adds
     // no state, so it shares its prev_event's group, and a thousand forks of
     // messages resolve as one state, not a thousand.
-    [[nodiscard]] auto resolve_extremity_states(std::string_view room_id, rooms::RoomVersionPolicy const& policy,
+    //
+    // State groups are immutable, so the same distinct groups come to the same result, and `memo` answers
+    // for them (ADR-0600). Only a success is ever remembered.
+    [[nodiscard]] auto resolve_extremity_states(database::ResolvedStateMemo& memo, std::string_view room_id,
+                                                rooms::RoomVersionPolicy const& policy,
                                                 events::StateResolutionLimits const& limits,
                                                 std::vector<std::string> const& extremities,
                                                 ExtremityGroupFn const& group_of, ExtremityStateFn const& state_of,
@@ -411,14 +454,22 @@ namespace
             {
                 return refused_resolution("extremity " + distinct.front() + " has no readable state");
             }
-            return {std::move(state->entries), std::nullopt};
+            return {std::move(state->entries), std::nullopt, {}};
         }
         if (distinct.size() > limits.max_state_groups)
         {
             return refused_resolution(std::to_string(distinct.size()) + " distinct extremity states, more than the " +
                                       std::to_string(limits.max_state_groups) + " that can be resolved");
         }
-        auto const lookup = make_lookup();
+        auto sorted_group_ids = std::vector<std::string>(seen_groups.begin(), seen_groups.end());
+        std::ranges::sort(sorted_group_ids);
+        if (auto const* remembered = memo.find(room_id, resolution_context(policy, limits), sorted_group_ids);
+            remembered != nullptr)
+        {
+            return {*remembered, std::nullopt, {}};
+        }
+        auto parsed = ParsedEvents{};
+        auto const lookup = parse_once(make_lookup(), parsed);
         auto total_state_events = std::size_t{0U};
         auto groups = std::vector<events::StateGroup>{};
         groups.reserve(distinct.size());
@@ -453,7 +504,7 @@ namespace
         {
             return refused_resolution("state resolution failed: " + result.reason);
         }
-        return {to_state_group_entries(result.resolved_state), std::nullopt};
+        return {to_state_group_entries(result.resolved_state), std::nullopt, std::move(sorted_group_ids)};
     }
 
     void log_refused_resolution(std::string_view room_id, std::string_view reason)
@@ -493,7 +544,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
     -> CurrentStateRecompute
 {
     auto resolution = resolve_extremity_states(
-        room_id, policy, limits, database::find_forward_extremities(store, room_id),
+        store.resolved_state_memo, room_id, policy, limits, database::find_forward_extremities(store, room_id),
         [&store](std::string const& extremity) {
             return database::find_event_state_group(store, extremity);
         },
@@ -508,6 +559,11 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         // F-49: leave the cached current state untouched, and say so.
         log_refused_resolution(room_id, *resolution.refusal);
         return {CurrentStateRecomputeStatus::refused, std::move(*resolution.refusal)};
+    }
+    if (!resolution.sorted_group_ids.empty())
+    {
+        store.resolved_state_memo.remember(room_id, resolution_context(policy, limits),
+                                           std::move(resolution.sorted_group_ids), resolution.entries);
     }
 
     // The room's current state in one pass over the room's rows, so each resolved entry is a lookup and
@@ -535,13 +591,44 @@ auto forward_extremities_stay_bounded(database::PersistentStore const& store, st
                                       std::vector<std::string> const& prev_event_ids,
                                       events::StateResolutionLimits const& limits) -> bool
 {
-    auto const extremities = database::find_forward_extremities(store, room_id);
-    auto const replaced = static_cast<std::size_t>(
-        std::ranges::count_if(prev_event_ids, [&extremities](std::string const& prev_event_id) {
-            return std::ranges::find(extremities, prev_event_id) != extremities.end();
-        }));
     // An event that cites a tip takes its place and the set does not grow.
-    return replaced > 0U || extremities.size() < limits.max_state_groups;
+    return std::ranges::any_of(prev_event_ids,
+                               [&store, room_id](std::string const& prev_event_id) {
+                                   return store.forward_extremities.contains(room_id, prev_event_id);
+                               }) ||
+           store.forward_extremities.count_for_room(room_id) < limits.max_state_groups;
+}
+
+auto event_may_become_forward_extremity(database::PersistentStore const& store, std::string_view room_id,
+                                        std::string_view sender_user_id, std::vector<std::string> const& prev_event_ids,
+                                        bool is_state_event, events::StateResolutionLimits const& limits) -> bool
+{
+    auto const& tips = store.forward_extremities;
+    if (std::ranges::any_of(prev_event_ids, [&tips, room_id](std::string const& prev_event_id) {
+            return tips.contains(room_id, prev_event_id);
+        }))
+    {
+        return true; // It replaces a tip, and the set does not grow.
+    }
+    if (!is_state_event && !forward_extremities_stay_bounded(store, room_id, prev_event_ids, limits))
+    {
+        return false;
+    }
+    if (tips.count_for_sender_server(room_id, sender_user_id) < limits.max_state_tips_per_server)
+    {
+        return true;
+    }
+    if (is_state_event || prev_event_ids.size() != 1U)
+    {
+        return false;
+    }
+    // A message past the cap stays a tip only in a state group a tip already holds: then it adds nothing to resolve,
+    // and it cannot be the way round the cap (ADR-0602). Hash lookups, and only on this path.
+    auto const group = store.event_state_groups.state_group_of(prev_event_ids.front());
+    return group.has_value() &&
+           std::ranges::any_of(tips.tips_of_room(room_id), [&store, group](std::string const& tip) {
+               return store.event_state_groups.state_group_of(tip) == group;
+           });
 }
 
 auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
@@ -708,8 +795,8 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
         extremities_after.push_back(event_id);
     }
     auto const& pending = prepared_event->event;
-    auto const resolution = resolve_extremity_states(
-        room_id, policy, limits, extremities_after,
+    auto resolution = resolve_extremity_states(
+        store.resolved_state_memo, room_id, policy, limits, extremities_after,
         [&](std::string const& extremity) -> std::optional<std::string> {
             if (extremity == event_id)
             {
@@ -777,6 +864,14 @@ auto store_event_with_bookkeeping(database::PersistentStore& store, rooms::RoomV
     if (!database::commit_persistent_transaction(store, statements))
     {
         return {false, "commit", "the event and its bookkeeping were not committed"};
+    }
+
+    // Before the event is applied: applying a redaction overwrites its target and forgets the room, and what was
+    // resolved here read the target as it was (ADR-0600).
+    if (!resolution.sorted_group_ids.empty())
+    {
+        store.resolved_state_memo.remember(room_id, resolution_context(policy, limits),
+                                           std::move(resolution.sorted_group_ids), std::move(resolution.entries));
     }
 
     // The event's own current_state row first, then what the resolution

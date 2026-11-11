@@ -1621,6 +1621,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
         return;
     }
     auto const& room_id = snapshot.room_id;
+    store.resolved_state_memo.forget_room(room_id);
 
     // Replace this room's slice of the store: drop every existing row keyed
     // to room_id (rooms/memberships/invites/state and this room's own
@@ -3322,32 +3323,26 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
 {
     for (auto const& replaced_event_id : replaced_event_ids)
     {
-        std::erase_if(store.forward_extremities,
-                      [room_id, &replaced_event_id](PersistentForwardExtremity const& extremity) {
-                          return extremity.room_id == room_id && extremity.event_id == replaced_event_id;
-                      });
+        std::ignore = store.forward_extremities.erase(room_id, replaced_event_id);
     }
-    if (!std::ranges::any_of(store.forward_extremities,
-                             [room_id, event_id](PersistentForwardExtremity const& extremity) {
-                                 return extremity.room_id == room_id && extremity.event_id == event_id;
-                             }))
-    {
-        store.forward_extremities.push_back({std::string{room_id}, std::string{event_id}});
-    }
+    auto const event = store.events.find(event_id);
+    std::ignore =
+        store.forward_extremities.insert({std::string{room_id}, std::string{event_id}},
+                                         event == store.events.end() ? std::string_view{} : event->sender_user_id);
+}
+
+auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
+{
+    store.forward_extremities.recount_servers([&store](std::string_view event_id) {
+        auto const event = store.events.find(event_id);
+        return event == store.events.end() ? std::string{} : event->sender_user_id;
+    });
 }
 
 [[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
     -> std::vector<std::string>
 {
-    auto result = std::vector<std::string>{};
-    for (auto const& extremity : store.forward_extremities)
-    {
-        if (extremity.room_id == room_id)
-        {
-            result.push_back(extremity.event_id);
-        }
-    }
-    return result;
+    return store.forward_extremities.tips_of_room(room_id);
 }
 
 [[nodiscard]] auto set_event_status(PersistentStore& store, std::string_view event_id, std::string_view status) -> bool
@@ -3367,6 +3362,8 @@ auto apply_forward_extremities_update(PersistentStore& store, std::string_view r
     {
         return false;
     }
+    // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
+    store.resolved_state_memo.forget_room(existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
     });
@@ -3427,6 +3424,8 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
+    // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
+    store.resolved_state_memo.forget_room(existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);
     });

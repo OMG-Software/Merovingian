@@ -843,9 +843,7 @@ SCENARIO("A make_join template is built from the room's own state and tips",
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         auto const room = seed_room(runtime, "!left:local.example.org", R"({"join_rule":"public"})");
-        std::erase_if(runtime.database.persistent_store.forward_extremities, [&](auto const& extremity) {
-            return extremity.room_id == room.room_id;
-        });
+        runtime.database.persistent_store.forward_extremities.erase_room(room.room_id);
 
         WHEN("a join template is asked for")
         {

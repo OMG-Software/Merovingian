@@ -710,6 +710,7 @@ not survive a restart. These limits are fixed. See
 | Key suffix | Default | Valid range |
 |---|---|---|
 | `max_state_groups` | `1000` | 1..4,096 |
+| `max_state_tips_per_server` | `32` | 1..4,096 |
 | `max_events_per_state_group` | `65536` | 1..262,144 |
 | `max_total_state_events` | `131072` | 1..1,048,576 |
 | `max_conflicted_state_keys` | `65536` | 1..262,144 |
@@ -720,6 +721,11 @@ not survive a restart. These limits are fixed. See
 most forward extremities a room holds before an accepted event with no `state_key` that cites none of them stops
 becoming one (ADR-0374). Extremities that share a state group count once. When a room's extremities cannot be
 resolved the server logs `state.current.refused` at warning level and keeps the current state it had (ADR-0375).
+
+`max_state_tips_per_server` is how many of a room's forward extremities the events of one server may hold before a further
+event of that server that cites none of them stops becoming one (ADR-0602). Such an event is stored and delivered but does
+not change current state; a `send_join`, `send_leave` or `send_knock` past the limit is answered 503. Changing it needs a
+restart.
 
 `appservice.*`:
 

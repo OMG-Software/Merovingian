@@ -264,6 +264,8 @@ shell = find_program('sh')
       'unit/test_password_hash_cost.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_alias_table.cpp',
+      'unit/test_forward_extremity_table.cpp',
+      'unit/test_resolved_state_memo.cpp',
       'unit/test_room_power.cpp',
       'unit/test_stored_room_version.cpp',
       'unit/test_appservice_client.cpp',

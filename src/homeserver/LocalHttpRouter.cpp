@@ -2747,6 +2747,19 @@ namespace
                 return membership_outcome_refusal(outcome_reason);
             }
 
+            // A membership that could not become a tip would be stored and take no effect, and a resend
+            // would be refused as not being current (ADR-0602). Refused here it is retryable with nothing
+            // stored: a fresh make_join cites the current tips, and an event citing a tip is never refused.
+            if (!event_may_become_forward_extremity(
+                    store, room_id, envelope.sender, envelope.prev_event_ids, true,
+                    state_resolution_limits(rt->config.security().federation.state_resolution)))
+            {
+                LOG_WARNING("Membership PDU refused: its server holds its share of the room's forward extremities; "
+                            "room_id=" +
+                            std::string{room_id} + " event_id=" + envelope.event_id);
+                return {false, 503U, "the sending server holds too many of this room's forward extremities", {}, {}};
+            }
+
             // What the answer to a send_join will hold, and whether it can be delivered, are
             // settled BEFORE the join is stored (F-23): a join stored and sent on to the room's
             // servers whose answer is then too big for the worker channel is committed but lost
@@ -5621,25 +5634,26 @@ namespace
         }
     }
 
-    // F-49, ADR-0374: an accepted event that adds no state and would take the room past the most forward
-    // extremities that can be resolved is stored, delivered and placed by its own prev_events as
-    // usual, but it is not made a tip. A state event is always a tip: it is what a ban or a demotion
-    // looks like, and it must reach resolution whatever the room's message forks.
+    // F-49, ADR-0374, ADR-0602: an accepted event that would take the room past the most forward extremities
+    // that can be resolved, or its sender's server past its share of them, is stored, delivered and placed by
+    // its own prev_events as usual, but it is not made a tip. A server is charged only for its own events, so
+    // a ban or a demotion from an honest server reaches resolution whatever another server's forks.
     auto const becomes_forward_extremity =
         outcome == ReceiptOutcome::accepted &&
-        (envelope.state_key.has_value() ||
-         forward_extremities_stay_bounded(
-             runtime.database.persistent_store, room_id, envelope.prev_event_ids,
-             state_resolution_limits(runtime.config.security().federation.state_resolution)));
+        event_may_become_forward_extremity(
+            runtime.database.persistent_store, room_id, envelope.sender, envelope.prev_event_ids,
+            envelope.state_key.has_value(),
+            state_resolution_limits(runtime.config.security().federation.state_resolution));
 
     // The naive immediate current_state write (see recompute_current_state's
     // doc comment on why this is safe: it is always reconciled against the
     // forward-extremity resolution right below) only ever applies to an
     // accepted event. A rejected event must never update state at all; a
     // soft-failed one only enters current_state if resolution later admits
-    // it via recompute_current_state, never through this shortcut.
+    // it via recompute_current_state, never through this shortcut. Neither does an accepted event
+    // that is not a tip (ADR-0602): no tip holds its state, so nothing would reconcile the row.
     auto state = std::optional<database::PersistentStateEvent>{};
-    if (envelope.state_key.has_value() && outcome == ReceiptOutcome::accepted)
+    if (envelope.state_key.has_value() && becomes_forward_extremity)
     {
         state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
     }
@@ -5677,7 +5691,7 @@ namespace
     // invite change commit in the event's own transaction, so a ban is never
     // durable while the row still says join.
     auto membership = std::string{};
-    if (outcome == ReceiptOutcome::accepted && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    if (becomes_forward_extremity && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
     {
         auto const* mem_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
         auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
