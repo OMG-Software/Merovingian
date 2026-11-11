@@ -6,28 +6,10 @@
 #include "merovingian/events/Authorization.hpp"
 
 #include <string>
-#include <string_view>
 #include <variant>
 
 namespace merovingian::events
 {
-
-namespace
-{
-
-    [[nodiscard]] auto string_member(canonicaljson::Object const& event, std::string_view key) -> std::string const*
-    {
-        for (auto const& member : event)
-        {
-            if (member.key == key)
-            {
-                return std::get_if<std::string>(&member.value->storage());
-            }
-        }
-        return nullptr;
-    }
-
-} // namespace
 
 auto join_names_another_user(canonicaljson::Value const& event) -> bool
 {
@@ -36,9 +18,25 @@ auto join_names_another_user(canonicaljson::Value const& event) -> bool
     {
         return false;
     }
-    auto const* type = string_member(*object, "type");
-    auto const* sender = string_member(*object, "sender");
-    auto const* state_key = string_member(*object, "state_key");
+    std::string const* type = nullptr;
+    std::string const* sender = nullptr;
+    std::string const* state_key = nullptr;
+    for (auto const& member : *object)
+    {
+        auto const* text = std::get_if<std::string>(&member.value->storage());
+        if (member.key == "type")
+        {
+            type = text;
+        }
+        else if (member.key == "sender")
+        {
+            sender = text;
+        }
+        else if (member.key == "state_key")
+        {
+            state_key = text;
+        }
+    }
     return type != nullptr && sender != nullptr && state_key != nullptr && *type == "m.room.member" &&
            *sender != *state_key && extract_content_membership(event) == "join";
 }
