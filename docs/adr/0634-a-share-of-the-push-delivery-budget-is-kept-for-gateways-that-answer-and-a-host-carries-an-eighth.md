@@ -38,7 +38,8 @@ Chosen option: "reserve a quarter for reachable hosts, an eighth per host".
   and the host has not failed or answered slowly since. The set is bounded by `max_hosts`, oldest forgotten first.
 * `PushBatchAdmission::admit` refuses a batch when the batches in flight are at the whole budget, or at three quarters
   of it unless every host of the batch is reachable, or when one of its hosts already carries an eighth of the budget
-  (a `GatewayInFlightLimiter` slot per host, held while the batch runs). A budget under 4 reserves nothing.
+  (a `GatewayInFlightLimiter` slot per host:port, held while the batch runs; at least two unless the budget is smaller,
+  as for requests). A budget under 4 reserves nothing.
 * A refusal is the existing drop with its log line (ADR-0028), with the reason in `scope`.
 
 "No failing pusher" was rejected: a freshly minted host has no failure until its first request ends, which is after the

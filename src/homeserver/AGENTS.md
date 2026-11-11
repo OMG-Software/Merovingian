@@ -228,7 +228,10 @@ runs the hook. `resolve_policy_server_hook` takes a place in
 decides), reads everything it needs from the runtime, then resolves the configured host with `discovery_network->lookup_addresses`
 (operator-trusted: no deny-list) and calls, all inside one `RuntimeLockRelease` scope and within what is left of
 `policy_server_timeout`. The caps derive from the request pool in `client_outbound_proxy_policy_for_pool`. A transport error is
-logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
+logged at warning level. For the federation surface the hook goes through `policy_decision_cache` (ADR-0635): a real
+decision is kept 30 s, one request at a time asks about an origin and the others wait for it with `runtime.mutex`
+released, and an origin decided about in the last ten minutes keeps that decision when the budget has no place left. No
+other failure uses a remembered decision. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
 (ADR-0362): an identifier derived from state and used after a lock release is reserved before the release.
 
 ## Client requests that call another server

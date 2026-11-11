@@ -23,7 +23,9 @@ auto PushBatchAdmission::global_cap(std::size_t max_in_flight, bool all_hosts_re
 
 auto PushBatchAdmission::host_cap(std::size_t max_in_flight) noexcept -> std::size_t
 {
-    return std::max(std::size_t{1U}, max_in_flight / 8U);
+    // The same share the request limiter gives a host (push_gateway_host_in_flight_cap): an eighth, at least two
+    // unless the budget is smaller.
+    return std::max(max_in_flight / 8U, std::min(max_in_flight, std::size_t{2U}));
 }
 
 auto PushBatchAdmission::admit(std::size_t in_flight, std::size_t max_in_flight, std::span<std::string const> hosts,

@@ -1524,7 +1524,7 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         return cached;
     };
     auto const cache_settings = trust_safety::PolicyDecisionCache::Settings{};
-    if (surface == trust_safety::PolicySurface::federation && runtime.policy_decision_cache != nullptr && false)
+    if (surface == trust_safety::PolicySurface::federation && runtime.policy_decision_cache != nullptr)
     {
         auto claim = [&]() {
             auto const unlocked = RuntimeLockRelease{};

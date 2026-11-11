@@ -2807,8 +2807,9 @@ SCENARIO("a recipient on an unproven gateway cannot take the share of the delive
             started.runtime, carol, "org.matrix.integration", "carol-slots",
             "https://" + carol_host + ":" + std::to_string(carol_acceptor.bound_port()) + "/_matrix/push/v1/notify");
         auto const breaker_policy = merovingian::push::GatewayCircuitBreakerPolicy{};
-        started.runtime.homeserver.push_gateway_breaker_->record(carol_host, true, std::chrono::steady_clock::now(),
-                                                                 breaker_policy);
+        started.runtime.homeserver.push_gateway_breaker_->record(
+            carol_host + ":" + std::to_string(carol_acceptor.bound_port()), true, std::chrono::steady_clock::now(),
+            breaker_policy);
         {
             auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
             started.runtime.homeserver.push_delivery_in_flight_ = 7U;

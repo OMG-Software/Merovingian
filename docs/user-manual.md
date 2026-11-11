@@ -647,6 +647,13 @@ one resolved address; a request over either is retried (below), not counted agai
 host. A gateway's `rejected` list removes only
 the pushers whose pushkeys it names. OUT-3, ADR-0151, ADR-0409.
 
+A quarter of `max_in_flight_deliveries` (none under 4) is kept for recipients whose
+gateway hosts have all answered promptly within the last hour, and one gateway host may
+carry at most an eighth of the batches in flight; a batch over either is dropped like one
+over the whole limit, with the reason in the `scope` of `push.delivery.dropped`, so
+gateways that never answer cannot hold every slot. A gateway never reached since the
+server started shares the other three quarters until it answers once. ADR-0634.
+
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
 recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. A batch stops contacting
@@ -1602,6 +1609,15 @@ body is expected to be JSON with at least:
 If the policy server is unreachable, returns a non-2xx status, omits a
 usable decision, or sends malformed JSON, the guarded workflow is rejected
 unless `security.trust_safety.policy_server_allow_without_result=true`.
+
+For inbound federation the decision about an origin is kept for 30 seconds, and
+simultaneous requests from one origin wait for a single request to the policy service,
+so a peer cannot use up the calls the policy service is allowed at once to decide for
+others. When no call is allowed because others hold them all, an origin decided about
+within the last ten minutes keeps that decision; any other origin is judged by
+`policy_server_allow_without_result`. A change you make at the policy service can take
+up to 30 seconds to reach requests already decided. Registration, room and media checks
+are not remembered. ADR-0635.
 
 The host in `policy_server_url` is resolved by this server, as it is for an
 application service: it is your own configuration, so a policy service on a

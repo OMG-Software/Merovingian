@@ -140,7 +140,7 @@ SCENARIO("The budget's caps follow its size", "[push][push-slots][gate-l]")
             CHECK(PushBatchAdmission::global_cap(256U, false) == 192U);
             CHECK(PushBatchAdmission::global_cap(256U, true) == 256U);
             CHECK(PushBatchAdmission::host_cap(1U) == 1U);
-            CHECK(PushBatchAdmission::host_cap(7U) == 1U);
+            CHECK(PushBatchAdmission::host_cap(7U) == 2U);
             CHECK(PushBatchAdmission::host_cap(256U) == 32U);
         }
     }

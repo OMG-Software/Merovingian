@@ -45,7 +45,8 @@ public:
     // Batches in flight at or above which a batch is refused: all of the budget for a batch whose hosts are all
     // reachable, and what is left after the reserved quarter for any other. Budgets under 4 reserve nothing.
     [[nodiscard]] static auto global_cap(std::size_t max_in_flight, bool all_hosts_reachable) noexcept -> std::size_t;
-    // Batches in flight at which one gateway host is refused: an eighth of the budget, at least one.
+    // Batches in flight at which one gateway host is refused: an eighth of the budget, at least two (or the whole
+    // budget when it is smaller), as for requests (push_gateway_host_in_flight_cap).
     [[nodiscard]] static auto host_cap(std::size_t max_in_flight) noexcept -> std::size_t;
 
     // Admits a batch whose pushers are served by `hosts` when `in_flight` batches already run.

@@ -41,10 +41,11 @@ namespace media = merovingian::media;
     return media::make_local_media_repository(config);
 }
 
-// Eight bytes of PNG signature and two bytes that make the file unique, so each `serial` is its own blob.
+// Eight bytes of PNG signature and three bytes that make the file unique, so each `serial` is its own blob.
 [[nodiscard]] auto png_bytes(std::uint32_t serial) -> std::string
 {
     auto bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
+    bytes.push_back(static_cast<char>('a' + (serial / 676U) % 26U));
     bytes.push_back(static_cast<char>('a' + (serial / 26U) % 26U));
     bytes.push_back(static_cast<char>('a' + serial % 26U));
     return bytes;
@@ -157,7 +158,7 @@ SCENARIO("A blob is dropped when its last reference goes, and the same bytes can
                 CHECK(repository.blobs.size() == 1U);
                 CHECK(repository.thumbnails.size() == 1U);
                 CHECK(repository.metrics.stored_blobs == 1U);
-                CHECK(repository.metrics.stored_bytes == 10U);
+                CHECK(repository.metrics.stored_bytes == 11U);
             }
 
             AND_WHEN("an evicted file is fetched again")
@@ -258,11 +259,11 @@ SCENARIO("Evicting a cached remote file costs work that does not grow with the r
 SCENARIO("Capacity limits follow removals and deduplicated uploads without a scan",
          "[media][repository][capacity][gate-l]")
 {
-    GIVEN("a repository limited to two files in total and one file per user pair of records")
+    GIVEN("a repository limited to two 11-byte files in total, with a cap of three records")
     {
         auto repository = lifecycle_repository(8U);
-        repository.config.max_total_bytes = 20U;
-        repository.config.max_bytes_per_user = 20U;
+        repository.config.max_total_bytes = 22U;
+        repository.config.max_bytes_per_user = 22U;
         repository.config.max_records = 3U;
         auto const first = local_png(repository, 1U, "@alice:example.org");
         auto const second = local_png(repository, 2U, "@alice:example.org");
@@ -277,28 +278,62 @@ SCENARIO("Capacity limits follow removals and deduplicated uploads without a sca
             {
                 CHECK_FALSE(third.ok);
                 CHECK(third.status == 507U);
+                CHECK(third.reason == "media repository storage limit reached");
             }
         }
 
-        WHEN("a copy of an existing file is uploaded, then one original is removed and a new file uploaded")
+        WHEN("a copy of an existing file takes the third record and a fourth is uploaded")
         {
             auto const copy = local_png(repository, 1U, "@bob:example.org");
             auto const over_records = local_png(repository, 4U, "@bob:example.org");
-            REQUIRE(media::remove_local_media(repository, first.media_id, "retention").ok);
-            auto const still_shared = local_png(repository, 5U, "@bob:example.org");
-            REQUIRE(media::remove_local_media(repository, copy.media_id, "retention").ok);
-            auto const freed = local_png(repository, 6U, "@bob:example.org");
 
-            THEN("the copy adds no bytes, the record cap holds removed records, and bytes free once no record holds them")
+            THEN("the copy adds no bytes and the record cap refuses the fourth")
             {
                 CHECK(copy.ok);
                 CHECK(copy.deduplicated);
                 CHECK_FALSE(over_records.ok);
                 CHECK(over_records.reason == "media repository record limit reached");
-                CHECK_FALSE(still_shared.ok);
-                CHECK(still_shared.reason == "media repository record limit reached");
-                CHECK_FALSE(freed.ok);
-                CHECK(freed.reason == "media repository record limit reached");
+            }
+        }
+
+        WHEN("a removed record still counts against the record cap")
+        {
+            REQUIRE(media::remove_local_media(repository, first.media_id, "retention").ok);
+            auto const third = local_png(repository, 3U, "@alice:example.org");
+            auto const fourth = local_png(repository, 4U, "@alice:example.org");
+
+            THEN("the freed bytes admit one more file and the cap of three records then refuses another")
+            {
+                CHECK(third.ok);
+                CHECK_FALSE(fourth.ok);
+                CHECK(fourth.reason == "media repository record limit reached");
+            }
+        }
+    }
+
+    GIVEN("a repository limited to two 11-byte files in total, with no record cap")
+    {
+        auto repository = lifecycle_repository(8U);
+        repository.config.max_total_bytes = 22U;
+        auto const first = local_png(repository, 1U, "@alice:example.org");
+        auto const second = local_png(repository, 2U, "@alice:example.org");
+        auto const copy = local_png(repository, 1U, "@bob:example.org");
+        REQUIRE(first.ok);
+        REQUIRE(second.ok);
+        REQUIRE(copy.ok);
+
+        WHEN("one of two records holding a file is removed, then the other")
+        {
+            REQUIRE(media::remove_local_media(repository, first.media_id, "retention").ok);
+            auto const while_shared = local_png(repository, 5U, "@bob:example.org");
+            REQUIRE(media::remove_local_media(repository, copy.media_id, "retention").ok);
+            auto const once_free = local_png(repository, 6U, "@bob:example.org");
+
+            THEN("the file's bytes are freed only when no record holds it")
+            {
+                CHECK_FALSE(while_shared.ok);
+                CHECK(while_shared.reason == "media repository storage limit reached");
+                CHECK(once_free.ok);
             }
         }
     }
