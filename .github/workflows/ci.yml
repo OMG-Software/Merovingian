@@ -54,12 +54,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}
-          restore-keys: ccache-linux-ci-${{ matrix.release }}-
-
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
@@ -84,6 +78,15 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}
+          restore-keys: ccache-linux-ci-${{ matrix.release }}-
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build --skip-job ubuntu
@@ -150,7 +153,9 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          apt-get update
+          # Fail on any fetch error: plain `apt-get update` exits 0 when it reached
+          # nothing, and the install then fails with no sign of why (ADR-0650).
+          apt-get update --error-on=any
           apt-get install -y --no-install-recommends \
             bison \
             ca-certificates \
@@ -239,12 +244,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: ccache-linux-hardened-${{ github.run_id }}
-          restore-keys: ccache-linux-hardened-
-
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
@@ -269,6 +268,15 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-linux-hardened-${{ github.run_id }}
+          restore-keys: ccache-linux-hardened-
 
       - name: Build with the hardened release profile
         run: sh scripts/build-linux.sh --builddir build-hardened --profile hardened --no-tests

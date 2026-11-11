@@ -169,6 +169,50 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("builddir: build-opensuse\n", opensuse)
         self.assertIn("builddir: build-opensuse-leap\n", opensuse)
 
+    def test_ubuntu_containers_fail_on_a_fetch_error(self) -> None:
+        # GIVEN the Ubuntu container jobs, whose plain `apt-get update` exited 0 on 2026-11-11 when
+        # the runners could not resolve archive.ubuntu.com, so the install failed with no cause shown.
+        workflows = REPO_ROOT / ".github" / "workflows"
+        jobs = {
+            "ci.yml": CI_WORKFLOW.read_text(encoding="utf-8")
+            .split("\n  ubuntu-rolling-build-and-test:")[1]
+            .split("\n  debian-build-and-test:")[0],
+            "packages.yml": (workflows / "packages.yml").read_text(encoding="utf-8")
+            .split("\n  deb:\n")[1]
+            .split("\n  deb-all-releases:")[0],
+        }
+        for name, job in jobs.items():
+            with self.subTest(workflow=name):
+                # WHEN the dependency step refreshes the package index
+                install = job.split("apt-get install", 1)[0]
+                # THEN the refresh fails on any fetch error, so the step that could not reach the
+                # archive is the one that fails.
+                self.assertNotRegex(install, r"(?m)^\s*apt-get update\s*$")
+                self.assertRegex(install, r"(?m)^\s*apt-get update --error-on=any\s*$")
+
+    def test_ccache_is_installed_before_the_ccache_action_runs(self) -> None:
+        # GIVEN ccache-action v1.2.24 installs a missing ccache without refreshing the package
+        # index, which fails on a GitHub host runner (PR #584: "Failed to install ccache via
+        # package manager", exit code 100), and GitHub's Ubuntu images do not ship ccache.
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            section = path.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+            headers = list(re.finditer(r"^  ([A-Za-z0-9_-]+):\n", section, re.MULTILINE))
+            for index, header in enumerate(headers):
+                job = section[header.end() : headers[index + 1].start() if index + 1 < len(headers) else len(section)]
+                action = job.find("uses: hendrikmuhs/ccache-action@")
+                if action < 0:
+                    continue
+                with self.subTest(workflow=path.name, job=header.group(1)):
+                    # WHEN the steps before the action's own step are read, comments left out
+                    before = job[: job.rfind("\n      - ", 0, action)]
+                    commands = "\n".join(
+                        line for line in before.splitlines() if not line.lstrip().startswith("#")
+                    )
+                    # THEN an earlier step installs ccache with the package manager, so the action
+                    # finds it and installs nothing.
+                    self.assertRegex(commands, r"\b(apt-get|dnf|zypper|apk)\b[^\n]*\b(install|add)\b")
+                    self.assertRegex(commands, r"(?m)(^|\s)ccache(\s*\\?$|\s)")
+
     def test_each_supported_ubuntu_and_opensuse_release_reports_its_own_check(self) -> None:
         # GIVEN the main ruleset requires checks by exact name, and a matrix job with no
         # `name` reports "<job> (<values>)" for each leg, which matches none of them.
