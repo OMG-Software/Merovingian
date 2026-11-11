@@ -9,7 +9,8 @@ The user's account data is read through its index once per request, not once per
 
 ### A /sync timeline reads only the newest rows of a room (ADR-0616)
 
-The walk starts at the newest row and stops once the window is full, and after 1000 rows it did not take.
+The walk starts at the newest row and stops once the window is full, and after 1000 rows it did not take. The test of a
+sync that finds nothing new also checks that the reply carries a `next_batch`.
 
 ### Unread counts read a bounded number of rows (ADR-0617)
 
