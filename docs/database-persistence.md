@@ -916,6 +916,12 @@ value. Test fixtures that do not exercise persistence select it through
   (`allocate_sync_stream_id` persists the watermark itself); a failed commit
   skips them, it never reuses them. A request with no local recipient records
   the transaction alone through the same function.
+- `to_device_messages` is indexed by (user, device) and by user (`to_device_recipient_index`, `to_device_user_index`,
+  ADR-0618). An erase moves the last row into the gap, so the vector has no meaningful order. Send and sync read only the
+  recipient's rows, and the per-user limits evict a user's oldest row first, whichever device holds it.
+- `invites` is indexed by (room, user), by what a record is charged to and by origin (`invite_key_index`,
+  `invite_quota_index`, `invite_origin_index`, ADR-0619). `invite_is_over_store_caps` is asked by every writer before it
+  builds a statement. The runtime rebuilds the indexes once it has set `local_server_name`, which hydration runs before.
 - An inbound `m.direct_to_device` EDU writes all of its `to_device_messages` rows in ONE backend
   transaction (`database::enqueue_to_device_messages`, ADR-0166), through the same prepare/apply
   steps and evictions as the single-message and `/sendToDevice` writers. A failed commit stores

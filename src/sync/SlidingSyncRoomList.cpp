@@ -78,39 +78,33 @@ namespace
 
     // True when room_id appears in the user's m.direct global account-data.
     [[nodiscard]] auto room_is_dm(database::PersistentStore const& store, std::string_view room_id,
-                                  std::string_view user) noexcept -> bool
+                                  std::string_view user) -> bool
     {
-        for (auto const& ad : store.account_data)
+        auto const content = database::find_account_data_content(store, user, std::string_view{}, "m.direct");
+        if (!content.has_value())
         {
-            if (ad.user_id != user || !ad.room_id.empty() || ad.event_type != "m.direct")
+            return false;
+        }
+        // m.direct content: { "@user:server": ["!room:server", ...], ... }
+        // Account data is never signed and may hold fractional numbers: general parser.
+        auto const parsed = canonicaljson::parse_json(*content);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        if (root == nullptr)
+        {
+            return false;
+        }
+        for (auto const& member : *root)
+        {
+            auto const* arr = as_array(*member.value);
+            if (arr == nullptr)
             {
                 continue;
             }
-            // m.direct content: { "@user:server": ["!room:server", ...], ... }
-            // Account data is never signed and may hold fractional numbers: general parser.
-            auto const parsed = canonicaljson::parse_json(ad.content_json);
-            if (parsed.error != canonicaljson::ParseError::none)
+            for (auto const& item : *arr)
             {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            for (auto const& member : *root)
-            {
-                auto const* arr = as_array(*member.value);
-                if (arr == nullptr)
+                if (auto const* s = as_string(item); s != nullptr && *s == room_id)
                 {
-                    continue;
-                }
-                for (auto const& item : *arr)
-                {
-                    if (auto const* s = as_string(item); s != nullptr && *s == room_id)
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
         }
@@ -119,41 +113,19 @@ namespace
 
     // True when room_id is tagged m.favourite in the user's room account-data.
     [[nodiscard]] auto room_is_favourite(database::PersistentStore const& store, std::string_view room_id,
-                                         std::string_view user) noexcept -> bool
+                                         std::string_view user) -> bool
     {
-        for (auto const& ad : store.account_data)
+        auto const content = database::find_account_data_content(store, user, room_id, "m.tag");
+        if (!content.has_value())
         {
-            if (ad.user_id != user || ad.room_id != room_id || ad.event_type != "m.tag")
-            {
-                continue;
-            }
-            // m.tag content may contain non-canonical doubles such as order:0.5.
-            auto const parsed = canonicaljson::parse_json(ad.content_json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* tags_val = find_member(*root, "tags");
-            if (tags_val == nullptr)
-            {
-                continue;
-            }
-            auto const* tags = as_object(*tags_val);
-            if (tags == nullptr)
-            {
-                continue;
-            }
-            if (find_member(*tags, "m.favourite") != nullptr)
-            {
-                return true;
-            }
+            return false;
         }
-        return false;
+        // m.tag content may contain non-canonical doubles such as order:0.5.
+        auto const parsed = canonicaljson::parse_json(*content);
+        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+        auto const* tags_val = root == nullptr ? nullptr : find_member(*root, "tags");
+        auto const* tags = tags_val == nullptr ? nullptr : as_object(*tags_val);
+        return tags != nullptr && find_member(*tags, "m.favourite") != nullptr;
     }
 
     // Returns the value of m.room.create content.type, or "" if absent.

@@ -17,6 +17,7 @@ Spec authority:
 | `TypePattern.cpp` | `type_pattern_matches`: the `*` wildcard (anywhere, any number of times) of `types` / `not_types`, iterative with no backtracking (ADR-0541); the one matcher both filter paths use |
 | `SyncNotifier.cpp` | Broadcasts new events to waiting long-poll sync requests; handles the `timeout=` wait |
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
+| `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
@@ -59,7 +60,8 @@ committed. Other writes followed by a position check `sync_stream_has_write_rese
 ## Joined-room timelines and holes in the event graph (ADR-0289)
 
 A classic `/sync` joined room's `timeline` is the newest `timeline_cap` events after `since` that pass
-the filters. `limited` is true when that window was cut by the cap **or** when an event in it has a hole
+the filters, read by `newest_timeline_window` from the newest row (ADR-0616). `limited` is true when that window was cut by
+the cap, when the walk ran out of its budget of rows not taken, **or** when an event in it has a hole
 before it: any ID in its `prev_events` that is not *held*, i.e. has no `store.events` row or a row whose
 status is `outlier` with no state group (rejected and soft-failed rows are held; an outlier that `/get_missing_events` or backfill placed has a state group and is held, ADR-0290). The window then starts at the newest such
 event (kept: the hole lies before it) and `prev_batch` is that event's stream ordering, so `/messages`
@@ -230,8 +232,8 @@ reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
 so, or a profile change would mark every room read.
 
 `read_markers_for()` finds each receipt's event with `find_in_room` and reads the user's own events through
-`room_in_stream_order`; `count_unread_by_thread()` walks that room index too, so neither costs more than the
-room's events (ADR-0435). `count_unread_by_thread()` is the one walk for these counts; `/sync` reports its
+`room_in_stream_order`; `count_unread_by_thread()` walks that room index too, both newest first and for at most
+`max_unread_rows_examined` (1000) rows (ADR-0435, ADR-0617). `count_unread_by_thread()` is the one walk for these counts; `/sync` reports its
 split when the filter sets `unread_thread_notifications`. What counts is the
 user's push rules' decision (R15, ADR-0205): the walk asks a
 `sync::UnreadEventClassifier` (`homeserver::PushRuleUnreadClassifier` in
@@ -249,10 +251,11 @@ scan; /sync, sliding sync and the push badge all get it through the classifier.
 
 Build one classifier per request and pass it to every count in that request
 (`/sync`, `compute_room_list`, `build_room_response`). It loads the user's rules
-once, and on first use gathers every room's facts and join start from one walk
-each of the memberships, the current state and the events (event lookups through
-the request's `HistoryVisibility` index). Never add a lookup to it that walks a
-whole table per room (ADR-0207).
+once, and on first use gathers every room's facts from one walk each of the
+memberships and the current state (event lookups through the request's
+`HistoryVisibility` index). A room's join start comes from the user's member events,
+walked back through their recorded predecessors (ADR-0617). Never add a lookup to it
+that walks a whole table per room (ADR-0207).
 
 The push badge (`homeserver::count_push_badge`, the Push Gateway `counts.unread`)
 does not use `count_unread_by_thread()`: it runs under `runtime.mutex` for every
@@ -265,7 +268,7 @@ rules through shared helpers (`member_transition`, `join_start_from`,
 capped. Change one, change both. Capped, it is a lower bound that never counts an
 event `/sync` would not. Its setup walks each table a fixed number of times
 (`PushBadgeCount::table_walks`), whatever the number of rooms. `/sync` and
-sliding sync stay exact.
+sliding sync are exact up to `max_unread_rows_examined` rows and a lower bound past it (ADR-0617).
 
 ## History visibility and room read access
 

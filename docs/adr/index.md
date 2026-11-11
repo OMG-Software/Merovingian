@@ -530,3 +530,8 @@
 * [0604 - A federation key request is answered for local users only and is capped by entry count](0604-a-federation-key-request-is-answered-for-local-users-only-and-is-capped-by-entry-count.md)
 * [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
 * [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)
+* [0616 - A sync timeline is read from the newest row and stops](0616-a-sync-timeline-is-read-from-the-newest-row-and-stops.md)
+* [0617 - Unread counts and read markers read a bounded number of the newest rows](0617-unread-counts-and-read-markers-read-a-bounded-number-of-the-newest-rows.md)
+* [0618 - The to-device queue has standing indexes and a per-user limit](0618-the-to-device-queue-has-standing-indexes-and-a-per-user-limit.md)
+* [0619 - Stored invites are limited per local user and per origin](0619-stored-invites-are-limited-per-local-user-and-per-origin.md)
+* [0620 - A knock's room state is bounded as an invite's is](0620-a-knocks-room-state-is-bounded-as-an-invites-is.md)

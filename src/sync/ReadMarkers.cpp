@@ -104,10 +104,19 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     // the user sends is in one thread, so it reads that thread up to itself (ADR-0170). Only
     // non-state events count: a state event can be sent for the user by this server without the
     // user looking at the room (a profile change is sent to every room as their m.room.member).
-    // Events an unthreaded receipt already covers cannot move any position, so they are skipped.
-    for (auto const& event : store.events.room_in_stream_order(room_id))
+    // Events an unthreaded receipt already covers cannot move any position, so they are not read. Only the newest
+    // rows are: unread counting reads no further, so an older event of the user's could not change a count (ADR-0617).
+    auto const rows = store.events.room_in_stream_order(room_id);
+    auto const floor =
+        std::ranges::upper_bound(rows, markers.unthreaded, {}, &database::PersistentEvent::stream_ordering);
+    auto examined = std::size_t{0U};
+    for (auto row = rows.end(); row > floor && examined < max_unread_rows_examined;)
     {
-        if (event.sender_user_id != user || event.stream_ordering <= markers.unthreaded)
+        --row;
+        ++examined;
+        auto const& event = *row;
+        store.sync_unread_rows_examined.add(1U);
+        if (event.sender_user_id != user)
         {
             continue;
         }

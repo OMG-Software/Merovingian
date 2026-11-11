@@ -68,6 +68,55 @@ SCENARIO("Invite room state for room versions before 12 is accepted as it arrive
         }
     }
 
+    GIVEN("a version 11 invite with more entries than a room's stripped state can hold")
+    {
+        auto const entries =
+            std::vector<std::string>(merovingian::federation::max_invite_room_state_entries + 1U, "{}");
+
+        WHEN("the invite is validated")
+        {
+            auto const outcome = validate("11", entries);
+
+            THEN("it is refused before any signature lookup: the count bounds every room version (ADR-0619)")
+            {
+                REQUIRE_FALSE(outcome.decision.accepted);
+                REQUIRE(outcome.decision.status == 400U);
+                REQUIRE(outcome.key_lookups == 0U);
+            }
+        }
+    }
+
+    GIVEN("a version 11 invite with exactly as many entries as allowed")
+    {
+        auto const entries = std::vector<std::string>(merovingian::federation::max_invite_room_state_entries, "{}");
+
+        WHEN("the invite is validated")
+        {
+            auto const outcome = validate("11", entries);
+
+            THEN("it is accepted as it arrives")
+            {
+                REQUIRE(outcome.decision.accepted);
+            }
+        }
+    }
+
+    GIVEN("a version 11 invite with one entry over the event size limit")
+    {
+        auto const entries = std::vector<std::string>{std::string(merovingian::events::max_event_size_bytes + 1U, 'x')};
+
+        WHEN("the invite is validated")
+        {
+            auto const outcome = validate("11", entries);
+
+            THEN("it is refused")
+            {
+                REQUIRE_FALSE(outcome.decision.accepted);
+                REQUIRE(outcome.decision.status == 400U);
+            }
+        }
+    }
+
     GIVEN("a room version this server has no policy for")
     {
         WHEN("the invite is validated")

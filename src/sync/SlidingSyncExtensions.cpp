@@ -207,19 +207,14 @@ namespace
         auto const response_rooms =
             std::unordered_set<std::string_view>{response_room_ids.begin(), response_room_ids.end()};
 
-        for (auto const& data : store.account_data)
-        {
-            if (data.user_id != user)
-            {
-                continue;
-            }
+        database::for_each_user_account_data(store, user, [&](database::PersistentAccountData const& data) {
             // A room the connection has not been sent has had none of its account data, so every row of it goes
             // down whatever its age; any other row goes down when it changed after `since`. No spec text states
             // this; it is this server's reading (ADR-0493).
             auto const room_is_new_to_connection = !data.room_id.empty() && initial_room_ids.contains(data.room_id);
             if (data.stream_id <= since_sync_stream_id && !room_is_new_to_connection)
             {
-                continue;
+                return;
             }
             auto event = canonicaljson::Object{};
             event.push_back(canonicaljson::make_member("type", jstr(data.event_type)));
@@ -238,7 +233,7 @@ namespace
                     resp.rooms_json[data.room_id].push_back(std::move(json));
                 }
             }
-        }
+        });
         return resp;
     }
 

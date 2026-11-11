@@ -3112,15 +3112,31 @@ namespace
             // Never replace a ban with an invite, whatever the room state says:
             // only an explicit unban (a leave) lifts a ban. Belt and braces for
             // rooms we do not hold state for, where the check above cannot run.
+            auto const* const held_membership =
+                database::find_membership_row(rt->database.persistent_store, invite.room_id, *target_user);
+            if (held_membership != nullptr && held_membership->membership == "ban")
             {
-                auto const& mems = rt->database.persistent_store.memberships;
-                auto const banned = std::ranges::any_of(mems, [&](database::PersistentMembership const& m) {
-                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "ban";
-                });
-                if (banned)
-                {
-                    return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
-                }
+                return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
+            }
+            auto const already_joined = held_membership != nullptr && held_membership->membership == "join";
+            // ADR-0619: past the user's stored invite limits nothing is signed. Spec (PUT /v2/invite, 403 M_FORBIDDEN):
+            // "The sender is not allowed to send invites to the target user/homeserver". The check is repeated on the
+            // signed record below, which is the one the writer would store.
+            auto const invite_limit_refusal = federation::InviteAcceptResult{
+                false,
+                403U,
+                matrix_error("M_FORBIDDEN", "the invited user holds too many invites from other servers"),
+                {}};
+            auto limit_candidate = database::PersistentInvite{invite.room_id,
+                                                              *target_user,
+                                                              *sender,
+                                                              invite.event_id,
+                                                              invite.invite_event_json,
+                                                              invite.invite_room_state_json,
+                                                              0U};
+            if (!already_joined && database::invite_is_over_store_caps(rt->database.persistent_store, limit_candidate))
+            {
+                return invite_limit_refusal;
             }
             auto signed_event = sign_invite_event(*rt, parsed.value, signing_room_version);
             if (!signed_event.has_value())
@@ -3132,16 +3148,15 @@ namespace
             // invite event (to remain cooperative) but MUST NOT overwrite the local
             // "join" membership with "invite": doing so corrupts sync — the room
             // disappears from rooms.join and the user enters an infinite invite loop.
+            if (already_joined)
             {
-                auto const& mems = rt->database.persistent_store.memberships;
-                auto const it = std::ranges::find_if(mems, [&](database::PersistentMembership const& m) {
-                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "join";
-                });
-                if (it != mems.end())
-                {
-                    // User is already joined: return the signed event without altering state.
-                    return {true, 200U, {}, std::move(*signed_event)};
-                }
+                // User is already joined: return the signed event without altering state.
+                return {true, 200U, {}, std::move(*signed_event)};
+            }
+            limit_candidate.signed_event_json = *signed_event;
+            if (database::invite_is_over_store_caps(rt->database.persistent_store, limit_candidate))
+            {
+                return invite_limit_refusal;
             }
             // Reserve the sync position before anything commits. At its ceiling the allocator throws
             // (ADR-0315): the invite is then refused whole, and the worker waiting on this answer is

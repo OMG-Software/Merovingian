@@ -6,6 +6,7 @@
 #include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -20,6 +21,10 @@ namespace merovingian::sync
 // referring to the main timeline as a thread (e.g. in receipts and notifications counts) a
 // special thread ID of `main` is used."
 inline constexpr auto main_thread_id = std::string_view{"main"};
+
+// The rows of a room one unread count, or one reading of the user's own events for read markers, looks at, newest
+// first (ADR-0617). Past it a count is a lower bound: it counts no event /sync would not.
+inline constexpr std::size_t max_unread_rows_examined{1000U};
 
 // Where one user has read up to in one room, from their m.read and m.read.private receipts.
 //
