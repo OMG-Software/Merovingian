@@ -22,6 +22,7 @@
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/Transactions.hpp"
+#include "merovingian/federation_worker/RoomReloadCoalescer.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
 #include "merovingian/federation_worker/DbUriFd.hpp"
 #include "merovingian/federation_worker/IpcKeyFd.hpp"
@@ -47,6 +48,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -972,6 +974,34 @@ auto WorkerEventLoop::run() -> void
     auto local_pool = net::ThreadPool{threads_};
     auto relay_pool = net::ThreadPool{config_.federation_worker().relay_threads};
 
+    // room_sync reloads have a thread of their own, so a burst of them cannot queue ahead of local_pool's reads, and
+    // the coalescer merges them per room (ADR-0623). Its queue holds at most one entry per room.
+    auto reload_pool = net::ThreadPool{1U};
+    auto reload_coalescer = RoomReloadCoalescer{};
+    auto run_reload_round = std::function<void(std::string const&)>{};
+    run_reload_round = [&runtime, &store_guard, channel_ptr, &reload_pool, &reload_coalescer,
+                        &run_reload_round](std::string const& room_id) {
+        auto const again = reload_coalescer.run_round(room_id, [&](std::uint64_t generation) {
+            auto const ok = store_guard.reload_room(runtime.database.persistent_store, room_id);
+            if (!ok)
+            {
+                LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
+            }
+            if (!channel_ptr->send_notification(
+                    ipc::serialize_room_sync_result(room_id, ok ? "ok" : "failed", generation)))
+            {
+                LOG_WARNING("Federation worker: room_sync result could not be sent for room_id=" + room_id);
+            }
+        });
+        if (again && !reload_pool.submit([&run_reload_round, room_id]() {
+                std::invoke(run_reload_round, room_id);
+            }))
+        {
+            reload_coalescer.abandon(room_id);
+            LOG_WARNING("Federation worker: room_sync dropped because the reload thread is stopped");
+        }
+    };
+
     auto shutdown = std::atomic<bool>{false};
     auto shutdown_mu = std::mutex{};
     auto shutdown_cv = std::condition_variable{};
@@ -986,8 +1016,8 @@ auto WorkerEventLoop::run() -> void
         shutdown_cv.notify_all();
     };
 
-    channel->set_request_handler([&runtime, &store_guard, channel_ptr, &local_pool, &relay_pool,
-                                  signal_shutdown](std::uint64_t id, std::string json) {
+    channel->set_request_handler([&runtime, channel_ptr, &local_pool, &relay_pool, &reload_pool, &reload_coalescer,
+                                  &run_reload_round, signal_shutdown](std::uint64_t id, std::string json) {
         auto const type = ipc::ipc_json_get_str(json, "type");
         if (type == "fed_request")
         {
@@ -1047,7 +1077,7 @@ auto WorkerEventLoop::run() -> void
             // the database into our own PersistentStore snapshot, which is
             // otherwise frozen as of this worker's own startup (see
             // database::reload_room and docs/architecture.md, "Federation
-            // worker room staleness"). Runs on the local pool, NOT inline on
+            // worker room staleness"). Runs on the reload pool, NOT inline on
             // this handler: the reload reads the database and then waits for
             // the readers of the store (StoreReadGuard) to drain, and main
             // sends this very notification (from its pdu_ingest handler's
@@ -1055,26 +1085,20 @@ auto WorkerEventLoop::run() -> void
             // Blocking the channel's dispatch thread on either would park
             // every later queued request behind it. The database read takes
             // no lock; only the in-memory swap excludes readers (F-27,
-            // ADR-0360). Concurrent reloads are serialised by the guard,
-            // and reload_room is a full fresh re-read, so pool scheduling
-            // order between two reloads of the same room is immaterial.
+            // ADR-0360). One accepted PDU is one notification and a reload
+            // reads the whole room, so notifications go through the coalescer
+            // (ADR-0623): main commits before it notifies, and a notification
+            // that finds the room scheduled makes the coalescer run a round
+            // whose read begins after it, so the last PDU is never lost.
             auto const room_id = ipc::ipc_json_get_str(json, "room_id");
             auto const generation = ipc::ipc_json_get_u64(json, "generation");
-            auto const sync_enqueued = local_pool.submit([&runtime, &store_guard, channel_ptr, room_id, generation]() {
-                auto const ok = store_guard.reload_room(runtime.database.persistent_store, room_id);
-                if (!ok)
-                {
-                    LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
-                }
-                if (!channel_ptr->send_notification(
-                        ipc::serialize_room_sync_result(room_id, ok ? "ok" : "failed", generation)))
-                {
-                    LOG_WARNING("Federation worker: room_sync result could not be sent for room_id=" + room_id);
-                }
-            });
-            if (!sync_enqueued)
+            if (reload_coalescer.note_changed(room_id, generation) &&
+                !reload_pool.submit([&run_reload_round, room_id]() {
+                    std::invoke(run_reload_round, room_id);
+                }))
             {
-                LOG_WARNING("Federation worker: room_sync dropped because local thread pool is stopped");
+                reload_coalescer.abandon(room_id);
+                LOG_WARNING("Federation worker: room_sync dropped because the reload thread is stopped");
             }
         }
         else if (type == "shutdown")
@@ -1125,6 +1149,7 @@ auto WorkerEventLoop::run() -> void
     // floor (issue #327). request_stop() blocks until all workers exit.
     local_pool.request_stop();
     relay_pool.request_stop();
+    reload_pool.request_stop();
 
     // Idempotent: if the shutdown handler already stopped the channel this
     // is a no-op; otherwise it joins the reader and dispatch threads now.

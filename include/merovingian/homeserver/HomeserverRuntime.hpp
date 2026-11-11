@@ -31,6 +31,7 @@
 #include "merovingian/homeserver/RoomMembers.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/SendJoinPlanCache.hpp"
 #include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
@@ -345,6 +346,8 @@ struct HomeserverRuntime final
     // F-42 (ADR-0361): calls to the external policy server in flight, per surface. Its own budget, apart from
     // client_outbound_budget, so that a flood of one cannot starve the other.
     std::unique_ptr<http::InFlightBudget> policy_server_budget{std::make_unique<http::InFlightBudget>()};
+    // ADR-0624: the room-wide part of send_join answers. Has its own mutex, taken with `mutex` held.
+    std::unique_ptr<SendJoinPlanCache> send_join_plan_cache{std::make_unique<SendJoinPlanCache>()};
     // ADR-0362: room IDs a createRoom has chosen and not yet stored, so a creation that runs while another waits
     // on the policy server (which releases `mutex`) cannot choose the same one. Guard every access with `mutex`.
     std::set<std::string, std::less<>> rooms_being_created{};

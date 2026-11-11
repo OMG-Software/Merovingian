@@ -50,9 +50,11 @@ namespace merovingian::homeserver
 // and therefore cannot be routed from the room ID alone.
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers = {},
-                             canonicaljson::Object const* third_party_signed = nullptr) -> OperationResult;
-[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult;
+                             canonicaljson::Object const* third_party_signed = nullptr,
+                             std::string_view client_key = {}) -> OperationResult;
+// `client_key` names the client for the ADR-0079 budget a federated join, leave or knock takes a slot of (ADR-0622).
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                              std::string_view client_key = {}) -> OperationResult;
 // Invites `target_user_id`. For a user of another server the invite is first offered to that user's server
 // (Server-Server API, "Inviting to a room": "a request to that homeserver to have the event signed and
 // verified must be made") and only stored, and sent to the room's other servers, once that server has
@@ -137,8 +139,8 @@ namespace merovingian::homeserver
 // `reason`, when not empty, is the knock event's content.reason. A resident that
 // refuses with 403 is a 403; no server to ask, or an unknown local room, is a 404.
 [[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                              std::vector<std::string> const& via_servers = {}, std::string_view reason = {})
-    -> OperationResult;
+                              std::vector<std::string> const& via_servers = {}, std::string_view reason = {},
+                              std::string_view client_key = {}) -> OperationResult;
 // The room's current state events that Server-Server API v1.19 puts in `invite_room_state` (an
 // invite sent to another server) and `knock_room_state` (a send_knock answer): the stripped-state
 // types of Client-Server API "Stripped state" (m.room.create, m.room.name, m.room.avatar,

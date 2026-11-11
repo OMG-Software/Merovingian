@@ -493,6 +493,9 @@ struct PersistentStore final
     ForwardExtremityTable forward_extremities{};
     // The last resolution of each room's forward extremities (ADR-0600). In memory only.
     ResolvedStateMemo resolved_state_memo{};
+    // How many times each room's current state, or the status or JSON of one of its events, has changed
+    // (`room_state_revision`, ADR-0624). In memory only.
+    std::unordered_map<std::string, std::uint64_t> room_state_revisions{};
     // Stored events parsed for state resolution, for tests that prove cost.
     ExaminedRows state_events_parsed{};
     // Test-only capture of committed statements (AUTH-11). Empty and disabled
@@ -712,6 +715,9 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Brings `federation_transaction_index` in step with `federation_transactions`.
 auto rebuild_federation_transaction_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
+// Deletes the rows named, in one commit and one pass over the table (ADR-0621). If the commit fails, none is deleted.
+[[nodiscard]] auto delete_federation_transactions(PersistentStore& store, std::span<std::string const> transaction_ids)
+    -> bool;
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 // Persists a room's directory visibility before updating its in-memory mirror.
@@ -923,6 +929,9 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void;
 
 // The event ID of the current state event for (room_id, event_type, state_key), or nullopt when the
 // room has none. An index lookup (ADR-0344): no scan of `state` while the index is in step with it.
+// A number that moves whenever the room's current state, or the status or JSON of one of its events, changes
+// (ADR-0624). What it does not cover: a room's rows edited directly, and an event added without any state.
+[[nodiscard]] auto room_state_revision(PersistentStore const& store, std::string_view room_id) -> std::uint64_t;
 [[nodiscard]] auto find_current_state_event_id(PersistentStore const& store, std::string_view room_id,
                                                std::string_view event_type, std::string_view state_key)
     -> std::optional<std::string>;

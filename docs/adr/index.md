@@ -535,3 +535,7 @@
 * [0618 - The to-device queue has standing indexes and a per-user limit](0618-the-to-device-queue-has-standing-indexes-and-a-per-user-limit.md)
 * [0619 - Stored invites are limited per local user and per origin](0619-stored-invites-are-limited-per-local-user-and-per-origin.md)
 * [0620 - A knock's room state is bounded as an invite's is](0620-a-knocks-room-state-is-bounded-as-an-invites-is.md)
+* [0621 - Failing destinations share half the dispatch queue, and their transactions age out](0621-failing-destinations-share-half-the-dispatch-queue-and-their-transactions-age-out.md)
+* [0622 - A client's federated join, knock or leave holds a client-outbound slot](0622-a-clients-federated-join-knock-or-leave-holds-a-client-outbound-slot.md)
+* [0623 - A worker's room reloads are coalesced per room, on one thread](0623-a-workers-room-reloads-are-coalesced-per-room-on-one-thread.md)
+* [0624 - Send_join answers are planned from a cached room-wide base](0624-send-join-answers-are-planned-from-a-cached-room-wide-base.md)

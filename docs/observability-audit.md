@@ -568,7 +568,8 @@ metadata ahead of each metric family. Core families currently exported are:
 - `admin_actions_total`
 - `merovingian_health_status{component="...",status="ok|degraded|failed"}`
 - `merovingian_federation_outbound_rejected_total`: outbound federation transactions refused
-  because the dispatch queue, or the destination's share of it, was full (ADR-0177)
+  because the dispatch queue, the destination's share of it, or the failing destinations' share was full (ADR-0177,
+  ADR-0621)
 - `merovingian_federation_outbound_pending`: outbound federation transactions waiting to be sent
 - `merovingian_appservice_outbox_queued{appservice_id="..."}` (gauge: events queued for the appservice),
   `merovingian_appservice_outbox_dropped_total{appservice_id="..."}` (counter: events refused because the

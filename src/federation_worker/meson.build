@@ -5,6 +5,7 @@ federation_worker_lib = static_library(
     'DbUriFd.cpp',
     'IpcKeyFd.cpp',
     'StoreReadGuard.cpp',
+    'RoomReloadCoalescer.cpp',
     'WorkerEventLoop.cpp',
     'WorkerRelayFrame.cpp',
   ),

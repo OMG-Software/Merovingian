@@ -20296,7 +20296,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // out of the federation round trip.
             auto const result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id,
+                                                           rate_limit_client_key(req, rt.homeserver.config.server()));
             }();
             if (!result.ok)
             {
@@ -20315,7 +20316,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 },
                                server_failure ? observability::LogEventSeverity::warning
                                               : observability::LogEventSeverity::debug);
-                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason);
+                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason,
+                                    result.retry_after_ms);
             }
             log_diagnostic("room.leave.accepted", {
                                                       {"actor",   *user,   false},
@@ -21125,10 +21127,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         auto const result =
-            merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id, *via_servers, reason);
+            merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id, *via_servers, reason,
+                                                rate_limit_client_key(req, rt.homeserver.config.server()));
         if (!result.ok)
         {
-            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
+            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason, result.retry_after_ms);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(result.value))})));
     }

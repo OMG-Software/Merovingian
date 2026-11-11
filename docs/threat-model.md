@@ -2579,7 +2579,9 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   the port, so they silently missed every event. **Mitigation:** first-`:` splitting everywhere.
 - **Outbound queue starvation.** One dead or hostile peer could fill the shared outbound queue.
   **Mitigation:** each destination holds a bounded share; refusals are counted and logged
-  (ADR-0177). Residual risk: sixteen or more dead destinations can still fill it together.
+  (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
+  most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
+  never-seen dead destinations counts as live until each has failed once.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create
@@ -2668,6 +2670,12 @@ nothing, all from trusting the worker's view or the hook's transport.
   room-scoped reads (`/state`, `/backfill`, ...) still use the serving shard's snapshot for the ACL, refreshed best-effort
   by `room_sync`; they return nothing a joined member of a denied server could not already fetch, and are bounded by
   the origin-in-room gate.
+- **Remote servers chose how much whole-room work this server did (release-gate audit).** A worker re-read a room for every
+  accepted PDU, now merged per room (ADR-0623). Every `send_join`, resent or refused for size, walked the room's state and
+  auth chain under `runtime.mutex`, now cached per room and state (ADR-0624). Residual risk: an accepted join still
+  builds once, and a delivered answer is still copied under the lock, up to `join_response_max_size`.
+- **A client's federated join, knock or leave held a request thread with no limit (release-gate audit).** Each now holds a
+  client-outbound slot (ADR-0622).
 - **Unlocked reads of the worker's store against `reload_room` (F-27, ADR-0360).** A data race on vectors and hash maps,
   and a window in which a room had no ACL (`room_server_acl_allows` answers true) while its rows were rewritten. Mitigated:
   the worker's store readers hold a shared lock for their own call, a reload takes the exclusive lock only for the

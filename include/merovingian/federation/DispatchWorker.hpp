@@ -52,6 +52,11 @@ inline constexpr auto dispatch_discovery_timeout_seconds = std::uint32_t{10U};
 // otherwise a sixteenth of max_queue_depth and never below 16 (256 for the default 4096).
 [[nodiscard]] auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t;
 
+// The most slots destinations that are failing may hold between them (ADR-0621):
+// max_pending_failing_destinations when set, otherwise half of max_queue_depth and at least 1. An unbounded
+// queue has no such limit.
+[[nodiscard]] auto effective_max_pending_failing(DispatchWorkerConfig const& config) noexcept -> std::size_t;
+
 // Federation outbound dispatch worker.
 //
 // Lifecycle:
@@ -177,6 +182,21 @@ private:
     auto requeue_locked(OutboundTransaction transaction) -> void;
     auto release_destination_slot_locked(std::string const& destination) -> void;
     [[nodiscard]] auto destination_at_share_locked(std::string const& destination) const -> bool;
+    // Whether `destination` is backing off with the failing destinations' share spent, `taken` slots counted beyond
+    // those already held. A failing destination past its backoff is never refused: it is due a try. Caller holds
+    // mutex_.
+    [[nodiscard]] auto failing_share_reached_locked(std::string const& destination, std::uint64_t now,
+                                                    std::size_t taken) const -> bool;
+    // Drops the entries at ascending `queued` and `parked` positions for good, with one durable commit; if that
+    // fails they all stay. Caller must hold mutex_.
+    auto discard_locked(std::vector<std::size_t> const& queued, std::vector<std::size_t> const& parked,
+                        std::string_view reason) -> void;
+    // Brings the failing destinations back within their share (ADR-0621): each keeps its oldest transactions, and the
+    // largest holders give up their newest. Caller must hold mutex_.
+    auto shed_failing_over_share_locked() -> void;
+    // Drops failing destinations' transactions past max_failing_transaction_age_ms, at most once per
+    // age_sweep_interval_ms. Caller must hold mutex_.
+    auto sweep_aged_locked(std::uint64_t now) -> void;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
@@ -197,6 +217,14 @@ private:
     std::unordered_map<std::string, std::size_t> queued_per_destination_{};
     // Destinations with an attempt running, guarded by mutex_.
     std::set<std::string, std::less<>> in_flight_destinations_{};
+    // Destinations whose last attempt failed, each with when its backoff ends, and the slots they hold between them
+    // (ADR-0621), guarded by mutex_. Changed only by remember_destination_locked and replay_pending; the slot
+    // bookkeeping above keeps failing_slots_ equal to the sum of these destinations' entries in
+    // queued_per_destination_.
+    std::unordered_map<std::string, std::uint64_t> failing_destinations_{};
+    std::size_t failing_slots_{0U};
+    // The next time sweep_aged_locked looks at the queue, guarded by mutex_.
+    std::uint64_t next_age_sweep_ms_{0U};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};
 

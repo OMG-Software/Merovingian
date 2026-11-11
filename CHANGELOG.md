@@ -29,6 +29,21 @@ from local users are never counted. Knocks have a limit of their own.
 ### A knock's room state is bounded (ADR-0620)
 
 Only what `/sync` could show is kept, at most 16 entries, each within the event size limit, from an answer of at most 1 MiB.
+### Dead destinations can no longer take the whole outbound queue (ADR-0621)
+
+Sixteen peers that stopped answering could hold every slot of the federation send queue for weeks, and every other server's transactions were then refused. Destinations that are failing now hold at most half of the queue between them, and a failing destination's transaction is dropped after 24 hours. A destination that is not failing is never cut, and a failing one past its backoff is always given a try, so recovery is still noticed.
+
+### A client's federated join, knock or leave takes an outbound slot (ADR-0622)
+
+These calls hold a request thread for their exchange with another server, with no limit. They now take a client-outbound slot and answer `429 M_LIMIT_EXCEEDED` with `Retry-After` when none is free, as the other client-triggered outbound calls do. A join, knock or leave decided locally takes no slot.
+
+### A burst of PDUs for one room no longer costs a reload each (ADR-0623)
+
+A federation worker re-read a whole room for every PDU main accepted. Reloads are now merged per room and run on their own thread: a burst costs at most one reload running and one after it, and the last PDU is always followed by a reload that sees it.
+
+### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
+
+Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
 
 ## 0.12.91
 
