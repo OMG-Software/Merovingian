@@ -307,11 +307,23 @@ class CiWorkflowTests(unittest.TestCase):
                     # THEN no bare pkg_add runs, and the shared script installs with a check
                     self.assertFalse([line for line in commands if line.startswith("pkg_add")])
                     self.assertIn('sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \\', commands)
+                    # AND the libraries the thumbnail worker needs are checked too, under OpenBSD's
+                    # package names: `jpeg` is its libjpeg-turbo, and base supplies pkg-config, flex
+                    # and LibreSSL, so asking for those packages only printed "Can't find".
+                    modules_line = '--require-pkg-config "libsodium libpng16 libturbojpeg" \\'
+                    self.assertIn(modules_line, commands)
+                    packages = commands[commands.index(modules_line) + 1].split()
+                    self.assertIn("jpeg", packages)
+                    for absent in ("jpeg-turbo", "pkgconf", "flex", "openssl"):
+                        self.assertNotIn(absent, packages)
         self.assertGreaterEqual(checked, 2)
 
-    def _run_openbsd_pkg_add(self, installs_on_call: int) -> tuple[subprocess.CompletedProcess[str], Path]:
+    def _run_openbsd_pkg_add(
+        self, installs_on_call: int, modules_present: bool = True
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
         # A fake pkg_add logs the PKG_PATH of each call and "installs" the fake command
         # fake-meson on call `installs_on_call`, exiting 0 every time, as OpenBSD's does.
+        # A fake pkg-config knows the module fake-jpeg only when `modules_present`.
         work = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, work)
         bin_dir = work / "bin"
@@ -329,6 +341,10 @@ class CiWorkflowTests(unittest.TestCase):
             "exit 0\n",
             encoding="utf-8",
         )
+        (bin_dir / "pkg-config").write_text(
+            f'#!/bin/sh\n[ "$1" = --exists ] && [ "$2" = fake-jpeg ] && [ {int(modules_present)} -eq 1 ]\n',
+            encoding="utf-8",
+        )
         for tool in bin_dir.iterdir():
             tool.chmod(0o755)
         env = {
@@ -339,7 +355,16 @@ class CiWorkflowTests(unittest.TestCase):
             "MEROVINGIAN_PKG_RETRY_DELAY": "0",
         }
         result = subprocess.run(
-            ["sh", str(REPO_ROOT / "scripts" / "ci-openbsd-pkg-add.sh"), "--require", "fake-meson", "meson", "ninja"],
+            [
+                "sh",
+                str(REPO_ROOT / "scripts" / "ci-openbsd-pkg-add.sh"),
+                "--require",
+                "fake-meson",
+                "--require-pkg-config",
+                "fake-jpeg",
+                "meson",
+                "ninja",
+            ],
             env=env,
             capture_output=True,
             text=True,
@@ -380,6 +405,16 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("still missing: fake-meson", result.stderr)
         self.assertEqual(len((work / "log").read_text(encoding="utf-8").splitlines()), 6)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_openbsd_package_install_fails_when_a_library_is_missing(self) -> None:
+        # GIVEN every command installs but a required pkg-config module never appears, as when
+        # the JPEG package was asked for under a name OpenBSD does not have
+        # WHEN ci-openbsd-pkg-add.sh runs
+        result, _ = self._run_openbsd_pkg_add(installs_on_call=1, modules_present=False)
+        # THEN it fails the step naming the module, rather than letting meson skip the worker.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("still missing: pkg-config:fake-jpeg", result.stderr)
 
     def test_ccache_is_installed_before_the_ccache_action_runs(self) -> None:
         # GIVEN ccache-action v1.2.24 installs a missing ccache without refreshing the package

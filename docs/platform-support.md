@@ -221,6 +221,10 @@ Capsicum on FreeBSD. It refuses to decode on a platform with none of these
 comes from outside the server process; thumbnail requests are answered `404`
 ([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)). NetBSD is also refused at server startup
 ([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+OpenBSD packages before 0.12.93 were built without libjpeg-turbo and so shipped
+no thumbnail worker, and answered thumbnail requests `404`; from 0.12.93 the
+OpenBSD package build fails rather than ship without either worker
+([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)).
 
 ClamAV scanning (`security.media.clamd_socket_path`) is refused at startup on
 FreeBSD and OpenBSD, because Capsicum and unveil stop the main process from

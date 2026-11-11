@@ -755,8 +755,11 @@ jobs:
           prepare: |
             # pkg_add exits 0 having installed nothing when the mirror fails, so the script
             # retries, falls back to the origin mirror and checks the commands exist (ADR-0650).
+            # Base supplies pkg-config, flex and LibreSSL. OpenBSD's libjpeg-turbo package is `jpeg`;
+            # without it meson builds no thumbnail worker.
             sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \
-              meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
+              --require-pkg-config "libsodium libpng16 libturbojpeg" \
+              meson ninja git bison gmake libsodium postgresql-client curl png jpeg
           run: |
             if ! sh scripts/build-bsd.sh --builddir build --skip-job openbsd; then
                 echo "::group::OpenBSD Catch2 failure report (runtime logs filtered out)"

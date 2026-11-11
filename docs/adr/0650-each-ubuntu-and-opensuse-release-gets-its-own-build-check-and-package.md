@@ -134,25 +134,25 @@ with `--require` are on `PATH` afterwards. Packages are signed, and `pkg_add` ch
 served them. vmactions syncs the checkout before it runs `prepare`, in the checkout, so the script is on disk there.
 The NetBSD jobs keep their own retry loop over two mirrors.
 
-`--require` names commands only. A library package that failed to install surfaces at `meson setup`, which says
-which dependency it could not find; retrying cannot tell a transient failure from a wrong package name, because
-`pkg_add` reports both as "Can't find".
+`--require-pkg-config` names the libraries the same way, checked with `pkg-config --exists`: `libsodium`,
+`libpng16` and `libturbojpeg`. meson treats the last two as optional and silently builds no thumbnail worker
+without them, so their absence must fail the install, not pass unnoticed.
+
+That is how the worker went missing. The list asked for `jpeg-turbo`, `pkgconf` and `flex`, which OpenBSD has no
+package by, and `openssl`, which is ambiguous; `pkg_add -I` skipped all four on every run, and the job passed. Base
+supplies `pkg-config`, `flex` and LibreSSL, so those three are dropped; OpenBSD's libjpeg-turbo package is `jpeg`.
+Until 0.12.93 every OpenBSD package therefore shipped without the thumbnail worker that `packaging/openbsd/PLIST`
+lists. `build-openbsd-pkg.sh` packs whatever the install staged, so it now refuses a staged tree missing the server,
+the migration tool or either worker, as the FreeBSD and NetBSD builds already did by naming each file. The worker
+confines itself with `pledge("stdio")` on OpenBSD
+([ADR-0419](0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)).
 
 ### Rejected
 
 * **Trusting `pkg_add`'s exit status, or grepping its output for "Can't find":** the status is 0 either way, and
-  the package list already carries names `pkg_add` cannot resolve on every run (see below), so any "Can't find"
-  would fail every run.
-* **`pkg_info -e` for each package:** the list's names are not the installed names for every package, so the
-  check would need its own name map; the commands are what the build step uses.
-
-### Known issue
-
-The list asks for `jpeg-turbo`, `pkgconf` and `flex`, which OpenBSD has no package by, and `openssl`, which is
-ambiguous; `pkg_add -I` skips all four. Base supplies `pkg-config`, `flex` and LibreSSL. The JPEG library's package
-is `jpeg`, so meson finds no libturbojpeg and the OpenBSD build has never built the thumbnail worker that
-`packaging/openbsd/PLIST` lists. Correcting the name changes what the OpenBSD package ships, which this CI fix
-leaves to its own change.
+  a package name that is wrong on one release is reported the same way as a mirror that is down.
+* **`pkg_info -e` for each package:** package names are not the installed names for every package, so the check
+  would need its own name map; the commands and pkg-config modules are what the build uses.
 
 ## Test TLS certificates are issued by a test CA
 

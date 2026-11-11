@@ -250,6 +250,25 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("name: openbsd-package", workflow)
         self.assertIn("name: netbsd-package", workflow)
 
+    def test_openbsd_package_refuses_a_build_without_a_worker(self) -> None:
+        # GIVEN build-openbsd-pkg.sh packs whatever the install staged, and meson skips the
+        # thumbnail worker without libpng16 and libturbojpeg: asked for as `jpeg-turbo`, a name
+        # OpenBSD has no package by, the JPEG library was never installed, and every OpenBSD
+        # package shipped without the worker its PLIST lists.
+        script = (REPO_ROOT / "scripts" / "build-openbsd-pkg.sh").read_text(encoding="utf-8")
+        # WHEN the script's steps between the install and the packing list are read
+        check = script.split("--skip-subprojects\n", 1)[1].split("# 2. Stage", 1)[0]
+        # THEN it fails unless every binary and both workers were staged, as FreeBSD and NetBSD do.
+        for binary in (
+            "bin/merovingian-server",
+            "bin/merovingian-db-migrate",
+            "libexec/merovingian/merovingian-fed-worker",
+            "libexec/merovingian/merovingian-thumbnail-worker",
+        ):
+            self.assertIn(binary, check)
+        self.assertIn('if [ ! -x "${STAGE}${PREFIX}/${binary}" ]; then', check)
+        self.assertIn("exit 1", check)
+
     def test_freebsd_packages_workflow_uses_the_supported_dependency_set(self) -> None:
         # GIVEN the FreeBSD packaging job in the packages workflow.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
