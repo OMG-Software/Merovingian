@@ -51,11 +51,13 @@
 #include "merovingian/push/EmailDigestQueue.hpp"
 #include "merovingian/push/GatewayCircuitBreaker.hpp"
 #include "merovingian/push/GatewayInFlightLimiter.hpp"
+#include "merovingian/push/PushBatchAdmission.hpp"
 #include "merovingian/push/PushRetryQueue.hpp"
 #include "merovingian/push/TestForcedPushGatewayResolution.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SyncNotifier.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
+#include "merovingian/trust_safety/PolicyDecisionCache.hpp"
 #include "merovingian/trust_safety/PolicyServerHook.hpp"
 #include "merovingian/trust_safety/PolicySurface.hpp"
 
@@ -346,6 +348,10 @@ struct HomeserverRuntime final
     // F-42 (ADR-0361): calls to the external policy server in flight, per surface. Its own budget, apart from
     // client_outbound_budget, so that a flood of one cannot starve the other.
     std::unique_ptr<http::InFlightBudget> policy_server_budget{std::make_unique<http::InFlightBudget>()};
+    // ADR-0635: the policy server's decisions about inbound federation origins, and the one request asking about
+    // each. Internally locked; behind a pointer so the runtime stays movable.
+    std::unique_ptr<trust_safety::PolicyDecisionCache> policy_decision_cache{
+        std::make_unique<trust_safety::PolicyDecisionCache>()};
     // ADR-0624: the room-wide part of send_join answers. Has its own mutex, taken with `mutex` held.
     std::unique_ptr<SendJoinPlanCache> send_join_plan_cache{std::make_unique<SendJoinPlanCache>()};
     // ADR-0362: room IDs a createRoom has chosen and not yet stored, so a creation that runs while another waits
@@ -479,6 +485,9 @@ struct HomeserverRuntime final
     // the delivery tasks and the retry job. Behind a pointer so the runtime stays movable.
     std::unique_ptr<push::GatewayInFlightLimiter> push_gateway_in_flight_{
         std::make_unique<push::GatewayInFlightLimiter>()};
+    // ADR-0634: gateway hosts carrying recipient batches, so one host cannot hold the delivery budget. Internally
+    // locked; consulted by dispatch_push_deliveries. Behind a pointer so the runtime stays movable.
+    std::unique_ptr<push::PushBatchAdmission> push_batch_admission_{std::make_unique<push::PushBatchAdmission>()};
     // R14, ADR-0206: notifications waiting to be sent again after a failed attempt. Internally
     // locked; delivery tasks fill it and the push retry job (main.cpp) drains it through
     // retry_due_push_deliveries. In memory only: a restart forgets pending retries. Behind a

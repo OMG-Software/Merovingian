@@ -88,19 +88,9 @@ namespace
         return request.sniffed_mime_type;
     }
 
-    [[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
-                                      std::string_view digest, std::uint64_t size_bytes) noexcept -> LocalMediaBlob*
-    {
-        auto const iterator =
-            std::ranges::find_if(repository.blobs, [hash_algorithm, digest, size_bytes](LocalMediaBlob const& blob) {
-                return blob.ref_count > 0U && blob.hash_algorithm == hash_algorithm && blob.digest == digest &&
-                       blob.size_bytes == size_bytes;
-            });
-        return iterator == repository.blobs.end() ? nullptr : &(*iterator);
-    }
-
     auto ensure_blob_index(LocalMediaRepository& repository) -> void;
     auto ensure_record_index(LocalMediaRepository& repository) -> void;
+    [[nodiscard]] auto make_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string;
 
     [[nodiscard]] auto find_blob(LocalMediaRepository& repository, std::string_view storage_id) noexcept
         -> LocalMediaBlob*
@@ -134,31 +124,37 @@ namespace
         return &repository.records[iterator->second];
     }
 
+    // The blob with the content `digest` and `size_bytes`, or nullptr. A storage ID is derived from the two, so this
+    // is one index lookup (ADR-0633).
+    [[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
+                                      std::string_view digest, std::uint64_t size_bytes) noexcept -> LocalMediaBlob*
+    {
+        auto* const blob = find_blob(repository, make_storage_id(digest, size_bytes));
+        if (blob == nullptr || blob->hash_algorithm != hash_algorithm || blob->digest != digest ||
+            blob->size_bytes != size_bytes)
+        {
+            return nullptr;
+        }
+        return blob;
+    }
+
     auto refresh_storage_metrics(LocalMediaRepository& repository) -> void
     {
-        auto stored_blobs = std::uint64_t{0U};
-        auto stored_bytes = std::uint64_t{0U};
-        for (auto const& blob : repository.blobs)
-        {
-            if (blob.ref_count == 0U)
-            {
-                continue;
-            }
-            ++stored_blobs;
-            stored_bytes += blob.size_bytes;
-        }
-        repository.metrics.stored_blobs = stored_blobs;
-        repository.metrics.stored_bytes = stored_bytes;
+        ensure_blob_index(repository);
+        repository.metrics.stored_blobs = repository.live_blob_total;
+        repository.metrics.stored_bytes = repository.live_blob_bytes;
     }
 
     auto clear_repository_indices(LocalMediaRepository& repository) -> void
     {
         repository.record_index.clear();
         repository.blob_index.clear();
+        repository.thumbnail_index.clear();
     }
 
     auto rebuild_record_index(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.records.size());
         repository.record_index.clear();
         repository.record_index.reserve(repository.records.size());
         for (std::size_t i = 0U; i < repository.records.size(); ++i)
@@ -167,16 +163,34 @@ namespace
         }
     }
 
+    // Indexes the blobs that hold a reference and counts them and their bytes. Costs the blobs once.
     auto rebuild_blob_index(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.blobs.size());
         repository.blob_index.clear();
         repository.blob_index.reserve(repository.blobs.size());
+        repository.live_blob_total = 0U;
+        repository.live_blob_bytes = 0U;
         for (std::size_t i = 0U; i < repository.blobs.size(); ++i)
         {
             if (repository.blobs[i].ref_count > 0U)
             {
                 repository.blob_index.emplace(repository.blobs[i].storage_id, i);
+                ++repository.live_blob_total;
+                repository.live_blob_bytes += repository.blobs[i].size_bytes;
             }
+        }
+        repository.blob_counts_basis = repository.blobs.size();
+    }
+
+    auto rebuild_thumbnail_index(LocalMediaRepository& repository) -> void
+    {
+        repository.media_rows_examined.add(repository.thumbnails.size());
+        repository.thumbnail_index.clear();
+        repository.thumbnail_index.reserve(repository.thumbnails.size());
+        for (std::size_t i = 0U; i < repository.thumbnails.size(); ++i)
+        {
+            repository.thumbnail_index.emplace(repository.thumbnails[i].media_id, i);
         }
     }
 
@@ -184,21 +198,12 @@ namespace
     {
         rebuild_record_index(repository);
         rebuild_blob_index(repository);
+        rebuild_thumbnail_index(repository);
     }
 
     auto insert_record_index(LocalMediaRepository& repository, std::string media_id, std::size_t index) -> void
     {
         repository.record_index.emplace(std::move(media_id), index);
-    }
-
-    auto insert_blob_index(LocalMediaRepository& repository, std::string storage_id, std::size_t index) -> void
-    {
-        repository.blob_index.emplace(std::move(storage_id), index);
-    }
-
-    auto remove_blob_index(LocalMediaRepository& repository, std::string_view storage_id) -> void
-    {
-        repository.blob_index.erase(std::string{storage_id});
     }
 
     auto ensure_record_index(LocalMediaRepository& repository) -> void
@@ -209,15 +214,72 @@ namespace
         }
     }
 
+    // The blob index and counts describe the blobs while they were built for exactly this many rows and the index
+    // holds exactly the live ones; otherwise the blobs changed behind the repository's back and they are rebuilt.
     auto ensure_blob_index(LocalMediaRepository& repository) -> void
     {
-        auto const live_count =
-            static_cast<std::size_t>(std::ranges::count_if(repository.blobs, [](LocalMediaBlob const& blob) {
-                return blob.ref_count > 0U;
-            }));
-        if (repository.blob_index.size() != live_count)
+        if (repository.blob_counts_basis != repository.blobs.size() ||
+            repository.blob_index.size() != repository.live_blob_total)
         {
             rebuild_blob_index(repository);
+        }
+    }
+
+    auto ensure_thumbnail_index(LocalMediaRepository& repository) -> void
+    {
+        if (repository.thumbnail_index.size() != repository.thumbnails.size())
+        {
+            rebuild_thumbnail_index(repository);
+        }
+    }
+
+    // Adds a blob that holds a reference. Returns it; the pointer holds until the next change to the blobs.
+    auto add_blob_row(LocalMediaRepository& repository, LocalMediaBlob blob) -> LocalMediaBlob*
+    {
+        ensure_blob_index(repository);
+        repository.blob_index.emplace(blob.storage_id, repository.blobs.size());
+        ++repository.live_blob_total;
+        repository.live_blob_bytes += blob.size_bytes;
+        repository.blobs.push_back(std::move(blob));
+        repository.blob_counts_basis = repository.blobs.size();
+        return &repository.blobs.back();
+    }
+
+    // Deletes the row of a blob whose last reference was just released (ADR-0636): the last row moves into its place.
+    auto erase_blob_row(LocalMediaRepository& repository, std::string_view storage_id) -> void
+    {
+        ensure_blob_index(repository);
+        auto const found = repository.blob_index.find(std::string{storage_id});
+        if (found == repository.blob_index.end() || found->second >= repository.blobs.size())
+        {
+            return;
+        }
+        auto const position = found->second;
+        repository.blob_index.erase(found);
+        --repository.live_blob_total;
+        repository.live_blob_bytes -= repository.blobs[position].size_bytes;
+        auto const last = repository.blobs.size() - 1U;
+        if (position != last)
+        {
+            repository.blobs[position] = std::move(repository.blobs[last]);
+            repository.blob_index[repository.blobs[position].storage_id] = position;
+        }
+        repository.blobs.pop_back();
+        repository.blob_counts_basis = repository.blobs.size();
+        repository.media_rows_examined.add(1U);
+    }
+
+    // Gives back one reference to the blob; its row goes with the last one.
+    auto release_blob_reference(LocalMediaRepository& repository, std::string_view storage_id) -> void
+    {
+        auto* const blob = find_blob(repository, storage_id);
+        if (blob == nullptr)
+        {
+            return;
+        }
+        if (--blob->ref_count == 0U)
+        {
+            erase_blob_row(repository, storage_id);
         }
     }
 
@@ -230,15 +292,36 @@ namespace
         return !record.from_remote_fetch && record.state != LocalMediaState::removed;
     }
 
+    // Counts a live local record into every count kept beside the records. Does not touch the records.
+    auto count_record_in(LocalMediaRepository& repository, LocalMediaRecord const& record) -> void
+    {
+        if (!record.from_remote_fetch)
+        {
+            ++repository.local_record_total;
+        }
+        if (holds_owner_slot(record))
+        {
+            ++repository.owner_record_counts[record.owner_user_id];
+            repository.owner_live_bytes[record.owner_user_id] += record.size_bytes;
+            if (++repository.local_holders[record.storage_id] == 1U)
+            {
+                repository.local_held_bytes += record.size_bytes;
+            }
+        }
+    }
+
+    // Rebuilds every record-derived count. Costs the records once.
     auto rebuild_owner_record_counts(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.records.size());
         repository.owner_record_counts.clear();
+        repository.owner_live_bytes.clear();
+        repository.local_holders.clear();
+        repository.local_record_total = 0U;
+        repository.local_held_bytes = 0U;
         for (auto const& record : repository.records)
         {
-            if (holds_owner_slot(record))
-            {
-                ++repository.owner_record_counts[record.owner_user_id];
-            }
+            count_record_in(repository, record);
         }
         repository.owner_record_counts_basis = repository.records.size();
     }
@@ -262,53 +345,95 @@ namespace
         return found == repository.owner_record_counts.end() ? std::uint64_t{0U} : found->second;
     }
 
-    // Gives back the slot `record` holds. Call before the record is erased or
-    // marked removed.
-    auto release_owner_slot(LocalMediaRepository& repository, LocalMediaRecord const& record) -> void
+    // Gives back what `record` holds as a live local record: its owner's slot and bytes and its hold on its stored
+    // file. Call before the record is erased or marked removed.
+    auto release_local_hold(LocalMediaRepository& repository, LocalMediaRecord const& record) -> void
     {
         ensure_owner_record_counts(repository);
         if (!holds_owner_slot(record))
         {
             return;
         }
-        auto const found = repository.owner_record_counts.find(record.owner_user_id);
-        if (found == repository.owner_record_counts.end())
-        {
-            return;
-        }
-        if (--found->second == 0U)
+        if (auto const found = repository.owner_record_counts.find(record.owner_user_id);
+            found != repository.owner_record_counts.end() && --found->second == 0U)
         {
             repository.owner_record_counts.erase(found);
         }
+        if (auto const found = repository.owner_live_bytes.find(record.owner_user_id);
+            found != repository.owner_live_bytes.end())
+        {
+            found->second -= std::min(found->second, record.size_bytes);
+            if (found->second == 0U)
+            {
+                repository.owner_live_bytes.erase(found);
+            }
+        }
+        if (auto const found = repository.local_holders.find(record.storage_id);
+            found != repository.local_holders.end() && --found->second == 0U)
+        {
+            repository.local_holders.erase(found);
+            repository.local_held_bytes -= std::min(repository.local_held_bytes, record.size_bytes);
+        }
+    }
+
+    // Removes the thumbnail entry of `media_id`: the last entry moves into its place.
+    auto erase_thumbnail(LocalMediaRepository& repository, std::string const& media_id) -> void
+    {
+        ensure_thumbnail_index(repository);
+        auto const found = repository.thumbnail_index.find(media_id);
+        if (found == repository.thumbnail_index.end() || found->second >= repository.thumbnails.size())
+        {
+            return;
+        }
+        auto const position = found->second;
+        repository.thumbnail_index.erase(found);
+        auto const last = repository.thumbnails.size() - 1U;
+        if (position != last)
+        {
+            repository.thumbnails[position] = std::move(repository.thumbnails[last]);
+            repository.thumbnail_index[repository.thumbnails[position].media_id] = position;
+        }
+        repository.thumbnails.pop_back();
+        repository.media_rows_examined.add(1U);
     }
 
     // Removes a record, its thumbnail entry and its blob reference. Shared by
-    // the upload rollback and by remote-media cache displacement.
+    // the upload rollback and by remote-media cache displacement. The last record moves into the erased one's place
+    // and its index entry is patched (ADR-0633). A removed record gave its reference back when it was removed
+    // (remove_local_media), so it gives back none now (ADR-0636).
     auto erase_record_and_release_blob(LocalMediaRepository& repository, std::string_view media_id) -> bool
     {
-        auto const record = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& candidate) {
-            return candidate.media_id == media_id;
-        });
-        if (record == repository.records.end())
+        ensure_record_index(repository);
+        ensure_owner_record_counts(repository);
+        auto const id = std::string{media_id};
+        auto const found = repository.record_index.find(id);
+        if (found == repository.record_index.end() || found->second >= repository.records.size())
         {
             return false;
         }
-        auto const storage_id = record->storage_id;
-        release_owner_slot(repository, *record);
-        repository.records.erase(record);
-        repository.owner_record_counts_basis = repository.records.size();
-        std::erase_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumbnail) {
-            return thumbnail.media_id == media_id;
-        });
-        // Positions after the erased record moved, so the record index is
-        // rebuilt rather than patched.
-        rebuild_record_index(repository);
-        if (auto* blob = find_blob(repository, storage_id); blob != nullptr)
+        auto const position = found->second;
+        auto const& record = repository.records[position];
+        auto const storage_id = record.storage_id;
+        auto const holds_reference = record.state != LocalMediaState::removed;
+        release_local_hold(repository, record);
+        if (!record.from_remote_fetch)
         {
-            if (--blob->ref_count == 0U)
-            {
-                remove_blob_index(repository, storage_id);
-            }
+            --repository.local_record_total;
+        }
+        erase_thumbnail(repository, id);
+        repository.record_index.erase(id);
+        auto const last = repository.records.size() - 1U;
+        if (position != last)
+        {
+            repository.records[position] = std::move(repository.records[last]);
+            repository.record_index[repository.records[position].media_id] = position;
+        }
+        repository.records.pop_back();
+        repository.owner_record_counts_basis = repository.records.size();
+        repository.media_rows_examined.add(1U);
+        if (holds_reference)
+        {
+            release_blob_reference(repository, storage_id);
         }
         refresh_storage_metrics(repository);
         return true;
@@ -446,6 +571,8 @@ namespace
         // download_local_media_thumbnail), which decodes the original blob and
         // resamples to the requested geometry. This entry simply records that the
         // source is a resamplable image type.
+        ensure_thumbnail_index(repository);
+        repository.thumbnail_index.emplace(record.media_id, repository.thumbnails.size());
         repository.thumbnails.push_back(
             {record.media_id, record.storage_id, 0U, 0U, record.content_type, record.size_bytes});
         ++repository.metrics.thumbnails_generated;
@@ -470,61 +597,37 @@ namespace
     // deduplicate onto one blob occupy one blob's worth of memory, so charging
     // both would refuse uploads long before the repository was actually full.
 
-    // ADR-0120: remote media is accounted against the remote media cache's own
-    // budget, never against local quotas, so cached remote files cannot make a
-    // local upload fail. The record says where it came from; the owner string
-    // is not trusted for this (security audit run-1).
-    [[nodiscard]] auto is_remote_cache_record(LocalMediaRecord const& record) noexcept -> bool
-    {
-        return record.from_remote_fetch;
-    }
-
+    // ADR-0120: remote media is accounted against the remote media cache's own budget, never against local quotas,
+    // so cached remote files cannot make a local upload fail. A record says where it came from (from_remote_fetch);
+    // the owner string is not trusted for this (security audit run-1).
     // Bytes of local media, counting each stored file once however many local
     // records share it. A record's size is its blob's size.
-    [[nodiscard]] auto local_media_bytes(LocalMediaRepository const& repository) -> std::uint64_t
+    // The four readers below answer from counts kept as records change (ADR-0633), so an upload under
+    // runtime.mutex does not scan the records.
+    [[nodiscard]] auto local_media_bytes(LocalMediaRepository& repository) -> std::uint64_t
     {
-        auto counted = std::unordered_set<std::string_view>{};
-        auto total = std::uint64_t{0U};
-        for (auto const& record : repository.records)
-        {
-            if (record.state != LocalMediaState::removed && !is_remote_cache_record(record) &&
-                counted.insert(record.storage_id).second)
-            {
-                total += record.size_bytes;
-            }
-        }
-        return total;
+        ensure_owner_record_counts(repository);
+        return repository.local_held_bytes;
     }
 
-    [[nodiscard]] auto local_media_holds(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
-        -> bool
+    [[nodiscard]] auto local_media_holds(LocalMediaRepository& repository, std::string_view storage_id) -> bool
     {
-        return std::ranges::any_of(repository.records, [storage_id](LocalMediaRecord const& record) {
-            return record.storage_id == storage_id && record.state != LocalMediaState::removed &&
-                   !is_remote_cache_record(record);
-        });
+        ensure_owner_record_counts(repository);
+        return repository.local_holders.contains(std::string{storage_id});
     }
 
-    [[nodiscard]] auto local_record_count(LocalMediaRepository const& repository) noexcept -> std::uint64_t
+    [[nodiscard]] auto local_record_count(LocalMediaRepository& repository) -> std::uint64_t
     {
-        return static_cast<std::uint64_t>(std::ranges::count_if(repository.records, [](LocalMediaRecord const& record) {
-            return !is_remote_cache_record(record);
-        }));
+        ensure_owner_record_counts(repository);
+        return repository.local_record_total;
     }
 
-    [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository,
-                                            std::string_view owner_user_id) noexcept -> std::uint64_t
+    [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository& repository, std::string_view owner_user_id)
+        -> std::uint64_t
     {
-        auto total = std::uint64_t{0U};
-        for (auto const& record : repository.records)
-        {
-            if (record.owner_user_id == owner_user_id && record.state != LocalMediaState::removed &&
-                !is_remote_cache_record(record))
-            {
-                total += record.size_bytes;
-            }
-        }
-        return total;
+        ensure_owner_record_counts(repository);
+        auto const found = repository.owner_live_bytes.find(std::string{owner_user_id});
+        return found == repository.owner_live_bytes.end() ? std::uint64_t{0U} : found->second;
     }
 
     // Which capacity limit, if any, this upload would cross. Empty means it
@@ -690,6 +793,17 @@ auto find_local_media_blob(LocalMediaRepository& repository, std::string_view st
 auto find_local_media_thumbnail(LocalMediaRepository const& repository, std::string_view media_id) noexcept
     -> LocalMediaThumbnail const*
 {
+    if (repository.thumbnail_index.size() == repository.thumbnails.size())
+    {
+        auto const found = repository.thumbnail_index.find(std::string{media_id});
+        if (found != repository.thumbnail_index.end() && found->second < repository.thumbnails.size() &&
+            repository.thumbnails[found->second].media_id == media_id)
+        {
+            return &repository.thumbnails[found->second];
+        }
+        return nullptr;
+    }
+    repository.media_rows_examined.add(repository.thumbnails.size());
     auto const iterator = std::ranges::find_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumb) {
         return thumb.media_id == media_id;
     });
@@ -702,6 +816,10 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
     clear_repository_indices(repository);
     repository.remote_media_cache.clear();
     repository.records = std::move(records);
+    // ADR-0636: a row at zero references is not live; earlier versions left some in the database.
+    std::erase_if(blobs, [](LocalMediaBlob const& blob) {
+        return blob.ref_count == 0U;
+    });
     repository.blobs = std::move(blobs);
     repository.thumbnails.clear();
     for (auto const& record : repository.records)
@@ -839,25 +957,9 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         new_blob.digest = digest;
         new_blob.size_bytes = size_bytes;
         new_blob.ref_count = 1U;
-        // Storage IDs are durable primary keys. Revive the emptied row rather
-        // than appending a second identity that persistence or removal could
-        // mistake for the live bytes.
-        auto const dead = std::ranges::find_if(repository.blobs, [&new_blob](LocalMediaBlob const& existing) {
-            return existing.storage_id == new_blob.storage_id;
-        });
-        if (dead == repository.blobs.end())
-        {
-            insert_blob_index(repository, new_blob.storage_id, repository.blobs.size());
-            repository.blobs.push_back(std::move(new_blob));
-            blob = &repository.blobs.back();
-        }
-        else
-        {
-            insert_blob_index(repository, new_blob.storage_id,
-                              static_cast<std::size_t>(std::distance(repository.blobs.begin(), dead)));
-            *dead = std::move(new_blob);
-            blob = &*dead;
-        }
+        // Storage IDs are durable primary keys, and a row exists only while it has a reference (ADR-0636), so no
+        // row with this identity is held here.
+        blob = add_blob_row(repository, std::move(new_blob));
     }
     else
     {
@@ -872,10 +974,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     {
         // This is only reachable if the CSPRNG or base64 encoder failed
         // repeatedly. Roll back the blob reference we just added.
-        if (--blob->ref_count == 0U)
-        {
-            remove_blob_index(repository, blob->storage_id);
-        }
+        release_blob_reference(repository, std::string{blob->storage_id});
         ++repository.metrics.uploads_rejected;
         log_diagnostic("upload.rejected",
                        {
@@ -910,10 +1009,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     auto const media_id = record.media_id;
     auto const record_index = repository.records.size();
     ensure_owner_record_counts(repository);
-    if (holds_owner_slot(record))
-    {
-        ++repository.owner_record_counts[record.owner_user_id];
-    }
+    count_record_in(repository, record);
     repository.records.push_back(std::move(record));
     repository.owner_record_counts_basis = repository.records.size();
     insert_record_index(repository, media_id, record_index);
@@ -1232,10 +1328,30 @@ auto validate_local_media_admin_action(LocalMediaRepository const& repository, s
         return {false, 400U, std::string{media_id}, LocalMediaState::available, "invalid media action"};
     }
 
-    auto const record = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& current) {
-        return current.media_id == media_id;
-    });
-    if (record == repository.records.end() || record->state == LocalMediaState::removed)
+    // The index answers while it is in step; a repository whose records changed behind its back is scanned.
+    auto const* record = static_cast<LocalMediaRecord const*>(nullptr);
+    if (repository.record_index.size() == repository.records.size())
+    {
+        if (auto const found = repository.record_index.find(std::string{media_id});
+            found != repository.record_index.end() && found->second < repository.records.size() &&
+            repository.records[found->second].media_id == media_id)
+        {
+            record = &repository.records[found->second];
+        }
+    }
+    else
+    {
+        repository.media_rows_examined.add(repository.records.size());
+        if (auto const found = std::ranges::find_if(repository.records,
+                                                    [media_id](LocalMediaRecord const& current) {
+                                                        return current.media_id == media_id;
+                                                    });
+            found != repository.records.end())
+        {
+            record = &*found;
+        }
+    }
+    if (record == nullptr || record->state == LocalMediaState::removed)
     {
         return {false, 404U, std::string{media_id}, LocalMediaState::removed, "media not found"};
     }
@@ -1307,18 +1423,10 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     }
 
     auto const storage_id = record->storage_id;
-    release_owner_slot(repository, *record);
+    release_local_hold(repository, *record);
     record->state = LocalMediaState::removed;
     record->quarantine_reason = std::string{reason};
-    auto* blob = find_blob(repository, storage_id);
-    if (blob != nullptr && blob->ref_count > 0U)
-    {
-        --blob->ref_count;
-        if (blob->ref_count == 0U)
-        {
-            remove_blob_index(repository, storage_id);
-        }
-    }
+    release_blob_reference(repository, storage_id);
 
     ++repository.metrics.admin_removals;
     refresh_storage_metrics(repository);
@@ -1453,11 +1561,19 @@ auto apply_remote_media_admission(LocalMediaRepository& repository, std::string_
                                   std::string_view media_id, std::string_view local_media_id, std::uint64_t now,
                                   std::vector<RemoteMediaCacheEntry> const& displaced) -> void
 {
+    // One pass over the cache removes every displaced entry (the cost is bounded by the cache cap, ADR-0633); the
+    // records are erased one by one in constant time each.
+    auto gone_keys = std::unordered_set<std::string>{};
     for (auto const& gone : displaced)
     {
         std::ignore = erase_record_and_release_blob(repository, gone.local_media_id);
-        std::erase_if(repository.remote_media_cache, [&gone](RemoteMediaCacheEntry const& entry) {
-            return remote_media_cache_entry_matches(entry, gone.origin_server, gone.media_id);
+        gone_keys.insert(gone.origin_server + '\0' + gone.media_id);
+    }
+    if (!gone_keys.empty())
+    {
+        repository.media_rows_examined.add(repository.remote_media_cache.size());
+        std::erase_if(repository.remote_media_cache, [&gone_keys](RemoteMediaCacheEntry const& entry) {
+            return gone_keys.contains(entry.origin_server + '\0' + entry.media_id);
         });
     }
     auto const ttl_ms = repository.config.remote_media_cache_max_entries == 0U

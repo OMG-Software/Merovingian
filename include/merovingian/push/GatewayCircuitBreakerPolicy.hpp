@@ -22,6 +22,9 @@ struct GatewayCircuitBreakerPolicy final
     std::uint32_t failure_threshold{3U};
     std::chrono::seconds cooldown{300};
     std::size_t max_hosts{4096U};
+    // ADR-0634: how long a host that answered promptly counts as reachable (see
+    // GatewayCircuitBreaker::reachable_recently).
+    std::chrono::seconds reachable_ttl{3600};
 };
 
 } // namespace merovingian::push

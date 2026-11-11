@@ -83,6 +83,18 @@ is reserved (`auth::localpart_is_reserved`).
 - `RemoteMediaCacheEntry::size_bytes` is set at admission and hydration. `plan_remote_media_admission` sums
   it and never looks a record up per entry; it drops at most 16 expired entries per admission.
 
+## Counts, indexes and blob rows (ADR-0633, ADR-0636)
+
+- Nothing under `runtime.mutex` may cost time that grows with the records held. The repository keeps, beside the
+  vectors, the record, blob and thumbnail position indexes, `local_record_total`, `owner_live_bytes`, `local_holders`
+  and `local_held_bytes`, and `live_blob_total`/`live_blob_bytes`. Every writer keeps them in step; `ensure_*` rebuilds
+  them once when a vector changed size behind the repository's back. An erase swaps the last row into the gap
+  (`records`, `blobs` and `thumbnails` have no order). Prove cost with `LocalMediaRepository::media_rows_examined`,
+  never timing.
+- A blob row exists only while it has a reference: the last release deletes it (`release_blob_reference`,
+  `erase_blob_row`), in the database in the same transaction. A record holds a reference while its state is not
+  `removed`; `remove_local_media` releases it, so erasing a removed record releases nothing.
+
 ## File names in Content-Disposition (ADR-0211)
 
 A file name (the `{fileName}` of a named download) is client-chosen text that lands in a

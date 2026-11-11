@@ -648,8 +648,9 @@ namespace
             for (auto const& gone : displaced)
             {
                 releases.push_back({gone.local_media_id, gone.origin_server, gone.media_id});
+                // ADR-0636: a removed record gave its reference back when it was removed.
                 if (auto const* gone_record = media::find_local_media_record(repository, gone.local_media_id);
-                    gone_record != nullptr)
+                    gone_record != nullptr && gone_record->state != media::LocalMediaState::removed)
                 {
                     ++released_per_blob[gone_record->storage_id];
                 }

@@ -57,7 +57,10 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
    `total_timeout_seconds` plus one attempt (`push_batch_deadline`; the pushers it did not reach are
    queued with `defer_push_delivery`), and `PushGatewayClient::notify` takes a `GatewayInFlightLimiter`
    slot per gateway host (an eighth of `max_in_flight_deliveries`) and per resolved address (a quarter),
-   returning `busy`, which is retried and not counted against the host. The delivery caps and the
+   returning `busy`, which is retried and not counted against the host. `PushBatchAdmission` (ADR-0634) decides whether a
+   recipient batch starts: a quarter of `max_in_flight_deliveries` is kept for batches whose gateway hosts have all
+   answered promptly within the hour (`GatewayCircuitBreaker::reachable_recently`), and one host carries at most an eighth
+   of the budget; a refusal is a drop, with its reason in the `scope` of `push.delivery.dropped`. The delivery caps and the
    breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.

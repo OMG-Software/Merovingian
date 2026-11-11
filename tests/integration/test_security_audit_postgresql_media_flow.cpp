@@ -45,6 +45,10 @@ namespace
                                    "SELECT COALESCE(octet_length(bytes), 0) FROM media_blobs WHERE storage_id = $1",
                                    {{storage_id, false}}});
     REQUIRE(result.ok);
+    if (result.rows.empty())
+    {
+        return "absent";
+    }
     REQUIRE(result.rows.size() == 1U);
     REQUIRE(result.rows.front().size() == 1U);
     return result.rows.front().front();
@@ -179,12 +183,12 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
                     REQUIRE(final_record != after_final_restart.store.local_media.end());
                     CHECK(final_record->removed);
                     auto const final_blob = find_blob(after_final_restart.store, storage_id);
-                    REQUIRE(final_blob != after_final_restart.store.media_blobs.end());
-                    CHECK(final_blob->ref_count == 0U);
+                    // ADR-0636: the last reference deleted the row.
+                    CHECK(final_blob == after_final_restart.store.media_blobs.end());
                     CHECK_FALSE(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
                                                                            after_final_restart.store, storage_id))
                                     .has_value());
-                    CHECK(stored_blob_byte_length(uri, storage_id) == "0");
+                    CHECK(stored_blob_byte_length(uri, storage_id) == "absent");
                     CHECK(admin_action_count(after_final_restart.store, first_media_id) == 1U);
                     CHECK(admin_action_count(after_final_restart.store, final_media_id) == 1U);
                     CHECK(audit_event_count(after_final_restart.store, first_media_id) == 1U);

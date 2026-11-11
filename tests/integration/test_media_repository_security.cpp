@@ -192,29 +192,15 @@ SCENARIO("Removed media can be re-uploaded durably and erased again", "[med-3][m
                     CHECK(downloaded.status == 200U);
                     CHECK(downloaded.body == "text/plain|hello");
                     CHECK(removed.status == 200U);
-                    CHECK(restarted.runtime.media_repository.blobs.size() == 1U);
-                    for (auto const& blob : restarted.runtime.media_repository.blobs)
-                    {
-                        CHECK(blob.ref_count == 0U);
-                    }
-                    for (auto const& blob : restarted.runtime.database.persistent_store.media_blobs)
-                    {
-                        CHECK(blob.ref_count == 0U);
-                    }
-                    auto const lengths = durable_blob_lengths(path);
-                    CHECK(lengths.size() == 1U);
-                    for (auto const length : lengths)
-                    {
-                        CHECK(length == 0);
-                    }
+                    // ADR-0636: the last reference deleted the row, in memory and on disk.
+                    CHECK(restarted.runtime.media_repository.blobs.empty());
+                    CHECK(restarted.runtime.database.persistent_store.media_blobs.empty());
+                    CHECK(durable_blob_lengths(path).empty());
                 }
             }
             auto reopened = merovingian::homeserver::start_runtime(config);
             REQUIRE(reopened.started);
-            for (auto const& blob : reopened.runtime.media_repository.blobs)
-            {
-                CHECK(blob.ref_count == 0U);
-            }
+            CHECK(reopened.runtime.media_repository.blobs.empty());
         }
         std::filesystem::remove(path);
     }

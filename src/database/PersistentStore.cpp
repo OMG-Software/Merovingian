@@ -5408,15 +5408,105 @@ namespace
         });
     }
 
+    [[nodiscard]] auto remote_media_key(std::string_view server_name, std::string_view media_id) -> std::string
+    {
+        auto key = std::string{server_name};
+        key += '\0';
+        key += media_id;
+        return key;
+    }
+
+    // Rebuilds each media index that is out of step with its vector. Costs the rows once; the commits call it first so
+    // the lookups after it are by key (ADR-0633).
+    auto ensure_media_indexes(PersistentStore& store) -> void
+    {
+        if (!store.local_media_index.in_step(store.local_media.size()))
+        {
+            store.media_rows_examined.add(store.local_media.size());
+            store.local_media_index.rebuild(store.local_media, [](PersistentLocalMedia const& row) {
+                return row.media_id;
+            });
+        }
+        if (!store.remote_media_index.in_step(store.remote_media.size()))
+        {
+            store.media_rows_examined.add(store.remote_media.size());
+            store.remote_media_index.rebuild(store.remote_media, [](PersistentRemoteMedia const& row) {
+                return remote_media_key(row.server_name, row.media_id);
+            });
+        }
+        if (!store.media_blob_index.in_step(store.media_blobs.size()))
+        {
+            store.media_rows_examined.add(store.media_blobs.size());
+            store.media_blob_index.rebuild(store.media_blobs, [](PersistentMediaBlob const& row) {
+                return row.storage_id;
+            });
+        }
+    }
+
+    // The position of the row `key` names in `rows`, by the index while it is in step and by a scan otherwise.
+    template <typename Row, typename KeyOf>
+    [[nodiscard]] auto find_media_row(PersistentStore const& store, std::vector<Row> const& rows,
+                                      RowKeyIndex const& index, std::string const& key, KeyOf key_of)
+        -> std::optional<std::size_t>
+    {
+        if (index.in_step(rows.size()))
+        {
+            auto const position = index.find(key);
+            if (position.has_value() && *position < rows.size() && key_of(rows[*position]) == key)
+            {
+                return position;
+            }
+            return std::nullopt;
+        }
+        store.media_rows_examined.add(rows.size());
+        for (auto position = std::size_t{0U}; position < rows.size(); ++position)
+        {
+            if (key_of(rows[position]) == key)
+            {
+                return position;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Erases the row at `position` by moving the last row into its place, and keeps the index in step.
+    template <typename Row, typename KeyOf>
+    auto erase_media_row(std::vector<Row>& rows, RowKeyIndex& index, std::size_t position, KeyOf key_of) -> void
+    {
+        auto const old_count = rows.size();
+        auto const erased_key = key_of(rows[position]);
+        auto const moved_key = key_of(rows.back());
+        if (position + 1U != old_count)
+        {
+            rows[position] = std::move(rows.back());
+        }
+        rows.pop_back();
+        index.erase_swap(position, erased_key, moved_key, old_count);
+    }
+
+    auto local_media_key(PersistentLocalMedia const& row) -> std::string
+    {
+        return row.media_id;
+    }
+
+    auto media_blob_key(PersistentMediaBlob const& row) -> std::string
+    {
+        return row.storage_id;
+    }
+
+    auto remote_media_row_key(PersistentRemoteMedia const& row) -> std::string
+    {
+        return remote_media_key(row.server_name, row.media_id);
+    }
+
     [[nodiscard]] auto local_media_row_is_valid(PersistentStore const& store, PersistentLocalMedia const& media) -> bool
     {
         if (!media_hash_is_valid(media.hash_algorithm, media.digest) || media.size_bytes == 0U)
         {
             return false;
         }
-        return std::ranges::none_of(store.local_media, [&media](PersistentLocalMedia const& existing) {
-            return existing.media_id == media.media_id;
-        });
+        return !find_media_row(store, store.local_media, store.local_media_index, media.media_id, local_media_key)
+                    .has_value();
     }
 
     [[nodiscard]] auto media_blob_row_is_valid(PersistentMediaBlob const& blob) noexcept -> bool
@@ -5432,22 +5522,24 @@ namespace
     auto remember_media_blob(PersistentStore& store, PersistentMediaBlob const& blob, bool bytes_written) -> void
     {
         auto const keep_bytes = store.backend == PersistentStoreBackend::memory && bytes_written;
-        auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
-            return current.storage_id == blob.storage_id;
-        });
-        if (existing == store.media_blobs.end())
+        ensure_media_indexes(store);
+        auto const position =
+            find_media_row(store, store.media_blobs, store.media_blob_index, blob.storage_id, media_blob_key);
+        if (!position.has_value())
         {
             store.media_blobs.push_back({blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes,
                                          keep_bytes ? blob.bytes : std::string{}, blob.ref_count});
+            store.media_blob_index.note_appended(store.media_blobs.size(), blob.storage_id);
             return;
         }
-        existing->hash_algorithm = blob.hash_algorithm;
-        existing->digest = blob.digest;
-        existing->size_bytes = blob.size_bytes;
-        existing->ref_count = blob.ref_count;
+        auto& existing = store.media_blobs[*position];
+        existing.hash_algorithm = blob.hash_algorithm;
+        existing.digest = blob.digest;
+        existing.size_bytes = blob.size_bytes;
+        existing.ref_count = blob.ref_count;
         if (bytes_written)
         {
-            existing->bytes = keep_bytes ? blob.bytes : std::string{};
+            existing.bytes = keep_bytes ? blob.bytes : std::string{};
         }
     }
 
@@ -5470,6 +5562,15 @@ namespace
         });
     }
 
+    // ADR-0636: a blob row goes with its last reference, in the transaction that releases it.
+    [[nodiscard]] auto delete_media_blob_statement(std::string_view storage_id) -> PreparedStatement
+    {
+        return record_statement("delete_media_blob", "DELETE FROM media_blobs WHERE storage_id = $1",
+                                {
+                                    {std::string{storage_id}, false}
+        });
+    }
+
     [[nodiscard]] auto update_media_blob_ref_count_statement(PersistentMediaBlob const& blob) -> PreparedStatement
     {
         return record_statement("update_media_blob_ref_count",
@@ -5484,11 +5585,14 @@ namespace
 
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool
 {
+    ensure_media_indexes(store);
     if (!local_media_row_is_valid(store, media) || !record_and_persist(store, insert_local_media_statement(media)))
     {
         return false;
     }
+    auto key = media.media_id;
     store.local_media.push_back(std::move(media));
+    store.local_media_index.note_appended(store.local_media.size(), std::move(key));
     return true;
 }
 
@@ -5496,6 +5600,7 @@ namespace
                                              PersistentMediaBlob const& blob, bool new_blob,
                                              std::string_view completes_pending_media_id) -> bool
 {
+    ensure_media_indexes(store);
     if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
         (new_blob && blob.bytes.size() != blob.size_bytes))
     {
@@ -5519,7 +5624,9 @@ namespace
     {
         return false;
     }
+    auto media_key = media.media_id;
     store.local_media.push_back(std::move(media));
+    store.local_media_index.note_appended(store.local_media.size(), std::move(media_key));
     remember_media_blob(store, blob, new_blob);
     if (!completes_pending_media_id.empty())
     {
@@ -5583,12 +5690,11 @@ auto prepare_media_blob_read(PersistentStore const& store, std::string_view stor
     read.postgresql_runtime_role = store.postgresql_runtime_role;
     if (store.backend == PersistentStoreBackend::memory)
     {
-        auto const blob = std::ranges::find_if(store.media_blobs, [storage_id](PersistentMediaBlob const& row) {
-            return row.storage_id == storage_id && row.ref_count > 0U;
-        });
-        if (blob != store.media_blobs.end())
+        auto const position =
+            find_media_row(store, store.media_blobs, store.media_blob_index, std::string{storage_id}, media_blob_key);
+        if (position.has_value() && store.media_blobs[*position].ref_count > 0U)
         {
-            read.memory_bytes = blob->bytes;
+            read.memory_bytes = store.media_blobs[*position].bytes;
         }
     }
     return read;
@@ -5634,13 +5740,14 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool
 {
-    auto const existing = std::ranges::find_if(store.local_media, [media_id](PersistentLocalMedia const& media) {
-        return media.media_id == media_id;
-    });
-    if (existing == store.local_media.end())
+    ensure_media_indexes(store);
+    auto const existing_position =
+        find_media_row(store, store.local_media, store.local_media_index, std::string{media_id}, local_media_key);
+    if (!existing_position.has_value())
     {
         return false;
     }
+    auto const existing = store.local_media.begin() + static_cast<std::ptrdiff_t>(*existing_position);
     if (!record_and_persist(store,
                             record_statement("update_media_state",
                                              "UPDATE media SET quarantined = $2, removed = $3 WHERE media_id = $1",
@@ -5661,22 +5768,33 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
                                                  bool removed, PersistentAdminAction action, PersistentAuditEvent audit)
     -> bool
 {
-    auto const media = std::ranges::find_if(store.local_media, [media_id](auto const& row) {
-        return row.media_id == media_id;
-    });
-    if (media == store.local_media.end() || media->removed || (removed && quarantined) || action.target != media_id)
+    ensure_media_indexes(store);
+    auto const media_position =
+        find_media_row(store, store.local_media, store.local_media_index, std::string{media_id}, local_media_key);
+    if (!media_position.has_value())
+    {
+        return false;
+    }
+    auto const media = store.local_media.begin() + static_cast<std::ptrdiff_t>(*media_position);
+    if (media->removed || (removed && quarantined) || action.target != media_id)
     {
         return false;
     }
     auto blob = store.media_blobs.end();
     if (removed)
     {
-        auto const matches = [&media](auto const& row) {
-            return row.hash_algorithm == media->hash_algorithm && row.digest == media->digest &&
-                   row.size_bytes == media->size_bytes && row.ref_count > 0U;
-        };
-        blob = std::ranges::find_if(store.media_blobs, matches);
-        if (blob == store.media_blobs.end() || std::ranges::count_if(store.media_blobs, matches) != 1)
+        // The row of the file the record holds: its storage ID is derived from the digest and size, as
+        // media::make_local_media_storage_id does. The storage ID is the primary key, so the match is unique.
+        auto const storage_id = "blob_" + media->digest + "_" + std::to_string(media->size_bytes);
+        auto const blob_position =
+            find_media_row(store, store.media_blobs, store.media_blob_index, storage_id, media_blob_key);
+        if (!blob_position.has_value())
+        {
+            return false;
+        }
+        blob = store.media_blobs.begin() + static_cast<std::ptrdiff_t>(*blob_position);
+        if (blob->hash_algorithm != media->hash_algorithm || blob->digest != media->digest ||
+            blob->size_bytes != media->size_bytes || blob->ref_count == 0U)
         {
             return false;
         }
@@ -5690,15 +5808,18 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
                           public_value(removed ? "true" : "false")})};
     if (removed)
     {
-        // Do not re-bind the payload. A shared blob keeps its bytes; the final
-        // reference clears them in the same transaction as removal metadata.
-        statements.push_back(record_statement(
-            "moderate_media_blob",
-            "UPDATE media_blobs SET ref_count = $2, bytes = CASE WHEN $2 = '0' THEN $3 ELSE bytes END "
-            "WHERE storage_id = $1",
-            {
-                public_value(blob->storage_id), public_value(std::to_string(blob->ref_count - 1U)), {"", true, true}
-        }));
+        // Do not re-bind the payload. A shared blob keeps its bytes; the final reference deletes the row, and
+        // with it the bytes, in the same transaction as removal metadata (ADR-0636).
+        if (blob->ref_count == 1U)
+        {
+            statements.push_back(delete_media_blob_statement(blob->storage_id));
+        }
+        else
+        {
+            statements.push_back(
+                record_statement("moderate_media_blob", "UPDATE media_blobs SET ref_count = $2 WHERE storage_id = $1",
+                                 {public_value(blob->storage_id), public_value(std::to_string(blob->ref_count - 1U))}));
+        }
     }
     statements.push_back(record_statement(
         "moderate_media_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
@@ -5717,10 +5838,14 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
     media->removed = removed;
     if (removed)
     {
-        --blob->ref_count;
-        if (blob->ref_count == 0U)
+        if (blob->ref_count == 1U)
         {
-            blob->bytes.clear();
+            erase_media_row(store.media_blobs, store.media_blob_index,
+                            static_cast<std::size_t>(blob - store.media_blobs.begin()), media_blob_key);
+        }
+        else
+        {
+            --blob->ref_count;
         }
     }
     store.admin_actions.push_back(std::move(action));
@@ -5730,10 +5855,10 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
 
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool
 {
-    auto const duplicate = std::ranges::any_of(store.remote_media, [&media](PersistentRemoteMedia const& existing) {
-        return existing.server_name == media.server_name && existing.media_id == media.media_id;
-    });
-    if (duplicate)
+    ensure_media_indexes(store);
+    if (find_media_row(store, store.remote_media, store.remote_media_index,
+                       remote_media_key(media.server_name, media.media_id), remote_media_row_key)
+            .has_value())
     {
         return false;
     }
@@ -5755,7 +5880,9 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
     {
         return false;
     }
+    auto key = remote_media_key(media.server_name, media.media_id);
     store.remote_media.push_back(std::move(media));
+    store.remote_media_index.note_appended(store.remote_media.size(), std::move(key));
     return true;
 }
 
@@ -5766,6 +5893,7 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
                                                  std::vector<PersistentBlobReferenceCount> const& released_blobs)
     -> bool
 {
+    ensure_media_indexes(store);
     if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
         (new_blob && blob.bytes.size() != blob.size_bytes) || mapping.server_name.empty() || mapping.media_id.empty() ||
         mapping.local_media_id != media.media_id)
@@ -5791,14 +5919,17 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
     }
     for (auto const& released : released_blobs)
     {
+        // ADR-0636: the last reference deletes the row, and its bytes with it.
+        if (released.ref_count == 0U)
+        {
+            statements.push_back(delete_media_blob_statement(released.storage_id));
+            continue;
+        }
         statements.push_back(
-            record_statement("release_remote_media_blob",
-                             "UPDATE media_blobs SET ref_count = $2, bytes = CASE WHEN $2 = '0' THEN $3 ELSE bytes END "
-                             "WHERE storage_id = $1",
+            record_statement("release_remote_media_blob", "UPDATE media_blobs SET ref_count = $2 WHERE storage_id = $1",
                              {
-                                 {released.storage_id, false},
-                                 {std::to_string(released.ref_count), false},
-                                 {std::string{}, true, true}
+                                 {released.storage_id,                false},
+                                 {std::to_string(released.ref_count), false}
         }));
     }
     statements.push_back(insert_local_media_statement(media));
@@ -5811,33 +5942,51 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
 
     for (auto const& release : releases)
     {
-        std::erase_if(store.local_media, [&release](PersistentLocalMedia const& row) {
-            return row.media_id == release.local_media_id;
-        });
-        std::erase_if(store.remote_media, [&release](PersistentRemoteMedia const& row) {
-            return row.server_name == release.server_name && row.media_id == release.media_id;
-        });
+        if (auto const position = find_media_row(store, store.local_media, store.local_media_index,
+                                                 release.local_media_id, local_media_key);
+            position.has_value())
+        {
+            erase_media_row(store.local_media, store.local_media_index, *position, local_media_key);
+        }
+        if (auto const position =
+                find_media_row(store, store.remote_media, store.remote_media_index,
+                               remote_media_key(release.server_name, release.media_id), remote_media_row_key);
+            position.has_value())
+        {
+            erase_media_row(store.remote_media, store.remote_media_index, *position, remote_media_row_key);
+        }
     }
     for (auto const& released : released_blobs)
     {
-        auto const row = std::ranges::find_if(store.media_blobs, [&released](PersistentMediaBlob const& candidate) {
-            return candidate.storage_id == released.storage_id;
-        });
-        if (row != store.media_blobs.end())
+        auto const position =
+            find_media_row(store, store.media_blobs, store.media_blob_index, released.storage_id, media_blob_key);
+        if (!position.has_value())
         {
-            row->ref_count = released.ref_count;
-            if (released.ref_count == 0U)
-            {
-                row->bytes.clear();
-            }
+            continue;
+        }
+        if (released.ref_count == 0U)
+        {
+            erase_media_row(store.media_blobs, store.media_blob_index, *position, media_blob_key);
+        }
+        else
+        {
+            store.media_blobs[*position].ref_count = released.ref_count;
         }
     }
+    auto media_key = media.media_id;
     store.local_media.push_back(std::move(media));
+    store.local_media_index.note_appended(store.local_media.size(), std::move(media_key));
     remember_media_blob(store, blob, new_blob);
-    std::erase_if(store.remote_media, [&mapping](PersistentRemoteMedia const& row) {
-        return row.server_name == mapping.server_name && row.media_id == mapping.media_id;
-    });
+    if (auto const position =
+            find_media_row(store, store.remote_media, store.remote_media_index,
+                           remote_media_key(mapping.server_name, mapping.media_id), remote_media_row_key);
+        position.has_value())
+    {
+        erase_media_row(store.remote_media, store.remote_media_index, *position, remote_media_row_key);
+    }
+    auto mapping_key = remote_media_key(mapping.server_name, mapping.media_id);
     store.remote_media.push_back(std::move(mapping));
+    store.remote_media_index.note_appended(store.remote_media.size(), std::move(mapping_key));
     return true;
 }
 

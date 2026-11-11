@@ -947,10 +947,10 @@ namespace
 
         if (table_load_profile_includes("media_blobs", profile))
         {
-            auto media_blobs =
-                query_rows(connection, "postgresql_load_media_blobs",
-                           "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs "
-                           "ORDER BY storage_id");
+            auto media_blobs = query_rows(connection, "postgresql_load_media_blobs",
+                                          "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM "
+                                          "media_blobs WHERE ref_count <> '0' "
+                                          "ORDER BY storage_id");
             if (!media_blobs.ok)
             {
                 return false;

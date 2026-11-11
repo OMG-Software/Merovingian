@@ -124,6 +124,8 @@
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/push/GatewayCircuitBreakerPolicy.hpp"
+#include "merovingian/push/PushBatchAdmission.hpp"
 #include "merovingian/push/PushEvaluationResult.hpp"
 #include "merovingian/push/PushGatewayClient.hpp"
 #include "merovingian/push/PushGatewayDevice.hpp"
@@ -9308,11 +9310,31 @@ namespace
             return;
         }
 
+        // ADR-0634: the gateway hosts a batch will contact, and whether each has answered promptly lately.
+        auto const& push_config = runtime.config.server().push;
+        auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
+            push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
         for (auto& [recipient, batch] : batches)
         {
             auto const delivery_count = batch.size();
             try
             {
+                auto hosts = std::vector<std::string>{};
+                auto all_hosts_reachable = true;
+                for (auto const& delivery : batch)
+                {
+                    auto host = push::push_gateway_host(delivery.pusher.data_url);
+                    if (!host.has_value() || runtime.push_gateway_breaker_ == nullptr ||
+                        !runtime.push_gateway_breaker_->reachable_recently(*host, std::chrono::steady_clock::now(),
+                                                                           breaker_policy))
+                    {
+                        all_hosts_reachable = false;
+                    }
+                    if (host.has_value())
+                    {
+                        hosts.push_back(std::move(*host));
+                    }
+                }
                 auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
                 reap_completed_futures(runtime.orphan_futures_);
                 std::erase_if(runtime.push_delivery_in_flight_by_user_, [](auto const& entry) {
@@ -9337,19 +9359,36 @@ namespace
                     continue;
                 }
 
+                // ADR-0634: a share of the budget is kept for batches whose hosts answer, and one host carries
+                // an eighth of it, so gateways the pushers' owners chose cannot hold every slot.
+                auto admission = runtime.push_batch_admission_->admit(runtime.push_delivery_in_flight_.load(),
+                                                                      max_in_flight, hosts, all_hosts_reachable);
+                if (!admission.slot.has_value())
+                {
+                    log_push_delivery_drop(admission.refusal == push::PushBatchRefusal::gateway_host
+                                               ? "gateway_host"
+                                               : (admission.refusal == push::PushBatchRefusal::unproven_share
+                                                      ? "unproven_share"
+                                                      : "global"),
+                                           runtime.push_delivery_in_flight_.load(), max_in_flight, delivery_count);
+                    continue;
+                }
+
                 // Reserve BEFORE launch and keep the parking mutex held. The
                 // following future insertion then needs no allocation, so an
                 // allocation failure cannot wait on a running future while
                 // this request still owns runtime.mutex.
                 runtime.orphan_futures_.reserve(runtime.orphan_futures_.size() + 1U);
                 auto permit = PushDeliveryPermit{runtime.push_delivery_in_flight_, user->second};
-                auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(batch),
-                                                                   permit = std::move(permit)]() mutable {
-                    // Return the counters on work completion (or throw),
-                    // not on destruction of the future's retained closure.
-                    auto const completion = std::move(permit);
-                    run_pending_push_deliveries(runtime, std::move(deliveries));
-                });
+                auto push_future =
+                    std::async(std::launch::async, [&runtime, deliveries = std::move(batch), permit = std::move(permit),
+                                                    host_slot = std::move(admission.slot)]() mutable {
+                        // Return the counters on work completion (or throw),
+                        // not on destruction of the future's retained closure.
+                        auto const completion = std::move(permit);
+                        auto const host_completion = std::move(host_slot);
+                        run_pending_push_deliveries(runtime, std::move(deliveries));
+                    });
                 runtime.orphan_futures_.push_back(std::move(push_future));
             }
             catch (std::exception const&)

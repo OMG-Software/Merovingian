@@ -406,10 +406,19 @@ struct PersistentStore final
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentMediaBlob> media_blobs{};
+    // Positions of the rows above by media ID, by origin server and media ID, and by storage ID (ADR-0633). Same
+    // trust rule as the other row indexes: used only while built for exactly the vector's row count, rebuilt by the
+    // media commits when a loader or a test left them out of step. An erase moves the last row into the gap.
+    RowKeyIndex local_media_index{};
+    RowKeyIndex remote_media_index{};
+    RowKeyIndex media_blob_index{};
     // Migration 026: reservations made by POST /_matrix/media/v1/create.
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
     // F-16: rows of `pending_media_uploads` visited by commit_pending_media_upload.
     ExaminedRows pending_media_rows_examined{};
+    // ADR-0633: media rows (local media, remote media, blobs) a media commit visited. A test reads the difference
+    // across one commit to prove the work does not grow with the rows held, never timing.
+    ExaminedRows media_rows_examined{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
     // list is a bounded mirror for the admin views, so an unauthenticated flood
