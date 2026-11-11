@@ -28,12 +28,8 @@ Package: merovingian
 Architecture: any
 Depends:
  ${misc:Depends},
- libssl3,
- libsodium23,
- libpq5,
- libcurl4,
- libpng16-16,
- libturbojpeg0
+ ${shlibs:Depends},
+ adduser
 Recommends:
  ca-certificates
 Description: secure Matrix Protocol homeserver

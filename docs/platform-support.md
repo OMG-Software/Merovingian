@@ -88,7 +88,8 @@ email integration scenarios that need an SMTP session are skipped, as on the
 `rhel-build-and-test` job.
 
 Runtime package dependencies are declared in the OS packaging metadata
-(`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
+(the `.deb` `Depends`, which `scripts/build-deb.sh` derives with `dpkg-shlibdeps` from the libraries the binaries
+link on the release being packaged, because Ubuntu and Debian releases name those packages differently; the rpm spec, `packaging/freebsd/+MANIFEST`
 `deps`, `packaging/openbsd/PLIST` `@depend`, `packaging/netbsd/Makefile`
 `DEPENDS`), so installing a Merovingian package pulls these libraries in
 automatically. `scripts/setup-dev-env.sh` installs the development files for

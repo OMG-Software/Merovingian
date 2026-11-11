@@ -41,6 +41,11 @@ Chosen option: matrix jobs whose name comes from the matrix, and `release.yml` c
   `rolling` becomes the number of the release it is that day. Every leg still installs and boots its package through
   the startup hardening gate. A matrix job reports no check under the bare job name, so `deb-all-releases` reports the
   required `Debian package` and passes only when every leg did, as `rpm-all-images` does for Fedora.
+* `build-deb.sh` no longer names library packages. The fixed `Depends` list failed on the first run of these legs:
+  Ubuntu 24.04 has no `libturbojpeg0` (its package is `libturbojpeg`), and the rolling release has no `libssl3`.
+  `dpkg-shlibdeps` now derives the library dependencies from every ELF file the package ships, on the release
+  building it, with the minimum version each binary's symbols need; only `adduser`, which the postinst runs, stays
+  named. `packaging/deb/control` uses `${shlibs:Depends}` the same way.
 * `opensuse-rpm` builds Tumbleweed (`OpenSUSE Tumbleweed RPM`, dist `.opensuse`, unchanged) and Leap 16.0
   (`OpenSUSE Leap 16.0 RPM`, dist `.leap16`). `build-opensuse-rpm.sh` takes the tag from `MEROVINGIAN_RPM_DIST` and
   refuses one that is not a dot, a lower-case letter, then lower-case letters, digits and dots, because it lands in an
@@ -56,6 +61,9 @@ Chosen option: matrix jobs whose name comes from the matrix, and `release.yml` c
 ### Rejected
 
 * **Copied jobs per release.** Six near-identical jobs drift apart; the Fedora and RHEL retry loops already did.
+* **Fixed `.deb` dependencies with alternatives** (`libturbojpeg0 | libturbojpeg`, `libssl3 | libssl3t64 | …`):
+  guesses at names each release chooses, carries no minimum version, and breaks again at the next rename.
+  `dpkg-shlibdeps` is how Debian packages state library dependencies.
 * **Default per-leg names plus aggregators for everything.** Workable, but adds an aggregator per required check;
   a matrix-built name keeps one required name on a real leg.
 * **Building packages a second time in `release.yml`.** Two definitions of each package job drift apart, and the

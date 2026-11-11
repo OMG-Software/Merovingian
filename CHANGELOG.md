@@ -114,6 +114,10 @@ GitHub moved `ubuntu-latest` to Ubuntu 26.04, so CI had stopped building for Ubu
 - Each openSUSE dependency step now fails when its third attempt does.
 - `packages.yml` builds a `.deb` for Ubuntu 24.04, 26.04 and the interim release. Each package is named
   `-ubuntu<release>.deb`, and each is installed and booted through the startup hardening gate.
+- `build-deb.sh` no longer names library packages in `Depends`. The fixed list could not install on Ubuntu 24.04,
+  which has no `libturbojpeg0`, or on the rolling release, which has no `libssl3`. `dpkg-shlibdeps` now derives them
+  from the shipped binaries on the release building the package, with minimum versions. `adduser` stays named for
+  the postinst. `packaging/deb/control` uses `${shlibs:Depends}`, and both `.deb` jobs install `dpkg-dev`.
 - `deb-all-releases` reports the required "Debian package" check.
 - `packages.yml` also builds an `.rpm` for Leap 16.0 (`.leap16`) beside Tumbleweed's (`.opensuse`).
   `build-opensuse-rpm.sh` takes its dist tag from `MEROVINGIAN_RPM_DIST`.
