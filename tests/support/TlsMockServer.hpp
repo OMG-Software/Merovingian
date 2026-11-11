@@ -15,6 +15,7 @@
 #include "StallingTlsServerState.hpp"
 #include "TlsTestCertificate.hpp"
 #include "X509Deleter.hpp"
+#include "X509ExtensionDeleter.hpp"
 #include "X509NameDeleter.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/SocketHandle.hpp"
@@ -29,6 +30,7 @@
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -100,11 +102,77 @@ namespace merovingian::tests::tls_mock
     return key;
 }
 
-// Generates a self-signed certificate for `common_name`. The name must match the
-// host in the URL the client requests, or peer verification fails — see the
-// negative scenario in tests/integration/test_federation_outbound_flow.cpp
-// ("a request that targets a different hostname"). No SAN is set, so OpenSSL
-// falls back to CN matching.
+// A one-entry name, CN=`common_name`. Built apart from any certificate: OpenSSL 4 returns a certificate's names
+// as const, and OpenSSL 3 and LibreSSL take a name built here, so this one form builds on all three.
+[[nodiscard]] inline auto make_common_name(std::string const& common_name) -> std::unique_ptr<X509_NAME, X509NameDeleter>
+{
+    auto name = std::unique_ptr<X509_NAME, X509NameDeleter>{X509_NAME_new()};
+    REQUIRE(name != nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    auto const* bytes = reinterpret_cast<unsigned char const*>(common_name.c_str());
+    REQUIRE(X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC, bytes, -1, -1, 0) == 1);
+    return name;
+}
+
+// An unsigned X.509 v3 certificate for `key`, named `subject` and issued by `issuer`, valid from an hour ago to an
+// hour from now. The caller adds extensions and signs it.
+[[nodiscard]] inline auto make_v3_certificate(EVP_PKEY* key, X509_NAME* subject, X509_NAME* issuer, int serial)
+    -> std::unique_ptr<X509, X509Deleter>
+{
+    auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
+    REQUIRE(certificate != nullptr);
+    // The version field holds the number less one: 2 is v3, which extensions require.
+    REQUIRE(X509_set_version(certificate.get(), 2L) == 1);
+    REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), serial) == 1);
+    // Backdated: a notBefore of exactly now made verification fail as "not yet
+    // valid" whenever the wall clock stepped back a moment between issuing and
+    // verifying (WSL steps its clock), failing whichever scenario was unlucky.
+    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
+    REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
+    REQUIRE(X509_set_pubkey(certificate.get(), key) == 1);
+    REQUIRE(X509_set_subject_name(certificate.get(), subject) == 1);
+    REQUIRE(X509_set_issuer_name(certificate.get(), issuer) == 1);
+    return certificate;
+}
+
+// Adds one extension to `certificate`, written as in an OpenSSL configuration file ("critical,CA:FALSE"). `issuer`
+// is the certificate whose key identifier an authorityKeyIdentifier names.
+inline auto add_extension(X509* certificate, X509* issuer, int nid, char const* value) -> void
+{
+    auto context = X509V3_CTX{};
+    X509V3_set_ctx(&context, issuer, certificate, nullptr, nullptr, 0);
+    auto const extension =
+        std::unique_ptr<X509_EXTENSION, X509ExtensionDeleter>{X509V3_EXT_conf_nid(nullptr, &context, nid, value)};
+    REQUIRE(extension != nullptr);
+    REQUIRE(X509_add_ext(certificate, extension.get(), -1) == 1);
+}
+
+// The subjectAltName value naming `host`: an IP address entry for a literal address, a DNS entry otherwise.
+[[nodiscard]] inline auto subject_alt_name_for(std::string const& host) -> std::string
+{
+    auto const is_ip_literal =
+        host.find(':') != std::string::npos ||
+        (!host.empty() && host.find_first_not_of("0123456789.") == std::string::npos);
+    return (is_ip_literal ? "IP:" : "DNS:") + host;
+}
+
+// Writes `certificate` as PEM to an owner-only file at `path`.
+inline auto write_certificate_pem(std::string const& path, X509* certificate) -> void
+{
+    auto file = open_owner_only_for_write(path);
+    REQUIRE(file != nullptr);
+    REQUIRE(PEM_write_X509(file.get(), certificate) == 1);
+}
+
+// Issues a server certificate for `common_name` from a throwaway test CA made for this call. The server presents
+// `certificate_file`; a client trusts `certificate_pem`, which is the CA, never the server certificate itself.
+//
+// A self-signed server certificate trusted as its own anchor passed OpenSSL's verification, but not Ubuntu's: from
+// Ubuntu 26.10 libcurl also verifies through upki (rustls-webpki), which accepts a server certificate only when a
+// trusted CA issued it, and only as a v3 end-entity certificate (ADR-0650). So the server certificate is CA:FALSE
+// with serverAuth and a subjectAltName for the name, and the CA is CA:TRUE and may sign certificates. The name must
+// match the host in the URL the client requests, or peer verification fails; see the negative scenario in
+// tests/integration/test_federation_outbound_flow.cpp ("a request that targets a different hostname").
 [[nodiscard]] inline auto write_test_tls_certificate(std::string const& common_name = "localhost") -> TlsTestCertificate
 {
     static auto counter = std::uint32_t{0U};
@@ -112,50 +180,44 @@ namespace merovingian::tests::tls_mock
                            ("merovingian-tls-mock-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
     std::filesystem::create_directories(directory);
 
-    auto key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
+    auto const ca_key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
+    REQUIRE(ca_key != nullptr);
+    auto const ca_name = make_common_name("Merovingian test CA");
+    auto const ca = make_v3_certificate(ca_key.get(), ca_name.get(), ca_name.get(), 1);
+    add_extension(ca.get(), ca.get(), NID_basic_constraints, "critical,CA:TRUE");
+    add_extension(ca.get(), ca.get(), NID_key_usage, "critical,keyCertSign,cRLSign");
+    add_extension(ca.get(), ca.get(), NID_subject_key_identifier, "hash");
+    REQUIRE(X509_sign(ca.get(), ca_key.get(), EVP_sha256()) > 0);
+
+    auto const key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
     REQUIRE(key != nullptr);
-
-    auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
-    REQUIRE(certificate != nullptr);
-    REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) == 1);
-    // Backdated: a notBefore of exactly now made verification fail as "not yet
-    // valid" whenever the wall clock stepped back a moment between issuing and
-    // verifying (WSL steps its clock), failing whichever scenario was unlucky.
-    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
-    REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
-    REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
-
-    // Built apart from the certificate: OpenSSL 4 returns its subject name as const, and OpenSSL 3 takes a
-    // const name here too, so this one form builds on both.
-    auto const subject = std::unique_ptr<X509_NAME, X509NameDeleter>{X509_NAME_new()};
-    REQUIRE(subject != nullptr);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    auto const* common_name_bytes = reinterpret_cast<unsigned char const*>(common_name.c_str());
-    REQUIRE(X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, common_name_bytes, -1, -1, 0) == 1);
-    REQUIRE(X509_set_subject_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_set_issuer_name(certificate.get(), subject.get()) == 1);
-    REQUIRE(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
+    auto const subject = make_common_name(common_name);
+    auto const certificate = make_v3_certificate(key.get(), subject.get(), ca_name.get(), 2);
+    add_extension(certificate.get(), ca.get(), NID_basic_constraints, "critical,CA:FALSE");
+    add_extension(certificate.get(), ca.get(), NID_key_usage, "critical,digitalSignature,keyEncipherment");
+    add_extension(certificate.get(), ca.get(), NID_ext_key_usage, "serverAuth");
+    add_extension(certificate.get(), ca.get(), NID_subject_alt_name, subject_alt_name_for(common_name).c_str());
+    add_extension(certificate.get(), ca.get(), NID_subject_key_identifier, "hash");
+    add_extension(certificate.get(), ca.get(), NID_authority_key_identifier, "keyid");
+    REQUIRE(X509_sign(certificate.get(), ca_key.get(), EVP_sha256()) > 0);
 
     auto output = TlsTestCertificate{};
     output.directory = directory;
     output.certificate_file = (directory / "server.pem").string();
     output.private_key_file = (directory / "server.key").string();
+    auto const ca_file = (directory / "ca.pem").string();
 
-    auto cert_file = open_owner_only_for_write(output.certificate_file);
-    REQUIRE(cert_file != nullptr);
-    REQUIRE(PEM_write_X509(cert_file.get(), certificate.get()) == 1);
-
-    auto key_file = open_owner_only_for_write(output.private_key_file);
-    REQUIRE(key_file != nullptr);
-    REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
-
-    // Flush the FILE handles before reading the cert back as a string.
-    cert_file.reset();
-    key_file.reset();
+    write_certificate_pem(output.certificate_file, certificate.get());
+    write_certificate_pem(ca_file, ca.get());
+    {
+        auto key_file = open_owner_only_for_write(output.private_key_file);
+        REQUIRE(key_file != nullptr);
+        REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
+    }
     // ISO-7: the server reads its TLS key only from an owner-read-only file.
     std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
 
-    output.certificate_pem = read_file_into_string(output.certificate_file);
+    output.certificate_pem = read_file_into_string(ca_file);
     return output;
 }
 
