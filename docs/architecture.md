@@ -208,7 +208,8 @@ merovingian-fed-worker x N  [spawned when security.federation.enabled=true]
   - IPC reader thread: routes frames only — responses wake pending waiters,
     request frames are queued for the IPC dispatch thread
   - IPC dispatch thread: invokes the request handler for queued frames in order
-  - local_pool (threads = federation.worker.threads): local room-scoped reads and `room_sync` reloads
+  - local_pool (threads = federation.worker.threads): local room-scoped reads
+  - reload_pool (one thread): `room_sync` reloads, coalesced per room (ADR-0623)
   - relay_pool (threads = federation.worker.relay_threads): main-process relays and outbound HTTP
 ```
 

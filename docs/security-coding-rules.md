@@ -1558,6 +1558,9 @@ media-fetch-pool task.
   Why: sixteen dead peers filled the shared queue, and joins through slow servers pinned the pool (CWE-400; release-gate
   audit, ADR-0621, ADR-0622). Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
+- **A remote server's event rate must not set how many whole-room reloads a worker does.** `room_sync` goes through
+  `RoomReloadCoalescer` (CWE-400; release-gate audit, ADR-0623). Source: `src/federation_worker/AGENTS.md`.
+
 - **A resent `send_join` is answered again from current state, and the join is never stored or sent on a second time.**
   A join already stored is answered by `resent_send_join_state`, never from the state at its `prev_events`; a stored
   `rejected` join is refused 403 again.

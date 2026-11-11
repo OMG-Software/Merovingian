@@ -19,6 +19,7 @@ because it is the process most exposed to hostile input, holds as little trust a
 | `DbUriFd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
+| `RoomReloadCoalescer.cpp` | `RoomReloadCoalescer`: merges a room's `room_sync` notifications into a bounded number of reloads (rule 6, ADR-0623) |
 | `WorkerRelayFrame.cpp` | `worker_relay_frame` / `relay_to_main`: the claim and key/profile query relay frames and their send, bound to the request being served (rule 12) |
 | `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
@@ -90,8 +91,10 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    serves endpoints that block on an IPC round trip or outbound HTTP.
    `federation::federation_endpoint_requires_main_relay` routes each request before a thread is
    committed, so slow relays cannot starve fast local reads.
-6. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread, and reload
-   through the `StoreReadGuard` (F-27, ADR-0360).** The reload reads the database with no lock and takes
+6. **`room_sync` notifications run on `reload_pool`, never inline on the IPC dispatch thread, go through the
+   `RoomReloadCoalescer` (ADR-0623), and reload through the `StoreReadGuard` (F-27, ADR-0360).** A
+   notification for a room already scheduled costs nothing; the coalescer's header states the invariant a change must
+   keep (a reload that starts after a notification was recorded sees its change). Hold no lock across a round. The reload reads the database with no lock and takes
    the guard's exclusive lock only to swap the room's rows in memory; every provider that reads the store
    (ACL, room version, state, state_ids, event_auth, get_missing_events, backfill, timestamp_to_event,
    hierarchy, the local make_leave/make_knock template) is wrapped by `wrap_store_readers` and holds the
@@ -104,7 +107,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 7. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
    thread and a thread cannot join itself. On `"shutdown"`, signal a condition variable and let the
    worker's main thread call `stop()`.
-8. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
+8. **Drain every thread pool before stopping the IPC channel on shutdown.** An in-flight handler
    still needs the channel to send its response.
 9. **The worker loads no application service registrations (ADR-0296).** It starts its runtime with
    `RuntimeStartOptions::load_appservices = false`: `runtime.appservices` stays empty and no

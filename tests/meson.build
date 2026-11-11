@@ -333,6 +333,7 @@ shell = find_program('sh')
       'unit/test_state_group_tables.cpp',
       'unit/test_reload_room_state_groups.cpp',
       'unit/test_store_read_guard.cpp',
+      'unit/test_room_reload_coalescer.cpp',
       'unit/test_state_bookkeeping.cpp',
       'unit/test_store_event_choke_point.cpp',
       'unit/test_dispatch_worker.cpp',

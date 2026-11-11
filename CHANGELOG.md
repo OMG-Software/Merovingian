@@ -10,6 +10,10 @@ Sixteen peers that stopped answering could hold every slot of the federation sen
 
 These calls hold a request thread for their exchange with another server, with no limit. They now take a client-outbound slot and answer `429 M_LIMIT_EXCEEDED` with `Retry-After` when none is free, as the other client-triggered outbound calls do. A join, knock or leave decided locally takes no slot.
 
+### A burst of PDUs for one room no longer costs a reload each (ADR-0623)
+
+A federation worker re-read a whole room for every PDU main accepted. Reloads are now merged per room and run on their own thread: a burst costs at most one reload running and one after it, and the last PDU is always followed by a reload that sees it.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
