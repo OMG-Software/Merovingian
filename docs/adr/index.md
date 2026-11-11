@@ -544,3 +544,7 @@
 * [0613 - An identifier over 255 bytes never reaches a namespace regex](0613-an-identifier-over-255-bytes-never-reaches-a-namespace-regex.md)
 * [0614 - The release signing key belongs to an environment, and a tag must name a commit on main](0614-the-release-signing-key-belongs-to-an-environment-and-a-tag-must-name-a-commit-on-main.md)
 * [0615 - Current state drops a key the resolution does not hold, and keeps a row from outside the graph](0615-current-state-drops-a-key-the-resolution-does-not-hold-and-keeps-a-row-from-outside-the-graph.md)
+* [0633 - Media counts and positions are kept as each record and blob changes, and a row is erased by swapping the last into its place](0633-media-counts-and-positions-are-kept-as-each-record-and-blob-changes.md)
+* [0634 - A share of the push delivery budget is kept for gateways that answer, and one host carries an eighth of it](0634-a-share-of-the-push-delivery-budget-is-kept-for-gateways-that-answer-and-a-host-carries-an-eighth.md)
+* [0635 - An inbound federation origin is asked about once at a time, and its decision is kept for a short time](0635-an-inbound-federation-origin-is-asked-about-once-at-a-time-and-its-decision-is-kept-for-a-short-time.md)
+* [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)

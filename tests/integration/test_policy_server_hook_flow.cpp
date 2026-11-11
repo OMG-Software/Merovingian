@@ -488,3 +488,55 @@ SCENARIO("two pre-v12 rooms created while the first one waits on the policy serv
         }
     }
 }
+
+// ADR-0635: whether an origin gets a decision does not depend on how many other origins' asks are in flight. An origin
+// the policy server has decided about keeps that decision, with the server asked once; an origin it has never
+// decided about is still judged by policy_server_allow_without_result when the budget has no place for it.
+SCENARIO("a federation origin the policy server has decided about keeps its decision while other origins hold the budget",
+         "[integration][trust-safety][policy_server_hook][gate-l][policy-budget]")
+{
+    GIVEN("a policy server that denies bad.example, asked once, and a federation budget then held by other origins")
+    {
+        auto mock = MockPolicyServer{};
+        auto started = homeserver::start_client_server(hook_config(mock.url(), true));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime.homeserver;
+        point_runtime_at(runtime, mock);
+        auto const deny = tls_mock::json_http_response("200 OK", R"({"action":"deny"})");
+        auto const first = [&]() {
+            auto server_thread = std::thread{[&]() {
+                tls_mock::run_one_shot_tls_server(mock.acceptor, *mock.tls_context.context, deny);
+            }};
+            auto const server_join = tls_mock::ScopedThreadJoin{server_thread};
+            return homeserver::resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation,
+                                                          "bad.example");
+        }();
+        REQUIRE(first.decision_received);
+        auto const& policy = runtime.client_outbound_proxy_policy;
+        auto held = std::vector<http::InFlightBudget::Slot>{};
+        for (auto index = std::uint32_t{0U}; index < policy.policy_server_per_surface_cap; ++index)
+        {
+            auto slot = runtime.policy_server_budget->try_acquire("federation", policy.policy_server_global_cap,
+                                                                  policy.policy_server_per_surface_cap);
+            REQUIRE(slot.has_value());
+            held.push_back(std::move(*slot));
+        }
+
+        WHEN("the denied origin and an origin never decided about both ask again")
+        {
+            auto const bad =
+                homeserver::resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, "bad.example");
+            auto const unknown = homeserver::resolve_policy_server_hook(
+                runtime, trust_safety::PolicySurface::federation, "unknown.example");
+
+            THEN("the denied origin is still denied without another ask, and the unknown one is judged as before")
+            {
+                CHECK(bad.decision_received);
+                CHECK_FALSE(trust_safety::policy_server_hook_allows(bad).allowed);
+                CHECK_FALSE(unknown.decision_received);
+                CHECK(trust_safety::policy_server_hook_allows(unknown).allowed);
+                CHECK(runtime.policy_server_budget->active() == policy.policy_server_per_surface_cap);
+            }
+        }
+    }
+}

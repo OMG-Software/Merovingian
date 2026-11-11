@@ -85,7 +85,12 @@ This capability note describes runtime-wired trust-and-safety behavior.
   is "no usable decision", exactly like an unreachable server: refused when
   `policy_server_allow_without_result=false` (the default), allowed when `true`.
   A transport error is logged at warning level with its error name. The hook
-  runs in main only; federation requests are judged by the proxy.
+  runs in main only; federation requests are judged by the proxy. For the
+  federation surface a real decision is kept per origin for 30 seconds, one
+  request at a time asks and the origin's other requests wait for it, and an
+  origin decided about within ten minutes keeps that decision when the budget
+  has no place left (ADR-0635); other failures, and every other surface, are
+  unchanged.
 - Durable policy audit rows, admin action rows, and persisted `policy_rules`
   for report/review decisions.
 - User-level ignore enforcement (Matrix v1.19 CS API §Ignoring Users):

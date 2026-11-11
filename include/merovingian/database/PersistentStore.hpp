@@ -410,6 +410,9 @@ struct PersistentStore final
     std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
     // F-16: rows of `pending_media_uploads` visited by commit_pending_media_upload.
     ExaminedRows pending_media_rows_examined{};
+    // ADR-0633: media rows (local media, remote media, blobs) a media commit visited. A test reads the difference
+    // across one commit to prove the work does not grow with the rows held, never timing.
+    ExaminedRows media_rows_examined{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
     // list is a bounded mirror for the admin views, so an unauthenticated flood

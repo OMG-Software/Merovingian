@@ -40,8 +40,24 @@ auto GatewayCircuitBreaker::record(std::string_view host, bool success, std::chr
     if (success)
     {
         std::ignore = hosts_.erase(key);
+        if (!reachable_.contains(key) && policy.max_hosts > 0U)
+        {
+            while (reachable_.size() >= policy.max_hosts)
+            {
+                auto const oldest = std::ranges::min_element(reachable_, {}, [](auto const& entry) {
+                    return entry.second;
+                });
+                if (oldest == reachable_.end())
+                {
+                    break;
+                }
+                reachable_.erase(oldest);
+            }
+        }
+        reachable_[key] = now;
         return;
     }
+    std::ignore = reachable_.erase(key);
     if (!hosts_.contains(key) && policy.max_hosts > 0U)
     {
         while (hosts_.size() >= policy.max_hosts)
@@ -67,6 +83,14 @@ auto GatewayCircuitBreaker::record(std::string_view host, bool success, std::chr
         state.open = true;
         state.open_until = now + policy.cooldown;
     }
+}
+
+auto GatewayCircuitBreaker::reachable_recently(std::string_view host, std::chrono::steady_clock::time_point now,
+                                               GatewayCircuitBreakerPolicy const& policy) const -> bool
+{
+    auto const lock = std::lock_guard{mutex_};
+    auto const found = reachable_.find(std::string{host});
+    return found != reachable_.end() && now - found->second <= policy.reachable_ttl;
 }
 
 auto GatewayCircuitBreaker::tracked_hosts() const -> std::size_t

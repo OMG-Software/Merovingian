@@ -75,6 +75,9 @@ struct LocalMediaRepository final
     // (records changed behind the repository's back) rebuilds it.
     std::unordered_map<std::string, std::uint64_t> owner_record_counts{};
     std::size_t owner_record_counts_basis{0U};
+    // ADR-0633: records, blobs, thumbnails and cache entries a media operation visited, moved or re-indexed. A test
+    // reads the difference across one operation to prove the work does not grow with the records held, never timing.
+    database::ExaminedRows media_rows_examined{};
 };
 
 [[nodiscard]] auto local_media_state_name(LocalMediaState state) noexcept -> char const*;

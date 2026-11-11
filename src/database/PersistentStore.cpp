@@ -5337,6 +5337,7 @@ namespace
         {
             return false;
         }
+        store.media_rows_examined.add(store.local_media.size());
         return std::ranges::none_of(store.local_media, [&media](PersistentLocalMedia const& existing) {
             return existing.media_id == media.media_id;
         });
@@ -5355,6 +5356,7 @@ namespace
     auto remember_media_blob(PersistentStore& store, PersistentMediaBlob const& blob, bool bytes_written) -> void
     {
         auto const keep_bytes = store.backend == PersistentStoreBackend::memory && bytes_written;
+        store.media_rows_examined.add(store.media_blobs.size());
         auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
             return current.storage_id == blob.storage_id;
         });
@@ -5598,6 +5600,7 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
             return row.hash_algorithm == media->hash_algorithm && row.digest == media->digest &&
                    row.size_bytes == media->size_bytes && row.ref_count > 0U;
         };
+        store.media_rows_examined.add(2U * store.media_blobs.size());
         blob = std::ranges::find_if(store.media_blobs, matches);
         if (blob == store.media_blobs.end() || std::ranges::count_if(store.media_blobs, matches) != 1)
         {
@@ -5734,6 +5737,7 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
 
     for (auto const& release : releases)
     {
+        store.media_rows_examined.add(store.local_media.size() + store.remote_media.size());
         std::erase_if(store.local_media, [&release](PersistentLocalMedia const& row) {
             return row.media_id == release.local_media_id;
         });
@@ -5743,6 +5747,7 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
     }
     for (auto const& released : released_blobs)
     {
+        store.media_rows_examined.add(store.media_blobs.size());
         auto const row = std::ranges::find_if(store.media_blobs, [&released](PersistentMediaBlob const& candidate) {
             return candidate.storage_id == released.storage_id;
         });
@@ -5757,6 +5762,7 @@ auto read_media_blob_chunk(MediaBlobRead const& read, std::uint64_t expected_siz
     }
     store.local_media.push_back(std::move(media));
     remember_media_blob(store, blob, new_blob);
+    store.media_rows_examined.add(store.remote_media.size());
     std::erase_if(store.remote_media, [&mapping](PersistentRemoteMedia const& row) {
         return row.server_name == mapping.server_name && row.media_id == mapping.media_id;
     });

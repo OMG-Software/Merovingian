@@ -2,6 +2,7 @@ push_sources = files(
   'EmailDigestQueue.cpp',
   'GatewayCircuitBreaker.cpp',
   'GatewayInFlightLimiter.cpp',
+  'PushBatchAdmission.cpp',
   'PushGatewayClient.cpp',
   'PushRetryQueue.cpp',
   'PushRules.cpp',

@@ -2,6 +2,36 @@
 
 Release-gate audit, low and informational findings
 
+### A removed cached remote file no longer releases its blob twice (ADR-0636)
+
+An administrator's removal of a cached remote file released its blob; evicting the file's cache entry later released it again. A local
+user's file with the same bytes then lost its content for good. A record now releases its blob only while it has not been removed, in
+memory and in the database.
+
+### A blob row is deleted with its last reference (ADR-0636)
+
+Rows at zero references were never deleted, so every remote file that passed through the cache left a row in memory and in the
+database. The row is now deleted in the transaction that takes its count to zero, the loaders skip old zero rows, and the same bytes
+can be uploaded again afterwards.
+
+### Evicting cached media costs the same however many records exist (ADR-0633)
+
+Eviction no longer moves every later record, rebuilds the record index or scans every blob and thumbnail. The record, byte and
+holder counts, the live blob count and the store's media row positions are kept as rows change, and a row is erased by swapping the
+last into its place.
+
+### A share of the push delivery budget is kept for gateways that answer (ADR-0634)
+
+A quarter of `server.push.max_in_flight_deliveries` is kept for recipients whose gateway hosts have all answered promptly within the
+last hour, and one gateway host may carry an eighth of it. Accounts pointing pushers at many hosts that never answer can no longer
+make every other user's notification drop.
+
+### An inbound federation origin is asked about once at a time (ADR-0635)
+
+With a policy server configured, a federation origin's decision is kept for 30 seconds and its simultaneous requests wait for one
+ask. When the budget has no place left, an origin the policy server already decided about (within ten minutes) keeps that decision,
+so a peer holding the budget no longer decides the outcome for the others. An origin never decided about is judged as before.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a

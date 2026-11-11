@@ -91,6 +91,7 @@ namespace
     [[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
                                       std::string_view digest, std::uint64_t size_bytes) noexcept -> LocalMediaBlob*
     {
+        repository.media_rows_examined.add(repository.blobs.size());
         auto const iterator =
             std::ranges::find_if(repository.blobs, [hash_algorithm, digest, size_bytes](LocalMediaBlob const& blob) {
                 return blob.ref_count > 0U && blob.hash_algorithm == hash_algorithm && blob.digest == digest &&
@@ -136,6 +137,7 @@ namespace
 
     auto refresh_storage_metrics(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.blobs.size());
         auto stored_blobs = std::uint64_t{0U};
         auto stored_bytes = std::uint64_t{0U};
         for (auto const& blob : repository.blobs)
@@ -159,6 +161,7 @@ namespace
 
     auto rebuild_record_index(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.records.size());
         repository.record_index.clear();
         repository.record_index.reserve(repository.records.size());
         for (std::size_t i = 0U; i < repository.records.size(); ++i)
@@ -211,6 +214,7 @@ namespace
 
     auto ensure_blob_index(LocalMediaRepository& repository) -> void
     {
+        repository.media_rows_examined.add(repository.blobs.size());
         auto const live_count =
             static_cast<std::size_t>(std::ranges::count_if(repository.blobs, [](LocalMediaBlob const& blob) {
                 return blob.ref_count > 0U;
@@ -286,6 +290,7 @@ namespace
     // the upload rollback and by remote-media cache displacement.
     auto erase_record_and_release_blob(LocalMediaRepository& repository, std::string_view media_id) -> bool
     {
+        repository.media_rows_examined.add(repository.records.size() + repository.thumbnails.size());
         auto const record = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& candidate) {
             return candidate.media_id == media_id;
         });
@@ -483,6 +488,7 @@ namespace
     // records share it. A record's size is its blob's size.
     [[nodiscard]] auto local_media_bytes(LocalMediaRepository const& repository) -> std::uint64_t
     {
+        repository.media_rows_examined.add(repository.records.size());
         auto counted = std::unordered_set<std::string_view>{};
         auto total = std::uint64_t{0U};
         for (auto const& record : repository.records)
@@ -499,6 +505,7 @@ namespace
     [[nodiscard]] auto local_media_holds(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
         -> bool
     {
+        repository.media_rows_examined.add(repository.records.size());
         return std::ranges::any_of(repository.records, [storage_id](LocalMediaRecord const& record) {
             return record.storage_id == storage_id && record.state != LocalMediaState::removed &&
                    !is_remote_cache_record(record);
@@ -507,6 +514,7 @@ namespace
 
     [[nodiscard]] auto local_record_count(LocalMediaRepository const& repository) noexcept -> std::uint64_t
     {
+        repository.media_rows_examined.add(repository.records.size());
         return static_cast<std::uint64_t>(std::ranges::count_if(repository.records, [](LocalMediaRecord const& record) {
             return !is_remote_cache_record(record);
         }));
@@ -515,6 +523,7 @@ namespace
     [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository,
                                             std::string_view owner_user_id) noexcept -> std::uint64_t
     {
+        repository.media_rows_examined.add(repository.records.size());
         auto total = std::uint64_t{0U};
         for (auto const& record : repository.records)
         {
@@ -842,6 +851,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         // Storage IDs are durable primary keys. Revive the emptied row rather
         // than appending a second identity that persistence or removal could
         // mistake for the live bytes.
+        repository.media_rows_examined.add(repository.blobs.size());
         auto const dead = std::ranges::find_if(repository.blobs, [&new_blob](LocalMediaBlob const& existing) {
             return existing.storage_id == new_blob.storage_id;
         });
@@ -1455,6 +1465,7 @@ auto apply_remote_media_admission(LocalMediaRepository& repository, std::string_
 {
     for (auto const& gone : displaced)
     {
+        repository.media_rows_examined.add(repository.remote_media_cache.size());
         std::ignore = erase_record_and_release_blob(repository, gone.local_media_id);
         std::erase_if(repository.remote_media_cache, [&gone](RemoteMediaCacheEntry const& entry) {
             return remote_media_cache_entry_matches(entry, gone.origin_server, gone.media_id);

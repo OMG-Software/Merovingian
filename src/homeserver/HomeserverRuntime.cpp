@@ -531,6 +531,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , last_create_event_ts_ms(other.last_create_event_ts_ms)
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , policy_server_budget(std::move(other.policy_server_budget))
+    , policy_decision_cache(std::move(other.policy_decision_cache))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , argon2id_admission(std::move(other.argon2id_admission))
     , deferred_pdu_next_attempt(std::move(other.deferred_pdu_next_attempt))
@@ -540,6 +541,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , password_reset_sends_in_flight_(other.password_reset_sends_in_flight_.exchange(0U))
     , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
     , push_gateway_breaker_(std::move(other.push_gateway_breaker_))
+    , push_batch_admission_(std::move(other.push_batch_admission_))
 {
     other.crypto_provider = nullptr;
 }
@@ -590,6 +592,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     last_create_event_ts_ms = other.last_create_event_ts_ms;
     client_outbound_budget = std::move(other.client_outbound_budget);
     policy_server_budget = std::move(other.policy_server_budget);
+    policy_decision_cache = std::move(other.policy_decision_cache);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     argon2id_admission = std::move(other.argon2id_admission);
     deferred_pdu_next_attempt = std::move(other.deferred_pdu_next_attempt);
@@ -599,6 +602,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     password_reset_sends_in_flight_ = other.password_reset_sends_in_flight_.exchange(0U);
     push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);
     push_gateway_breaker_ = std::move(other.push_gateway_breaker_);
+    push_batch_admission_ = std::move(other.push_batch_admission_);
     return *this;
 }
 
@@ -1507,6 +1511,37 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     hook.timeout_milliseconds = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(timeout_milliseconds, std::numeric_limits<std::uint32_t>::max()));
 
+    // ADR-0635: an inbound federation origin is asked about once at a time and its decision kept for a short time.
+    // The question is the surface and the origin only, so the answer is a function of the origin. Taken with
+    // runtime.mutex released, since a request that finds another already asking waits for it. Other surfaces
+    // ask about a user, a room or a media ID that does not repeat, and are not remembered.
+    auto leader = std::optional<trust_safety::PolicyDecisionCache::Leader>{};
+    auto const decision_with_current_config = [&hook](trust_safety::PolicyServerHook cached) {
+        cached.enabled = hook.enabled;
+        cached.reachable = true;
+        cached.allow_without_result = hook.allow_without_result;
+        cached.timeout_milliseconds = hook.timeout_milliseconds;
+        return cached;
+    };
+    auto const cache_settings = trust_safety::PolicyDecisionCache::Settings{};
+    if (surface == trust_safety::PolicySurface::federation && runtime.policy_decision_cache != nullptr && false)
+    {
+        auto claim = [&]() {
+            auto const unlocked = RuntimeLockRelease{};
+            return runtime.policy_decision_cache->acquire(entity, std::chrono::steady_clock::now(), cache_settings,
+                                                          std::chrono::milliseconds{hook.timeout_milliseconds});
+        }();
+        if (claim.decision.has_value())
+        {
+            return decision_with_current_config(std::move(*claim.decision));
+        }
+        if (!claim.leader.has_value())
+        {
+            return hook;
+        }
+        leader = std::move(claim.leader);
+    }
+
     // Everything from here on is a synchronous round trip to the policy
     // server — the real one via OutboundClient::perform below, or (in tests)
     // the injectable trust_safety_policy_server hook standing in for it.
@@ -1523,8 +1558,15 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     // RuntimeLockRelease in RuntimeLockRelease.hpp.
     if (runtime.trust_safety_policy_server)
     {
-        auto const unlocked = RuntimeLockRelease{};
-        return runtime.trust_safety_policy_server(surface, entity);
+        auto seam_hook = [&]() {
+            auto const unlocked = RuntimeLockRelease{};
+            return runtime.trust_safety_policy_server(surface, entity);
+        }();
+        if (leader.has_value() && seam_hook.decision_received)
+        {
+            leader->publish(seam_hook, std::chrono::steady_clock::now());
+        }
+        return seam_hook;
     }
 
     if (runtime.outbound_client == nullptr || hook.timeout_milliseconds == 0U)
@@ -1545,6 +1587,18 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     {
         LOG_WARNING(std::string{"Policy server call not made: too many are in flight; surface="} +
                     trust_safety::policy_surface_name(surface));
+        // ADR-0635: an origin the policy server has already decided about keeps that decision while the budget is
+        // busy with other origins, so its outcome does not depend on theirs. Only this failure uses it: an
+        // unreachable server is still judged by policy_server_allow_without_result.
+        if (leader.has_value())
+        {
+            if (auto remembered = runtime.policy_decision_cache->stale(entity, std::chrono::steady_clock::now(),
+                                                                       cache_settings);
+                remembered.has_value())
+            {
+                return decision_with_current_config(std::move(*remembered));
+            }
+        }
         return hook;
     }
 
@@ -1620,7 +1674,12 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     }
 
     hook.reachable = true;
-    return parse_policy_server_response(result.response.body, std::move(hook));
+    auto decided = parse_policy_server_response(result.response.body, std::move(hook));
+    if (leader.has_value() && decided.decision_received)
+    {
+        leader->publish(decided, std::chrono::steady_clock::now());
+    }
+    return decided;
 }
 
 auto find_local_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*

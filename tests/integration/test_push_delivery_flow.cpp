@@ -2758,3 +2758,102 @@ SCENARIO("one message reaches an active recipient's pusher and skips a deactivat
         }
     }
 }
+
+// ADR-0634: a share of the delivery budget is kept for recipients whose gateway host has answered promptly lately, so
+// gateways that never answer cannot hold every slot. The budget is set to 8 and 7 batches are marked in flight: the
+// reserved share (2) is out of reach of a recipient whose host this server has never reached, and not of one whose
+// host is known to answer.
+SCENARIO("a recipient on an unproven gateway cannot take the share of the delivery budget kept for reachable ones",
+         "[integration][push][gate-l][push-slots]")
+{
+    GIVEN("a budget of 8 with 7 batches in flight, bob on a gateway never reached and carol on one that answers")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        started.runtime.homeserver.config.server().push.max_in_flight_deliveries = 8U;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const carol = register_and_login(started.runtime, "carol");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                      R"({"user_id":"@carol:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", carol, "{}"})
+                    .response.status == 200U);
+
+        auto const bob_host = std::string{"push-slots-bob.localhost.test"};
+        auto bob_cert = merovingian::tests::tls_mock::write_test_tls_certificate(bob_host);
+        auto bob_acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(bob_acceptor.bind("127.0.0.1", 0U).ok);
+        started.runtime.homeserver.test_forced_push_gateway_resolution[bob_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, bob_cert.certificate_pem};
+        register_http_pusher(
+            started.runtime, bob, "org.matrix.integration", "bob-slots",
+            "https://" + bob_host + ":" + std::to_string(bob_acceptor.bound_port()) + "/_matrix/push/v1/notify");
+
+        auto const carol_host = std::string{"push-slots-carol.localhost.test"};
+        auto carol_cert = merovingian::tests::tls_mock::write_test_tls_certificate(carol_host);
+        auto carol_tls = merovingian::homeserver::make_tls_server_context(carol_cert.certificate_file,
+                                                                          carol_cert.private_key_file);
+        REQUIRE(carol_tls.ok());
+        auto carol_acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(carol_acceptor.bind("127.0.0.1", 0U).ok);
+        started.runtime.homeserver.test_forced_push_gateway_resolution[carol_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, carol_cert.certificate_pem};
+        register_http_pusher(
+            started.runtime, carol, "org.matrix.integration", "carol-slots",
+            "https://" + carol_host + ":" + std::to_string(carol_acceptor.bound_port()) + "/_matrix/push/v1/notify");
+        auto const breaker_policy = merovingian::push::GatewayCircuitBreakerPolicy{};
+        started.runtime.homeserver.push_gateway_breaker_->record(carol_host, true, std::chrono::steady_clock::now(),
+                                                                 breaker_policy);
+        {
+            auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+            started.runtime.homeserver.push_delivery_in_flight_ = 7U;
+        }
+
+        auto const ok_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto path_responses = std::vector<std::pair<std::string, std::string>>{
+            {"/_matrix/push/v1/notify", ok_response}
+        };
+        auto carol_requests = std::vector<std::string>{};
+        auto carol_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(carol_acceptor, *carol_tls.context,
+                                                                       path_responses, &carol_requests);
+        }};
+        auto const carol_join = merovingian::tests::tls_mock::ScopedThreadJoin{carol_thread};
+        auto bob_connections = std::atomic<unsigned>{0U};
+        auto bob_thread = std::thread{[&] {
+            auto const client_fd = merovingian::tests::tls_mock::accept_loopback(bob_acceptor, 3000);
+            if (client_fd >= 0)
+            {
+                auto const dropped = merovingian::core::SocketHandle{client_fd};
+                bob_connections.fetch_add(1U);
+            }
+        }};
+        auto const bob_join = merovingian::tests::tls_mock::ScopedThreadJoin{bob_thread};
+
+        WHEN("alice sends a message that notifies both")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-slots", "hello both");
+            REQUIRE(send.response.status == 200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (carol_thread.joinable())
+            {
+                carol_thread.join();
+            }
+            if (bob_thread.joinable())
+            {
+                bob_thread.join();
+            }
+
+            THEN("carol's reachable gateway was notified and bob's unproven one was never contacted")
+            {
+                CHECK(carol_requests.size() == 1U);
+                CHECK(bob_connections.load() == 0U);
+            }
+        }
+    }
+}
