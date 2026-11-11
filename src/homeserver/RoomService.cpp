@@ -8761,6 +8761,8 @@ namespace
 
         // The history rows of every recipient this event notifies, committed together after the loop (ADR-0440).
         auto notified = std::vector<database::PersistentNotification>{};
+        // What the badges of every recipient of this event may spend between them (ADR-0608).
+        auto badge_budget = PushBadgeBudget{};
         // Built on the first recipient with a pusher (see the check below).
         auto active_users = std::optional<std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>>{};
         auto recipients = room.members;
@@ -8896,7 +8898,7 @@ namespace
                 }
                 if (!unread.has_value())
                 {
-                    unread = push_badge_unread_count(runtime, member, ruleset);
+                    unread = push_badge_unread_count(runtime, member, ruleset, badge_budget);
                 }
                 auto notification = push::PushGatewayNotification{};
                 notification.event_id = composed.event_id;

@@ -118,6 +118,7 @@ memberships.size()` and each position names a row of the room; otherwise a reade
 to `memberships` calls `note_membership_row_appended` (`store_membership`, `apply_membership_projection`, the room
 creation writer), every one that erases calls `rebuild_membership_index` (`delete_membership`, `apply_room_snapshot`),
 and both hydration paths rebuild it after loading. A row's room never changes in place. A new writer does the same.
+`membership_user_index` is the same index keyed by user (`for_each_user_membership_row`, ADR-0609), maintained at the same points and counted in `membership_rows_examined`. Read a user's rows through it, not by scanning `memberships`.
 ## The relation index (ADR-0430)
 
 `EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,

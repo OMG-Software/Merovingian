@@ -530,3 +530,83 @@ SCENARIO("A capped push badge over many rooms reads receipts up front and walks 
         }
     }
 }
+
+// Security audit run-2 release gate (ADR-0608): the badges one event causes share one budget, so
+// the work under the lock does not grow with the number of recipients.
+SCENARIO("The badges of one event share a row and call budget", "[push][push-badge][gate-h]")
+{
+    GIVEN("a joined room with 1000 unread messages")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        join_room(store, "!r:example.org");
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        for (auto stream = std::uint64_t{10U}; stream < 1010U; ++stream)
+        {
+            add_message(store, "$r" + std::to_string(stream), "!r:example.org", stream);
+        }
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+        auto const ruleset = merovingian::homeserver::load_push_ruleset(store, alice, 200U);
+
+        WHEN("thirty recipients are counted against one event's budget")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto rows = std::uint64_t{0U};
+            auto walks = std::uint64_t{0U};
+            auto exact = std::uint32_t{0U};
+            auto lower_bound = std::uint32_t{0U};
+            for (auto recipient = 0; recipient < 30; ++recipient)
+            {
+                auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+                rows += count.rows_visited;
+                walks += count.table_walks;
+                (count.capped ? lower_bound : exact) += 1U;
+                if (recipient < 9)
+                {
+                    REQUIRE(count.unread == 1000U);
+                }
+            }
+
+            THEN("the rows visited stay within the event's budget and the table walks within its call cap")
+            {
+                REQUIRE(rows <= merovingian::homeserver::push_badge_event_row_budget);
+                REQUIRE(walks <= 16U * 3U + 3U);
+            }
+            THEN("recipients past the budget get the lower bound without any walk")
+            {
+                auto const refused = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+                REQUIRE(refused.unread == merovingian::homeserver::push_badge_lower_bound);
+                REQUIRE(refused.capped);
+                REQUIRE(refused.rows_visited == 0U);
+                REQUIRE(refused.table_walks == 0U);
+                REQUIRE(exact + lower_bound == 30U);
+            }
+        }
+
+        WHEN("a recipient with a fresh budget is counted")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+
+            THEN("the badge is exact and equals the unbudgeted one")
+            {
+                REQUIRE_FALSE(count.capped);
+                REQUIRE(count.unread == badge(runtime).unread);
+                REQUIRE(count.unread == 1000U);
+            }
+        }
+
+        WHEN("sixteen recipients with nothing to count use the call cap")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            budget.rows_left = 0U;
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+
+            THEN("an empty row budget gives the lower bound")
+            {
+                REQUIRE(count.unread == merovingian::homeserver::push_badge_lower_bound);
+                REQUIRE(count.rows_visited == 0U);
+            }
+        }
+    }
+}

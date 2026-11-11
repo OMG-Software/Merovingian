@@ -7,12 +7,16 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/SlidingSyncRelevance.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -3075,6 +3079,157 @@ SCENARIO("A join and a leave are seen by the roster lookups", "[homeserver][room
                     REQUIRE(bob_joined_rooms().empty());
                     REQUIRE(put_message(rt, bob_token, room_id, "t2", "x") == 403U);
                 }
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Event rows in rooms nobody here has joined, stored behind the API's back after `count` more stream
+// orderings, so a long-poll's relevance check has something to walk (ADR-0609). Done on the main thread.
+auto seed_foreign_events(merovingian::homeserver::ClientServerRuntime& rt, std::size_t count) -> void
+{
+    auto& database = rt.homeserver.database;
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        auto event = merovingian::database::PersistentEvent{};
+        event.event_id = "$foreign" + std::to_string(i);
+        event.room_id = "!foreign:example.org";
+        event.sender_user_id = "@stranger:example.org";
+        event.json =
+            R"({"type":"m.room.message","sender":"@stranger:example.org","content":{"msgtype":"m.text","body":"x"}})";
+        event.depth = 1U;
+        event.stream_ordering = database.next_stream_ordering++;
+        database.persistent_store.events.push_back(std::move(event));
+    }
+}
+
+// Membership rows of other users, and the index rebuilt over them as the store's own writers keep it.
+auto seed_foreign_memberships(merovingian::homeserver::ClientServerRuntime& rt, std::size_t count) -> void
+{
+    auto& store = rt.homeserver.database.persistent_store;
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        store.memberships.push_back({"!foreign" + std::to_string(i % 50U) + ":example.org",
+                                     "@stranger" + std::to_string(i) + ":example.org", "join", 1U});
+    }
+    merovingian::database::rebuild_membership_index(store);
+}
+
+[[nodiscard]] auto relevance_rows(merovingian::homeserver::ClientServerRuntime& rt) -> std::uint64_t
+{
+    auto const& store = rt.homeserver.database.persistent_store;
+    return store.sync_relevance_rows_examined.value() + store.membership_rows_examined.value();
+}
+
+[[nodiscard]] auto long_poll(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                             std::string const& pos) -> merovingian::homeserver::DispatchResult
+{
+    auto const target = std::string{"/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=30000"} +
+                        (pos.empty() ? std::string{} : "&pos=" + pos);
+    return merovingian::homeserver::handle_client_server_request(
+        rt, {"POST", target, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"}, /*can_wait=*/true);
+}
+
+} // namespace
+
+// Security audit run-2 release gate (ADR-0609): the relevance check of a sliding-sync long-poll is
+// bounded by a constant and by the caller's own rooms, not by the events and memberships on the server.
+SCENARIO("A sliding-sync long-poll from an account with no room examines no table rows",
+         "[homeserver][sliding-sync][integration][gate-h]")
+{
+    GIVEN("an account with no joined room, on a server holding 3000 foreign events and 3000 foreign memberships")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        seed_foreign_events(rt, 3000U);
+        seed_foreign_memberships(rt, 3000U);
+
+        WHEN("it long-polls with a fresh connection")
+        {
+            auto const before = relevance_rows(rt);
+            auto const result = long_poll(rt, token, {});
+            auto const examined = relevance_rows(rt) - before;
+
+            THEN("the poll parks, having examined a handful of rows")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(examined <= 16U);
+            }
+        }
+    }
+}
+
+SCENARIO("A sliding-sync long-poll walks a bounded number of events, and the next poll parks",
+         "[homeserver][sliding-sync][integration][gate-h]")
+{
+    GIVEN("alice in a room of her own, caught up, and 3000 newer events in rooms she has not joined")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        std::ignore = create_room(rt, token);
+        auto const initial = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+        REQUIRE(initial.response.status == 200U);
+        auto const pos = sliding_sync_pos(initial.response.body);
+        seed_foreign_events(rt, 3000U);
+        seed_foreign_memberships(rt, 3000U);
+
+        WHEN("she long-polls from her pos")
+        {
+            auto const before = relevance_rows(rt);
+            auto const result = long_poll(rt, token, pos);
+            auto const examined = relevance_rows(rt) - before;
+
+            THEN("the walk stops at its cap and the poll is answered rather than parked")
+            {
+                REQUIRE(result.status != merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(examined <= merovingian::homeserver::sliding_sync_relevance_scan_rows + 16U);
+            }
+
+            THEN("the poll after that answer parks, so the capped wake-up does not spin")
+            {
+                auto const next_pos = sliding_sync_pos(result.response.body);
+                auto const again = long_poll(rt, token, next_pos);
+                REQUIRE(again.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}
+
+SCENARIO("A sliding-sync long-poll still wakes for an event in a room the caller has joined",
+         "[homeserver][sliding-sync][integration][gate-h]")
+{
+    GIVEN("alice in a room of her own, caught up")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room = create_room(rt, token);
+        auto const initial = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+        REQUIRE(initial.response.status == 200U);
+        auto const pos = sliding_sync_pos(initial.response.body);
+
+        WHEN("a message lands in her room, and then she long-polls from her pos")
+        {
+            send_message(rt, token, room, "hello");
+            auto const result = long_poll(rt, token, pos);
+
+            THEN("the poll is answered at once with the message's room")
+            {
+                REQUIRE(result.status != merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(rooms_object(result.response.body).size() >= 1U);
             }
         }
     }

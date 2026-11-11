@@ -103,6 +103,7 @@
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/SearchRoomIndex.hpp"
+#include "merovingian/homeserver/SlidingSyncRelevance.hpp"
 #include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
 #include "merovingian/homeserver/TurnCredentials.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
@@ -4689,16 +4690,6 @@ namespace
         });
     }
 
-    // True when the persistent store records a "join" membership for the user in
-    // the given room.  Used by handlers that only have a room_id, not a LocalRoom.
-    [[nodiscard]] auto user_is_joined(database::PersistentStore const& store, std::string_view room_id,
-                                      std::string_view user) noexcept -> bool
-    {
-        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
-            return m.room_id == room_id && m.user_id == user && m.membership == "join";
-        });
-    }
-
     // Keyed by (room_id, event_type, state_key) → event_id. Built once per request
     // so all state lookups within the same response are O(log n) rather than O(n).
     using StateIndex = std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
@@ -7400,20 +7391,45 @@ namespace
             bool const wants_typing = ssreq.extensions.has_value() && ssreq.extensions->typing.has_value() &&
                                       ssreq.extensions->typing->enabled;
 
+            // The rooms the user has joined, once for this evaluation, found through the user's own
+            // membership rows, so the checks below test membership in O(1) and an account with no
+            // room scans nothing (ADR-0609).
+            auto joined_rooms = std::unordered_set<std::string_view>{};
+            if (wants_rooms || wants_receipts || wants_typing)
+            {
+                database::for_each_user_membership_row(store, user,
+                                                       [&joined_rooms](database::PersistentMembership const& row) {
+                                                           if (row.membership == "join")
+                                                           {
+                                                               joined_rooms.insert(row.room_id);
+                                                           }
+                                                       });
+            }
+
             // A new room event only matters to this connection if it landed in a
             // room the user has joined: rooms{} is windowed to the user's own
             // lists/subscriptions, so an event in an unrelated room on the server
             // must not wake this long-poll early.
             // Newest first, and only until `since`: the events after it, not the whole table (ADR-0435).
-            bool const has_relevant_event =
-                wants_rooms && cur_event > since_event_ordering &&
-                std::ranges::any_of(store.events.in_stream_order() | std::views::reverse |
-                                        std::views::take_while([&](database::PersistentEvent const& e) {
-                                            return e.stream_ordering > since_event_ordering;
-                                        }),
-                                    [&](database::PersistentEvent const& e) {
-                                        return user_is_joined(store, e.room_id, user);
-                                    });
+            // At most sliding_sync_relevance_scan_rows of them: past that the poll is answered, which
+            // cannot lose a wake-up, and the answer's pos is past those events (ADR-0609).
+            bool has_relevant_event = false;
+            if (wants_rooms && cur_event > since_event_ordering && !joined_rooms.empty())
+            {
+                auto walked = std::size_t{0U};
+                for (auto const& e : store.events.in_stream_order() | std::views::reverse |
+                                         std::views::take_while([&](database::PersistentEvent const& event) {
+                                             return event.stream_ordering > since_event_ordering;
+                                         }))
+                {
+                    store.sync_relevance_rows_examined.add(1U);
+                    if (++walked > sliding_sync_relevance_scan_rows || joined_rooms.contains(e.room_id))
+                    {
+                        has_relevant_event = true;
+                        break;
+                    }
+                }
+            }
 
             if (!has_relevant_event)
             {
@@ -7441,12 +7457,12 @@ namespace
                 bool const has_relevant_receipts =
                     wants_receipts &&
                     std::ranges::any_of(rt.homeserver.database.persistent_store.receipts, [&](auto const& r) {
-                        return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user) &&
+                        return r.stream_id > since_sync_stream_id && joined_rooms.contains(r.room_id) &&
                                sync::receipt_visible_to(r.receipt_type, r.user_id, user);
                     });
                 bool const has_relevant_typing =
                     wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
-                        return kv.second > since_sync_stream_id && user_is_joined(store, kv.first, user);
+                        return kv.second > since_sync_stream_id && joined_rooms.contains(kv.first);
                     });
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
                     !has_relevant_typing)

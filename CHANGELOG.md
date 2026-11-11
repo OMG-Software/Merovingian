@@ -6,6 +6,14 @@ Bound the work one request can hold the runtime lock for (release-gate audit, hi
 
 An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
 
+### Push badge: the recipients of one event share a budget (ADR-0608)
+
+The unread badge walked up to 10,000 events per recipient with an http pusher, under the runtime lock, so one message to a busy room cost recipients times a full walk. The recipients of one event now share 10,000 rows and 16 badge computations. A badge that ends uncapped is exact as before; a recipient past the budget is sent 1, the notifying event itself. Tests: `[push-badge][gate-h]` in `tests/unit/test_push_badge_count.cpp`.
+
+### Sliding sync: the long-poll relevance check is bounded (ADR-0609)
+
+A sliding-sync request with a timeout checked each newer event with a scan of every membership row, before it parked, so an account with no room could hold the runtime lock for seconds. The check now builds the caller's joined-room set once, through a new per-user membership index (`for_each_user_membership_row`, also used by `room_access_index` and the push badge), answers at once for an account with no room, and walks at most 2048 events; reaching that cap answers the poll rather than parking it, and the next poll parks. The receipt and typing checks use the same set. Tests: `[gate-h]` in `tests/integration/test_sliding_sync_flow.cpp` and `[membership-user-index]` in `tests/unit/test_sync_notifier.cpp`.
+
 ## 0.12.90
 
 Tagged releases come from plain `v<version>` tags, and every tagged release and every rolling `latest` build now carries a signed SBOM that names the software it ships. Release tarballs also ship both worker binaries, which they had always left out.

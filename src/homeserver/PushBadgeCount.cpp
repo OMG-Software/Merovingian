@@ -89,13 +89,12 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     // m.read and m.read.private, at the stream ordering of the event each names in the room; a
     // receipt whose event is not stored there moves nothing.
     auto rooms = std::map<std::string, BadgeRoom, std::less<>>{};
-    for (auto const& membership : store.memberships)
-    {
-        if (membership.user_id == user_id && membership.membership == "join")
+    database::for_each_user_membership_row(store, user_id, [&rooms](database::PersistentMembership const& membership) {
+        if (membership.membership == "join")
         {
             rooms.try_emplace(membership.room_id).first->second.membership_row_ordering = membership.stream_ordering;
         }
-    }
+    });
     ++result.table_walks;
     for (auto const& receipt : store.receipts)
     {
@@ -254,6 +253,29 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     }
     result.unread = static_cast<std::uint32_t>(std::min<std::uint64_t>(total, push_badge_unread_cap));
     return result;
+}
+
+auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
+                      PushBadgeBudget& budget) -> PushBadgeCount
+{
+    if (budget.calls_left == 0U || budget.rows_left == 0U)
+    {
+        auto refused = PushBadgeCount{};
+        refused.unread = push_badge_lower_bound;
+        refused.capped = true;
+        return refused;
+    }
+    --budget.calls_left;
+    auto const result =
+        count_push_badge(runtime, user_id, ruleset, std::min<std::uint64_t>(budget.rows_left, push_badge_row_budget));
+    budget.rows_left -= std::min(budget.rows_left, result.rows_visited);
+    return result;
+}
+
+auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
+                             push::PushRuleset const& ruleset, PushBadgeBudget& budget) -> std::uint32_t
+{
+    return count_push_badge(runtime, user_id, ruleset, budget).unread;
 }
 
 auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,

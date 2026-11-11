@@ -520,3 +520,5 @@
 * [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
 * [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)
 * [0607 - Glob conditions on every key share the per-evaluation step budget](0607-glob-conditions-on-every-key-share-the-per-evaluation-step-budget.md)
+* [0608 - The badges of one event share one row and call budget](0608-the-badges-of-one-event-share-one-row-and-call-budget.md)
+* [0609 - Sliding sync decides a long-poll wake from the caller's own rooms](0609-sliding-sync-decides-a-long-poll-wake-from-the-callers-own-rooms.md)
