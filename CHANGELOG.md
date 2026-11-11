@@ -2,6 +2,10 @@
 
 Release-gate audit, medium findings
 
+### Dead destinations can no longer take the whole outbound queue (ADR-0621)
+
+Sixteen peers that stopped answering could hold every slot of the federation send queue for weeks, and every other server's transactions were then refused. Destinations that are failing now hold at most half of the queue between them, and a failing destination's transaction is dropped after 24 hours. A destination that is not failing is never cut, and a failing one past its backoff is always given a try, so recovery is still noticed.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).

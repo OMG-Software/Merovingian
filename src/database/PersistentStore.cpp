@@ -1989,6 +1989,33 @@ auto rebuild_federation_transaction_index(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto delete_federation_transactions(PersistentStore& store, std::span<std::string const> transaction_ids)
+    -> bool
+{
+    if (transaction_ids.empty())
+    {
+        return true;
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(transaction_ids.size());
+    for (auto const& transaction_id : transaction_ids)
+    {
+        statements.push_back(record_statement("delete_federation_transaction",
+                                              "DELETE FROM federation_transactions WHERE transaction_id = $1",
+                                              {public_value(transaction_id)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    auto const doomed = std::unordered_set<std::string_view>{transaction_ids.begin(), transaction_ids.end()};
+    std::erase_if(store.federation_transactions, [&doomed](PersistentFederationTransaction const& transaction) {
+        return doomed.contains(transaction.transaction_id);
+    });
+    rebuild_federation_transaction_index(store);
+    return true;
+}
+
 auto reconstruct_event_relations(PersistentStore& store) -> void
 {
     // Gathered by row position first, then written with one modify() per row.

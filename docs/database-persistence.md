@@ -186,6 +186,8 @@ value. Test fixtures that do not exercise persistence select it through
   (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
   no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
   vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
+- `delete_federation_transactions` removes a list of queued transactions in one database transaction; the dispatch worker
+  uses it to drop what a failing destination holds past its share or its age (ADR-0621).
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names; the checked-in `migrations/` directory contains only
   `001_initial_schema.sql`, the frozen record of the v1 schema.

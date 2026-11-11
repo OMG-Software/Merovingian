@@ -483,6 +483,7 @@ shell = find_program('sh')
       'unit/test_key_row_indexes.cpp',
       'unit/test_federation_key_request_cost.cpp',
       'unit/test_dispatch_batch.cpp',
+      'unit/test_dispatch_failing_share.cpp',
       'unit/test_key_signature_index.cpp',
       'unit/test_persistent_store_copy.cpp',
       'unit/test_remote_media_fetch.cpp',

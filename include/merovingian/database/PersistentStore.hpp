@@ -683,6 +683,9 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Brings `federation_transaction_index` in step with `federation_transactions`.
 auto rebuild_federation_transaction_index(PersistentStore& store) -> void;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
+// Deletes the rows named, in one commit and one pass over the table (ADR-0621). If the commit fails, none is deleted.
+[[nodiscard]] auto delete_federation_transactions(PersistentStore& store, std::span<std::string const> transaction_ids)
+    -> bool;
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 // Persists a room's directory visibility before updating its in-memory mirror.

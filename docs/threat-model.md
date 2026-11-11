@@ -2579,7 +2579,9 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   the port, so they silently missed every event. **Mitigation:** first-`:` splitting everywhere.
 - **Outbound queue starvation.** One dead or hostile peer could fill the shared outbound queue.
   **Mitigation:** each destination holds a bounded share; refusals are counted and logged
-  (ADR-0177). Residual risk: sixteen or more dead destinations can still fill it together.
+  (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
+  most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
+  never-seen dead destinations counts as live until each has failed once.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create

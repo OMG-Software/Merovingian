@@ -530,3 +530,4 @@
 * [0604 - A federation key request is answered for local users only and is capped by entry count](0604-a-federation-key-request-is-answered-for-local-users-only-and-is-capped-by-entry-count.md)
 * [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
 * [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)
+* [0621 - Failing destinations share half the dispatch queue, and their transactions age out](0621-failing-destinations-share-half-the-dispatch-queue-and-their-transactions-age-out.md)
