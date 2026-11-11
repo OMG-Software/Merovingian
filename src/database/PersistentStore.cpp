@@ -3383,6 +3383,10 @@ auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
         return false;
     }
     remove_state_rows_from_mirror(store, room_id, keys);
+    if (!keys.empty())
+    {
+        note_room_state_changed(store, std::string{room_id});
+    }
     for (auto const& projection : memberships)
     {
         apply_membership_projection(store, room_id, projection);

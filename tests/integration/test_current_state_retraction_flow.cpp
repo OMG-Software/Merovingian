@@ -224,6 +224,7 @@ SCENARIO("A removal from current state is written to the database", "[gate-m][st
 
         WHEN("the key is removed with its membership correction and the store is reopened")
         {
+            auto const revision_before = database::room_state_revision(store, room_id);
             REQUIRE(database::remove_current_state_rows(store, room_id,
                                                         {
                                                             {"m.room.member", carol}
@@ -237,6 +238,12 @@ SCENARIO("A removal from current state is written to the database", "[gate-m][st
                 CHECK_FALSE(
                     database::find_current_state_event_id(reopened.store, room_id, "m.room.member", carol).has_value());
                 CHECK(membership_of(reopened.store, room_id, carol) == "leave");
+            }
+
+            // A cached send_join plan is stamped with this revision (ADR-0624), so a removal has to move it.
+            THEN("the room's state revision has moved")
+            {
+                CHECK(database::room_state_revision(store, room_id) != revision_before);
             }
         }
         std::filesystem::remove(path);

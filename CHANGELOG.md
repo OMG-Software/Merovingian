@@ -1,6 +1,7 @@
 ## 0.12.92
 
-Release-gate audit, medium findings
+The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
+forged join, administrator authority through an application service, and release signing reachable from any ref.
 
 ### A /sync reads a user's account data once
 
@@ -29,6 +30,7 @@ from local users are never counted. Knocks have a limit of their own.
 ### A knock's room state is bounded (ADR-0620)
 
 Only what `/sync` could show is kept, at most 16 entries, each within the event size limit, from an answer of at most 1 MiB.
+
 ### Dead destinations can no longer take the whole outbound queue (ADR-0621)
 
 Sixteen peers that stopped answering could hold every slot of the federation send queue for weeks, and every other server's transactions were then refused. Destinations that are failing now hold at most half of the queue between them, and a failing destination's transaction is dropped after 24 hours. A destination that is not failing is never cut, and a failing one past its backoff is always given a try, so recovery is still noticed.
@@ -44,6 +46,7 @@ A federation worker re-read a whole room for every PDU main accepted. Reloads ar
 ### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
 
 Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
+
 ### Current state drops what the resolution does not hold (ADR-0615)
 
 A state key set only on a losing fork, such as a member, a server ACL or a room name, stayed in current state for good. It
