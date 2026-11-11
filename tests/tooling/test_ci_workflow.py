@@ -290,6 +290,97 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("failed through the public DNS resolvers too", result.stderr)
         self.assertEqual(len((work / "log").read_text(encoding="utf-8").splitlines()), 4)
 
+    def test_every_openbsd_package_install_checks_what_it_installed(self) -> None:
+        # GIVEN OpenBSD's pkg_add exits 0 having installed nothing: on 2026-11-11 the CDN's TLS
+        # handshake failed, every package came back "Can't find", and the job only failed at
+        # "meson: not found" in its build step.
+        checked = 0
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            for job in re.split(r"(?m)^  (?=[A-Za-z0-9_-]+:\n)", text.split("\njobs:\n", 1)[1]):
+                if "vmactions/openbsd-vm@" not in job:
+                    continue
+                checked += 1
+                with self.subTest(workflow=path.name, job=job.split(":", 1)[0]):
+                    # WHEN the job's prepare script is read
+                    commands = [line.strip() for line in job.splitlines() if not line.lstrip().startswith("#")]
+                    # THEN no bare pkg_add runs, and the shared script installs with a check
+                    self.assertFalse([line for line in commands if line.startswith("pkg_add")])
+                    self.assertIn('sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \\', commands)
+        self.assertGreaterEqual(checked, 2)
+
+    def _run_openbsd_pkg_add(self, installs_on_call: int) -> tuple[subprocess.CompletedProcess[str], Path]:
+        # A fake pkg_add logs the PKG_PATH of each call and "installs" the fake command
+        # fake-meson on call `installs_on_call`, exiting 0 every time, as OpenBSD's does.
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work)
+        bin_dir = work / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "uname").write_text('#!/bin/sh\n[ "$1" = -r ] && echo 8.0 || echo amd64\n', encoding="utf-8")
+        (bin_dir / "pkg_add").write_text(
+            "#!/bin/sh\n"
+            'calls=$(($(cat "$FAKE_DIR/calls" 2>/dev/null || echo 0) + 1))\n'
+            'echo "$calls" > "$FAKE_DIR/calls"\n'
+            'echo "$PKG_PATH $*" >> "$FAKE_DIR/log"\n'
+            'if [ "$calls" -eq "$FAKE_INSTALLS_ON_CALL" ]; then\n'
+            "    printf '#!/bin/sh\\n' > \"$FAKE_DIR/bin/fake-meson\"\n"
+            '    chmod 755 "$FAKE_DIR/bin/fake-meson"\n'
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        for tool in bin_dir.iterdir():
+            tool.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DIR": str(work),
+            "FAKE_INSTALLS_ON_CALL": str(installs_on_call),
+            "MEROVINGIAN_PKG_RETRY_DELAY": "0",
+        }
+        result = subprocess.run(
+            ["sh", str(REPO_ROOT / "scripts" / "ci-openbsd-pkg-add.sh"), "--require", "fake-meson", "meson", "ninja"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result, work
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_openbsd_package_install_stops_once_the_commands_exist(self) -> None:
+        # GIVEN the first pkg_add through the CDN installs what the build needs
+        # WHEN ci-openbsd-pkg-add.sh runs
+        result, work = self._run_openbsd_pkg_add(installs_on_call=1)
+        # THEN it installs once, from the release's package directory on the CDN.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (work / "log").read_text(encoding="utf-8"),
+            "https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/ -I meson ninja\n",
+        )
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_openbsd_package_install_falls_back_to_the_origin_mirror(self) -> None:
+        # GIVEN three pkg_add runs through the CDN that exit 0 having installed nothing
+        # WHEN ci-openbsd-pkg-add.sh runs
+        result, work = self._run_openbsd_pkg_add(installs_on_call=4)
+        # THEN it warns about each, and the fourth run goes through ftp.openbsd.org and succeeds.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("::warning::pkg_add through cdn.openbsd.org"), 3)
+        calls = (work / "log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(calls[3].startswith("https://ftp.openbsd.org/pub/OpenBSD/8.0/packages/amd64/ "))
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_openbsd_package_install_fails_when_no_mirror_installs_the_commands(self) -> None:
+        # GIVEN pkg_add never installs anything, though it always exits 0
+        # WHEN ci-openbsd-pkg-add.sh runs
+        result, work = self._run_openbsd_pkg_add(installs_on_call=99)
+        # THEN it fails the step after three tries per mirror, naming what is missing.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("still missing: fake-meson", result.stderr)
+        self.assertEqual(len((work / "log").read_text(encoding="utf-8").splitlines()), 6)
+
     def test_ccache_is_installed_before_the_ccache_action_runs(self) -> None:
         # GIVEN ccache-action v1.2.24 installs a missing ccache without refreshing the package
         # index, which fails on a GitHub host runner (PR #584: "Failed to install ccache via

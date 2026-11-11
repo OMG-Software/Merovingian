@@ -177,6 +177,15 @@ Debian jobs are unchanged: `deb.debian.org` resolved throughout. Tooling tests r
 (success, one failure on either kind of `resolv.conf`, and failure through the public resolvers too). They also check
 that every Ubuntu job refreshes through it, or through the inline copy with the same resolvers.
 
+### OpenBSD jobs retry package installs and fall back to the origin mirror (ADR-0650)
+
+The same day `cdn.openbsd.org` dropped TLS handshakes in the `OpenBSD package` job. OpenBSD's `pkg_add` exits 0 having
+installed nothing, so the job failed only at `meson: not found`. Both OpenBSD jobs now install through the new
+`scripts/ci-openbsd-pkg-add.sh`, which judges success by whether the commands the build needs (`meson`, `ninja`, `git`,
+`bison`, `gmake`, `curl`) are on `PATH` afterwards, never by `pkg_add`'s status. It tries three times through the CDN,
+then three times through `ftp.openbsd.org`, and fails the step naming what is still missing. Tooling tests run it
+against a fake `pkg_add` that always exits 0 and check that no OpenBSD job runs `pkg_add` directly.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
