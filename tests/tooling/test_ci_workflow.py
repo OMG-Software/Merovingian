@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -169,26 +173,122 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("builddir: build-opensuse\n", opensuse)
         self.assertIn("builddir: build-opensuse-leap\n", opensuse)
 
-    def test_ubuntu_containers_fail_on_a_fetch_error(self) -> None:
-        # GIVEN the Ubuntu container jobs, whose plain `apt-get update` exited 0 on 2026-11-11 when
-        # the runners could not resolve archive.ubuntu.com, so the install failed with no cause shown.
-        workflows = REPO_ROOT / ".github" / "workflows"
-        jobs = {
-            "ci.yml": CI_WORKFLOW.read_text(encoding="utf-8")
-            .split("\n  ubuntu-rolling-build-and-test:")[1]
-            .split("\n  debian-build-and-test:")[0],
-            "packages.yml": (workflows / "packages.yml").read_text(encoding="utf-8")
-            .split("\n  deb:\n")[1]
-            .split("\n  deb-all-releases:")[0],
+    def test_every_ubuntu_apt_refresh_falls_back_to_public_dns(self) -> None:
+        # GIVEN on 2026-11-11 the resolver GitHub's runners use answered nothing for *.ubuntu.com
+        # for hours, on host runners and in Ubuntu containers alike, while plain `apt-get update`
+        # exited 0 and the install then failed with no cause shown.
+        script = (REPO_ROOT / "scripts" / "ci-apt-update.sh").read_text(encoding="utf-8")
+        nameservers = re.search(r"printf '(nameserver [^']+)'", script)
+        self.assertIsNotNone(nameservers)
+        checked = 0
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            section = path.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+            headers = list(re.finditer(r"^  ([A-Za-z0-9_-]+):\n", section, re.MULTILINE))
+            for index, header in enumerate(headers):
+                job = section[header.end() : headers[index + 1].start() if index + 1 < len(headers) else len(section)]
+                commands = "\n".join(line for line in job.splitlines() if not line.lstrip().startswith("#"))
+                if "apt-get update" not in commands and "ci-apt-update.sh" not in commands:
+                    continue
+                if re.search(r"(?m)^\s+(container|image): debian:", job):
+                    continue  # deb.debian.org, not the Ubuntu archive
+                checked += 1
+                with self.subTest(workflow=path.name, job=header.group(1)):
+                    # WHEN the job's package-index refresh is read
+                    install = commands.split("apt-get install", 1)[0]
+                    # THEN no refresh can pass having reached nothing
+                    self.assertNotRegex(commands, r"(?m)^\s*(sudo )?apt-get update\s*$")
+                    if "sh scripts/ci-apt-update.sh" in install:
+                        # AND the shared script runs from the checkout, after it
+                        self.assertIn("actions/checkout@", install.split("sh scripts/ci-apt-update.sh")[0])
+                    else:
+                        # AND a job that must refresh before its checkout carries the script's
+                        # fallback with the same resolvers.
+                        self.assertIn("apt-get update --error-on=any", install)
+                        self.assertIn(f"printf '{nameservers.group(1)}' > /etc/resolv.conf", install)
+        self.assertGreaterEqual(checked, 13)
+
+    def _run_apt_update(self, failures: int, resolv_is_link: bool) -> tuple[subprocess.CompletedProcess[str], Path]:
+        # A fake apt-get fails its first `failures` calls and logs the resolver each call saw;
+        # a fake sudo runs its arguments, so the script behaves the same as root or not.
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work)
+        bin_dir = work / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "sudo").write_text('#!/bin/sh\nexec "$@"\n', encoding="utf-8")
+        (bin_dir / "apt-get").write_text(
+            "#!/bin/sh\n"
+            'calls=$(($(cat "$FAKE_DIR/calls" 2>/dev/null || echo 0) + 1))\n'
+            'echo "$calls" > "$FAKE_DIR/calls"\n'
+            'echo "$* | $(head -n 1 "$FAKE_RESOLV")" >> "$FAKE_DIR/log"\n'
+            '[ "$calls" -gt "$FAKE_FAILURES" ]\n',
+            encoding="utf-8",
+        )
+        for tool in bin_dir.iterdir():
+            tool.chmod(0o755)
+        stub = work / "stub-resolv.conf"
+        stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+        resolv = work / "resolv.conf"
+        if resolv_is_link:
+            resolv.symlink_to(stub)
+        else:
+            resolv.write_text("nameserver 168.63.129.16\n", encoding="utf-8")
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DIR": str(work),
+            "FAKE_FAILURES": str(failures),
+            "FAKE_RESOLV": str(resolv),
+            "MEROVINGIAN_RESOLV_CONF": str(resolv),
+            "MEROVINGIAN_APT_RETRY_DELAY": "0",
         }
-        for name, job in jobs.items():
-            with self.subTest(workflow=name):
-                # WHEN the dependency step refreshes the package index
-                install = job.split("apt-get install", 1)[0]
-                # THEN the refresh fails on any fetch error, so the step that could not reach the
-                # archive is the one that fails.
-                self.assertNotRegex(install, r"(?m)^\s*apt-get update\s*$")
-                self.assertRegex(install, r"(?m)^\s*apt-get update --error-on=any\s*$")
+        result = subprocess.run(
+            ["sh", str(REPO_ROOT / "scripts" / "ci-apt-update.sh")],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result, work
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_apt_refresh_keeps_the_runners_resolver_when_it_works(self) -> None:
+        # GIVEN a refresh that succeeds through the runner's own resolver
+        # WHEN ci-apt-update.sh runs
+        result, work = self._run_apt_update(failures=0, resolv_is_link=False)
+        # THEN it refreshes once, with apt failing on any fetch error, and leaves DNS alone.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((work / "log").read_text(encoding="utf-8"), "update --error-on=any | nameserver 168.63.129.16\n")
+        self.assertEqual((work / "resolv.conf").read_text(encoding="utf-8"), "nameserver 168.63.129.16\n")
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_apt_refresh_retries_through_public_dns_after_a_failure(self) -> None:
+        for resolv_is_link in (True, False):
+            with self.subTest(host_runner_symlink=resolv_is_link):
+                # GIVEN the runner's resolver fails the first refresh, and /etc/resolv.conf is
+                # systemd-resolved's symlink (host runner) or a plain file (container bind mount)
+                # WHEN ci-apt-update.sh runs
+                result, work = self._run_apt_update(failures=1, resolv_is_link=resolv_is_link)
+                # THEN it warns, points DNS at the public resolvers, and the retry succeeds
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("::warning::apt-get update failed", result.stdout)
+                calls = (work / "log").read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[1], "update --error-on=any | nameserver 1.1.1.1")
+                resolv = work / "resolv.conf"
+                self.assertFalse(resolv.is_symlink())
+                self.assertTrue(resolv.read_text(encoding="utf-8").startswith("nameserver 1.1.1.1\n"))
+                # AND systemd-resolved's own stub file is never written through the link.
+                self.assertEqual((work / "stub-resolv.conf").read_text(encoding="utf-8"), "nameserver 127.0.0.53\n")
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+    def test_apt_refresh_fails_when_public_dns_cannot_reach_the_archive_either(self) -> None:
+        # GIVEN every refresh fails
+        # WHEN ci-apt-update.sh runs
+        result, work = self._run_apt_update(failures=99, resolv_is_link=False)
+        # THEN it stops after three tries through the public resolvers and fails the step.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed through the public DNS resolvers too", result.stderr)
+        self.assertEqual(len((work / "log").read_text(encoding="utf-8").splitlines()), 4)
 
     def test_ccache_is_installed_before_the_ccache_action_runs(self) -> None:
         # GIVEN ccache-action v1.2.24 installs a missing ccache without refreshing the package

@@ -145,9 +145,23 @@ images do not ship ccache, so the action failed on every host-runner job. `ubunt
 `ubuntu-hardened-listener-coverage` and the release's `linux-release-package` now run it after their own dependency step, which
 installs ccache. A tooling test requires every job using the action to install ccache first.
 
-The Ubuntu container jobs (`deb` and `ubuntu-rolling-build-and-test`) run `apt-get update --error-on=any`. Plain
-`apt-get update` exits 0 when it fetches nothing, so the runners' failure to resolve `archive.ubuntu.com` on 2026-11-11
-showed only as packages missing at install.
+### Ubuntu jobs retry a failed package-index refresh through public DNS (ADR-0650)
+
+On 2026-11-11 the resolver GitHub's runners use answered nothing for `*.ubuntu.com` for hours, on host runners and in
+Ubuntu containers alike, while Cloudflare's still resolved it. Plain `apt-get update` exits 0 when it fetches nothing,
+so the failure showed only as packages missing at install. Every Ubuntu job now refreshes through the new
+`scripts/ci-apt-update.sh`:
+
+- It runs `apt-get update --error-on=any`, so a refresh that reached nothing fails at the refresh.
+- When that fails, it points `/etc/resolv.conf` at Cloudflare and Google for the rest of the job and tries three more
+  times. apt still verifies the archive's signed `Release` files, so the resolver is not trusted for integrity.
+- On a host runner it replaces systemd-resolved's symlink with a file; in a container it rewrites the bind-mounted
+  file in place.
+
+`ubuntu-rolling-build-and-test` installs `git` before its checkout, so it carries the same fallback inline. The
+Debian jobs are unchanged: `deb.debian.org` resolved throughout. Tooling tests run the script against a fake `apt-get`
+(success, one failure on either kind of `resolv.conf`, and failure through the public resolvers too). They also check
+that every Ubuntu job refreshes through it, or through the inline copy with the same resolvers.
 
 ## 0.12.92
 

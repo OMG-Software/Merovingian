@@ -89,7 +89,29 @@ dependency step first, which already refreshes the index; the action then finds 
 `update-package-index` was rejected: it would refresh the index a second time in each job. `test_ci_workflow.py`
 checks the order.
 
-The Ubuntu container jobs refresh with `apt-get update --error-on=any`, so a refresh that reached nothing fails at
-that step instead of at the install. Falling back to `azure.archive.ubuntu.com`, the mirror GitHub's Ubuntu runner
-images use, was tried and withdrawn: during the 2026-11-11 outage the runners could not resolve that host either, so
-the fallback only added code that could not help.
+## Package-index refresh on Ubuntu
+
+Every Ubuntu job, on a host runner or in an Ubuntu container, refreshes the package index with
+`scripts/ci-apt-update.sh`. It runs `apt-get update --error-on=any`, so a refresh that reached nothing fails there and
+not at the install; plain `apt-get update` exits 0 having fetched nothing. When that refresh fails, the script points
+`/etc/resolv.conf` at Cloudflare (`1.1.1.1`, `1.0.0.1`) and Google (`8.8.8.8`) for the rest of the job and retries
+three times. On 2026-11-11 the resolver GitHub's runners use, which Docker also hands their containers, answered
+nothing for `*.ubuntu.com` for hours, on host runners and in containers alike, while Cloudflare still resolved it.
+DNS carries no integrity here: apt verifies the archive's signed `Release` files whichever resolver found the mirror.
+
+* On a host runner `/etc/resolv.conf` is a symlink to systemd-resolved's stub, which forwards to the failing
+  resolver, so the script replaces the link with a file. In a container it is a bind mount that cannot be removed,
+  so it is rewritten in place.
+* `ubuntu-rolling-build-and-test` installs `git` before its checkout, because the tooling tests run `git ls-files`,
+  so the script is not on disk when it refreshes. That job carries the same fallback inline, and
+  `test_ci_workflow.py` checks it names the script's resolvers.
+* The Debian trixie jobs keep plain `apt-get update`: they fetch from `deb.debian.org`, which the outage did not
+  touch.
+
+### Rejected
+
+* **Public resolvers always** (`container.options: --dns`, or rewriting `resolv.conf` up front): ties every job to
+  one outside resolver even while GitHub's works. The fallback changes nothing until a refresh has failed.
+* **`azure.archive.ubuntu.com`, the mirror GitHub's Ubuntu runner images use**, as the fallback: tried and
+  withdrawn. During the outage the runners could not resolve that host either.
+* **Retrying through the same resolver:** the outage lasted hours, longer than any retry budget a job can spend.
