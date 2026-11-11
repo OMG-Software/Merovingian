@@ -1,3 +1,7 @@
+## 1.0.0
+
+Merovingian 1.0.0
+
 ## 0.12.93
 
 The low and informational findings of the release-gate audit, and the three it could not settle without a test.
