@@ -99,7 +99,7 @@ change to what a reload rewrites goes in both the snapshot and the swap, and the
 `find_current_state_event_id` and `for_each_room_state_row`. They are trusted only while `state_indexed_rows ==
 state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
-and both hydration paths); a new one must too. Do not scan `state` for one key or one room in a handler.
+and both hydration paths) or, for a deletion, goes through `remove_current_state_rows` (ADR-0615); a new one must too. Do not scan `state` for one key or one room in a handler.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
 

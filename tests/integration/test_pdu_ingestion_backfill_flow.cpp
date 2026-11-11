@@ -3249,8 +3249,11 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
             }));
         };
 
+        // The snapshot holds the local join: a key only one tip holds goes through the auth rules, which this seed's
+        // join (with no join rules in the room) would not pass, and then it leaves current state (ADR-0615).
         auto const snapshot_with_outlier_body = make_state_ids_response(
-            std::vector<std::string>{create_id, pl_id, member_bob_id, historical_state_id}, auth_event_ids);
+            std::vector<std::string>{create_id, pl_id, room_id + ":member", member_bob_id, historical_state_id},
+            auth_event_ids);
         auto const historical_state_body = make_event_transaction_response(historical_state_pdu.json, remote_server);
         auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
 

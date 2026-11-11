@@ -1560,3 +1560,55 @@ SCENARIO("PostgreSQL hydrates a row of every table the store loads, with its num
         }
     }
 }
+
+// ADR-0615: a key the resolution dropped is deleted from `current_state`, and its membership correction commits with
+// it.
+SCENARIO("A removal from current state survives a reopen on PostgreSQL", "[postgresql][gate-m][state_retraction]")
+{
+    auto const uri = postgresql_uri();
+    if (uri.empty())
+    {
+        SKIP("MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+    }
+
+    GIVEN("a member's current-state row and membership")
+    {
+        auto opened = reopen(uri);
+        auto& store = opened.store;
+        auto const suffix = unique_suffix();
+        auto const creator = "@creator-" + suffix + ":example.org";
+        auto const member = "@member-" + suffix + ":example.org";
+        auto const room_id = "!retract-" + suffix + ":example.org";
+        auto const event_id = "$retract-" + suffix;
+        REQUIRE(make_user(store, creator));
+        REQUIRE(db::store_room(store, {room_id, creator}));
+        auto event = db::PersistentEvent{};
+        event.event_id = event_id;
+        event.room_id = room_id;
+        event.sender_user_id = member;
+        event.json = R"({"type":"m.room.member","room_id":")" + room_id + R"(","sender":")" + member +
+                     R"(","state_key":")" + member + R"(","content":{"membership":"join"}})";
+        REQUIRE(db::store_event(store, event));
+        REQUIRE(db::store_state(store, {room_id, "m.room.member", member, event_id}));
+        REQUIRE(db::store_membership_projection(store, room_id, {member, "join", 3U, std::nullopt}));
+
+        WHEN("the key is removed with its membership correction and the store is reopened")
+        {
+            REQUIRE(db::remove_current_state_rows(store, room_id,
+                                                  {
+                                                      {"m.room.member", member}
+            },
+                                                  {{member, "leave", 9U, std::nullopt}}));
+            auto reopened = reopen(uri);
+
+            THEN("the row is gone and the membership says leave")
+            {
+                CHECK_FALSE(
+                    db::find_current_state_event_id(reopened.store, room_id, "m.room.member", member).has_value());
+                auto const* row = db::find_membership_row(reopened.store, room_id, member);
+                REQUIRE(row != nullptr);
+                CHECK(row->membership == "leave");
+            }
+        }
+    }
+}

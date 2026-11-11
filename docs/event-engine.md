@@ -739,6 +739,10 @@ readable state is the event refused (500, `event.prev_events.unresolvable`).
 Before 0.12.48 the failed resolution refused every local event in the room,
 with no log above debug.
 
+`recompute_current_state` removes a key the resolution does not hold, and the membership row and roster follow a member
+key it removes or changes. A row from outside the graph (an event with no state group that no tip's state names, such as
+an outlier invite) is kept (ADR-0615).
+
 `recompute_current_state` returns a status (ADR-0375, F-49): `resolved`, `refused`
 or `write_failed`. A refusal (an extremity with no readable state, more distinct
 extremity states than `max_state_groups`, the state budget, a resolution that

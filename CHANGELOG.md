@@ -2,6 +2,12 @@
 
 Release-gate audit, medium findings
 
+### Current state drops what the resolution does not hold (ADR-0615)
+
+A state key set only on a losing fork, such as a member, a server ACL or a room name, stayed in current state for good. It
+is now removed, on both database backends, and a membership row and the room's roster follow. A row written outside the
+room's graph, such as an invite to a room this server is not in, is kept.
+
 ### A join sent by anyone but the user joining is refused (ADR-0612)
 
 The auth rules let any server write a join for a room's creator if it cites only the create event, which put the creator

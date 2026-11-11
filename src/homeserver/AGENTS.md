@@ -723,6 +723,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
   another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
   the same question.
+- `recompute_current_state` removes a key the resolution does not hold, except a row whose event has no state group and
+  that no tip's state names (ADR-0615). `membership_changes` lists the membership rows it corrected: a caller applies each
+  with `apply_membership_to_roster`, after the event's own membership. Pass the event's stream ordering, so `/sync` sees a
+  corrected row.
 - `recompute_current_state` and `store_event_with_bookkeeping` reuse the room's last resolved state while its distinct
   state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
   skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.

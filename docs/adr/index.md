@@ -534,3 +534,4 @@
 * [0612 - A join naming another user is refused at receipt, and the auth rule stays as the spec writes it](0612-a-join-naming-another-user-is-refused-at-receipt-and-the-auth-rule-stays-as-the-spec-writes-it.md)
 * [0613 - An identifier over 255 bytes never reaches a namespace regex](0613-an-identifier-over-255-bytes-never-reaches-a-namespace-regex.md)
 * [0614 - The release signing key belongs to an environment, and a tag must name a commit on main](0614-the-release-signing-key-belongs-to-an-environment-and-a-tag-must-name-a-commit-on-main.md)
+* [0615 - Current state drops a key the resolution does not hold, and keeps a row from outside the graph](0615-current-state-drops-a-key-the-resolution-does-not-hold-and-keeps-a-row-from-outside-the-graph.md)

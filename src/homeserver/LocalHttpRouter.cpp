@@ -712,6 +712,26 @@ namespace
         }
     }
 
+    // The roster follows the membership rows a recomputation corrected (ADR-0615), after the event's own membership,
+    // which a correction may overrule.
+    auto apply_recomputed_memberships(HomeserverRuntime& runtime, std::string_view room_id,
+                                      std::vector<database::MembershipProjection> const& changes) -> void
+    {
+        for (auto const& change : changes)
+        {
+            if (!apply_membership_to_roster(runtime, room_id, change.user_id, change.membership))
+            {
+                LOG_WARNING("Device-list change persistence failed after a membership followed state resolution; "
+                            "room_id=" +
+                            std::string{room_id} + " user_id=" + change.user_id);
+            }
+            if (change.membership == "join")
+            {
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id);
+            }
+        }
+    }
+
     // The room's version, from its m.room.create through the one accessor
     // (stored_room_version). A room with no stored create (unknown here) falls
     // back to "10", the oldest version this server advertises; a create without
@@ -2877,6 +2897,7 @@ namespace
             // treatment: the raw event is already durably stored, so a
             // bookkeeping failure here is logged, not turned into a
             // rejection (which would only cause pointless retries).
+            auto recomputed_memberships = std::vector<database::MembershipProjection>{};
             {
                 auto const event_type = state.has_value() ? state->event_type : std::string{};
                 auto const state_key =
@@ -2890,9 +2911,10 @@ namespace
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
-                else if (auto const recomputed = recompute_current_state(
+                else if (auto recomputed = recompute_current_state(
                              store, room_id, *room_policy,
-                             state_resolution_limits(rt->config.security().federation.state_resolution));
+                             state_resolution_limits(rt->config.security().federation.state_resolution),
+                             event_stream_ordering);
                          recomputed.status == CurrentStateRecomputeStatus::write_failed)
                 {
                     LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
@@ -2905,9 +2927,13 @@ namespace
                     LOG_WARNING("Current state left unresolved after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
+                else
+                {
+                    recomputed_memberships = std::move(recomputed.membership_changes);
+                }
             }
-            auto const membership_changed = !membership.empty();
-            if (membership_changed)
+            auto const membership_changed = !membership.empty() || !recomputed_memberships.empty();
+            if (!membership.empty())
             {
                 // The roster and the device-list changes this membership causes (a remote
                 // user's join or leave is `changed` or `left` for the local members).
@@ -2921,6 +2947,7 @@ namespace
                     broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
                 }
             }
+            apply_recomputed_memberships(*rt, room_id, recomputed_memberships);
             auto sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
             if (membership_changed)
             {
@@ -5802,6 +5829,7 @@ namespace
     // "Soft failure": a soft-failed event "participate[s] in state
     // resolution as normal", so its after-state is the normally-computed
     // compute_state_after result, same as an accepted event.
+    auto recomputed_memberships = std::vector<database::MembershipProjection>{};
     {
         auto const state_after =
             outcome == ReceiptOutcome::rejected
@@ -5814,9 +5842,9 @@ namespace
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
-        else if (auto const recomputed = recompute_current_state(
+        else if (auto recomputed = recompute_current_state(
                      runtime.database.persistent_store, room_id, *room_policy,
-                     state_resolution_limits(runtime.config.security().federation.state_resolution));
+                     state_resolution_limits(runtime.config.security().federation.state_resolution), stream_ordering);
                  recomputed.status == CurrentStateRecomputeStatus::write_failed)
         {
             LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
@@ -5828,6 +5856,10 @@ namespace
             // the room's forward extremities until one can be resolved.
             LOG_WARNING("Current state left unresolved after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
+        }
+        else
+        {
+            recomputed_memberships = std::move(recomputed.membership_changes);
         }
     }
 
@@ -5863,6 +5895,12 @@ namespace
             result.accepted_sync_stream_id =
                 std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
         }
+    }
+    if (!recomputed_memberships.empty())
+    {
+        apply_recomputed_memberships(runtime, room_id, recomputed_memberships);
+        result.accepted_sync_stream_id =
+            std::max(result.accepted_sync_stream_id, runtime.database.persistent_store.next_sync_stream_id);
     }
 
     return result;

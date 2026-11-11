@@ -103,6 +103,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace merovingian::database
@@ -757,6 +758,11 @@ auto apply_current_state(PersistentStore& store, PreparedCurrentState const& pre
 // holds). The in-memory mirror changes only after the commit.
 [[nodiscard]] auto store_membership_projection(PersistentStore& store, std::string_view room_id,
                                                MembershipProjection projection) -> bool;
+// Removes `keys` (event type, state key) from `room_id`'s current state and writes `memberships`, in one transaction,
+// then mirrors both, keeping the state indexes in step (ADR-0615). Costs the rows of the rooms that lose or move a row.
+[[nodiscard]] auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
+                                             std::vector<std::pair<std::string, std::string>> const& keys,
+                                             std::vector<MembershipProjection> const& memberships) -> bool;
 // DB-4: makes each `membership` row agree with its room's current m.room.member
 // state event, which is the user's membership (Matrix v1.19 "m.room.member").
 // A row is rewritten to the event's membership when the row is missing, when it

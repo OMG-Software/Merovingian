@@ -3056,6 +3056,12 @@ The spec's bootstrap clause allows a join for the creator before it looks at the
 rejoin a creator who had left. `events::join_names_another_user` refuses such an event on every receipt path. The auth rule
 stays as written, since state resolution re-runs it.
 
+### State from a losing fork (0.12.92, ADR-0615)
+
+Current state was only ever overwritten, so a key that one fork set and the resolution dropped kept taking effect: a member
+stayed joined, a server ACL stayed applied. `recompute_current_state` now removes such keys and corrects the membership
+rows and the roster with them. Nothing is removed when the room has no tips or its resolution is refused.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes

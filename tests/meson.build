@@ -789,6 +789,7 @@ shell = find_program('sh')
       'integration/test_operator_admin_flow.cpp',
       'integration/test_admin_masquerade_refusal_flow.cpp',
       'integration/test_forged_member_join_flow.cpp',
+      'integration/test_current_state_retraction_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_device_lifecycle_flow.cpp',
