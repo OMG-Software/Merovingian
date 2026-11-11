@@ -140,6 +140,11 @@ GitHub deprecated Node 20 for actions. Every action now names a release that run
 
 Every input passed was checked against each new release.
 
+`ccache-action` v1.2.24 no longer refreshes the package index before it installs a missing ccache, and GitHub's Ubuntu runner
+images do not ship ccache, so the action failed on every host-runner job. `ubuntu-build-and-test`,
+`ubuntu-hardened-listener-coverage` and the release's `linux-release-package` now run it after their own dependency step, which
+installs ccache. A tooling test requires every job using the action to install ccache first.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a

@@ -82,3 +82,9 @@ The same change moves every action to a release that runs on Node 24 (`actions/c
 `attest-build-provenance@v4`, and the SHA-pinned `codecov-action` v7.1.1, `ghaction-import-gpg` v7.0.0,
 `action-gh-release` v3.0.4, `ccache-action` v1.2.24). Every input the workflows pass was checked against each target
 release's `action.yml`. A future pin must name a release whose `runs.using` is `node24` or later.
+
+`ccache-action` v1.2.24 installs a missing ccache without refreshing the package index unless `update-package-index` is
+set, and GitHub's Ubuntu images do not ship ccache. Every job that uses it therefore installs ccache in its own
+dependency step first, which already refreshes the index; the action then finds ccache and installs nothing. Turning on
+`update-package-index` was rejected: it would refresh the index a second time in each job. `test_ci_workflow.py`
+checks the order.
