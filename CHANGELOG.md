@@ -24,7 +24,8 @@ writes with `dd`, since OpenBSD's `head` has no `-c`.
 
 `fcntl` and `ioctl` are argument-filtered in the thumbnail decoder profile (an allowlist) and the federation worker
 profile (the signalling commands denied): no call can set a signal owner or turn on `O_ASYNC` (ADR-0642). The decoder
-profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053).
+profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053). The test that runs
+both filters on the real kernel says why each command is expected to pass or be killed.
 
 ### The worker refuses to start with a registration file under a path it may read
 
