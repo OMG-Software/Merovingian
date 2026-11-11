@@ -94,6 +94,9 @@ is full.
   *not* part of this durable set — see "Federation audit events are not
   durable" below.
 - Durable admin action rows for moderation and trust-and-safety review actions.
+- An administrator's account action and its audit row (`account.locked`, `account.suspended`, `auth.account_deactivated`)
+  commit in one transaction (ADR-0629): the row exists exactly when the change does, and a store that cannot insert the
+  row refuses the action with 500.
 - Account-moderation audit rows: `account.locked` and `account.suspended`
   (admin category) are appended when an admin locks/unlocks or
   suspends/unsuspends a user via `/_matrix/client/v1/admin/lock/{userId}` or

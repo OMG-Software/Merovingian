@@ -746,6 +746,88 @@ SCENARIO("A state write that fails leaves memory and the database in agreement",
     }
 }
 
+namespace
+{
+
+[[nodiscard]] auto audit_rows_of(ClientServerRuntime& runtime, std::string_view event_type) -> std::size_t
+{
+    auto const& rows = runtime.homeserver.database.persistent_store.audit_log;
+    return static_cast<std::size_t>(
+        std::ranges::count(rows, event_type, &merovingian::database::PersistentAuditEvent::event_type));
+}
+
+} // namespace
+
+// ADR-0629: the state change and its audit row are one transaction, so a completed administrative action always has
+// its durable row and a failed audit write fails the action.
+SCENARIO("An administrator's account action and its audit row commit together", "[g5][operator-admin][audit-atomic]")
+{
+    GIVEN("a SQLite store whose audit rows cannot be inserted")
+    {
+        auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-operator-audit-" + std::to_string(now) + ".sqlite3");
+        {
+            auto database = merovingian::config::DatabaseConfig{};
+            database.backend = merovingian::config::DatabaseBackend::sqlite;
+            database.sqlite_path = path.string();
+            auto world = make_world(make_config({}, {}, database));
+            auto fault = merovingian::tests::SqliteInsertFault{path, "audit_log", "audit_insert_failure"};
+
+            WHEN("an administrator locks, suspends and deactivates the user")
+            {
+                auto const lock =
+                    send(world.runtime(), "POST", std::string{alice_path}, world.admin, action_body("lock"));
+                auto const suspend =
+                    send(world.runtime(), "POST", std::string{alice_path}, world.admin, action_body("suspend"));
+                auto const deactivate = send(world.runtime(), "POST", std::string{alice_path}, world.admin,
+                                             R"({"action":"deactivate","confirm":true})");
+
+                THEN("each is a 500 and no state changed, in memory or in the database")
+                {
+                    REQUIRE(lock.status == 500U);
+                    REQUIRE(suspend.status == 500U);
+                    REQUIRE(deactivate.status == 500U);
+                    REQUIRE(memory_and_store_agree(world.runtime(), "@alice:example.org"));
+                    auto const* alice = find_user(world.runtime(), "@alice:example.org");
+                    REQUIRE_FALSE(alice->locked);
+                    REQUIRE_FALSE(alice->suspended);
+                    REQUIRE_FALSE(alice->deactivated);
+                    REQUIRE(audit_rows_of(world.runtime(), "account.locked") == 0U);
+                    REQUIRE(audit_rows_of(world.runtime(), "account.suspended") == 0U);
+                    REQUIRE(audit_rows_of(world.runtime(), "auth.account_deactivated") == 0U);
+                }
+            }
+
+            WHEN("the fault is lifted, then the user is locked and deactivated, and the deactivation is repeated")
+            {
+                fault.clear();
+                auto const lock =
+                    send(world.runtime(), "POST", std::string{alice_path}, world.admin, action_body("lock"));
+                auto const unlock =
+                    send(world.runtime(), "POST", std::string{alice_path}, world.admin, action_body("unlock"));
+                auto const deactivate = send(world.runtime(), "POST", std::string{alice_path}, world.admin,
+                                             R"({"action":"deactivate","confirm":true})");
+                auto const repeat = send(world.runtime(), "POST", std::string{alice_path}, world.admin,
+                                         R"({"action":"deactivate","confirm":true})");
+
+                THEN("each action has exactly one audit row, and the repeat adds none")
+                {
+                    REQUIRE(lock.status == 200U);
+                    REQUIRE(unlock.status == 200U);
+                    REQUIRE(deactivate.status == 200U);
+                    REQUIRE(repeat.status == 200U);
+                    REQUIRE(memory_and_store_agree(world.runtime(), "@alice:example.org"));
+                    REQUIRE(find_user(world.runtime(), "@alice:example.org")->deactivated);
+                    REQUIRE(audit_rows_of(world.runtime(), "account.locked") == 2U);
+                    REQUIRE(audit_rows_of(world.runtime(), "auth.account_deactivated") == 1U);
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
 SCENARIO("The operator review route and the client review route share one implementation",
          "[g5][operator-admin][review]")
 {

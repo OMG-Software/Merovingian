@@ -838,6 +838,28 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 - `docs/media-repository.md` — media upload/download flow
 - `docs/auth-identity.md` — token validation and session flow
 
+## Gate-L authorization rules (ADR-0626 to ADR-0631)
+
+- `authenticated_user` and `authenticated_session` return `nullopt` for a deactivated account, so a token that revocation
+  missed is an unknown token to every gate, `require_admin` included. A new gate that reads the user record after a token
+  lookup does the same (ADR-0626).
+- `exchange_third_party_invite` asks `invite_permission_blocks` for a local invitee before composing, like every other
+  invite path. A new path that creates an invite for a local user does too.
+- An asserted identity (a masquerade token) never holds server-administrator authority: not on the operator routes
+  (ADR-0611), and not for the administrator's right to redact another local user's event, which `send_event` withholds by
+  passing `via_appservice` to `send_event_as_user` (ADR-0628). A new use of `LocalUser::admin` goes through
+  `authenticated_admin_user` or `require_admin`.
+- `upgrade_room_options` copies `m.federate: false` and no other custom create property (ADR-0627).
+- `set_local_user_moderation` and `deactivate_user_account` commit the state change with its audit row
+  (`commit_user_account_state_with_audit`, `commit_user_deactivation_with_audit`) and only then `remember_local_audit`
+  (ADR-0629). Do not return to `append_local_audit` after the write.
+- `ingest_send_join_state` judges a `m.room.member` entry for a user of this server with `judge_local_member_claim`: it is
+  taken only when this server holds no row for the user in the room or holds that very event as current. A refused entry is
+  stored as an outlier, writes no `current_state` row and names no joined member, and the state group takes this server's
+  current event for the key (ADR-0630). Never feed the raw snapshot to the state group.
+- The `GET /mutual_rooms` token is `MutualRoomsToken.cpp`'s `<offset>.<keyed hash>`; verification is one hash and a
+  constant-time comparison. Never search offsets (ADR-0631).
+
 ## Redactions (CSAZ-11)
 
 `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` builds an `m.room.redaction` and sends it through `send_event`, like

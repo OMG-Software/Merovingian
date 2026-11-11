@@ -643,6 +643,15 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 
 [[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
     -> bool;
+// `set_user_account_state` and `set_user_deactivated` with the administrator's audit row in the same transaction
+// (ADR-0629): the row exists if and only if the change does. `audit` is bounded and stamped here and joins the
+// in-memory window only after the commit. False when the user is unknown or the transaction did not commit, with
+// nothing changed.
+[[nodiscard]] auto commit_user_account_state_with_audit(PersistentStore& store, std::string_view user_id,
+                                                        bool suspended, bool locked, PersistentAuditEvent audit)
+    -> bool;
+[[nodiscard]] auto commit_user_deactivation_with_audit(PersistentStore& store, std::string_view user_id,
+                                                       PersistentAuditEvent audit) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;

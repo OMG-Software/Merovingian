@@ -9,9 +9,9 @@
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/auth/FailureWindowTable.hpp"
-#include "merovingian/auth/PasswordPolicy.hpp"
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/auth/Password.hpp"
+#include "merovingian/auth/PasswordPolicy.hpp"
 #include "merovingian/auth/Session.hpp"
 #include "merovingian/auth/Token.hpp"
 #include "merovingian/config/Config.hpp"
@@ -19,30 +19,32 @@
 #include "merovingian/config/SsoConfig.hpp"
 #include "merovingian/config/SsoIdentityProvider.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
-#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/QueryParams.hpp"
-#include "merovingian/crypto/TokenHmacKey.hpp"
-#include "merovingian/crypto/TokenHmacKeys.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/ConstantTime.hpp"
 #include "merovingian/crypto/Random.hpp"
+#include "merovingian/crypto/TokenHmacKey.hpp"
+#include "merovingian/crypto/TokenHmacKeys.hpp"
 #include "merovingian/crypto/TokenKey.hpp"
 #include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
 #include "merovingian/homeserver/DeactivationAudit.hpp"
+#include "merovingian/homeserver/DeviceLimits.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/SsoRedirectResult.hpp"
-#include "merovingian/homeserver/DeviceLimits.hpp"
-#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/platform/FileMetadataSupport.hpp"
-#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -1785,7 +1787,8 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
     // v3 hashes fail closed earlier and force a re-login. This path migrates any
     // remaining v3 sessions (e.g. v3 hashes created under the new key) to v4.
     upgrade_v3_access_token_to_v4(runtime, access_token, session->access_token_hash);
-    if (find_user(runtime.database, session->user_id) == nullptr)
+    auto const* const session_user = find_user(runtime.database, session->user_id);
+    if (session_user == nullptr)
     {
         // Security: session exists but the owning user record is gone — use the
         // user_id from the session record, not the raw bearer token.
@@ -1795,6 +1798,18 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "access_token.rejected", session->user_id, session->user_id, "user not found");
+        return std::nullopt;
+    }
+    // ADR-0626: deactivation revokes the account's credentials after it sets the flag, and a revocation that failed
+    // leaves a live session until the retry. The flag alone closes the gate, as it closes login and refresh.
+    if (session_user->deactivated)
+    {
+        log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
+                             {
+                                 {"reason", "account deactivated", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "access_token.rejected", session->user_id, session->user_id, "account deactivated");
         return std::nullopt;
     }
     // ADR-0074: the first use of an access token minted by POST /refresh
@@ -1857,7 +1872,13 @@ auto authenticated_session(HomeserverRuntime const& runtime, std::string_view ac
         return std::nullopt;
     }
     auto const* session = find_session(runtime.database, token_hashes, std::chrono::system_clock::now());
-    if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
+    if (session == nullptr)
+    {
+        return std::nullopt;
+    }
+    // ADR-0626: a deactivated account has no session, whether or not its revocation finished.
+    auto const* const session_user = find_user(runtime.database, session->user_id);
+    if (session_user == nullptr || session_user->deactivated)
     {
         return std::nullopt;
     }
@@ -2100,6 +2121,18 @@ namespace
         return all_deleted;
     }
 
+    // The audit row of an administrator's account action, as `append_local_audit` would write it, for the writers that
+    // commit it with the state change (ADR-0629).
+    [[nodiscard]] auto account_action_audit_row(observability::AuditCategory category, std::string_view event_type,
+                                                std::string_view actor, std::string_view target,
+                                                std::string_view reason) -> database::PersistentAuditEvent
+    {
+        return {std::string{observability::audit_category_name(category)}, std::string{event_type},
+                observability::bounded_utf8(actor, observability::max_audit_field_bytes),
+                observability::sanitized_audit_target(target),
+                observability::bounded_utf8(reason, observability::max_audit_field_bytes)};
+    }
+
 } // namespace
 
 // Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
@@ -2119,11 +2152,27 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     {
         return make_operation_result(false, {}, "unknown user", 404U);
     }
-    if (!database::set_user_deactivated(runtime.database.persistent_store, user_id))
+    // ADR-0629: the flag and its audit row commit together, so the row exists exactly when the account is closed, and
+    // before any revocation that may fail. A repeat on an account already closed (how a half-finished deactivation is
+    // completed) writes the flag again and no second row.
+    auto const first_deactivation = !user->deactivated;
+    auto const flag_persisted =
+        first_deactivation
+            ? database::commit_user_deactivation_with_audit(
+                  runtime.database.persistent_store, user_id,
+                  account_action_audit_row(observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
+                                           audit.target, audit.reason))
+            : database::set_user_deactivated(runtime.database.persistent_store, user_id);
+    if (!flag_persisted)
     {
         return make_operation_result(false, {}, "deactivation persistence failed", 500U);
     }
     user->deactivated = true;
+    if (first_deactivation)
+    {
+        remember_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated",
+                             audit.actor, audit.target, audit.reason);
+    }
 
     // Every credential dies with the account, including the caller's own -- unlike
     // a password change, there is no session to preserve.
@@ -2181,8 +2230,6 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
         user->password_hash = "!deactivated";
     }
 
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
-                       audit.target, audit.reason);
     log_diagnostic("account.deactivated",
                    {
                        {"user_id", std::string{user_id}, false},
@@ -2208,7 +2255,10 @@ auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admi
 {
     // Persist first. set_user_account_state changes its own mirror only after the write took, and the
     // LocalUser copy is changed only after that, so a failed write leaves both copies as they were.
-    if (!database::set_user_account_state(runtime.database.persistent_store, user_id, suspended, locked))
+    // ADR-0629: the state change and its audit row are one transaction.
+    if (!database::commit_user_account_state_with_audit(
+            runtime.database.persistent_store, user_id, suspended, locked,
+            account_action_audit_row(observability::AuditCategory::admin, audit_event, admin_id, user_id, reason_code)))
     {
         return make_operation_result(false, {}, "failed to persist account state", 500U);
     }
@@ -2219,8 +2269,8 @@ auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admi
     }
     user->suspended = suspended;
     user->locked = locked;
-    append_local_audit(runtime.database, observability::AuditCategory::admin, audit_event, admin_id, user_id,
-                       reason_code);
+    remember_local_audit(runtime.database, observability::AuditCategory::admin, audit_event, admin_id, user_id,
+                         reason_code);
     return make_operation_result(true, std::string{user_id});
 }
 

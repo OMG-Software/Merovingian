@@ -733,6 +733,12 @@ are reversible where deactivation is not.
   column of `users` (part of the v1 schema — see `docs/database-persistence.md`), not a row
   removal, so registration's existing duplicate-`user_id` check keeps
   rejecting a re-registration of the same localpart.
+- **The access-token gate checks it too (ADR-0626).** `authenticated_user` and `authenticated_session` answer a token whose
+  user is `deactivated` as unknown (401 `M_UNKNOWN_TOKEN`), so `require_admin`, `authenticated_admin_user` and every
+  route behind them refuse it as well, even when revoking the account's credentials failed and the sessions are still
+  live. An administrator completes a half-finished deactivation by repeating it.
+- **The flag and its audit row commit together (ADR-0629).** `auth.account_deactivated` is written in the transaction that
+  sets `deactivated`, before the credentials are revoked, and only when the flag is first set; a repeat adds no row.
 - **Both login gates check it first.** `complete_login`'s shared tail and
   the token-login path in `login_local_user_by_id` (`src/homeserver/
   AuthService.cpp`) each reject `user.deactivated` with `403` "account
