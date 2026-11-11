@@ -147,7 +147,7 @@ distribution failure.
 Release assets also include:
 
 - `SHA256SUMS` for every package (in rolling `latest` releases)
-- per-tarball `.sha256` files for tagged releases
+- per-tarball and per-package `.sha256` files for tagged releases
 - `merovingian.spdx.json` and `merovingian.cdx.json` SBOMs, in both
 - `merovingian.licenses.json` machine-readable license summary, in both
 
@@ -253,15 +253,23 @@ rolling `latest` GitHub prerelease, and uploads fresh package checksums:
 
 | Artifact | Job |
 |---|---|
-| Ubuntu `.deb` | `deb` |
+| Ubuntu `.deb`, one each for 24.04 LTS, 26.04 LTS and `ubuntu:rolling` | `deb` (reported as "Ubuntu <release> package"; `deb-all-releases` reports the required "Debian package") |
 | Debian trixie `.deb` | `debian-pkg` |
 | Fedora `.rpm`, one each for `fedora:44` and `fedora:latest` | `rpm` |
 | RHEL-compatible `.rpm` (AlmaLinux 10) | `rhel-rpm` |
-| OpenSUSE Tumbleweed `.rpm` | `opensuse-rpm` |
+| OpenSUSE `.rpm`, one each for Tumbleweed and Leap 16.0 | `opensuse-rpm` |
 | FreeBSD `.pkg` | `freebsd-pkg` |
 | OpenBSD `.tgz` | `openbsd-pkg` |
 | NetBSD `.tgz` | `netbsd-pkg` (a failure blocks publishing; re-run the failed job, [ADR-0502](adr/0502-every-bsd-job-is-required-and-the-netbsd-retry-cannot-rescue-it.md)) |
 | Portable static Linux tarball (musl) | `static-linux-fallback` |
+
+A tagged release ships the same `.deb` and `.rpm` packages: `release.yml` calls
+`packages.yml` (`distro-packages`) after the tag check, and stages every Ubuntu,
+Fedora, RHEL-compatible and OpenSUSE package with a `.sha256` beside the tarballs
+([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)). It leaves out the Debian trixie
+package: the Complement step attaches the trixie package it tested under that
+name, and never replaces an asset. Staging, signing and publishing `latest` in
+`packages.yml` run only for a push to `main`, so a tag never touches `latest`.
 
 Every packaging script configures Meson with `--buildtype=release`. Meson's
 default `debug` build has no `_FORTIFY_SOURCE`, and the server refuses to start

@@ -55,7 +55,8 @@ writes with `dd`, since OpenBSD's `head` has no `-c`.
 
 `fcntl` and `ioctl` are argument-filtered in the thumbnail decoder profile (an allowlist) and the federation worker
 profile (the signalling commands denied): no call can set a signal owner or turn on `O_ASYNC` (ADR-0642). The decoder
-profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053).
+profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053). The test that runs
+both filters on the real kernel says why each command is expected to pass or be killed.
 
 ### The worker refuses to start with a registration file under a path it may read
 
@@ -117,7 +118,8 @@ can be uploaded again afterwards.
 Eviction no longer moves every later record, rebuilds the record index or scans every blob and thumbnail. The record, byte and
 holder counts, the live blob count and the store's media row positions are kept as rows change, and a row is erased by swapping the
 last into its place. Moderating a record now finds its blob by the storage ID derived from its digest and size, so the PostgreSQL
-media moderation test names its shared blob that way, as every upload does.
+media moderation test names its shared blob that way, as every upload does. Releasing a record decrements its owner's and its
+file's hold counts in a statement of their own, not inside the condition that finds them.
 
 ### A share of the push delivery budget is kept for gateways that answer (ADR-0634)
 
@@ -130,6 +132,44 @@ make every other user's notification drop.
 With a policy server configured, a federation origin's decision is kept for 30 seconds and its simultaneous requests wait for one
 ask. When the budget has no place left, an origin the policy server already decided about (within ten minutes) keeps that decision,
 so a peer holding the budget no longer decides the outcome for the others. An origin never decided about is judged as before.
+
+### Each Ubuntu and openSUSE release is built, tested and packaged on its own (ADR-0650)
+
+GitHub moved `ubuntu-latest` to Ubuntu 26.04, so CI had stopped building for Ubuntu 24.04, the documented minimum.
+
+- CI builds and tests Ubuntu 26.04 (`ubuntu-build-and-test`) and 24.04 (`ubuntu-24.04-build-and-test`), each on the
+  runner image named by its release, never `ubuntu-latest`.
+- A new `ubuntu-rolling-build-and-test` does the same for the interim release in `ubuntu:rolling`.
+- openSUSE Leap 16.0 builds beside Tumbleweed (`opensuse-leap-build-and-test`). Leap takes maintenance updates, not a
+  distribution upgrade.
+- Each openSUSE dependency step now fails when its third attempt does.
+- `packages.yml` builds a `.deb` for Ubuntu 24.04, 26.04 and the interim release. Each package is named
+  `-ubuntu<release>.deb`, and each is installed and booted through the startup hardening gate.
+- `deb-all-releases` reports the required "Debian package" check.
+- `packages.yml` also builds an `.rpm` for Leap 16.0 (`.leap16`) beside Tumbleweed's (`.opensuse`).
+  `build-opensuse-rpm.sh` takes its dist tag from `MEROVINGIAN_RPM_DIST`.
+- `latest` carries every one of these packages. A tagged release now carries them too, with a `.sha256` each:
+  `release.yml` calls `packages.yml`. Debian trixie is the exception: the Complement step attaches the trixie package
+  it tested.
+- `tests/expected_skips.json` lists the `ubuntu-rolling` and `opensuse-leap` jobs.
+- The skip-job test reads a matrix's `skip_job:` values.
+
+### Every action runs on Node 24 (ADR-0650)
+
+GitHub deprecated Node 20 for actions. Every action now names a release that runs on Node 24:
+
+- `actions/checkout` v7
+- `upload-artifact` v7
+- `download-artifact` v8
+- `setup-python` v7
+- `cache` v6
+- `deploy-pages` v5
+- `upload-pages-artifact` v5
+- `attest-build-provenance` v4
+- `codecov-action` v7.1.1, `ghaction-import-gpg` v7.0.0, `action-gh-release` v3.0.4 and `ccache-action` v1.2.24, each
+  pinned by commit
+
+Every input passed was checked against each new release.
 
 ## 0.12.92
 
@@ -179,7 +219,7 @@ A federation worker re-read a whole room for every PDU main accepted. Reloads ar
 
 ### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
 
-Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
+Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ. `build_plan_base` explains each of its steps in comments.
 
 ### Current state drops what the resolution does not hold (ADR-0615)
 

@@ -548,6 +548,7 @@
 * [0641 - The thumbnail response is bounded by the requested size, whatever the config says](0641-the-thumbnail-response-is-bounded-by-the-requested-size-whatever-the-config-says.md)
 * [0642 - Seccomp refuses the fcntl and ioctl commands that arrange signal delivery](0642-seccomp-refuses-the-fcntl-and-ioctl-commands-that-arrange-signal-delivery.md)
 * [0643 - The decoder profile has no path form of stat](0643-the-decoder-profile-has-no-path-form-of-stat.md)
+* [0650 - Each Ubuntu and openSUSE release gets its own build, check and package](0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)
 * [0626 - A deactivated account's access token is an unknown token](0626-a-deactivated-accounts-access-token-is-an-unknown-token.md)
 * [0627 - A room upgrade keeps `m.federate: false`](0627-a-room-upgrade-keeps-m-federate-false.md)
 * [0628 - An application service asserting a user never holds server administrator redaction](0628-an-application-service-asserting-a-user-never-holds-server-administrator-redaction.md)

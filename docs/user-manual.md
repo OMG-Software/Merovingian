@@ -121,7 +121,7 @@ Thumbnail worker library libjpeg-turbo version not reported (dynamic, /lib/x86_6
 | Debian | 13 (trixie) |
 | Fedora | 44 or the current release (RPM); 40+ (source build) |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 |
-| OpenSUSE | Tumbleweed |
+| OpenSUSE | Tumbleweed, or Leap 16.0 |
 | FreeBSD | 14.1+ |
 | OpenBSD | 7.6+ with the `llvm` package |
 | NetBSD | 10+ with pkgsrc `clang` |
@@ -143,23 +143,32 @@ libraries. Use the portable static Linux tarball (musl) for those hosts.
 
 Tier 1 and Tier 2 CI produces `.deb`, `.rpm`, `.pkg`, and `.tgz` packages for
 Ubuntu, Debian, Fedora, RHEL/AlmaLinux, OpenSUSE, FreeBSD, OpenBSD, and NetBSD.
-The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
+The rolling `latest` GitHub prerelease is rebuilt on every push to `main`, and
+each tagged release carries the same `.deb` and `.rpm` packages.
 
 ```sh
-# Debian/Ubuntu example
-dpkg -i merovingian_X.Y.Z_amd64.deb
+# Ubuntu example: use the package whose -ubuntuNN.NN suffix matches
+# VERSION_ID in /etc/os-release (24.04, 26.04 or the current interim release)
+apt install ./merovingian_X.Y.Z_amd64-ubuntu26.04.deb
+
+# Debian trixie example
+apt install ./merovingian_X.Y.Z_amd64-debian.deb
 
 # Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
 dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
+
+# openSUSE example: .opensuse is Tumbleweed, .leap16 is Leap 16.0
+zypper install merovingian-X.Y.Z-1.leap16.x86_64.rpm
 
 # FreeBSD example
 pkg add merovingian-X.Y.Z.pkg
 ```
 
-An RPM installs only on the Fedora release it was built on, because it links
-against that release's libraries. The rolling release has one RPM for Fedora 44
-and one for the current Fedora. On any other release, use the static tarball
-below or build from source.
+A package installs only on the distribution release it was built on, because it
+links against that release's libraries. There is one Ubuntu package each for
+24.04 LTS, 26.04 LTS and the current interim release, one RPM each for Fedora 44
+and the current Fedora, and one each for openSUSE Tumbleweed and Leap 16.0. On any
+other release, use the static tarball below or build from source.
 
 On FreeBSD and OpenBSD, the federation worker's in-process sandbox is not
 available, so with the default settings the worker refuses to start and the

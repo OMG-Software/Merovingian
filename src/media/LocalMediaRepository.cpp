@@ -355,9 +355,13 @@ namespace
             return;
         }
         if (auto const found = repository.owner_record_counts.find(record.owner_user_id);
-            found != repository.owner_record_counts.end() && --found->second == 0U)
+            found != repository.owner_record_counts.end())
         {
-            repository.owner_record_counts.erase(found);
+            --found->second;
+            if (found->second == 0U)
+            {
+                repository.owner_record_counts.erase(found);
+            }
         }
         if (auto const found = repository.owner_live_bytes.find(record.owner_user_id);
             found != repository.owner_live_bytes.end())
@@ -369,10 +373,14 @@ namespace
             }
         }
         if (auto const found = repository.local_holders.find(record.storage_id);
-            found != repository.local_holders.end() && --found->second == 0U)
+            found != repository.local_holders.end())
         {
-            repository.local_holders.erase(found);
-            repository.local_held_bytes -= std::min(repository.local_held_bytes, record.size_bytes);
+            --found->second;
+            if (found->second == 0U)
+            {
+                repository.local_holders.erase(found);
+                repository.local_held_bytes -= std::min(repository.local_held_bytes, record.size_bytes);
+            }
         }
     }
 

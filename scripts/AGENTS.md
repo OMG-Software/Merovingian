@@ -14,7 +14,7 @@ called by it rather than directly.
 | `build-bsd.sh` | POSIX-sh build/test driver for BSD hosts (FreeBSD/NetBSD/OpenBSD): configures Meson with system libsodium/openssl/libpq/libcurl, supports named profiles (`debug`, `release`, `sanitizer`, `coverage`, `fuzz`, `hardened`), and runs `meson test` with hardening disabled in-process for the Catch2 runner and `--timeout-multiplier 2` by default (`MESON_TEST_TIMEOUT_MULTIPLIER` overrides it), because the BSD CI VMs' speed varies between runs |
 | `build-deb.sh` | Builds a `.deb` package |
 | `build-rpm.sh` | Builds an `.rpm` package (Fedora-family default spec) |
-| `build-opensuse-rpm.sh` | Builds an `.rpm` for OpenSUSE Tumbleweed from `packaging/opensuse/merovingian.spec` (OpenSUSE package names); forces the `.opensuse` dist tag so the filename doesn't collide with the Fedora/RHEL RPMs |
+| `build-opensuse-rpm.sh` | Builds an `.rpm` for OpenSUSE Tumbleweed or Leap from `packaging/opensuse/merovingian.spec` (OpenSUSE package names); forces a dist tag so the filename doesn't collide with the Fedora/RHEL RPMs: `.opensuse` unless `MEROVINGIAN_RPM_DIST` names another (packages.yml passes `.leap16` for Leap 16.0, ADR-0650). Refuses a tag that is not a dot, a lower-case letter, then lower-case letters, digits and dots |
 | `build-rhel-rpm.sh` | Builds an `.rpm` for RHEL 10 / AlmaLinux 10 from `packaging/rhel/merovingian.spec`, which omits `catch-devel` (unreliable in EPEL 10 and unneeded with `-Dbuild_tests=false`) |
 | `build-freebsd-pkg.sh` / `build-netbsd-pkg.sh` / `build-openbsd-pkg.sh` | BSD package builds |
 | `format_code.py` | Runs `clang-format -i` over every `.h`, `.hpp` and `.cpp` file under the repo root. Manual only: no hook or CI job runs it |

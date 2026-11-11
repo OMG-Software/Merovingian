@@ -952,6 +952,8 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 {
     GIVEN("a forked child on a pipe that installs a real filter before the call")
     {
+        // Every way a descriptor can be given a signal owner or O_ASYNC (ADR-0642). The owner named is this test
+        // process, so a command the filter let through could signal the parent, the case the filter exists to stop.
         auto const self = static_cast<long>(::getpid());
         auto const unsafe_calls = std::array<std::pair<char const*, long (*)(int, long)>, 8>{
             {
@@ -1001,6 +1003,7 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
                         return call(fd, self);
                     }));
                 }
+                // TIOCSPGRP, the terminal form, fails on a pipe but must still reach the kernel unfiltered.
                 REQUIRE(child_survives(FilterProfile::none, [](int fd) {
                     return ioctl_call(fd, TIOCSPGRP);
                 }));
@@ -1025,6 +1028,7 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 
             THEN("the commands a decoder uses are still allowed")
             {
+                // The decoder's allowlist: descriptor and status flags, and the stdio terminal probe and pipe count.
                 REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
                     return fcntl_call(fd, F_GETFD, 0);
                 }));
@@ -1047,6 +1051,7 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 
             THEN("a command outside the decoder allowlist is killed even though it signals nothing")
             {
+                // The decoder profile is an allowlist, so harmless commands it does not name are killed too.
                 REQUIRE_FALSE(child_survives(FilterProfile::decoder, [](int fd) {
                     return fcntl_call(fd, F_SETPIPE_SZ, 65536);
                 }));
@@ -1074,6 +1079,7 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
 
             THEN("every other command is still allowed")
             {
+                // The worker profile is a denylist: the same two harmless commands the decoder refuses pass here.
                 REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
                     return fcntl_call(fd, F_GETFD, 0);
                 }));

@@ -194,7 +194,15 @@
       "landlock",
       "root-container"
     ],
+    "ubuntu-rolling": [
+      "landlock",
+      "root-container"
+    ],
     "opensuse": [
+      "landlock",
+      "root-container"
+    ],
+    "opensuse-leap": [
       "landlock",
       "root-container"
     ],
