@@ -124,6 +124,36 @@ DNS carries no integrity here: apt verifies the archive's signed `Release` files
   withdrawn. During the outage the runners could not resolve that host either.
 * **Retrying through the same resolver:** the outage lasted hours, longer than any retry budget a job can spend.
 
+## Package installs on OpenBSD
+
+OpenBSD's `pkg_add` exits 0 when it installed nothing: on 2026-11-11 the TLS handshake with `cdn.openbsd.org`
+failed, every package came back "Can't find", and the `OpenBSD package` job failed only later, at
+`meson: not found`. Both OpenBSD jobs therefore install through `scripts/ci-openbsd-pkg-add.sh`, which tries three
+times through the CDN and three through `ftp.openbsd.org`, and judges each attempt by whether the commands named
+with `--require` are on `PATH` afterwards. Packages are signed, and `pkg_add` checks the signature whichever mirror
+served them. vmactions syncs the checkout before it runs `prepare`, in the checkout, so the script is on disk there.
+The NetBSD jobs keep their own retry loop over two mirrors.
+
+`--require` names commands only. A library package that failed to install surfaces at `meson setup`, which says
+which dependency it could not find; retrying cannot tell a transient failure from a wrong package name, because
+`pkg_add` reports both as "Can't find".
+
+### Rejected
+
+* **Trusting `pkg_add`'s exit status, or grepping its output for "Can't find":** the status is 0 either way, and
+  the package list already carries names `pkg_add` cannot resolve on every run (see below), so any "Can't find"
+  would fail every run.
+* **`pkg_info -e` for each package:** the list's names are not the installed names for every package, so the
+  check would need its own name map; the commands are what the build step uses.
+
+### Known issue
+
+The list asks for `jpeg-turbo`, `pkgconf` and `flex`, which OpenBSD has no package by, and `openssl`, which is
+ambiguous; `pkg_add -I` skips all four. Base supplies `pkg-config`, `flex` and LibreSSL. The JPEG library's package
+is `jpeg`, so meson finds no libturbojpeg and the OpenBSD build has never built the thumbnail worker that
+`packaging/openbsd/PLIST` lists. Correcting the name changes what the OpenBSD package ships, which this CI fix
+leaves to its own change.
+
 ## Test TLS certificates are issued by a test CA
 
 Every TLS test failed on the first `ubuntu-rolling-build-and-test` run with `tls_verification_failed`. From Ubuntu

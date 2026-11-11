@@ -336,7 +336,10 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
+            # pkg_add exits 0 having installed nothing when the mirror fails, so the script
+            # retries, falls back to the origin mirror and checks the commands exist (ADR-0650).
+            sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \
+              meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: sh scripts/build-openbsd-pkg.sh
       - name: Attest OpenBSD package
         uses: actions/attest-build-provenance@v4
