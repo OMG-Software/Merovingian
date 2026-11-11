@@ -73,7 +73,7 @@ public:
     [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event)
         -> sync::UnreadEventOutcome override;
 
-    // Whole store tables walked so far: memberships, current state, profiles and events, each
+    // Whole store tables walked so far: memberships, current state and profiles, each
     // counted once per walk (the visibility filter's own indexes are not). It does not grow with
     // the number of rooms asked about.
     [[nodiscard]] auto table_walks() const noexcept -> std::uint64_t;
@@ -96,7 +96,6 @@ private:
 
     [[nodiscard]] auto room(std::string_view room_id) -> RoomFacts const&;
     auto ensure_room_sources() -> void;
-    auto ensure_join_transitions() -> void;
 
     std::reference_wrapper<database::PersistentStore const> store_;
     std::string user_;
@@ -111,9 +110,6 @@ private:
     bool room_sources_built_{false};
     std::map<std::string, RoomSources, std::less<>> room_sources_{};
     std::string profile_display_name_{};
-    // Built only when counted_after() asks, so classify() never scans the events for it.
-    bool join_transitions_built_{false};
-    std::map<std::string, std::vector<std::pair<std::uint64_t, bool>>, std::less<>> join_transitions_{};
     std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
     std::uint64_t table_walks_{0U};
 };

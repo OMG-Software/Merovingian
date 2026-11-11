@@ -2,6 +2,34 @@
 
 Release-gate audit, medium findings
 
+### A /sync reads a user's account data once
+
+The user's account data is read through its index once per request, not once per room.
+
+### A /sync timeline reads only the newest rows of a room (ADR-0616)
+
+The walk starts at the newest row and stops once the window is full, and after 1000 rows it did not take.
+
+### Unread counts read a bounded number of rows (ADR-0617)
+
+Unread counts and read markers read at most the newest 1000 rows of a room, and the start of a join comes from the user's
+member events instead of a walk of the event table.
+
+### The to-device queue is indexed and limited per user (ADR-0618)
+
+Send and sync read only the recipient's rows. Two options bound one user's queues across all devices:
+`server.client_api.max_to_device_messages_per_user` and `server.client_api.max_to_device_bytes_per_user`. One-time and
+fallback key counts read only the device's rows.
+
+### Stored invites are limited per user and per origin (ADR-0619)
+
+Past the limits an invite from another server is answered 403 `M_FORBIDDEN` before anything is signed or stored. Invites
+from local users are never counted. Knocks have a limit of their own.
+
+### A knock's room state is bounded (ADR-0620)
+
+Only what `/sync` could show is kept, at most 16 entries, each within the event size limit, from an answer of at most 1 MiB.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).

@@ -3043,3 +3043,15 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **A deactivated account's pushers (F-80, ADR-0411).** Deactivation deletes them, and delivery skips a deactivated recipient.
 - **A device ID equal to a cross-signing key ID (F-85).** Login answers `403 M_FORBIDDEN` for one, and
   `POST /keys/device_signing/upload` refuses a key whose ID is one of the uploader's device IDs.
+
+## Release-gate audit: sync, to-device and stored invites (ADR-0616 to ADR-0620)
+
+- **A remote server's history cost every `/sync` of a joined user.** The timeline, unread counts and read markers read a
+  room's whole history under `runtime.mutex`. **Mitigation:** they read the newest rows only, with a fixed budget.
+- **One user's to-device rows cost every user's send and sync, and one user's queues had no joint bound.**
+  **Mitigation:** standing indexes by recipient and user, and per-user limits that evict the oldest row first.
+- **A remote server could store unbounded invites for a local user.** **Mitigation:** limits per user and per origin,
+  enforced by every writer before the write, answered 403 `M_FORBIDDEN`. Invites from local users are not counted, so a
+  remote server cannot starve them.
+- **A resident chose how much a knock stored and how many signatures it cost.** **Mitigation:** the answer is bounded in
+  bytes and the list in count and entry size before any signature check.

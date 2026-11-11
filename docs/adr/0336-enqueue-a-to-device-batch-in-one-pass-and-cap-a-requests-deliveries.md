@@ -1,6 +1,6 @@
 # Enqueue a to-device batch in one pass, and cap a request's deliveries
 
-* Status: accepted
+* Status: accepted; the rejection of a standing per-recipient index superseded by [ADR-0618](0618-the-to-device-queue-has-standing-indexes-and-a-per-user-limit.md) (2026-11-11)
 * Deciders: James Chapman
 * Date: 2026-11-03
 

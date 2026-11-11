@@ -96,9 +96,9 @@ SCENARIO("one batch of to-device messages costs one pass over the queue, however
                 batch.push_back(message_to("@bob:example.org", "DEV" + std::to_string(recipient), R"({"n":2})"));
             }
             auto const queue_rows = store.to_device_messages.size();
-            auto const examined_before = store.to_device_rows_examined;
+            auto const examined_before = store.to_device_rows_examined.value();
             REQUIRE(merovingian::database::enqueue_to_device_messages(store, std::move(batch)));
-            auto const examined = store.to_device_rows_examined - examined_before;
+            auto const examined = store.to_device_rows_examined.value() - examined_before;
 
             THEN("the queue is walked a small constant number of times, not once per message")
             {

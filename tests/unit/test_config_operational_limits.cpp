@@ -420,9 +420,38 @@ SCENARIO("The to-device byte limits default to bounded values, can be tuned and 
         }
     }
 
+    GIVEN("the per-user limits (ADR-0618)")
+    {
+        auto const defaults = merovingian::config::parse_key_value_config("");
+        auto const overridden =
+            merovingian::config::parse_key_value_config("server.client_api.max_to_device_messages_per_user=7\n"
+                                                        "server.client_api.max_to_device_bytes_per_user=70000\n");
+
+        WHEN("they are read and a reload plan is built against the defaults")
+        {
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, overridden.config);
+
+            THEN("the defaults are 50000 rows and 64 MiB, the overrides apply, and each is a restart-required change")
+            {
+                REQUIRE(defaults.config.server().client_api.max_to_device_messages_per_user == 50000U);
+                REQUIRE(defaults.config.server().client_api.max_to_device_bytes_per_user == 67108864U);
+                REQUIRE(overridden.findings.empty());
+                REQUIRE(merovingian::config::validate(overridden.config).empty());
+                REQUIRE(overridden.config.server().client_api.max_to_device_messages_per_user == 7U);
+                REQUIRE(overridden.config.server().client_api.max_to_device_bytes_per_user == 70000U);
+                REQUIRE(plan.changes().size() == 2U);
+                REQUIRE(plan.restart_required_change_count() == 2U);
+            }
+        }
+    }
+
     GIVEN("an unusable override")
     {
         auto const input = GENERATE("server.client_api.max_to_device_message_bytes=0\n",
+                                    "server.client_api.max_to_device_messages_per_user=0\n",
+                                    "server.client_api.max_to_device_messages_per_user=10000001\n",
+                                    "server.client_api.max_to_device_bytes_per_user=0\n",
+                                    "server.client_api.max_to_device_bytes_per_user=1000\n",
                                     "server.client_api.max_to_device_message_bytes=16777217\n",
                                     "server.client_api.max_to_device_message_bytes=big\n",
                                     "server.client_api.max_to_device_bytes_per_user_device=0\n",

@@ -47,6 +47,10 @@ struct ClientApiConfig final
     // loses its oldest rows to make room, as the row-count cap does.
     std::uint32_t max_to_device_message_bytes{65536U};
     std::uint32_t max_to_device_bytes_per_user_device{16777216U};
+    // ADR-0618: the same two bounds across all of one user's queues. Past either, the user's oldest rows go first,
+    // whichever device holds them.
+    std::uint32_t max_to_device_messages_per_user{50000U};
+    std::uint32_t max_to_device_bytes_per_user{67108864U};
     // CSAZ-10: bound the end-to-end key material and filters one user can
     // store.  An upload that would take the user over a cap is refused with
     // M_TOO_LARGE and stores nothing; stored rows are never evicted to make

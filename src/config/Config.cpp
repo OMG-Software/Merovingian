@@ -1048,6 +1048,17 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.client_api.max_to_device_message_bytes",
                             "must not exceed server.client_api.max_to_device_bytes_per_user_device"});
     }
+    validate_count("server.client_api.max_to_device_messages_per_user",
+                   config.server().client_api.max_to_device_messages_per_user, 10000000U);
+    validate_count("server.client_api.max_to_device_bytes_per_user",
+                   config.server().client_api.max_to_device_bytes_per_user, 4294967295U);
+    // ADR-0618: a message larger than the user's whole budget could never be queued.
+    if (config.server().client_api.max_to_device_message_bytes >
+        config.server().client_api.max_to_device_bytes_per_user)
+    {
+        findings.push_back({"server.client_api.max_to_device_message_bytes",
+                            "must not exceed server.client_api.max_to_device_bytes_per_user"});
+    }
     validate_count("server.client_api.to_device_message_ttl_seconds",
                    config.server().client_api.to_device_message_ttl_seconds, 31536000U);
     validate_count("server.client_api.max_one_time_keys_per_device",
