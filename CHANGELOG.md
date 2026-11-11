@@ -180,6 +180,16 @@ images do not ship ccache, so the action failed on every host-runner job. `ubunt
 `ubuntu-hardened-listener-coverage` and the release's `linux-release-package` now run it after their own dependency step, which
 installs ccache. A tooling test requires every job using the action to install ccache first.
 
+### Test TLS certificates are issued by a test CA (ADR-0650)
+
+Every TLS test failed on Ubuntu 26.10 with `tls_verification_failed`. From that release, libcurl also verifies each
+chain through upki (rustls-webpki), which refuses a self-signed server certificate trusted as its own anchor.
+OpenSSL accepted that, and the tests depended on it. `write_test_tls_certificate()` in `tests/support/TlsMockServer.hpp`
+now makes a throwaway CA for each call and issues the server certificate from it. That certificate is v3, CA:FALSE,
+serverAuth, with a subjectAltName for the name (an `IP:` entry for an address literal). `certificate_pem`, which
+every test already hands the client as its trusted CA, is now that CA, so no test changed. A wrong host name is still
+refused. Production outbound calls trust the system store and are unaffected. New `X509ExtensionDeleter.hpp`.
+
 ### Ubuntu jobs retry a failed package-index refresh through public DNS (ADR-0650)
 
 On 2026-11-11 the resolver GitHub's runners use answered nothing for `*.ubuntu.com` for hours, on host runners and in

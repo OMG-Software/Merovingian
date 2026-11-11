@@ -85,7 +85,7 @@ public:
         return "https://" + host_port();
     }
 
-    // The bound loopback port and the PEM of the self-signed certificate, for
+    // The bound loopback port and the PEM of the test CA that issued its certificate, for
     // tests that pin this server's host themselves (URL previews pin it through
     // HomeserverRuntime::test_forced_outbound_resolution).
     [[nodiscard]] auto port() const -> std::uint16_t
@@ -136,7 +136,7 @@ public:
     }
 
     // Marks this server trusted and pins its host to loopback with its
-    // self-signed certificate. `Runtime` is a ClientServerRuntime; it is a
+    // test CA. `Runtime` is a ClientServerRuntime; it is a
     // template parameter so this header stays free of the client-server header.
     template <typename Runtime>
     auto install(Runtime& runtime) const -> void

@@ -437,8 +437,8 @@ forced_resolution` (defined in `include/merovingian/identity/TestForcedIdentityR
 stored on `HomeserverRuntime::test_forced_identity_resolution` and keyed by IS
 host). When an entry exists for the target host, `perform()` uses the entry's
 `pinned_addresses` and in-memory `trusted_ca_pem` and skips
-`CachedServerDiscovery` entirely, so a self-signed local mock IS listening on
-`127.0.0.1` can be reached over real TLS without weakening the production SSRF
+`CachedServerDiscovery` entirely, so a local mock IS listening on
+`127.0.0.1`, its certificate issued by a test CA, can be reached over real TLS without weakening the production SSRF
 path — the map is empty in production and has no production construction path.
 Unlike the federation seam, the identity seam carries no `resolved_port`: the IS
 base URL already names the port, and `OutboundClient` builds the `CURLOPT_RESOLVE`

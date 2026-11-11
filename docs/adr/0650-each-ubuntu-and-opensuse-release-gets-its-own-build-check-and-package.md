@@ -123,3 +123,30 @@ DNS carries no integrity here: apt verifies the archive's signed `Release` files
 * **`azure.archive.ubuntu.com`, the mirror GitHub's Ubuntu runner images use**, as the fallback: tried and
   withdrawn. During the outage the runners could not resolve that host either.
 * **Retrying through the same resolver:** the outage lasted hours, longer than any retry budget a job can spend.
+
+## Test TLS certificates are issued by a test CA
+
+Every TLS test failed on the first `ubuntu-rolling-build-and-test` run with `tls_verification_failed`. From Ubuntu
+26.10, libcurl depends on `libupki-openssl1` (rustls/upki), which checks each verified chain again with rustls-webpki
+for CRLite revocation. webpki accepts a server certificate only when a trusted CA issued it, and only as a v3
+end-entity certificate. The test helper `write_test_tls_certificate()` made a self-signed v1 certificate with only a
+CN, and clients trusted that certificate as its own anchor. OpenSSL accepts that; upki refuses it as "application
+verification failure". It refuses a self-signed v3 certificate with a subjectAltName, CA:FALSE and serverAuth too,
+so no change to the certificate alone would do.
+
+The helper now makes a throwaway CA for each call (CA:TRUE, keyCertSign) and issues the server certificate from it:
+v3, CA:FALSE, serverAuth, a subjectAltName for the requested name (an `IP:` entry for an address literal), and key
+identifiers. The server presents the issued certificate; `certificate_pem`, which every caller already passes as the
+client's trusted CA, is now the CA. Checked on `ubuntu:rolling` (OpenSSL 4.0.3, curl 8.20 with upki) and
+`ubuntu:24.04` (OpenSSL 3.0.13): the CA-issued certificate is accepted and a wrong host name is still refused.
+
+Production is unaffected: the outbound clients trust the system CA store, and `trusted_ca_pem` is set only through
+the test seams. An operator whose own peers present self-signed certificates would meet the same refusal from a
+libcurl built with upki.
+
+### Rejected
+
+* **Self-signed certificates with v3 extensions:** upki refuses any self-signed server certificate trusted as its
+  own anchor, whatever its extensions.
+* **Building the rolling job's tests against a libcurl without upki:** the job exists to show the server works with
+  that release's libraries.
