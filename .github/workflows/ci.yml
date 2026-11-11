@@ -154,19 +154,8 @@ jobs:
       - name: Install dependencies
         run: |
           # Fail on any fetch error: plain `apt-get update` exits 0 when it reached
-          # nothing, and the install then fails with no sign of why. On 2026-11-11
-          # the runners could not resolve archive.ubuntu.com or security.ubuntu.com
-          # for hours, while Azure's Ubuntu mirror, which GitHub's own Ubuntu runner
-          # images use, still answered. apt checks the Ubuntu archive signature on
-          # whichever mirror serves the index (ADR-0650).
-          if ! apt-get update --error-on=any; then
-            echo "apt-get update failed; retrying through azure.archive.ubuntu.com" >&2
-            sed -i \
-              -e 's#http://archive\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' \
-              -e 's#http://security\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' \
-              /etc/apt/sources.list.d/ubuntu.sources
-            apt-get update --error-on=any
-          fi
+          # nothing, and the install then fails with no sign of why (ADR-0650).
+          apt-get update --error-on=any
           apt-get install -y --no-install-recommends \
             bison \
             ca-certificates \

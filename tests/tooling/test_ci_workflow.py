@@ -169,7 +169,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("builddir: build-opensuse\n", opensuse)
         self.assertIn("builddir: build-opensuse-leap\n", opensuse)
 
-    def test_ubuntu_containers_fail_on_a_fetch_error_and_fall_back_to_the_runner_mirror(self) -> None:
+    def test_ubuntu_containers_fail_on_a_fetch_error(self) -> None:
         # GIVEN the Ubuntu container jobs, whose plain `apt-get update` exited 0 on 2026-11-11 when
         # the runners could not resolve archive.ubuntu.com, so the install failed with no cause shown.
         workflows = REPO_ROOT / ".github" / "workflows"
@@ -185,14 +185,10 @@ class CiWorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 # WHEN the dependency step refreshes the package index
                 install = job.split("apt-get install", 1)[0]
-                # THEN every refresh fails on any fetch error, and a failed one is retried through the
-                # Azure mirror GitHub's own Ubuntu runners use, for both archive hosts.
+                # THEN the refresh fails on any fetch error, so the step that could not reach the
+                # archive is the one that fails.
                 self.assertNotRegex(install, r"(?m)^\s*apt-get update\s*$")
-                self.assertIn("if ! apt-get update --error-on=any; then", install)
-                self.assertIn("s#http://archive\\.ubuntu\\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g", install)
-                self.assertIn("s#http://security\\.ubuntu\\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g", install)
-                self.assertIn("/etc/apt/sources.list.d/ubuntu.sources", install)
-                self.assertEqual(install.count("apt-get update --error-on=any"), 2)
+                self.assertRegex(install, r"(?m)^\s*apt-get update --error-on=any\s*$")
 
     def test_ccache_is_installed_before_the_ccache_action_runs(self) -> None:
         # GIVEN ccache-action v1.2.24 installs a missing ccache without refreshing the package

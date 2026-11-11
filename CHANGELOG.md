@@ -147,8 +147,7 @@ installs ccache. A tooling test requires every job using the action to install c
 
 The Ubuntu container jobs (`deb` and `ubuntu-rolling-build-and-test`) run `apt-get update --error-on=any`. Plain
 `apt-get update` exits 0 when it fetches nothing, so the runners' failure to resolve `archive.ubuntu.com` on 2026-11-11
-showed only as packages missing at install. A failed refresh is retried once through `azure.archive.ubuntu.com`, the mirror
-GitHub's own Ubuntu runners use. apt still checks the Ubuntu archive signature.
+showed only as packages missing at install.
 
 ## 0.12.92
 
