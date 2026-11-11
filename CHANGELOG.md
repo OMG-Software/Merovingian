@@ -145,6 +145,11 @@ images do not ship ccache, so the action failed on every host-runner job. `ubunt
 `ubuntu-hardened-listener-coverage` and the release's `linux-release-package` now run it after their own dependency step, which
 installs ccache. A tooling test requires every job using the action to install ccache first.
 
+The Ubuntu container jobs (`deb` and `ubuntu-rolling-build-and-test`) run `apt-get update --error-on=any`. Plain
+`apt-get update` exits 0 when it fetches nothing, so the runners' failure to resolve `archive.ubuntu.com` on 2026-11-11
+showed only as packages missing at install. A failed refresh is retried once through `azure.archive.ubuntu.com`, the mirror
+GitHub's own Ubuntu runners use. apt still checks the Ubuntu archive signature.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
