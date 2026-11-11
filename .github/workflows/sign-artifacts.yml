@@ -11,16 +11,12 @@ on:
         description: 'Name of the artifact to upload after signing'
         required: true
         type: string
-    secrets:
-      gpg_private_key:
-        description: 'ASCII-armored GPG private key for the maintainer signing key'
-        required: true
-      gpg_passphrase:
-        description: 'Passphrase for the GPG private key'
-        required: true
 
 jobs:
   sign:
+    # GPG_PRIVATE_KEY and GPG_PASSPHRASE are secrets of this environment, not of
+    # the repository, so only a ref the environment admits can read them (ADR-0614).
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,8 +24,8 @@ jobs:
       - name: Import maintainer GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
         with:
-          gpg_private_key: ${{ secrets.gpg_private_key }}
-          passphrase: ${{ secrets.gpg_passphrase }}
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Download unsigned artifacts
         uses: actions/download-artifact@v4
@@ -39,7 +35,7 @@ jobs:
 
       - name: Create detached GPG signatures
         env:
-          GPG_PASSPHRASE: ${{ secrets.gpg_passphrase }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           for f in signed-assets/*; do
             [ -f "$f" ] || continue

@@ -3033,6 +3033,12 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **Residual risk:** servers can reach different verdicts on one redaction, depending on when each sees a demotion. A
   redaction sent before a demotion and first judged after it stays withheld.
 
+### A release signed from any ref (0.12.92, ADR-0614)
+
+The GPG key was a repository secret, so a workflow on any pushed branch or tag could read it, and `release.yml` published
+any commit whose version matched the tag. The key is now a secret of the `release` environment, read by one job, and a tag
+must name a commit on `main`. Someone who can push to `main` is outside this control; the `main` ruleset covers them.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes

@@ -2,6 +2,12 @@
 
 Release-gate audit, medium findings
 
+### The release signing key is held by an environment, and a tag must be on main (ADR-0614)
+
+The job that signs now runs in the `release` environment, so the key can move out of the repository's secrets, and a
+release tag is refused unless its commit is on `main`. Signing fails until the owner creates the environment and moves the
+secrets into it.
+
 ## 0.12.91
 
 Bound the work one request can hold the runtime lock for (release-gate audit, high findings).
