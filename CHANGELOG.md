@@ -217,6 +217,23 @@ installed nothing, so the job failed only at `meson: not found`. Both OpenBSD jo
 then three times through `ftp.openbsd.org`, and fails the step naming what is still missing. Tooling tests run it
 against a fake `pkg_add` that always exits 0 and check that no OpenBSD job runs `pkg_add` directly.
 
+### The OpenBSD package ships the thumbnail worker (ADR-0650)
+
+Every OpenBSD package so far shipped without `merovingian-thumbnail-worker`, so OpenBSD servers answered thumbnail
+requests `404`. The CI jobs asked for libjpeg-turbo as `jpeg-turbo`, but OpenBSD's package is `jpeg`; `pkg_add`
+printed "Can't find" and exited 0, and meson, which treats the image libraries as optional, built no worker. The
+package build generates its packing list from what was installed, so nothing noticed.
+
+- Both OpenBSD jobs install `jpeg`, and no longer ask for `jpeg-turbo`, `pkgconf`, `flex` or `openssl`, which base
+  supplies (`pkg-config`, `flex`, LibreSSL) or OpenBSD has no package by.
+- `ci-openbsd-pkg-add.sh` takes `--require-pkg-config` and the jobs require `libsodium`, `libpng16` and
+  `libturbojpeg`, so a missing library fails the install rather than dropping the worker.
+- `build-openbsd-pkg.sh` refuses to package a build missing the server, `merovingian-db-migrate` or either worker,
+  as the FreeBSD and NetBSD builds already did. It also loses a garbled character in its header comment.
+- The OpenBSD CI job now builds the worker, so the thumbnail tests run on OpenBSD for the first time.
+- Tooling tests cover the package names, the library check against a fake `pkg-config`, and the package build's
+  refusal.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
