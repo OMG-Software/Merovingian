@@ -15,7 +15,7 @@ and what has been deliberately dropped.
 
 ## What blocks 1.0.0
 
-**1.0.0 was tagged on 2026-11-11 with the Complement blocker waived, not closed.**
+**1.0.0 is released with the Complement blocker waived, not closed.**
 The owner waived it for 1.0.0 only ([ADR-0648](../adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
 No green Complement run was ever recorded: the last, run 18 at 0.12.64, had one
 unexpected failure, a restricted-join power-level latency race. The gate for

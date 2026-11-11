@@ -11,6 +11,9 @@ Merovingian 1.0.0 is the first production release. It follows the release-gate s
 * SSO login can start, but no route completes it: `complete_sso_login` has no caller. SSO cannot be used.
 * `POST /account/deactivate` ignores `erase`.
 * The aarch64 branch of the seccomp filters was not run on a real kernel.
+* No pre-1.0 database is supported. One from a build up to 0.12.46 is refused at startup. One from 0.12.47 to
+  0.12.93 passes the startup check, but the v1 schema changed until it was frozen at 1.0.0, so it may lack columns
+  and indexes this build uses.
 * The release signing key is read through the `release` environment. The repository owner must restrict that
   environment to `main` and `v*` tags and hold the GPG secrets in it. Until then repository secrets remain readable by
   it.
@@ -27,6 +30,9 @@ Merovingian 1.0.0 is the first production release. It follows the release-gate s
 * `SECURITY.md`: the latest 1.x release is supported; 0.x releases are not.
 * `migrations/AGENTS.md`, `src/database/AGENTS.md`, `docs/database-persistence.md`, `docs/release-process.md` and
   `tests/fixtures/upgrade/README.md`: the v1 schema is frozen now, and a schema change is a new numbered migration.
+  `docs/release-process.md` now says which pre-1.0 databases are refused at startup (those up to 0.12.46, by the
+  schema ledger check), and that later ones pass it without being supported.
+* `docs/todos/production-milestone.md` no longer gives a tag date before the tag exists.
 * `packaging/` RPM spec descriptions and the FreeBSD manifest no longer call the project beta.
 
 ## 0.12.93

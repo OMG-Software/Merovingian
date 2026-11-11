@@ -106,11 +106,16 @@ Then add scenarios to `tests/integration/test_database_upgrade_flow.cpp` that op
 fixture and serve it, and remove the previous fixture directory. Never regenerate a fixture from current code: it is
 evidence only because the old release wrote it.
 
-A pre-1.0 series start added no fixture and no upgrade test. The
-migrations were collapsed into one initial schema in 0.12.47
-([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)), so a
-pre-1.0 database cannot be opened: that change removed the 0.11.13 fixture and
-its scenarios, and there is no fixture until the 1.1 series starts.
+A pre-1.0 series start added no fixture and no upgrade test, and no pre-1.0 database is
+supported. The migrations were collapsed into one initial schema in 0.12.47
+([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)). A database
+written by a build up to 0.12.46 is refused at startup: its schema ledger records migrations
+this build no longer has (`schema_ledger_is_known` in `src/database/Migration.cpp`). A
+database from 0.12.47 onwards records the same v1 step and passes that check, but v1 changed
+seven times before it was frozen (0.12.59 to 0.12.86), and nothing compares a database's
+tables with this build's, so such a database may lack columns and indexes this build uses.
+The 0.12.47 collapse also removed the 0.11.13 upgrade fixture and its scenarios; there is no
+fixture until the 1.1 series starts.
 
 ### The v1 schema is frozen from 1.0.0
 
