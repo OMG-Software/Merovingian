@@ -100,6 +100,7 @@ SCENARIO("a receipt EDU naming rooms this server is not in reads one membership 
         add_filler_memberships(large.runtime, 6000U);
         auto const content = receipt_for_rooms("ghost", 300U);
 
+        // The same EDU against a small and a large table: equal row counts show the lookup does not scan.
         WHEN("the EDU is delivered to each")
         {
             auto& small_store = small.runtime.homeserver.database.persistent_store;
@@ -138,6 +139,7 @@ SCENARIO("a receipt EDU naming rooms this server is not in reads one membership 
                                         receipt_for_rooms("ghost", 600U));
             auto const rows = store.membership_rows_examined.value() - before;
 
+            // The rows read stop at the cap, so the size of the EDU cannot raise the cost.
             THEN("only the first max_inbound_receipt_rooms_per_edu rooms are looked at")
             {
                 REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
@@ -161,6 +163,7 @@ SCENARIO("a receipt EDU naming rooms this server is not in reads one membership 
         }
         content += "}";
 
+        // Under the caps nothing changes: legitimate receipts are still stored.
         WHEN("the receipt EDU naming the 5 rooms is delivered")
         {
             auto const result =
@@ -196,6 +199,7 @@ SCENARIO("a receipt EDU naming rooms this server is not in reads one membership 
                 deliver(started.runtime, merovingian::federation::EduType::receipt, "m.receipt", content);
             auto const rows = store.membership_rows_examined.value() - before;
 
+            // The user cap applies across the EDU, so many users in one room stop at it too.
             THEN("one room lookup and only max_inbound_receipt_users_per_edu user lookups are made")
             {
                 REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
@@ -230,6 +234,7 @@ SCENARIO("a direct-to-device EDU naming users that do not exist reads one user r
             auto const result = deliver(started.runtime, merovingian::federation::EduType::direct_to_device,
                                         "m.direct_to_device", content);
 
+            // Every name is unknown, so the user index answers and the device table is never read.
             THEN("each user costs one lookup, no device row is read, and nothing is queued")
             {
                 REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
@@ -261,6 +266,7 @@ SCENARIO("a direct-to-device EDU naming users that do not exist reads one user r
             std::ignore = deliver(started.runtime, merovingian::federation::EduType::direct_to_device,
                                   "m.direct_to_device", content);
 
+            // Past the cap the rest of the EDU is dropped, not looked up.
             THEN("only max_inbound_direct_to_device_users users are looked up")
             {
                 REQUIRE(store.user_rows_examined.value() - before ==
@@ -276,6 +282,7 @@ SCENARIO("a direct-to-device EDU naming users that do not exist reads one user r
         std::ignore = register_and_login_alice(started.runtime);
         auto& store = started.runtime.homeserver.database.persistent_store;
 
+        // The caps must not change delivery to real devices, addressed by name or by wildcard.
         WHEN("the two EDUs are delivered")
         {
             auto const named = deliver(

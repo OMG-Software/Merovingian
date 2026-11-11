@@ -88,6 +88,7 @@ SCENARIO("a key backup upload that would take the user over the session cap is r
         auto const token = merovingian::tests::register_and_login_alice(runtime);
         REQUIRE(create_version(runtime, token).status == 200U);
 
+        // The boundary: a batch of exactly the cap must fit.
         WHEN("a batch of exactly the cap is uploaded")
         {
             auto const response = put_batch(runtime, token, batch_of("s", 5U));
@@ -100,6 +101,7 @@ SCENARIO("a key backup upload that would take the user over the session cap is r
             }
         }
 
+        // One over the cap is refused before any write, so the batch stores nothing.
         WHEN("a batch one over the cap is uploaded")
         {
             auto const response = put_batch(runtime, token, batch_of("s", 6U));
@@ -112,6 +114,7 @@ SCENARIO("a key backup upload that would take the user over the session cap is r
             }
         }
 
+        // Only additions count: uploading a held session again is never refused.
         WHEN("the user is at the cap and a batch replaces held sessions and adds none")
         {
             REQUIRE(put_batch(runtime, token, batch_of("s", 5U)).status == 200U);
@@ -124,6 +127,7 @@ SCENARIO("a key backup upload that would take the user over the session cap is r
             }
         }
 
+        // A mixed batch is judged net of the sessions it replaces.
         WHEN("the user is at the cap and a batch replaces 3 held sessions and adds 1 new one")
         {
             REQUIRE(put_batch(runtime, token, batch_of("s", 5U)).status == 200U);
