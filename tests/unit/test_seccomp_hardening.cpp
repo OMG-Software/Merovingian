@@ -9,19 +9,23 @@
 #include <catch2/catch_test_macros.hpp>
 
 #ifdef __linux__
-#include <array>
-#include <cerrno>
-#include <csignal>
-#include <cstdint>
-#include <tuple>
-
+#include <fcntl.h>
 #include <linux/audit.h>
 #include <linux/seccomp.h>
+#include <linux/sockios.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <array>
+#include <cerrno>
+#include <csignal>
+#include <cstdint>
+#include <tuple>
+#include <utility>
 
 // #428: personality() is allowed in the seccomp allowlist only for
 // ThreadSanitizer builds (which call personality(ADDR_NO_RANDOMIZE) during
@@ -870,6 +874,263 @@ SCENARIO("decoder seccomp filter confines the thumbnail worker to the stdio "
                 REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_openat));
                 REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_clone));
                 REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_clone));
+            }
+        }
+    }
+}
+
+// Audit run-2, sandbox.decoder-seccomp.fcntl-ioctl-allow-sigio-signal-to-same-uid-processes (ADR-0642) and
+// filesystem-process.decoder-seccomp.path-based-stat-allowed (ADR-0643). These run the real installed filter in a
+// forked child on the real kernel, because the filter has once allowed everything and passed its tests. A control child
+// with no filter makes every call, so a kill below is the filter's doing, not a bad argument's.
+namespace
+{
+enum class FilterProfile
+{
+    none,
+    worker,
+    decoder,
+};
+
+// True when the child that installed `profile` and made `call` survived the call (whatever it returned), false when
+// seccomp killed it with SIGSYS. Any other end fails the test.
+template <typename Call>
+[[nodiscard]] auto child_survives(FilterProfile profile, Call call) -> bool
+{
+    auto pipe_ends = std::array<int, 2>{-1, -1};
+    REQUIRE(::pipe(pipe_ends.data()) == 0);
+    auto const pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        auto installed = true;
+        if (profile == FilterProfile::worker)
+        {
+            installed = merovingian::platform::apply_worker_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS);
+        }
+        else if (profile == FilterProfile::decoder)
+        {
+            installed = merovingian::platform::apply_decoder_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS);
+        }
+        if (!installed)
+        {
+            ::syscall(__NR_exit_group, 20);
+            __builtin_unreachable();
+        }
+        std::ignore = call(pipe_ends[0]);
+        ::syscall(__NR_exit_group, 0);
+        __builtin_unreachable();
+    }
+    ::close(pipe_ends[0]);
+    ::close(pipe_ends[1]);
+    auto status = int{};
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    if (WIFSIGNALED(status))
+    {
+        REQUIRE(WTERMSIG(status) == SIGSYS);
+        return false;
+    }
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    return true;
+}
+
+[[nodiscard]] auto fcntl_call(int fd, int command, long argument) -> long
+{
+    return ::syscall(__NR_fcntl, fd, command, argument);
+}
+
+[[nodiscard]] auto ioctl_call(int fd, unsigned long request) -> long
+{
+    auto value = int{0};
+    return ::syscall(__NR_ioctl, fd, request, &value);
+}
+} // namespace
+
+SCENARIO("The decoder and worker seccomp filters refuse every command that arranges signal delivery",
+         "[platform][seccomp][linux][signal_commands]")
+{
+    GIVEN("a forked child on a pipe that installs a real filter before the call")
+    {
+        auto const self = static_cast<long>(::getpid());
+        auto const unsafe_calls = std::array<std::pair<char const*, long (*)(int, long)>, 8>{
+            {
+             {"F_SETOWN",
+                 [](int fd, long pid) {
+                     return fcntl_call(fd, F_SETOWN, pid);
+                 }},
+             {"F_SETOWN_EX",
+                 [](int fd, long) {
+                     return fcntl_call(fd, F_SETOWN_EX, 0);
+                 }},
+             {"F_SETSIG",
+                 [](int fd, long) {
+                     return fcntl_call(fd, F_SETSIG, SIGUSR1);
+                 }},
+             {"F_SETFL O_ASYNC",
+                 [](int fd, long) {
+                     return fcntl_call(fd, F_SETFL, O_ASYNC);
+                 }},
+             {"F_SETFL O_ASYNC|O_NONBLOCK",
+                 [](int fd, long) {
+                     return fcntl_call(fd, F_SETFL, O_ASYNC | O_NONBLOCK);
+                 }},
+             {"FIOASYNC",
+                 [](int fd, long) {
+                     return ioctl_call(fd, FIOASYNC);
+                 }},
+             {"FIOSETOWN",
+                 [](int fd, long) {
+                     return ioctl_call(fd, FIOSETOWN);
+                 }},
+             {"SIOCSPGRP",
+                 [](int fd, long) {
+                     return ioctl_call(fd, SIOCSPGRP);
+                 }},
+             }
+        };
+
+        WHEN("no filter is installed")
+        {
+            THEN("the control child survives each call, so the arguments are not what kills it")
+            {
+                for (auto const& [name, call] : unsafe_calls)
+                {
+                    CAPTURE(name);
+                    REQUIRE(child_survives(FilterProfile::none, [&](int fd) {
+                        return call(fd, self);
+                    }));
+                }
+                REQUIRE(child_survives(FilterProfile::none, [](int fd) {
+                    return ioctl_call(fd, TIOCSPGRP);
+                }));
+            }
+        }
+
+        WHEN("the decoder filter is installed")
+        {
+            THEN("each signalling command is killed by seccomp")
+            {
+                for (auto const& [name, call] : unsafe_calls)
+                {
+                    CAPTURE(name);
+                    REQUIRE_FALSE(child_survives(FilterProfile::decoder, [&](int fd) {
+                        return call(fd, self);
+                    }));
+                }
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return ioctl_call(fd, TIOCSPGRP);
+                }));
+            }
+
+            THEN("the commands a decoder uses are still allowed")
+            {
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return fcntl_call(fd, F_GETFD, 0);
+                }));
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return fcntl_call(fd, F_SETFD, FD_CLOEXEC);
+                }));
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return fcntl_call(fd, F_GETFL, 0);
+                }));
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return fcntl_call(fd, F_SETFL, O_NONBLOCK);
+                }));
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return ioctl_call(fd, FIONREAD);
+                }));
+                REQUIRE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return ioctl_call(fd, TCGETS);
+                }));
+            }
+
+            THEN("a command outside the decoder allowlist is killed even though it signals nothing")
+            {
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return fcntl_call(fd, F_SETPIPE_SZ, 65536);
+                }));
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [](int fd) {
+                    return ioctl_call(fd, FIONBIO);
+                }));
+            }
+        }
+
+        WHEN("the federation worker filter is installed")
+        {
+            THEN("each signalling command is killed by seccomp")
+            {
+                for (auto const& [name, call] : unsafe_calls)
+                {
+                    CAPTURE(name);
+                    REQUIRE_FALSE(child_survives(FilterProfile::worker, [&](int fd) {
+                        return call(fd, self);
+                    }));
+                }
+                REQUIRE_FALSE(child_survives(FilterProfile::worker, [](int fd) {
+                    return ioctl_call(fd, TIOCSPGRP);
+                }));
+            }
+
+            THEN("every other command is still allowed")
+            {
+                REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
+                    return fcntl_call(fd, F_GETFD, 0);
+                }));
+                REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
+                    return fcntl_call(fd, F_SETFL, O_NONBLOCK);
+                }));
+                REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
+                    return fcntl_call(fd, F_SETPIPE_SZ, 65536);
+                }));
+                REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
+                    return ioctl_call(fd, FIONBIO);
+                }));
+                REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
+                    return ioctl_call(fd, FIONREAD);
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("The decoder seccomp filter can stat only a descriptor", "[platform][seccomp][linux][decoder_stat]")
+{
+    GIVEN("a forked child on a pipe that installs the decoder filter before the call")
+    {
+        WHEN("it asks for the status of a path")
+        {
+            THEN("newfstatat and statx are killed by seccomp, and an AT_EMPTY_PATH form is no exception")
+            {
+                struct stat metadata{};
+                REQUIRE(child_survives(FilterProfile::none, [&](int) {
+                    return ::syscall(__NR_newfstatat, AT_FDCWD, "/", &metadata, 0);
+                }));
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [&](int) {
+                    return ::syscall(__NR_newfstatat, AT_FDCWD, "/", &metadata, 0);
+                }));
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [&](int fd) {
+                    return ::syscall(__NR_newfstatat, fd, "/", &metadata, AT_EMPTY_PATH);
+                }));
+                REQUIRE(child_survives(FilterProfile::none, [](int) {
+                    struct statx extended{};
+                    return ::syscall(__NR_statx, AT_FDCWD, "/", 0, STATX_BASIC_STATS, &extended);
+                }));
+                REQUIRE_FALSE(child_survives(FilterProfile::decoder, [](int) {
+                    struct statx extended{};
+                    return ::syscall(__NR_statx, AT_FDCWD, "/", 0, STATX_BASIC_STATS, &extended);
+                }));
+            }
+        }
+
+        WHEN("it asks for the status of a descriptor it holds")
+        {
+            THEN("fstat is allowed")
+            {
+                struct stat metadata{};
+                REQUIRE(child_survives(FilterProfile::decoder, [&](int fd) {
+                    return ::syscall(__NR_fstat, fd, &metadata);
+                }));
             }
         }
     }

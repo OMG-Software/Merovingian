@@ -13,21 +13,23 @@
 #include <system_error>
 
 #ifdef __linux__
+#include <fcntl.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <linux/sockios.h>
+#include <sys/ioctl.h>
+#include <sys/prctl.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 #include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <vector>
-
-#include <fcntl.h>
-#include <linux/audit.h>
-#include <linux/filter.h>
-#include <linux/seccomp.h>
-#include <sys/prctl.h>
-#include <sys/socket.h>
-#include <sys/syscall.h>
-#include <unistd.h>
 #endif
 
 namespace merovingian::platform
@@ -718,16 +720,12 @@ namespace
         // fstat only: the fd-based form. Every path-based stat is omitted, as
         // are open/openat/openat2, unlink*, rename*, mkdirat, chdir and
         // getdents64 — a decoder that names a file is already compromised.
+        // newfstatat and statx are omitted too (ADR-0643): both take a path, and no
+        // filter can tell the empty path of an AT_EMPTY_PATH call from an absolute one,
+        // which the kernel resolves whatever descriptor and flags are given.
         __NR_fstat,
-#ifdef __NR_newfstatat
-        // glibc implements fstat() as newfstatat(fd, "", ..., AT_EMPTY_PATH),
-        // so this is required for fstat to work at all on modern glibc.
-        __NR_newfstatat,
-#endif
-#ifdef __NR_statx
-        __NR_statx,
-#endif
-        // stdio buffering probes the descriptor before its first write.
+        // Argument-filtered to an allowlist in argument_check_block (ADR-0642): no
+        // command may set a signal owner or turn on O_ASYNC.
         __NR_fcntl,
         __NR_ioctl,
         // ── Memory ─────────────────────────────────────────────────────────
@@ -810,8 +808,8 @@ namespace
     // for one allowed outright. Loading an argument overwrites the syscall
     // number in the accumulator, so every path through a block ends in its
     // own RET; none may fall through to the next entry.
-    [[nodiscard]] auto argument_check_block(int nr, std::uint32_t own_tgid, std::uint32_t default_action)
-        -> std::vector<::sock_filter>
+    [[nodiscard]] auto argument_check_block(int nr, std::uint32_t own_tgid, std::uint32_t default_action,
+                                            bool decoder_profile) -> std::vector<::sock_filter>
     {
         ::sock_filter const allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
         ::sock_filter const deny = BPF_STMT(BPF_RET | BPF_K, default_action);
@@ -855,6 +853,67 @@ namespace
                 deny,
             };
         }
+        if (nr == __NR_fcntl)
+        {
+            // ADR-0642: no fcntl may arrange signal delivery. A descriptor with an owner (F_SETOWN, F_SETOWN_EX,
+            // F_SETSIG) and O_ASYNC sends the owner a signal when the descriptor next becomes ready, and the kernel
+            // lets a process signal any process of its own uid that way. The kernel reads the command as an unsigned
+            // int: the low word is all of it. F_SETFL's argument is the new flags word, whose O_ASYNC bit is tested.
+            if (decoder_profile)
+            {
+                // An allowlist: the decoder needs descriptor flags and nothing else.
+                return {
+                    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(1U)), // [0] A = cmd
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_GETFD, 6, 0),             // [1] -> [8]
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETFD, 5, 0),             // [2] -> [8]
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_GETFL, 4, 0),             // [3] -> [8]
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_DUPFD_CLOEXEC, 3, 0),     // [4] -> [8]
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETFL, 0, 3),             // [5] else -> [9]
+                    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(2U)), // [6] A = flags word
+                    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_ASYNC, 1, 0),            // [7] O_ASYNC -> [9]
+                    allow,                                                          // [8]
+                    deny,                                                           // [9]
+                };
+            }
+            // The federation worker: every command but the signalling ones. A full allowlist for it (SQLite and
+            // PostgreSQL locks, OpenSSL, getaddrinfo) is not proved by a run, so the denial names exactly what is
+            // unsafe.
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(1U)), // [0] A = cmd
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETOWN, 6, 0),            // [1] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETOWN_EX, 5, 0),         // [2] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETSIG, 4, 0),            // [3] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETFL, 0, 2),             // [4] else -> [7]
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(2U)), // [5] A = flags word
+                BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_ASYNC, 1, 0),            // [6] O_ASYNC -> [8]
+                allow,                                                          // [7]
+                deny,                                                           // [8]
+            };
+        }
+        if (nr == __NR_ioctl)
+        {
+            // ADR-0642: FIOASYNC, FIOSETOWN, SIOCSPGRP and TIOCSPGRP are the ioctl forms of the same signal setup.
+            if (decoder_profile)
+            {
+                // An allowlist: the terminal probe stdio makes, and the pipe's byte count.
+                return {
+                    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(1U)), // [0] A = request
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TCGETS, 2, 0),              // [1] -> [4]
+                    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIONREAD, 1, 0),            // [2] -> [4]
+                    deny,                                                           // [3]
+                    allow,                                                          // [4]
+                };
+            }
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(1U)), // [0] A = request
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOASYNC, 4, 0),            // [1] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOSETOWN, 3, 0),           // [2] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIOCSPGRP, 2, 0),           // [3] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSPGRP, 1, 0),           // [4] -> [6]
+                allow,                                                          // [5]
+                deny,                                                           // [6]
+            };
+        }
         if (nr == __NR_prlimit64)
         {
             // Read-only, on itself: pid 0 or its own pid, and a NULL new limit
@@ -877,8 +936,8 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto build_seccomp_program(std::span<int const> allowed, std::uint32_t default_action)
-        -> std::vector<::sock_filter>
+    [[nodiscard]] auto build_seccomp_program(std::span<int const> allowed, std::uint32_t default_action,
+                                             bool decoder_profile = false) -> std::vector<::sock_filter>
     {
         auto filt = std::vector<::sock_filter>{};
         filt.reserve(4U + (2U * allowed.size()));
@@ -901,7 +960,7 @@ namespace
         auto const own_tgid = static_cast<std::uint32_t>(::getpid());
         for (auto const nr : allowed)
         {
-            auto const block = argument_check_block(nr, own_tgid, default_action);
+            auto const block = argument_check_block(nr, own_tgid, default_action, decoder_profile);
             if (block.empty())
             {
                 filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
@@ -1097,7 +1156,7 @@ auto apply_worker_seccomp_filter_with_default([[maybe_unused]] std::uint32_t def
 auto apply_decoder_seccomp_filter() noexcept -> bool
 {
 #ifdef __linux__
-    return install_seccomp_program(build_seccomp_program(k_decoder_allowed_syscalls, k_seccomp_ret_kill_process),
+    return install_seccomp_program(build_seccomp_program(k_decoder_allowed_syscalls, k_seccomp_ret_kill_process, true),
                                    k_seccomp_ret_kill_process);
 #else
     return false;
@@ -1107,7 +1166,8 @@ auto apply_decoder_seccomp_filter() noexcept -> bool
 auto apply_decoder_seccomp_filter_with_default([[maybe_unused]] std::uint32_t default_action) noexcept -> bool
 {
 #ifdef __linux__
-    return install_seccomp_program(build_seccomp_program(k_decoder_allowed_syscalls, default_action), default_action);
+    return install_seccomp_program(build_seccomp_program(k_decoder_allowed_syscalls, default_action, true),
+                                   default_action);
 #else
     return false;
 #endif

@@ -205,6 +205,14 @@ auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<s
             paths.push_back(*path);
         }
     }
+    // A registration file holds an appservice's as_token and hs_token, which the worker never holds.
+    for (auto const& registration_file : config.appservice().registration_files)
+    {
+        if (!registration_file.empty())
+        {
+            paths.push_back(registration_file);
+        }
+    }
     return paths;
 }
 

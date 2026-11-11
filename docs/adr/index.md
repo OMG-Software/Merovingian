@@ -544,3 +544,7 @@
 * [0613 - An identifier over 255 bytes never reaches a namespace regex](0613-an-identifier-over-255-bytes-never-reaches-a-namespace-regex.md)
 * [0614 - The release signing key belongs to an environment, and a tag must name a commit on main](0614-the-release-signing-key-belongs-to-an-environment-and-a-tag-must-name-a-commit-on-main.md)
 * [0615 - Current state drops a key the resolution does not hold, and keeps a row from outside the graph](0615-current-state-drops-a-key-the-resolution-does-not-hold-and-keeps-a-row-from-outside-the-graph.md)
+* [0640 - A server ACL past its caps or its step budget refuses every server](0640-a-server-acl-past-its-caps-or-its-step-budget-refuses-every-server.md)
+* [0641 - The thumbnail response is bounded by the requested size, whatever the config says](0641-the-thumbnail-response-is-bounded-by-the-requested-size-whatever-the-config-says.md)
+* [0642 - Seccomp refuses the fcntl and ioctl commands that arrange signal delivery](0642-seccomp-refuses-the-fcntl-and-ioctl-commands-that-arrange-signal-delivery.md)
+* [0643 - The decoder profile has no path form of stat](0643-the-decoder-profile-has-no-path-form-of-stat.md)

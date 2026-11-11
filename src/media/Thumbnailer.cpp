@@ -522,6 +522,18 @@ auto normalise_thumbnail_dimensions(ThumbnailerConfig const& config, std::uint32
 namespace
 {
 
+    // The most bytes a legal worker response holds (ADR-0641): the thumbnail is at most width x height RGBA pixels, and
+    // a PNG of it is under twice that, so twice that plus 64 KiB is the ceiling whatever the operator configured. A
+    // configured cap below it applies; 0 (the default, unset by every shipped wiring) no longer means unbounded.
+    [[nodiscard]] auto response_byte_limit(ThumbnailerConfig const& config, std::uint32_t width, std::uint32_t height)
+        -> std::uint64_t
+    {
+        auto const clamped_width = std::min(width, max_thumbnail_dimension);
+        auto const clamped_height = std::min(height, max_thumbnail_dimension);
+        auto const ceiling = std::uint64_t{2U} * 4U * clamped_width * clamped_height + 65536U;
+        return config.max_output_bytes == 0U ? ceiling : std::min(config.max_output_bytes, ceiling);
+    }
+
     // One round trip with a freshly spawned worker: `frame` in, its whole stdout back. Every
     // request takes this path, so a library report runs under the same environment, descriptor
     // sweep, NO_NEW_PRIVS and deadline as a thumbnail.
@@ -708,8 +720,8 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     // LCOV_EXCL_STOP
     auto const& frame = *frame_opt;
 
-    auto const exchange = exchange_with_worker(
-        config, frame, config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) + 32U);
+    auto const output_limit = response_byte_limit(config, dimensions->first, dimensions->second);
+    auto const exchange = exchange_with_worker(config, frame, static_cast<std::size_t>(output_limit) + 32U);
     if (!exchange.setup_failure.empty())
     {
         return {false, 500U, {}, {}, 0U, 0U, exchange.setup_failure};
@@ -737,7 +749,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     switch (response->status)
     {
     case ThumbnailWorkerStatus::ok:
-        if (config.max_output_bytes != 0U && response->png_bytes.size() > config.max_output_bytes)
+        if (response->png_bytes.size() > output_limit)
         {
             return {false, 502U, {}, {}, 0U, 0U, "thumbnail exceeds output limit"};
         }

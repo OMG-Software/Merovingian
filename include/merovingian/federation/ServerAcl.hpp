@@ -7,6 +7,7 @@
 #include "merovingian/federation/ServerAclEvaluation.hpp"
 #include "merovingian/federation/ServerAclEvent.hpp"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +15,15 @@
 
 namespace merovingian::federation
 {
+
+// The most patterns (allow and deny together) and the longest pattern an ACL may hold to be evaluated. A server name is
+// at most 255 bytes and the event is at most 64 KiB; an ACL past either cap refuses every server (ADR-0640).
+inline constexpr auto server_acl_max_patterns = std::size_t{4096U};
+inline constexpr auto server_acl_max_pattern_length = std::size_t{255U};
+
+// The glob steps one ACL check may spend over all of its patterns. A real ACL needs about the pattern count times the
+// server name length; past this the check stops and refuses the server (ADR-0640).
+inline constexpr auto server_acl_max_glob_steps = std::size_t{1'000'000U};
 
 // Parses the content of an m.room.server_acl state event. Missing or
 // malformed fields fall back to the spec defaults (empty lists, allow

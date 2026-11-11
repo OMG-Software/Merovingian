@@ -210,6 +210,26 @@ contain, not for the kind of process that installs them** — a new isolated
 child process gets its own profile unless its syscall needs are genuinely
 identical to an existing one. See
 [ADR-0053](adr/0053-the-thumbnail-decoder-gets-its-own-syscall-profile.md).
+
+**Signal delivery and path-based stat (0.12.93).** Two things the paragraph above
+said were denied were not. The decoder profile allowed `fcntl` and `ioctl` for
+every command, so a taken-over decoder could set a signal owner and `O_ASYNC` on
+its pipe and have the kernel signal any process of the server's uid (the server,
+the federation worker) when the pipe was next ready; and it allowed `newfstatat`
+and `statx`, which take a path. Now `fcntl` and `ioctl` are argument-filtered in
+`argument_check_block`. The decoder has an allowlist (`F_GETFD`, `F_SETFD`,
+`F_GETFL`, `F_DUPFD_CLOEXEC`, `F_SETFL` without `O_ASYNC`; `TCGETS`, `FIONREAD`);
+the federation worker is killed on exactly the signalling commands (`F_SETOWN`,
+`F_SETOWN_EX`, `F_SETSIG`, `F_SETFL` with `O_ASYNC`, `FIOASYNC`, `FIOSETOWN`,
+`SIOCSPGRP`, `TIOCSPGRP`) and keeps the rest, because a full allowlist for it was
+not proved by a run (ADR-0642). The main server's own profile is unchanged. The
+decoder keeps `fstat` and has no `newfstatat` or `statx`: a filter cannot read the
+path, and an absolute path is resolved whatever descriptor and `AT_EMPTY_PATH` are
+given, so the path forms cannot be made safe by arguments (ADR-0643, which
+corrects ADR-0053). `tests/unit/test_seccomp_hardening.cpp` installs the real
+filters in forked children and checks each command is killed or allowed. The
+parent also reads at most a bounded thumbnail response whatever
+`max_decode_output_bytes` is (ADR-0641).
 * These checks run in `src/main.cpp` before any listener is created.
 
 ### Signal handling and graceful shutdown
@@ -403,7 +423,8 @@ separate process on the same host:
   `database.backend=sqlite`) plus a fixed set of best-effort, read-only or
   read-execute OS-integration paths (CA trust store candidates, resolver
   configuration, NSS/dynamic-linker library directories, timezone data).
-  The master key file, both database URI files, and TLS private keys are
+  The master key file, both database URI files, TLS private keys and every
+  `appservice.registration_files` entry (which hold the appservice tokens) are
   never in the rule set, and the worker refuses to start if any rule covers
   one of them — a rule on a directory grants everything beneath it, so a
   secret kept beside the SQLite database would otherwise be exposed. The CA

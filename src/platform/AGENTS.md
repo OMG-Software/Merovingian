@@ -83,6 +83,14 @@ This module is security-critical. Changes here affect the server's attack surfac
    socket BIO writes without `MSG_NOSIGNAL`, so the default disposition lets one TLS client
    that resets its connection kill the process (HTTP-5).
 
+10. **A seccomp profile that allows `fcntl` or `ioctl` filters the command (ADR-0642).** A descriptor with a signal
+   owner and `O_ASYNC` signals any process of the same uid when it is next ready, which is the one kill route a profile
+   without `kill`/`tgkill` still leaves. `argument_check_block` kills `F_SETOWN`, `F_SETOWN_EX`, `F_SETSIG`, `F_SETFL`
+   with `O_ASYNC`, `FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP` and `TIOCSPGRP` in the worker profile, and gives the decoder an
+   allowlist of commands. A new command for the decoder is added there with a test in `test_seccomp_hardening.cpp` that
+   runs the real filter in a forked child. The decoder has no `newfstatat` or `statx` (ADR-0643): a filter cannot read
+   a path, so only `fstat` is safe.
+
 ## Platform support
 
 Seccomp is Linux-only. On other platforms (`__linux__` not defined), the seccomp functions

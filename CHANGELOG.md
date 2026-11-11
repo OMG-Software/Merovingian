@@ -2,6 +2,34 @@
 
 Release-gate audit, low and informational findings
 
+### A DNS answer longer than its buffer is cut to the buffer
+
+`res_query` can report the full wire length of a truncated answer, which is more than the 4096 bytes it filled. The SRV
+parser now never reads past the buffer: `clamp_srv_answer_length` cuts the reported length, on the glibc and NetBSD
+paths alike, and `parse_srv_answer` parses only what the buffer holds.
+
+### A server ACL is cheap to check and has limits
+
+The ACL glob is a two-pointer match instead of a table, one check spends at most one million glob steps, an ACL of more
+than 4096 patterns or with a pattern over 255 bytes refuses every server, and the parsed ACL is kept per ACL event
+instead of being parsed again on each check (ADR-0640).
+
+### The thumbnail response is bounded by default
+
+The parent no longer reads a thumbnail worker's output without limit when `max_decode_output_bytes` is 0 (its default):
+it reads at most twice the requested thumbnail's raw RGBA size plus 64 KiB (ADR-0641).
+
+### The decoder and worker filters refuse the commands that signal other processes
+
+`fcntl` and `ioctl` are argument-filtered in the thumbnail decoder profile (an allowlist) and the federation worker
+profile (the signalling commands denied): no call can set a signal owner or turn on `O_ASYNC` (ADR-0642). The decoder
+profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053).
+
+### The worker refuses to start with a registration file under a path it may read
+
+`appservice.registration_files` joins the secret paths the federation worker's Landlock check compares with the paths it
+grants, so startup is refused when a registration file (which holds the appservice tokens) lies under one.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a

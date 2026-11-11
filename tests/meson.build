@@ -364,6 +364,7 @@ shell = find_program('sh')
       'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_remote_device_list_cache.cpp',
       'unit/test_federation_server_acl.cpp',
+      'unit/test_federation_server_acl_limits.cpp',
       'unit/test_federation_tls_origin.cpp',
       'unit/test_federation_transactions.cpp',
       'unit/test_security_audit_auth_4.cpp',
