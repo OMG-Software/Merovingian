@@ -5,6 +5,10 @@ on:
     branches: [main, 'codex/**', 'alpha-release']
   pull_request:
     branches: [main]
+  # release.yml calls this workflow for a v* tag, so a release ships the .deb and
+  # .rpm packages these jobs build and gate (ADR-0650). Staging, signing and
+  # publishing `latest` run only for a push to main, so they skip there.
+  workflow_call:
 jobs:
   # ADR-0580: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
   # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
@@ -18,12 +22,25 @@ jobs:
       - name: Let the long jobs queue
         run: "true"
 
+  # A .deb installs only on the Ubuntu release it was built on, because its
+  # sonames come from that release (as for the Fedora RPMs, ADR-0376), so each
+  # supported release gets its own package (ADR-0650).
   deb:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
-    name: Debian package
+    name: Ubuntu ${{ matrix.release }} package
     runs-on: ubuntu-latest
-    container: ubuntu:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: '24.04'
+            image: ubuntu:24.04
+          - release: '26.04'
+            image: ubuntu:26.04
+          - release: rolling
+            image: ubuntu:rolling
+    container: ${{ matrix.image }}
     permissions:
       contents: read
       # Required by actions/attest-build-provenance to publish SLSA
@@ -34,7 +51,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           apt-get update
@@ -50,10 +67,10 @@ jobs:
             libturbojpeg0-dev \
             perl bison flex m4
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
-          key: ccache-deb-${{ github.run_id }}
-          restore-keys: ccache-deb-
+          key: ccache-deb-${{ matrix.release }}-${{ github.run_id }}
+          restore-keys: ccache-deb-${{ matrix.release }}-
       - name: Build .deb
         run: sh scripts/build-deb.sh
       - name: Run the installed package's startup hardening gate
@@ -66,15 +83,40 @@ jobs:
           setpriv --reuid=merovingian --regid=merovingian --init-groups \
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
-      - name: Attest Debian package
-        uses: actions/attest-build-provenance@v2
+      # Every release builds merovingian_<version>_<arch>.deb; the release it
+      # was built on goes into the name, from the image itself, so `rolling`
+      # becomes the number of the release it is today.
+      - name: Name the package after its Ubuntu release
+        run: |
+          . /etc/os-release
+          for f in merovingian_*.deb; do
+            mv "$f" "${f%.deb}-ubuntu${VERSION_ID}.deb"
+          done
+      - name: Attest Ubuntu package
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian_*.deb
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: deb-package
+          name: ubuntu-deb-package-${{ matrix.release }}
           path: merovingian_*.deb
+          if-no-files-found: error
           retention-days: 30
+
+  # The main ruleset requires a check called "Debian package" (the Ubuntu
+  # package's old name), and a matrix job reports one check per release, none
+  # of them with that name.
+  deb-all-releases:
+    name: Debian package
+    needs: deb
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every Ubuntu release to pass
+        env:
+          RESULT: ${{ needs.deb.result }}
+        run: test "${RESULT}" = success
 
   static-linux-fallback:
     needs: queue-after-analyses
@@ -90,7 +132,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           apk add --no-cache \
@@ -121,17 +163,17 @@ jobs:
             pkgconf \
             zlib-static
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-alpine-${{ github.run_id }}
           restore-keys: ccache-alpine-
       - name: Build static Linux fallback tarball
         run: sh scripts/build-static-linux.sh
       - name: Attest static Linux tarball
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*-linux-static-x86_64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: static-linux-fallback-package
           path: |
@@ -173,9 +215,9 @@ jobs:
             libnghttp2-devel \
             catch-devel perl bison flex m4 \
             rpm-build systemd-rpm-macros util-linux
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-rpm-${{ matrix.artifact }}-${{ github.run_id }}
           restore-keys: ccache-rpm-${{ matrix.artifact }}-
@@ -199,7 +241,7 @@ jobs:
       # dependencies.
       - name: Attest RPM package
         id: attest_rpm_1
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -209,7 +251,7 @@ jobs:
       - name: Attest RPM package (retry 1)
         id: attest_rpm_2
         if: steps.attest_rpm_1.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -218,10 +260,10 @@ jobs:
         run: sleep 30
       - name: Attest RPM package (retry 2)
         if: steps.attest_rpm_2.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.rpm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: merovingian-*.rpm
@@ -251,7 +293,7 @@ jobs:
       attestations: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build FreeBSD .pkg
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
@@ -268,10 +310,10 @@ jobs:
             cp scripts/check-startup-hardening-gate.sh /tmp/check-startup-hardening-gate.sh
             su -m nobody -c "sh /tmp/check-startup-hardening-gate.sh /usr/local/bin/merovingian-server"
       - name: Attest FreeBSD package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: freebsd-package
           path: merovingian-*.pkg
@@ -286,7 +328,7 @@ jobs:
       attestations: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build OpenBSD package
         uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
         with:
@@ -295,10 +337,10 @@ jobs:
             pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: sh scripts/build-openbsd-pkg.sh
       - name: Attest OpenBSD package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.tgz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: openbsd-package
           path: merovingian-*.tgz
@@ -313,7 +355,7 @@ jobs:
       attestations: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build NetBSD package
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
@@ -345,10 +387,10 @@ jobs:
             if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.tgz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: netbsd-package
           path: merovingian-*.tgz
@@ -391,9 +433,9 @@ jobs:
             libpng-dev \
             libturbojpeg0-dev \
             perl
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-debian-pkg-${{ github.run_id }}
           restore-keys: ccache-debian-pkg-
@@ -407,10 +449,10 @@ jobs:
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       - name: Attest Debian package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian_*.deb
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: debian-package
           path: merovingian_*.deb
@@ -424,7 +466,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the Docker image
         run: docker build --tag merovingian:ci .
       - name: Run the image's startup hardening gate
@@ -455,8 +497,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: debian-package
           path: debian-package/
@@ -584,9 +626,9 @@ jobs:
             dnf clean metadata
             sleep 15
           done
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-rhel-rpm-${{ github.run_id }}
           restore-keys: ccache-rhel-rpm-
@@ -598,7 +640,7 @@ jobs:
       # (404) Not Found").
       - name: Attest RHEL RPM
         id: attest_rhel_rpm_1
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -608,7 +650,7 @@ jobs:
       - name: Attest RHEL RPM (retry 1)
         id: attest_rhel_rpm_2
         if: steps.attest_rhel_rpm_1.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -617,21 +659,40 @@ jobs:
         run: sleep 30
       - name: Attest RHEL RPM (retry 2)
         if: steps.attest_rhel_rpm_2.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.rpm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rhel-rpm-package
           path: merovingian-*.rpm
           retention-days: 30
 
+  # Leap and Tumbleweed ship different library versions, so each gets its own
+  # RPM under its own dist tag (ADR-0650). The Tumbleweed leg keeps the name the
+  # main ruleset requires.
   opensuse-rpm:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
-    name: OpenSUSE Tumbleweed RPM
+    name: OpenSUSE ${{ matrix.flavour }} RPM
     runs-on: ubuntu-latest
-    container: opensuse/tumbleweed
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavour: Tumbleweed
+            image: opensuse/tumbleweed
+            # A rolling release: dup moves the image to the live snapshot.
+            sync: dup
+            dist: .opensuse
+            artifact: opensuse-rpm-package
+          - flavour: Leap 16.0
+            image: opensuse/leap:16.0
+            # A fixed release: update applies its maintenance updates only.
+            sync: update
+            dist: .leap16
+            artifact: opensuse-leap-rpm-package
+    container: ${{ matrix.image }}
     permissions:
       contents: read
       attestations: write
@@ -643,24 +704,23 @@ jobs:
       - name: Install build dependencies
         run: |
           set -e
-          # Transient CDN timeouts fetching Tumbleweed repo metadata are the
-          # most common cause of OpenSUSE CI failures.  Retry refresh + install
-          # a few times before giving up; --gpg-auto-import-keys tolerates key
-          # rotation on the download mirrors.
+          # Transient CDN timeouts fetching repo metadata are the most common
+          # cause of OpenSUSE CI failures.  Retry refresh + install a few times
+          # before giving up; --gpg-auto-import-keys tolerates key rotation on
+          # the download mirrors.
           #
-          # `zypper dup` first syncs every package already on the image
-          # (including runtime libs like libpsl5) to the current repo
-          # snapshot before we ask for anything new. Tumbleweed is a rolling
-          # release built independently of the opensuse/tumbleweed Docker
-          # image, so the image's baked-in package set can briefly outpace
-          # (or lag) the live repo; without this, `zypper install` can hit a
-          # solver conflict (e.g. libcurl-devel needing a pkgconfig(libpsl)
-          # version older than the image's preinstalled libpsl5) that no
-          # amount of retrying the same install resolves, since it isn't a
-          # transient failure.
+          # The sync step (`dup` on Tumbleweed, `update` on Leap) first brings
+          # every package already on the image (including runtime libs like
+          # libpsl5) to the current repo snapshot before we ask for anything
+          # new. The image is built independently of the live repo, so its
+          # baked-in package set can briefly outpace (or lag) it; without this,
+          # `zypper install` can hit a solver conflict (e.g. libcurl-devel
+          # needing a pkgconfig(libpsl) version older than the image's
+          # preinstalled libpsl5) that no amount of retrying the same install
+          # resolves, since it isn't a transient failure.
           for attempt in 1 2 3; do
             if zypper --non-interactive --gpg-auto-import-keys refresh && \
-               zypper --non-interactive dup && \
+               zypper --non-interactive ${{ matrix.sync }} && \
                zypper --non-interactive install -y \
                  ccache clang gcc-c++ meson ninja pkg-config git \
                  libopenssl-devel \
@@ -674,16 +734,19 @@ jobs:
                  rpm-build systemd-rpm-macros; then
               break
             fi
+            if [ "${attempt}" = 3 ]; then
+              exit 1
+            fi
             echo "zypper attempt ${attempt} failed; retrying in 15s"
             sleep 15
           done
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.ccache
-          key: ccache-opensuse-rpm-${{ github.run_id }}
-          restore-keys: ccache-opensuse-rpm-
+          key: ccache-opensuse-rpm-${{ matrix.artifact }}-${{ github.run_id }}
+          restore-keys: ccache-opensuse-rpm-${{ matrix.artifact }}-
           save-always: true
       - name: Configure ccache
         run: |
@@ -697,6 +760,8 @@ jobs:
           echo "CC=ccache clang" >> "$GITHUB_ENV"
           echo "CXX=ccache clang++" >> "$GITHUB_ENV"
       - name: Build OpenSUSE .rpm
+        env:
+          MEROVINGIAN_RPM_DIST: ${{ matrix.dist }}
         run: sh scripts/build-opensuse-rpm.sh
       # See the Fedora RPM job above for why this retries: Sigstore's Rekor
       # transparency log occasionally hasn't replicated an entry by the time
@@ -704,7 +769,7 @@ jobs:
       # (404) Not Found").
       - name: Attest OpenSUSE RPM
         id: attest_opensuse_rpm_1
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -714,7 +779,7 @@ jobs:
       - name: Attest OpenSUSE RPM (retry 1)
         id: attest_opensuse_rpm_2
         if: steps.attest_opensuse_rpm_1.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-path: merovingian-*.rpm
@@ -723,13 +788,14 @@ jobs:
         run: sleep 30
       - name: Attest OpenSUSE RPM (retry 2)
         if: steps.attest_opensuse_rpm_2.outcome == 'failure'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-*.rpm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: opensuse-rpm-package
+          name: ${{ matrix.artifact }}
           path: merovingian-*.rpm
+          if-no-files-found: error
           retention-days: 30
 
   stage-package-assets:
@@ -740,54 +806,69 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      # Each Ubuntu package already names its release (-ubuntu24.04 and so on),
+      # so they can land directly in packages/. All three are required: a
+      # missing one stops staging.
+      - uses: actions/download-artifact@v8
         with:
-          name: deb-package
+          name: ubuntu-deb-package-24.04
           path: packages/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
+        with:
+          name: ubuntu-deb-package-26.04
+          path: packages/
+      - uses: actions/download-artifact@v8
+        with:
+          name: ubuntu-deb-package-rolling
+          path: packages/
+      - uses: actions/download-artifact@v8
         with:
           name: static-linux-fallback-package
           path: packages/
       # Each Fedora RPM carries its release's dist tag (.fc44, .fc45), so their
       # file names are unique and can land directly in packages/.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rpm-package-fc44
           path: packages/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rpm-package-latest
           path: packages/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: freebsd-package
           path: packages/
       # OpenBSD and NetBSD both emit merovingian-<version>.tgz; download to
       # separate dirs and re-suffix so the flat release bundle does not collide.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: openbsd-package
           path: packages-openbsd/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: netbsd-package
           path: packages-netbsd/
-      # Debian trixie and Ubuntu both produce merovingian_<ver>_<arch>.deb;
-      # download to a separate dir and re-suffix to avoid collision.
-      - uses: actions/download-artifact@v4
+      # The Debian trixie job builds merovingian_<ver>_<arch>.deb with no
+      # release in the name; download to a separate dir and re-suffix it.
+      - uses: actions/download-artifact@v8
         with:
           name: debian-package
           path: packages-debian/
-      # RHEL and OpenSUSE RPMs carry distinct dist tags (.el10 / .opensuse) so
-      # their filenames are unique and can land directly in packages/.
-      - uses: actions/download-artifact@v4
+      # RHEL and OpenSUSE RPMs carry distinct dist tags (.el10 / .opensuse /
+      # .leap16) so their filenames are unique and can land directly in packages/.
+      - uses: actions/download-artifact@v8
         with:
           name: rhel-rpm-package
           path: packages/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: opensuse-rpm-package
+          path: packages/
+      - uses: actions/download-artifact@v8
+        with:
+          name: opensuse-leap-rpm-package
           path: packages/
       - name: Disambiguate BSD tarball and Debian package names
         run: |
@@ -816,7 +897,7 @@ jobs:
       - name: Generate checksums
         run: sha256sum packages/* > packages/SHA256SUMS
       - name: Upload unsigned package assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-packages
           path: packages/
@@ -860,7 +941,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: signed-packages
           path: packages/

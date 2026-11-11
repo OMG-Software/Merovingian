@@ -18,7 +18,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
@@ -70,18 +70,18 @@ jobs:
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-linux-release-${{ github.run_id }}
           restore-keys: ccache-linux-release-
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -129,12 +129,12 @@ jobs:
           sha256sum "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
 
       - name: Attest Linux release package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
 
       - name: Upload Linux release package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-${{ github.ref_name }}
           path: |
@@ -144,7 +144,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Linux release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-evidence-linux-${{ github.ref_name }}
           path: release-evidence-linux-x86_64.md
@@ -162,7 +162,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
@@ -184,12 +184,12 @@ jobs:
             printf '%s  %s\n' "${digest}" "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
 
       - name: Attest FreeBSD release package
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
 
       - name: Upload FreeBSD release package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-freebsd-${{ github.ref_name }}
           path: |
@@ -199,36 +199,102 @@ jobs:
           retention-days: 30
 
       - name: Upload FreeBSD release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-evidence-freebsd-${{ github.ref_name }}
           path: release-evidence-freebsd-x86_64.md
           if-no-files-found: warn
           retention-days: 30
 
+  # ADR-0650: the tag's .deb and .rpm packages, one per distribution release,
+  # built, installed and booted by the same jobs as on every pull request.
+  distro-packages:
+    name: Distribution packages
+    needs: check-tag
+    uses: ./.github/workflows/packages.yml
+    # A ceiling for the called jobs, each of which names its own permissions.
+    # contents: write is there only because publish-latest declares it; that job
+    # runs for a push to main and is skipped for a tag.
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+
   stage-release-assets:
     name: Stage unsigned release assets
     needs:
       - linux-release-package
       - freebsd-release-package
+      - distro-packages
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
       - name: Download Linux release package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-linux-${{ github.ref_name }}
           path: release-assets/
       - name: Download FreeBSD release package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-freebsd-${{ github.ref_name }}
           path: release-assets/
+      # Each of these names its distribution release (-ubuntu24.04, .fc44,
+      # .el10, .opensuse, .leap16), so they land side by side. The Debian
+      # trixie package is not among them: the Complement step attaches the
+      # trixie package it tested under that name, and never replaces an asset
+      # (docs/release-process.md, "Complement").
+      - name: Download Ubuntu 24.04 package
+        uses: actions/download-artifact@v8
+        with:
+          name: ubuntu-deb-package-24.04
+          path: release-assets/
+      - name: Download Ubuntu 26.04 package
+        uses: actions/download-artifact@v8
+        with:
+          name: ubuntu-deb-package-26.04
+          path: release-assets/
+      - name: Download Ubuntu rolling package
+        uses: actions/download-artifact@v8
+        with:
+          name: ubuntu-deb-package-rolling
+          path: release-assets/
+      - name: Download Fedora 44 package
+        uses: actions/download-artifact@v8
+        with:
+          name: rpm-package-fc44
+          path: release-assets/
+      - name: Download Fedora latest package
+        uses: actions/download-artifact@v8
+        with:
+          name: rpm-package-latest
+          path: release-assets/
+      - name: Download RHEL-compatible package
+        uses: actions/download-artifact@v8
+        with:
+          name: rhel-rpm-package
+          path: release-assets/
+      - name: Download OpenSUSE Tumbleweed package
+        uses: actions/download-artifact@v8
+        with:
+          name: opensuse-rpm-package
+          path: release-assets/
+      - name: Download OpenSUSE Leap 16.0 package
+        uses: actions/download-artifact@v8
+        with:
+          name: opensuse-leap-rpm-package
+          path: release-assets/
+      - name: Write package checksums
+        working-directory: release-assets
+        run: |
+          for f in *.deb *.rpm; do
+            sha256sum "$f" > "$f.sha256"
+          done
       # Staged before signing, so the SBOM and the licence summary get detached
       # signatures like every package (ADR-0598).
       - name: Generate SBOM
@@ -241,7 +307,7 @@ jobs:
       - name: Generate license summary
         run: python scripts/generate-license-summary.py release-assets/merovingian.licenses.json
       - name: Upload unsigned release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-release-assets
           path: release-assets/*
@@ -280,25 +346,25 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
 
       - name: Download signed release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: signed-release-assets
           path: release-assets/
 
       - name: Download Linux release evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-evidence-linux-${{ github.ref_name }}
           path: release-evidence/
 
       - name: Download FreeBSD release evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: release-evidence-freebsd-${{ github.ref_name }}
@@ -315,6 +381,13 @@ jobs:
 
           - Linux x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
           - FreeBSD x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
+          - `.deb` packages for Ubuntu 24.04 LTS, 26.04 LTS and the current interim release,
+            each named after the release it installs on (`-ubuntu<release>.deb`)
+          - `.rpm` packages for Fedora 44 and the current Fedora (`.fc<release>`), RHEL 10 and
+            compatible distributions (`.el10`), openSUSE Tumbleweed (`.opensuse`) and openSUSE
+            Leap 16.0 (`.leap16`)
+          - each package with a detached GPG signature (`.asc`) and SHA-256 checksum. A package
+            installs only on the release it names
           - SBOM in SPDX 2.3 (`merovingian.spdx.json`) and CycloneDX 1.5 (`merovingian.cdx.json`) JSON, each with a detached GPG signature
           - Machine-readable license summary (`merovingian.licenses.json`) and its detached GPG signature
 
@@ -327,6 +400,8 @@ jobs:
           - the tag names the version in `meson.build`
           - hardened Linux and FreeBSD builds
           - full Meson test suites on both platforms
+          - every Ubuntu, Debian and Fedora package installed and its server booted through the
+            startup hardening gate
           - phase 1 configuration validation on Linux
           - unsafe-source gate
           - release-readiness metadata gate
@@ -334,7 +409,7 @@ jobs:
 
           Verification:
 
-          - SLSA provenance: `gh attestation verify <tarball> --repo OMG-Software/Merovingian`
+          - SLSA provenance: `gh attestation verify <tarball or package> --repo OMG-Software/Merovingian`
           - GPG signature: `gpg --verify <file>.asc <file>` (import the maintainer key from `docs/release-process.md`)
 
           ## Complement
@@ -377,7 +452,7 @@ jobs:
           done
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: release-notes.md
           fail_on_unmatched_files: true

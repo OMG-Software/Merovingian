@@ -92,7 +92,7 @@ class PagesWorkflowTests(unittest.TestCase):
         # GIVEN the documentation site workflow.
         # WHEN a branch that is not main builds the site.
         # THEN the rendered site is kept as a downloadable artifact.
-        self.assertIn("actions/upload-artifact@v4", self.workflow)
+        self.assertIn("actions/upload-artifact@v7", self.workflow)
         self.assertRegex(self.workflow, r"name: docs-site\n\s+path: site/")
 
     def test_only_main_deploys_to_github_pages(self) -> None:
@@ -104,7 +104,7 @@ class PagesWorkflowTests(unittest.TestCase):
         # job holding the Pages and OIDC token permissions.
         self.assertIn("github.ref == 'refs/heads/main'", deploy)
         self.assertIn("github.event_name != 'pull_request'", deploy)
-        self.assertIn("actions/deploy-pages@v4", deploy)
+        self.assertIn("actions/deploy-pages@v5", deploy)
         self.assertIn("pages: write", deploy)
         self.assertIn("id-token: write", deploy)
         self.assertNotIn("pages: write", build)

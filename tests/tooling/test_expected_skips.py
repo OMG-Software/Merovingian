@@ -180,6 +180,11 @@ class AllowListTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             used.update(re.findall(r"--skip-job\s+([A-Za-z0-9_-]+)", text))
             used.update(re.findall(r"check_expected_skips\.py\s+--job\s+([A-Za-z0-9_-]+)", text))
+            # A matrix job names its job in each leg (`skip_job: opensuse-leap`) and passes
+            # `--skip-job ${{ matrix.skip_job }}` (ADR-0650); any other expression could not be read here.
+            for expression in re.findall(r"--skip-job\s+(\$\{\{[^}]*\}\})", text):
+                self.assertEqual(expression, "${{ matrix.skip_job }}", f"{path.name}: unreadable --skip-job")
+            used.update(re.findall(r"^\s+skip_job:[ \t]+([A-Za-z0-9_-]+)[ \t]*$", text, re.MULTILINE))
         self.assertEqual(used, set(self.document["jobs"]))
 
     def test_workflows_that_run_catch2_through_the_build_scripts_pass_a_job(self) -> None:

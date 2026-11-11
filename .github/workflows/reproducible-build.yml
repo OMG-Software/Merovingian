@@ -21,7 +21,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history is not required; only the HEAD commit date is needed.
           fetch-depth: 1

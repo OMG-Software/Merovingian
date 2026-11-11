@@ -141,16 +141,18 @@ class CiWorkflowTests(unittest.TestCase):
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN the Tier 1 Linux distro matrix is checked.
-        # THEN Debian trixie, RHEL-compatible (AlmaLinux 10), and OpenSUSE
-        # Tumbleweed each have a dedicated container job that builds and runs the
-        # full test suite, covering distro-specific package names and glibc versions.
+        # THEN Debian trixie, RHEL-compatible (AlmaLinux 10), the Ubuntu interim
+        # release, and OpenSUSE Tumbleweed and Leap 16.0 each have a container job
+        # that builds and runs the full test suite, covering distro-specific
+        # package names and glibc versions (ADR-0650).
         for job in (
             "debian-build-and-test:",
             "rhel-build-and-test:",
+            "ubuntu-rolling-build-and-test:",
             "opensuse-build-and-test:",
         ):
             self.assertIn(job, workflow)
-        for image in ("debian:trixie", "almalinux:10", "opensuse/tumbleweed"):
+        for image in ("debian:trixie", "almalinux:10", "ubuntu:rolling", "opensuse/tumbleweed", "opensuse/leap:16.0"):
             self.assertIn(image, workflow)
         # THEN each job installs distro-specific library packages.
         self.assertIn("libopenssl-devel", workflow)   # OpenSUSE OpenSSL
@@ -161,7 +163,39 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN each job runs the same Linux build wrapper used by Ubuntu and Fedora.
         self.assertIn("sh scripts/build-linux.sh --builddir build-debian", workflow)
         self.assertIn("sh scripts/build-linux.sh --builddir build-rhel", workflow)
-        self.assertIn("sh scripts/build-linux.sh --builddir build-opensuse", workflow)
+        self.assertIn("sh scripts/build-linux.sh --builddir build-ubuntu-rolling --skip-job ubuntu-rolling", workflow)
+        opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
+        self.assertIn('sh scripts/build-linux.sh --builddir "${BUILDDIR}" --skip-job ${{ matrix.skip_job }}', opensuse)
+        self.assertIn("builddir: build-opensuse\n", opensuse)
+        self.assertIn("builddir: build-opensuse-leap\n", opensuse)
+
+    def test_each_supported_ubuntu_and_opensuse_release_reports_its_own_check(self) -> None:
+        # GIVEN the main ruleset requires checks by exact name, and a matrix job with no
+        # `name` reports "<job> (<values>)" for each leg, which matches none of them.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        ubuntu = workflow.split("\n  ubuntu-build-and-test:")[1].split("\n  ubuntu-rolling-build-and-test:")[0]
+        opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
+
+        # WHEN the Ubuntu and OpenSUSE matrices are read
+        # THEN each leg reports the check its matrix names, one leg keeping the required name.
+        for job in (ubuntu, opensuse):
+            self.assertIn("    name: ${{ matrix.check }}\n", job)
+            self.assertIn("fail-fast: false", job)
+        # AND Ubuntu runs on each LTS runner image by its release, never on ubuntu-latest,
+        # so a label migration cannot drop a release unnoticed (ADR-0650).
+        self.assertIn("runs-on: ${{ matrix.runner }}", ubuntu)
+        self.assertNotIn("ubuntu-latest", ubuntu)
+        for check, runner in (("ubuntu-build-and-test", "ubuntu-26.04"), ("ubuntu-24.04-build-and-test", "ubuntu-24.04")):
+            self.assertIn(f"- check: {check}\n            runner: {runner}\n", ubuntu)
+        # AND each leg keeps its own compiler cache and artifact.
+        self.assertIn("key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}", ubuntu)
+        self.assertIn("name: merovingian-linux-ubuntu${{ matrix.release }}-${{ github.sha }}", ubuntu)
+        # AND OpenSUSE runs Tumbleweed under the required name and Leap 16.0 beside it, Leap
+        # taking maintenance updates rather than a distribution upgrade.
+        self.assertIn("- check: opensuse-build-and-test\n            image: opensuse/tumbleweed\n", opensuse)
+        self.assertIn("- check: opensuse-leap-build-and-test\n            image: opensuse/leap:16.0\n", opensuse)
+        self.assertIn("zypper --non-interactive ${{ matrix.sync }}", opensuse)
+        self.assertIn('if [ "${attempt}" = 3 ]; then', opensuse)
 
     def test_conformance_and_packaging_capability_gates_are_present(self) -> None:
         # GIVEN the repository CI workflow.

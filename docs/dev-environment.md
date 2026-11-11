@@ -225,7 +225,7 @@ CI also produces distro-specific packages via dedicated scripts:
 ```sh
 sh scripts/build-deb.sh           # Debian .deb (also used by deb CI job)
 sh scripts/build-rhel-rpm.sh      # RHEL-compatible RPM (AlmaLinux 10)
-sh scripts/build-opensuse-rpm.sh  # OpenSUSE Tumbleweed RPM
+sh scripts/build-opensuse-rpm.sh  # OpenSUSE Tumbleweed RPM (MEROVINGIAN_RPM_DIST=.leap16 on Leap 16.0)
 sh scripts/build-openbsd-pkg.sh   # OpenBSD .tgz (run inside OpenBSD)
 sh scripts/build-netbsd-pkg.sh    # NetBSD .tgz (run inside NetBSD)
 ```

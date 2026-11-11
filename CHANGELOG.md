@@ -102,6 +102,44 @@ With a policy server configured, a federation origin's decision is kept for 30 s
 ask. When the budget has no place left, an origin the policy server already decided about (within ten minutes) keeps that decision,
 so a peer holding the budget no longer decides the outcome for the others. An origin never decided about is judged as before.
 
+### Each Ubuntu and openSUSE release is built, tested and packaged on its own (ADR-0650)
+
+GitHub moved `ubuntu-latest` to Ubuntu 26.04, so CI had stopped building for Ubuntu 24.04, the documented minimum.
+
+- CI builds and tests Ubuntu 26.04 (`ubuntu-build-and-test`) and 24.04 (`ubuntu-24.04-build-and-test`), each on the
+  runner image named by its release, never `ubuntu-latest`.
+- A new `ubuntu-rolling-build-and-test` does the same for the interim release in `ubuntu:rolling`.
+- openSUSE Leap 16.0 builds beside Tumbleweed (`opensuse-leap-build-and-test`). Leap takes maintenance updates, not a
+  distribution upgrade.
+- Each openSUSE dependency step now fails when its third attempt does.
+- `packages.yml` builds a `.deb` for Ubuntu 24.04, 26.04 and the interim release. Each package is named
+  `-ubuntu<release>.deb`, and each is installed and booted through the startup hardening gate.
+- `deb-all-releases` reports the required "Debian package" check.
+- `packages.yml` also builds an `.rpm` for Leap 16.0 (`.leap16`) beside Tumbleweed's (`.opensuse`).
+  `build-opensuse-rpm.sh` takes its dist tag from `MEROVINGIAN_RPM_DIST`.
+- `latest` carries every one of these packages. A tagged release now carries them too, with a `.sha256` each:
+  `release.yml` calls `packages.yml`. Debian trixie is the exception: the Complement step attaches the trixie package
+  it tested.
+- `tests/expected_skips.json` lists the `ubuntu-rolling` and `opensuse-leap` jobs.
+- The skip-job test reads a matrix's `skip_job:` values.
+
+### Every action runs on Node 24 (ADR-0650)
+
+GitHub deprecated Node 20 for actions. Every action now names a release that runs on Node 24:
+
+- `actions/checkout` v7
+- `upload-artifact` v7
+- `download-artifact` v8
+- `setup-python` v7
+- `cache` v6
+- `deploy-pages` v5
+- `upload-pages-artifact` v5
+- `attest-build-provenance` v4
+- `codecov-action` v7.1.1, `ghaction-import-gpg` v7.0.0, `action-gh-release` v3.0.4 and `ccache-action` v1.2.24, each
+  pinned by commit
+
+Every input passed was checked against each new release.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a
