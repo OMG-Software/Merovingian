@@ -60,7 +60,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates \
             ccache \
-            clang meson ninja-build pkg-config git make binutils \
+            clang meson ninja-build pkg-config git make binutils dpkg-dev \
             libssl-dev \
             libsodium-dev \
             libcurl4-openssl-dev \
@@ -420,6 +420,7 @@ jobs:
             ca-certificates \
             ccache \
             clang \
+            dpkg-dev \
             flex \
             gcc \
             git \

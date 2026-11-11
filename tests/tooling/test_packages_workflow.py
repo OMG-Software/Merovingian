@@ -541,6 +541,30 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertTrue(uses_adduser, "postinst no longer uses adduser; update this test")
         self.assertIn("adduser", packages)
 
+    def test_deb_library_dependencies_come_from_the_release_it_was_built_on(self) -> None:
+        # GIVEN one build-deb.sh builds the Ubuntu 24.04, 26.04 and rolling packages and the
+        # Debian trixie one, and their library package names differ: PR #584's 24.04 package
+        # failed to install on "libturbojpeg0", and the rolling one on "libssl3" (ADR-0650).
+        build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
+        depends = re.search(r"(?m)^Depends: (.*)$", build_script)
+        self.assertIsNotNone(depends, "build-deb.sh writes no Depends line")
+
+        # WHEN the control file's Depends line is read
+        # THEN it names no library package itself: dpkg-shlibdeps derives them from the shipped
+        # binaries on the release building the package.
+        self.assertEqual(depends.group(1), "adduser, ${SHLIBS_DEPENDS}")
+        self.assertRegex(build_script, r"dpkg-shlibdeps -O \$\{ELF_FILES\}")
+        # AND an empty result fails the build instead of shipping a package with no library dependencies.
+        self.assertIn('if [ -z "${SHLIBS_DEPENDS}" ]; then', build_script)
+
+        # AND every job that runs build-deb.sh installs dpkg-shlibdeps' package.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        for job in ("deb", "debian-pkg"):
+            with self.subTest(job=job):
+                body = workflow_job(workflow, job)
+                self.assertIn("sh scripts/build-deb.sh", body)
+                self.assertRegex(body.split("sh scripts/build-deb.sh")[0], r"\bdpkg-dev\b")
+
     def test_deb_does_not_ship_vendored_subproject_files(self) -> None:
         # GIVEN the Debian package build script.
         build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
