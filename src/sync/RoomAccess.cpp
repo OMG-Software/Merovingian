@@ -59,19 +59,14 @@ auto room_access_index(database::PersistentStore const& store, std::string_view 
     // Newest row per room, with the same tie rule as room_access_for: on an equal stream
     // ordering the row stored later wins.
     auto newest = std::map<std::string_view, std::pair<std::uint64_t, std::string_view>, std::less<>>{};
-    for (auto const& membership : store.memberships)
-    {
-        if (membership.user_id != user)
-        {
-            continue;
-        }
+    database::for_each_user_membership_row(store, user, [&newest](database::PersistentMembership const& membership) {
         auto const [found, inserted] = newest.try_emplace(
             membership.room_id, std::pair{membership.stream_ordering, std::string_view{membership.membership}});
         if (!inserted && membership.stream_ordering >= found->second.first)
         {
             found->second = std::pair{membership.stream_ordering, std::string_view{membership.membership}};
         }
-    }
+    });
     auto index = std::map<std::string, RoomAccess, std::less<>>{};
     for (auto const& [room_id, row] : newest)
     {

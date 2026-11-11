@@ -31,6 +31,11 @@ namespace merovingian::push
 // them and end at a real word boundary; a keyword further into a longer body is not found.
 inline constexpr std::size_t max_push_glob_body_bytes = 4096U;
 
+// The longest value a glob condition on a key other than `content.body` is matched against
+// (ADR-0607). The spec matches the entire value, so a longer value cannot be judged on a prefix;
+// it does not match a pattern holding a wildcard. A pattern without one compares equal lengths only.
+inline constexpr std::size_t max_push_glob_key_value_bytes = 4096U;
+
 // The most matcher steps one evaluation (one recipient, one event) spends on `content.body`
 // globs, summed over every rule: content rules and `event_match` conditions on `content.body`.
 // The sender chooses the body and the recipient the patterns, so without it their product, times

@@ -309,6 +309,13 @@ struct PersistentStore final
     // directly (a test) thereby loses speed, never correctness. A row's room never changes in place.
     std::unordered_map<std::string, std::vector<std::size_t>> membership_room_index{};
     std::size_t membership_indexed_rows{0U};
+    // Positions in `memberships` of each user's rows, kept and trusted exactly as `membership_room_index` is
+    // (ADR-0609), behind `for_each_user_membership_row`. `membership_rows_examined` counts the rows those
+    // readers looked at, so a test proves cost by count, not time.
+    std::unordered_map<std::string, std::vector<std::size_t>> membership_user_index{};
+    ExaminedRows membership_rows_examined{};
+    // Event rows the sliding-sync long-poll relevance check walked (ADR-0609).
+    ExaminedRows sync_relevance_rows_examined{};
     // The `events` table, indexed by event ID and by stream order (ADR-0215).
     EventTable events{};
     RedactionState redactions{};
@@ -873,7 +880,13 @@ auto rebuild_forward_extremity_servers(PersistentStore& store) -> void;
 auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,
                                   std::function<void(PersistentMembership const&)> const& visit) -> void;
 
-// Rebuilds the per-room membership index from `memberships`. Called after SQLite/PostgreSQL hydration,
+// Calls `visit` with every row of `memberships` that belongs to `user_id`, in storage order. Walks only that
+// user's rows while the index is in step with `memberships` (ADR-0609), otherwise scans. Adds the rows it
+// looked at to `store.membership_rows_examined`. `visit` must not change `memberships`.
+auto for_each_user_membership_row(PersistentStore const& store, std::string_view user_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void;
+
+// Rebuilds the per-room and per-user membership indexes from `memberships`. Called after SQLite/PostgreSQL hydration,
 // after `reload_room`, after a row is erased, and after any direct edit of the vector that should be fast again.
 auto rebuild_membership_index(PersistentStore& store) -> void;
 

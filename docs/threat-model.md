@@ -2826,7 +2826,7 @@ nothing, all from trusting the worker's view or the hook's transport.
   tree for every page, `/threads` parsed every event on the server and looked roots up linearly, and one long message
   multiplied body length, pattern length and rule count in push matching. **Mitigation:** a state index and a set
   (ADR-0344); a page-bounded walk of at most 4096 rooms and a 10000-event, per-room, hash-keyed thread scan
-  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343).
+  (ADR-0345); a 2^21-step budget per recipient and event over the first 4096 bytes of the body (ADR-0343); globs on other keys draw from the same budget and refuse a wildcard match on a value over 4096 bytes (ADR-0607).
   **Residual risk:** past those bounds a very large space or busy room is answered from its first rooms or newest
   events, and `/members` still walks the server-wide `memberships` vector once. Tests: `[f10]`, `[f32]`, `[f33]`,
   `[f39]`.

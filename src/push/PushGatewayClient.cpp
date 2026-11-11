@@ -93,9 +93,9 @@ namespace
     {
         // "Counts whose value is zero should be omitted."
         auto object = canonicaljson::Object{};
-        if (counts.unread != 0U)
+        if (counts.unread.value_or(0U) != 0U)
         {
-            object.push_back(make_int_member("unread", static_cast<std::int64_t>(counts.unread)));
+            object.push_back(make_int_member("unread", static_cast<std::int64_t>(*counts.unread)));
         }
         if (counts.missed_calls != 0U)
         {

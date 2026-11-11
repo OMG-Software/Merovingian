@@ -1870,6 +1870,7 @@ namespace
         }
         auto const position = store.memberships.size() - 1U;
         store.membership_room_index[store.memberships[position].room_id].push_back(position);
+        store.membership_user_index[store.memberships[position].user_id].push_back(position);
         store.membership_indexed_rows = store.memberships.size();
     }
 
@@ -2518,11 +2519,46 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
 auto rebuild_membership_index(PersistentStore& store) -> void
 {
     store.membership_room_index.clear();
+    store.membership_user_index.clear();
     for (auto position = std::size_t{0U}; position < store.memberships.size(); ++position)
     {
         store.membership_room_index[store.memberships[position].room_id].push_back(position);
+        store.membership_user_index[store.memberships[position].user_id].push_back(position);
     }
     store.membership_indexed_rows = store.memberships.size();
+}
+
+auto for_each_user_membership_row(PersistentStore const& store, std::string_view user_id,
+                                  std::function<void(PersistentMembership const&)> const& visit) -> void
+{
+    if (store.membership_indexed_rows == store.memberships.size())
+    {
+        auto const entry = store.membership_user_index.find(std::string{user_id});
+        if (entry == store.membership_user_index.end())
+        {
+            return;
+        }
+        auto const names_the_user = [&](std::size_t position) {
+            return position < store.memberships.size() && store.memberships[position].user_id == user_id;
+        };
+        if (std::ranges::all_of(entry->second, names_the_user))
+        {
+            store.membership_rows_examined.add(entry->second.size());
+            for (auto const position : entry->second)
+            {
+                visit(store.memberships[position]);
+            }
+            return;
+        }
+    }
+    store.membership_rows_examined.add(store.memberships.size());
+    for (auto const& row : store.memberships)
+    {
+        if (row.user_id == user_id)
+        {
+            visit(row);
+        }
+    }
 }
 
 auto for_each_room_membership_row(PersistentStore const& store, std::string_view room_id,

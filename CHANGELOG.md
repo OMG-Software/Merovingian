@@ -13,6 +13,17 @@ Every accepted PDU resolved all of a room's distinct forward-extremity states ag
 ### One server can hold only its share of a room's forward extremities (ADR-0602)
 
 An accepted event that cites no current tip no longer becomes a tip once its sender's server holds `security.federation.state_resolution.max_state_tips_per_server` (default 32) of the room's tips. It is still stored, delivered and given its state group, but it writes no `current_state` row or membership. An event citing a current tip replaces it and is never refused, and a server is charged only for its own events, so an honest server's ban or demotion still reaches resolution. A message past the limit stays a tip only if it adds no distinct state. A `send_join`, `send_leave` or `send_knock` past the limit is answered 503 with nothing stored, and a retry through a fresh `make_join` succeeds.
+### Push rules: glob conditions on every key share the step budget (ADR-0607)
+
+An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans; a wildcard-free pattern and `event_property_is` are never charged or refused, so the default rules still run when the budget is spent. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
+
+### Push badge: the recipients of one event share a budget (ADR-0608)
+
+The unread badge walked up to 10,000 events per recipient with an http pusher, under the runtime lock, so one message to a busy room cost recipients times a full walk. The recipients of one event now share 10,000 rows and 16 badge computations. A badge that ends uncapped is exact as before. A recipient past the budget is sent the notification without an `unread` count, so the client keeps its last badge, and recipients draw on the budget from a point that moves with the event so the same members are not always the ones skipped. Tests: `[push-badge][gate-h]` in `tests/unit/test_push_badge_count.cpp` and `[push-gateway][gate-h]` in `tests/unit/test_push_gateway_client.cpp`.
+
+### Sliding sync: the long-poll relevance check is bounded (ADR-0609)
+
+A sliding-sync request with a timeout checked each newer event with a scan of every membership row, before it parked, so an account with no room could hold the runtime lock for seconds. The check now builds the caller's joined-room set once, through a new per-user membership index (`for_each_user_membership_row`, also used by `room_access_index` and the push badge), answers at once for an account with no room, and walks at most 2048 events; reaching that cap answers the poll rather than parking it, and the next poll parks. The receipt and typing checks use the same set. Tests: `[gate-h]` in `tests/integration/test_sliding_sync_flow.cpp` and `[membership-user-index]` in `tests/unit/test_sync_notifier.cpp`.
 
 ## 0.12.90
 

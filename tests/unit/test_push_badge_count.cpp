@@ -17,11 +17,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -526,6 +528,138 @@ SCENARIO("A capped push badge over many rooms reads receipts up front and walks 
             {
                 REQUIRE(count.table_walks > 0U);
                 REQUIRE(count.table_walks == single.table_walks);
+            }
+        }
+    }
+}
+
+// Security audit run-2 release gate (ADR-0608): the badges one event causes share one budget, so
+// the work under the lock does not grow with the number of recipients.
+SCENARIO("The badges of one event share a row and call budget", "[push][push-badge][gate-h]")
+{
+    GIVEN("a joined room with 1000 unread messages")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        join_room(store, "!r:example.org");
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        for (auto stream = std::uint64_t{10U}; stream < 1010U; ++stream)
+        {
+            add_message(store, "$r" + std::to_string(stream), "!r:example.org", stream);
+        }
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+        auto const ruleset = merovingian::homeserver::load_push_ruleset(store, alice, 200U);
+
+        WHEN("thirty recipients are counted against one event's budget")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto rows = std::uint64_t{0U};
+            auto walks = std::uint64_t{0U};
+            auto counted = std::uint32_t{0U};
+            auto skipped = std::uint32_t{0U};
+            for (auto recipient = 0; recipient < 30; ++recipient)
+            {
+                auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+                if (!count.has_value())
+                {
+                    ++skipped;
+                    continue;
+                }
+                ++counted;
+                rows += count->rows_visited;
+                walks += count->table_walks;
+                if (recipient < 9)
+                {
+                    REQUIRE(count->unread == 1000U);
+                }
+            }
+
+            THEN("the rows visited stay within the event's budget and the table walks within its call cap")
+            {
+                REQUIRE(rows <= merovingian::homeserver::push_badge_event_row_budget);
+                REQUIRE(walks <= 16U * 3U + 3U);
+                REQUIRE(counted + skipped == 30U);
+                REQUIRE(skipped > 0U);
+            }
+            THEN("recipients past the budget get no count and no walk")
+            {
+                REQUIRE_FALSE(merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget).has_value());
+                REQUIRE_FALSE(
+                    merovingian::homeserver::push_badge_unread_count(runtime, alice, ruleset, budget).has_value());
+            }
+        }
+
+        WHEN("a recipient with a fresh budget is counted")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+
+            THEN("the badge is exact and equals the unbudgeted one")
+            {
+                REQUIRE(count.has_value());
+                REQUIRE_FALSE(count->capped);
+                REQUIRE(count->unread == badge(runtime).unread);
+                REQUIRE(count->unread == 1000U);
+            }
+        }
+
+        WHEN("the event's row budget is already spent")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            budget.rows_left = 0U;
+
+            THEN("there is no count")
+            {
+                REQUIRE_FALSE(
+                    merovingian::homeserver::push_badge_unread_count(runtime, alice, ruleset, budget).has_value());
+            }
+        }
+    }
+}
+
+// The recipients draw on the budget from a point that moves with the event, so the same members are not
+// always the ones left without a count (ADR-0608).
+SCENARIO("Which recipients are left without a badge changes from one event to the next", "[push][push-badge][gate-h]")
+{
+    GIVEN("eighteen recipients and a budget that counts sixteen of them")
+    {
+        auto const recipients = std::size_t{18U};
+        auto const skipped_for = [](std::uint64_t stream_ordering) {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto skipped = std::vector<std::size_t>{};
+            auto const start = merovingian::homeserver::push_badge_draw_start(stream_ordering, recipients);
+            for (auto position = std::size_t{0U}; position < recipients; ++position)
+            {
+                // What count_push_badge does to the budget when it has a call left.
+                if (budget.calls_left == 0U)
+                {
+                    skipped.push_back((start + position) % recipients);
+                    continue;
+                }
+                --budget.calls_left;
+            }
+            std::ranges::sort(skipped);
+            return skipped;
+        };
+
+        WHEN("two events with different stream orderings are delivered")
+        {
+            auto const first = skipped_for(100U);
+            auto const second = skipped_for(101U);
+
+            THEN("two recipients are skipped each time and they are different ones")
+            {
+                REQUIRE(first.size() == 2U);
+                REQUIRE(second.size() == 2U);
+                REQUIRE(first != second);
+            }
+        }
+
+        WHEN("the recipient list is empty")
+        {
+            THEN("the start is zero")
+            {
+                REQUIRE(merovingian::homeserver::push_badge_draw_start(7U, 0U) == 0U);
             }
         }
     }

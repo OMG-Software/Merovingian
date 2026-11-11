@@ -523,3 +523,6 @@
 * [0600 - A room remembers its last resolved state by its distinct state groups](0600-a-room-remembers-its-last-resolved-state-by-its-distinct-state-groups.md)
 * [0601 - Current state is resolved over all tips, never incrementally](0601-current-state-is-resolved-over-all-tips-never-incrementally.md)
 * [0602 - A server is limited to its own share of a room's forward extremities](0602-a-server-is-limited-to-its-own-share-of-a-rooms-forward-extremities.md)
+* [0607 - Glob conditions on every key share the per-evaluation step budget](0607-glob-conditions-on-every-key-share-the-per-evaluation-step-budget.md)
+* [0608 - The badges of one event share one row and call budget](0608-the-badges-of-one-event-share-one-row-and-call-budget.md)
+* [0609 - Sliding sync decides a long-poll wake from the caller's own rooms](0609-sliding-sync-decides-a-long-poll-wake-from-the-callers-own-rooms.md)
