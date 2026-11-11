@@ -1,6 +1,6 @@
 ## 0.12.93
 
-Release-gate audit, low and informational findings
+The low and informational findings of the release-gate audit, and the three it could not settle without a test.
 
 ### A DNS answer longer than its buffer is cut to the buffer
 
@@ -29,6 +29,7 @@ profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0
 
 `appservice.registration_files` joins the secret paths the federation worker's Landlock check compares with the paths it
 grants, so startup is refused when a registration file (which holds the appservice tokens) lies under one.
+
 ### A third-party invite no longer invites a user who blocks invites
 
 `PUT /_matrix/federation/v1/3pid/onbind` and the exchange path now refuse a local invitee whose `m.invite_permission_config`
@@ -66,6 +67,7 @@ ban, is still taken.
 Locking, suspending and deactivating an account write the state change and its audit row in one transaction. If the audit
 row cannot be written the action fails with 500 and changes nothing. Deactivation writes its row when the account is first
 closed, before the credentials are revoked, and a repeat adds none.
+
 ### A removed cached remote file no longer releases its blob twice (ADR-0636)
 
 An administrator's removal of a cached remote file released its blob; evicting the file's cache entry later released it again. A local
