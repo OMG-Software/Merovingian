@@ -256,14 +256,11 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
 }
 
 auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
-                      PushBadgeBudget& budget) -> PushBadgeCount
+                      PushBadgeBudget& budget) -> std::optional<PushBadgeCount>
 {
     if (budget.calls_left == 0U || budget.rows_left == 0U)
     {
-        auto refused = PushBadgeCount{};
-        refused.unread = push_badge_lower_bound;
-        refused.capped = true;
-        return refused;
+        return std::nullopt;
     }
     --budget.calls_left;
     auto const result =
@@ -273,9 +270,10 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
 }
 
 auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
-                             push::PushRuleset const& ruleset, PushBadgeBudget& budget) -> std::uint32_t
+                             push::PushRuleset const& ruleset, PushBadgeBudget& budget) -> std::optional<std::uint32_t>
 {
-    return count_push_badge(runtime, user_id, ruleset, budget).unread;
+    auto const count = count_push_badge(runtime, user_id, ruleset, budget);
+    return count.has_value() ? std::optional<std::uint32_t>{count->unread} : std::nullopt;
 }
 
 auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,

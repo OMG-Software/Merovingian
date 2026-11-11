@@ -767,8 +767,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   table a fixed number of times (`PushBadgeCount::table_walks`), whatever the number of rooms:
   nothing per room may walk a whole table.
   The badges of one event share a `PushBadgeBudget` (10000 rows, 16 calls; ADR-0608): pass the
-  `badge_budget` built per event to every `push_badge_unread_count`, and a recipient past it gets
-  `push_badge_lower_bound` (1) with no walk. Never give each recipient a budget of its own.
+  `badge_budget` built per event to every `push_badge_unread_count`; a recipient past it gets `nullopt` and
+  its notification omits `unread` (never a made-up count, which would overwrite the client's real badge).
+  Recipients draw from `push_badge_draw_start(stream_ordering, n)`, so the skipped ones rotate. Never give each recipient a budget of its own.
 
 ### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
 

@@ -27,15 +27,16 @@ Chosen option: charge per step and refuse an over-long value.
 * It compares ASCII case-insensitively without copying value or pattern, and
   `event_property_as_string` returns a view, so the value is not copied before any bound applies. The same
   applies to `content.body`, `sender` and `room_id`.
-* A pattern without a wildcard checks the lengths first and costs one step per byte only when they are equal.
+* A pattern without a wildcard checks the lengths first and then compares equal lengths. It is never charged and never refused, because its work is bounded by the pattern, which the rule caps bound. Charging it would let a sender whose body exhausts the budget against a recipient's keyword rules silence `.m.rule.message` (`type` equals `m.room.message`), which runs later; those conditions always ran before this decision.
 * A pattern with a wildcard does not match a value over `max_push_glob_key_value_bytes` (4096).
   This is a deliberate departure from the spec, which matches the entire value: the whole value cannot be
   judged on a prefix, as `content.body` can (a body match is "any substring", so a prefix is a sound
   search window). No Matrix identifier, type or msgtype approaches 4096 bytes. Even a pattern of only `*` does not match
   such a value; special-casing it was rejected as complexity for a case no rule needs.
-* `event_property_contains` charges one step per array element before it scans, and `event_property_is`
-  one step. Both do plain scalar compares, but the sender chooses the array length and the recipient the
-  number of conditions.
+* `event_property_contains` charges one step per array element before it scans, because the sender chooses the array
+  length and the recipient the number of conditions. `event_property_is` is one scalar compare and is not charged. An
+  array scan refused for want of budget does not match, so a default rule that reads an array (the user-mention rule)
+  can be lost for that event by a sender who exhausts the budget first.
 
 Charging the worst case up front was rejected: one 4096-byte value against a 510-byte pattern would cost
 about 2 million steps, the whole budget, for a rule that matches in a few steps.

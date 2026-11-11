@@ -4,11 +4,11 @@ Bound the work one request can hold the runtime lock for (release-gate audit, hi
 
 ### Push rules: glob conditions on every key share the step budget (ADR-0607)
 
-An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
+An `event_match` on any key other than `content.body` ran an unbudgeted matcher over a copy of the whole value, so a recipient with 200 rules and a sender with a 60 KB string field could hold the runtime lock for seconds per event. These globs now draw from the same per-event step budget as the body, values are compared as views without copying, and a wildcard pattern does not match a value over 4096 bytes. `event_property_contains` is charged for the array it scans; a wildcard-free pattern and `event_property_is` are never charged or refused, so the default rules still run when the budget is spent. Tests: `[push][security][gate-h]` in `tests/unit/test_push_rules.cpp`.
 
 ### Push badge: the recipients of one event share a budget (ADR-0608)
 
-The unread badge walked up to 10,000 events per recipient with an http pusher, under the runtime lock, so one message to a busy room cost recipients times a full walk. The recipients of one event now share 10,000 rows and 16 badge computations. A badge that ends uncapped is exact as before; a recipient past the budget is sent 1, the notifying event itself. Tests: `[push-badge][gate-h]` in `tests/unit/test_push_badge_count.cpp`.
+The unread badge walked up to 10,000 events per recipient with an http pusher, under the runtime lock, so one message to a busy room cost recipients times a full walk. The recipients of one event now share 10,000 rows and 16 badge computations. A badge that ends uncapped is exact as before. A recipient past the budget is sent the notification without an `unread` count, so the client keeps its last badge, and recipients draw on the budget from a point that moves with the event so the same members are not always the ones skipped. Tests: `[push-badge][gate-h]` in `tests/unit/test_push_badge_count.cpp` and `[push-gateway][gate-h]` in `tests/unit/test_push_gateway_client.cpp`.
 
 ### Sliding sync: the long-poll relevance check is bounded (ADR-0609)
 

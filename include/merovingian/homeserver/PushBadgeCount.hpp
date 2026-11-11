@@ -6,6 +6,7 @@
 #include "merovingian/push/PushRuleset.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace merovingian::homeserver
@@ -60,14 +61,16 @@ struct PushBadgeCount final
 // The badge for one recipient of an event whose recipients share `budget` (ADR-0608). With a call
 // and rows left it is count_push_badge over at most min(budget.rows_left, push_badge_row_budget)
 // rows, and the budget is charged what the walk used; exact whenever it ends uncapped. With
-// either spent it walks nothing and returns push_badge_lower_bound, capped. Call with
+// either spent it walks nothing and returns nullopt: there is no count to send. Call with
 // runtime.mutex held.
 [[nodiscard]] auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id,
-                                    push::PushRuleset const& ruleset, PushBadgeBudget& budget) -> PushBadgeCount;
+                                    push::PushRuleset const& ruleset, PushBadgeBudget& budget)
+    -> std::optional<PushBadgeCount>;
 
-// count_push_badge(runtime, user_id, ruleset, budget).unread.
+// count_push_badge(runtime, user_id, ruleset, budget)'s unread, or nullopt when the budget was spent.
 [[nodiscard]] auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
-                                           push::PushRuleset const& ruleset, PushBadgeBudget& budget) -> std::uint32_t;
+                                           push::PushRuleset const& ruleset, PushBadgeBudget& budget)
+    -> std::optional<std::uint32_t>;
 
 // count_push_badge(...).unread with the default budget.
 [[nodiscard]] auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,

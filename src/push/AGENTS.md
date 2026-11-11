@@ -74,7 +74,8 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
     Every other `event_match` key draws from the same budget (ADR-0607): a pattern with a wildcard does
     not match a value over `max_push_glob_key_value_bytes` (4096), a deliberate departure from the spec's
     whole-value match, since the whole value cannot be judged on a prefix; `event_property_contains`
-    charges its array length and `event_property_is` one step. Values are views, never copied before a bound.
+    charges its array length; a wildcard-free pattern and `event_property_is` are never charged or refused, so the
+    default rules still run when the budget is spent. Values are views, never copied before a bound.
 12. **A user's rules are bounded before they are stored, and again when they are read**
     (ADR-0204). `UserPushRules` refuses a rule past `server.client_api.max_push_rules_per_user`
     and any rule over the per-rule bounds in `UserPushRules.hpp` (ID, pattern and string

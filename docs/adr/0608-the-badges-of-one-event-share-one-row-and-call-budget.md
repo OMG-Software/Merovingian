@@ -25,9 +25,18 @@ Chosen option: a `PushBadgeBudget` per event, shared by its recipients.
 * It holds `push_badge_event_row_budget` (10000) rows and `push_badge_calls_per_event` (16) calls.
   `count_push_badge(runtime, user, ruleset, budget)` takes one call, walks at most
   `min(rows_left, push_badge_row_budget)` rows and charges the rows it visited.
-* A recipient who finds either spent gets `push_badge_lower_bound` (1), the notifying event itself, with
-  `capped` set, and no walk and no setup. That is never above the exact count for a recipient the event
-  notifies. A badge that ends uncapped is exact, as before.
+* A recipient who finds either spent is given no count: `count_push_badge` returns nullopt, the
+  notification's `PushGatewayCounts::unread` is absent and the request omits `unread` (the spec's counts
+  are optional), so the client keeps its last badge. The notification is stored and retried as built, so the
+  omission survives `PushRetry`. A badge that started within budget and saturated or capped keeps ADR-0207's
+  behaviour. An earlier draft sent 1 to such a recipient; in a room with more than 16 pusher recipients the
+  same members, in member order, would have had their real badge overwritten with 1 on every event, so
+  it was rejected.
+* The recipients draw on the budget starting at `stream_ordering % recipient_count`
+  (`push_badge_draw_start`), wrapping, so when the budget runs short the members left without a count change
+  from event to event. Nothing in the recipient loop depends on order: each recipient's checks and caps
+  are its own, the history rows are committed together after the loop, and delivery dispatch groups by
+  recipient (the in-flight cap that drops later deliveries now drops a rotating set too).
 * `EmailPush.cpp` counts one recipient per lock hold with a fresh single-call budget, so it is already
   bounded by one walk. `PushRetry.cpp` calls no badge code: it resends the notification as built, with the count it carried.
 
@@ -46,7 +55,7 @@ membership index of [ADR-0609](0609-sliding-sync-decides-a-long-poll-wake-from-t
 ### Negative Consequences
 
 * In a room with more than 16 pusher recipients, or recipients with deep backlogs, those past the budget are
-  sent a badge of 1 for that event.
+  sent the event without a count, which a client may show as no change to its badge.
 
 ## Links
 

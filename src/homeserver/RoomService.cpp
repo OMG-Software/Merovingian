@@ -8774,8 +8774,14 @@ namespace
             }
         }
 
-        for (auto const& member : recipients)
+        // Recipients draw on the shared badge budget from a point that moves with the event's stream
+        // ordering, so when it runs short the same members are not always the ones left without a count
+        // (ADR-0608). Nothing below depends on the order: each recipient's checks and caps are its own,
+        // and the history rows are committed together after the loop.
+        auto const draw_start = push_badge_draw_start(persisted_stream_ordering, recipients.size());
+        for (auto position = std::size_t{0U}; position < recipients.size(); ++position)
         {
+            auto const& member = recipients[(draw_start + position) % recipients.size()];
             if (member == sender || events::domain_of(member) != server_name)
             {
                 continue;
@@ -8881,7 +8887,9 @@ namespace
 
             // The badge count walks the event table (ADR-0207): only count when an http pusher
             // will carry it. An email reports the count it finds when it is sent.
+            // Absent when the event's badge budget was spent: the notification then omits `unread`.
             auto unread = std::optional<std::uint32_t>{};
+            auto unread_counted = false;
             for (auto const& pusher : pushers)
             {
                 if (pusher.kind == "email")
@@ -8896,14 +8904,15 @@ namespace
                 {
                     continue;
                 }
-                if (!unread.has_value())
+                if (!unread_counted)
                 {
                     unread = push_badge_unread_count(runtime, member, ruleset, badge_budget);
+                    unread_counted = true;
                 }
                 auto notification = push::PushGatewayNotification{};
                 notification.event_id = composed.event_id;
                 notification.room_id = room.room_id;
-                notification.counts = {*unread, 0U};
+                notification.counts = {unread, 0U};
                 notification.prio = "high";
                 auto const event_id_only = pusher.data_format == "event_id_only";
                 if (!event_id_only)

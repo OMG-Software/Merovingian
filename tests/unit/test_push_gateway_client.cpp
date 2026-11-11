@@ -25,7 +25,9 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -549,6 +551,48 @@ SCENARIO("the per-host and per-address in-flight caps are shares of the delivery
                 CHECK(merovingian::push::push_gateway_address_in_flight_cap(config) == 2U);
                 config.max_in_flight_deliveries = 1U;
                 CHECK(merovingian::push::push_gateway_host_in_flight_cap(config) == 1U);
+            }
+        }
+    }
+}
+
+// ADR-0608: a recipient whose event ran out of badge budget has no count, and the notification says
+// nothing about `unread` so the client keeps its last badge; a known count is sent as before.
+SCENARIO("A notification with no unread count omits unread", "[push][push-gateway][gate-h]")
+{
+    GIVEN("a notification whose unread count is absent, and one whose count is known")
+    {
+        auto absent = merovingian::push::PushGatewayNotification{};
+        absent.event_id = "$event:example.org";
+        absent.room_id = "!room:example.org";
+        absent.counts = {std::nullopt, 1U};
+        absent.devices.push_back(merovingian::push::PushGatewayDevice{});
+        auto known = absent;
+        known.counts = {std::optional<std::uint32_t>{5U}, 1U};
+
+        WHEN("the request bodies are built")
+        {
+            auto const counts_of = [](merovingian::push::PushGatewayNotification const& notification) {
+                auto const root = parse_object(merovingian::push::build_notify_request_body(notification));
+                auto const* inner_value = object_member(root, "notification");
+                REQUIRE(inner_value != nullptr);
+                auto const* inner = std::get_if<merovingian::canonicaljson::Object>(&inner_value->storage());
+                REQUIRE(inner != nullptr);
+                auto const* counts_value = object_member(*inner, "counts");
+                REQUIRE(counts_value != nullptr);
+                auto const* counts = std::get_if<merovingian::canonicaljson::Object>(&counts_value->storage());
+                REQUIRE(counts != nullptr);
+                return std::pair{object_member(*counts, "unread") != nullptr,
+                                 object_member(*counts, "missed_calls") != nullptr};
+            };
+
+            THEN("only the known count carries unread")
+            {
+                auto const without = counts_of(absent);
+                auto const with = counts_of(known);
+                REQUIRE_FALSE(without.first);
+                REQUIRE(without.second);
+                REQUIRE(with.first);
             }
         }
     }

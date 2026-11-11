@@ -200,7 +200,7 @@ namespace
     //
     // Evaluation runs per recipient, per event, under runtime.mutex, on values the sender
     // controls, so it allocates nothing and draws from the evaluation's `budget` (ADR-0607):
-    // a pattern without wildcards is a length check and then one pass over equal lengths; a
+    // a pattern without wildcards is a length check and then one pass over equal lengths, never charged; a
     // pattern with one refuses a value over max_push_glob_key_value_bytes (the spec matches the
     // whole value, so a prefix cannot be judged) and otherwise takes one step per turn of the
     // standard greedy matcher, which backtracks only to the last '*' seen. A glob that runs out
@@ -210,7 +210,10 @@ namespace
     {
         if (!has_glob_wildcard(pattern))
         {
-            if (value.size() != pattern.size() || !budget.charge(static_cast<std::uint64_t>(value.size()) + 1U))
+            // Never charged and never refused: constant work bounded by the pattern, which the rule
+            // caps bound, so the default rules (`type` equals `m.room.message`) run however spent
+            // the budget is.
+            if (value.size() != pattern.size())
             {
                 return false;
             }
@@ -543,10 +546,6 @@ namespace
         }
         case PushConditionKind::event_property_is: {
             if (!condition.value.has_value())
-            {
-                return false;
-            }
-            if (!budget.charge(1U))
             {
                 return false;
             }

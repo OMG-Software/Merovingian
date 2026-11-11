@@ -1450,3 +1450,70 @@ SCENARIO("An event_property_contains scan of a large array is charged to the ste
         }
     }
 }
+
+// A sender who exhausts a recipient's glob budget must not silence the rules that need no glob
+// (ADR-0607): a pattern without a wildcard and an event_property_is condition cost constant work
+// bounded by the rule caps, so they always run, and the default `.m.rule.message` is one of them.
+SCENARIO("A spent glob budget does not stop wildcard-free conditions from matching", "[push][security][gate-h]")
+{
+    GIVEN("200 non-matching body globs that exhaust the budget, then a type rule and a property rule")
+    {
+        auto pattern = std::string(511U, '*');
+        pattern += 'z';
+        auto body = std::string{};
+        while (body.size() < 64U * 1024U)
+        {
+            body += "a ";
+        }
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                      Object{str_member("body", body), str_member("msgtype", "m.text")});
+
+        WHEN("the next rule is event_match on type with a wildcard-free pattern")
+        {
+            auto overrides = Array{};
+            for (auto i = 0; i < 200; ++i)
+            {
+                overrides.push_back(make_rule("exhaust" + std::to_string(i), true,
+                                              Array{cond_event_match("content.body", pattern)}, Array{}));
+            }
+            overrides.push_back(make_rule(".m.rule.message", true, Array{cond_event_match("type", "m.room.message")},
+                                          Array{action_notify()}));
+            auto object = Object{};
+            object.push_back(make_member("override", Value{std::move(overrides)}));
+            auto const result =
+                merovingian::push::evaluate_push_rules(merovingian::push::parse_push_ruleset(object), event, context);
+
+            THEN("the budget ran out, and the rule still matches")
+            {
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE(result.notify);
+                REQUIRE(result.matched_rule_id == ".m.rule.message");
+            }
+        }
+
+        WHEN("the next rule is event_property_is on content.msgtype")
+        {
+            auto overrides = Array{};
+            for (auto i = 0; i < 200; ++i)
+            {
+                overrides.push_back(make_rule("exhaust" + std::to_string(i), true,
+                                              Array{cond_event_match("content.body", pattern)}, Array{}));
+            }
+            overrides.push_back(make_rule(
+                "by-property", true, Array{cond_event_property_is("content.msgtype", Value{std::string{"m.text"}})},
+                Array{action_notify()}));
+            auto object = Object{};
+            object.push_back(make_member("override", Value{std::move(overrides)}));
+            auto const result =
+                merovingian::push::evaluate_push_rules(merovingian::push::parse_push_ruleset(object), event, context);
+
+            THEN("the budget ran out, and the rule still matches")
+            {
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE(result.notify);
+                REQUIRE(result.matched_rule_id == "by-property");
+            }
+        }
+    }
+}
