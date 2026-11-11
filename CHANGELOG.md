@@ -46,7 +46,7 @@ A federation worker re-read a whole room for every PDU main accepted. Reloads ar
 
 ### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
 
-Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
+Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ. `build_plan_base` explains each of its steps in comments.
 
 ### Current state drops what the resolution does not hold (ADR-0615)
 

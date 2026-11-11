@@ -223,6 +223,8 @@ namespace
         base.omit_members = omit_members;
         base.room_on_roster = room != nullptr;
 
+        // With omit_members the answer replaces the roster by a summary: the first few members (the hero candidates)
+        // and the servers in the room, each counted once with how many members it has.
         auto first_members = std::unordered_set<std::string_view>{};
         if (omit_members && room != nullptr)
         {
@@ -251,6 +253,8 @@ namespace
                 }
             }
         }
+        // The state list: every current state event, except member events when they are omitted. Those are only
+        // counted, and kept aside when they belong to a hero candidate, whose member event the answer may still need.
         for (auto const& entry : state)
         {
             if (omit_members && entry.event_type == "m.room.member")
@@ -270,6 +274,9 @@ namespace
                                  state_event_sets_text(store, room_id, state, "m.room.canonical_alias", "alias");
         }
 
+        // One breadth-first walk of the auth DAG from the state events. `known` records each event once with its JSON
+        // size (0 until it is found, and for an event this server does not hold, which goes to `missing`), so an event
+        // cited by many others is read once. `cited` is every event some other event names as an auth event.
         auto queue = std::vector<std::string>{};
         auto const visit = [&base, &queue](std::string const& id) {
             if (!id.empty() && base.known.emplace(id, 0U).second)
@@ -298,6 +305,8 @@ namespace
             }
         }
 
+        // Totals for the two lists. Without omit_members the auth chain repeats the state events, as the spec requires;
+        // with it, an event already in the state list is not counted again in the chain.
         auto largest_state_event = std::uint64_t{0U};
         auto in_state = std::unordered_set<std::string_view>{};
         for (auto const& id : base.state_event_ids)
@@ -338,6 +347,8 @@ namespace
         {
             return base;
         }
+        // Even the smallest answer any request could derive is too large: keep only the sizes, so every request for
+        // this room is refused without its lists being built.
         auto verdict = SendJoinPlanBase{};
         verdict.omit_members = omit_members;
         verdict.sizes_only = true;
