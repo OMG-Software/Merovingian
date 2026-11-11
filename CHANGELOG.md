@@ -44,6 +44,34 @@ A federation worker re-read a whole room for every PDU main accepted. Reloads ar
 ### Resent and refused send_joins no longer plan the room's answer (ADR-0624)
 
 Every `send_join` walked the room's whole state and auth chain under the runtime lock, even a resend or one refused because the answer is too large. The room-wide part is now cached per room until its state changes, and each request pays only for what it changes. The answer holds the same events; only the order of `auth_chain` can differ.
+### Current state drops what the resolution does not hold (ADR-0615)
+
+A state key set only on a losing fork, such as a member, a server ACL or a room name, stayed in current state for good. It
+is now removed, on both database backends, and a membership row and the room's roster follow. A row written outside the
+room's graph, such as an invite to a room this server is not in, is kept.
+
+### A join sent by anyone but the user joining is refused (ADR-0612)
+
+The auth rules let any server write a join for a room's creator if it cites only the create event, which put the creator
+back in the room and lifted the limit on what a departed user may read. Such an event is now rejected wherever a remote
+event is admitted. The auth rule itself is unchanged, because it is the spec's and every server must agree on it.
+
+### A very long identifier cannot crash a namespace match (ADR-0613)
+
+`GET /directory/room/{roomAlias}` and `GET /profile/{userId}` passed an identifier of any length to an application
+service's namespace regex, which recursed until the stack ran out. An identifier over 255 bytes now matches no namespace,
+and those two routes answer it with `400 M_INVALID_PARAM`.
+
+### An application service cannot use an administrator's authority (ADR-0611)
+
+An application service asserting a user is now refused on every operator and admin route, whatever user it asserts. A
+namespace covering a server administrator used to give the service those routes.
+
+### The release signing key is held by an environment, and a tag must be on main (ADR-0614)
+
+The job that signs now runs in the `release` environment, so the key can move out of the repository's secrets, and a
+release tag is refused unless its commit is on `main`. Signing fails until the owner creates the environment and moves the
+secrets into it.
 
 ## 0.12.91
 

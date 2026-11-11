@@ -3282,7 +3282,113 @@ namespace
         store.state_indexed_rows = store.state.size();
     }
 
+    // Takes `keys` out of `state`, filling each gap from the end, and leaves the indexes in step (ADR-0615). Only the
+    // rooms that lost or moved a row have their position lists rewritten.
+    auto remove_state_rows_from_mirror(PersistentStore& store, std::string_view room_id,
+                                       std::vector<std::pair<std::string, std::string>> const& keys) -> void
+    {
+        if (store.state_indexed_rows != store.state.size())
+        {
+            rebuild_state_index(store);
+        }
+        auto removed = std::set<std::size_t>{};
+        for (auto const& [event_type, state_key] : keys)
+        {
+            auto const entry = store.state_position_index.find(state_position_key(room_id, event_type, state_key));
+            if (entry != store.state_position_index.end())
+            {
+                removed.insert(entry->second);
+                store.state_position_index.erase(entry);
+            }
+        }
+        if (removed.empty())
+        {
+            return;
+        }
+
+        auto const kept_rows = store.state.size() - removed.size();
+        auto moved = std::unordered_map<std::size_t, std::size_t>{};
+        auto touched_rooms = std::unordered_set<std::string>{std::string{room_id}};
+        auto gap = removed.begin();
+        for (auto position = kept_rows; position < store.state.size(); ++position)
+        {
+            if (removed.contains(position))
+            {
+                continue;
+            }
+            auto& row = store.state[*gap];
+            row = std::move(store.state[position]);
+            store.state_position_index[state_position_key(row.room_id, row.event_type, row.state_key)] = *gap;
+            touched_rooms.insert(row.room_id);
+            moved.emplace(position, *gap);
+            ++gap;
+        }
+        store.state.erase(store.state.begin() + static_cast<std::ptrdiff_t>(kept_rows), store.state.end());
+
+        for (auto const& room : touched_rooms)
+        {
+            auto const entry = store.state_room_index.find(room);
+            if (entry == store.state_room_index.end())
+            {
+                continue;
+            }
+            auto& positions = entry->second;
+            std::erase_if(positions, [&removed](std::size_t position) {
+                return removed.contains(position);
+            });
+            for (auto& position : positions)
+            {
+                if (auto const to = moved.find(position); to != moved.end())
+                {
+                    position = to->second;
+                }
+            }
+            std::ranges::sort(positions);
+            if (positions.empty())
+            {
+                store.state_room_index.erase(entry);
+            }
+        }
+        store.state_indexed_rows = store.state.size();
+    }
+
 } // namespace
+
+auto remove_current_state_rows(PersistentStore& store, std::string_view room_id,
+                               std::vector<std::pair<std::string, std::string>> const& keys,
+                               std::vector<MembershipProjection> const& memberships) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    if (room_id.empty())
+    {
+        return false;
+    }
+    for (auto const& [event_type, state_key] : keys)
+    {
+        statements.push_back(
+            record_statement("delete_current_state",
+                             "DELETE FROM current_state WHERE room_id = $1 AND event_type = $2 AND state_key = $3",
+                             {public_value(room_id), public_value(event_type), public_value(state_key)}));
+    }
+    for (auto const& projection : memberships)
+    {
+        if (!membership_projection_is_valid(projection) ||
+            !append_membership_projection_statements(statements, room_id, projection))
+        {
+            return false;
+        }
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    remove_state_rows_from_mirror(store, room_id, keys);
+    for (auto const& projection : memberships)
+    {
+        apply_membership_projection(store, room_id, projection);
+    }
+    return true;
+}
 
 auto rebuild_state_index(PersistentStore& store) -> void
 {

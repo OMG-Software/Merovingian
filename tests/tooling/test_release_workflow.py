@@ -11,6 +11,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+SIGN_WORKFLOW = WORKFLOWS_DIR / "sign-artifacts.yml"
 STAGE_SCRIPT = REPO_ROOT / "scripts" / "stage-release-tarball.sh"
 
 
@@ -24,9 +26,9 @@ def job_text(workflow: str, job: str) -> str:
     return "".join(lines[start:end])
 
 
-def check_tag_script(workflow: str) -> str:
-    """The shell that the check-tag job's version step runs."""
-    step = job_text(workflow, "check-tag").split("- name: Compare the tag with meson.build", 1)[1]
+def check_tag_script(workflow: str, step_name: str = "Compare the tag with meson.build") -> str:
+    """The shell that one step of the check-tag job runs."""
+    step = job_text(workflow, "check-tag").split(f"- name: {step_name}", 1)[1]
     body = step.split("run: |\n", 1)[1]
     kept = []
     for line in body.splitlines():
@@ -110,6 +112,82 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for refused in (other_version, suffixed, bare):
             self.assertNotEqual(refused[0], 0)
             self.assertEqual(refused[1], "")
+
+    def test_check_tag_fetches_the_history_that_makes_the_ancestor_check_real(self) -> None:
+        # GIVEN the check-tag job (ADR-0614).
+        job = job_text(WORKFLOW.read_text(encoding="utf-8"), "check-tag")
+
+        # WHEN its checkout is read.
+        # THEN it fetches all history, without which origin/main does not exist
+        # on a tag build, and the check comes before the version comparison.
+        self.assertIn("fetch-depth: 0", job)
+        self.assertLess(job.index("- name: Refuse a tag that is not on main"),
+                        job.index("- name: Compare the tag with meson.build"))
+
+    @unittest.skipUnless(shutil.which("sh") and shutil.which("git"), "needs a POSIX sh and git")
+    def test_check_tag_refuses_a_commit_that_is_not_on_main(self) -> None:
+        # GIVEN the shell of the ancestor step, and a repository whose
+        # origin/main holds one commit, with a side commit that main does not.
+        script = check_tag_script(WORKFLOW.read_text(encoding="utf-8"), "Refuse a tag that is not on main")
+        identity = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+
+            def git(*args: str) -> str:
+                return subprocess.run(["git", *identity, *args], cwd=work, capture_output=True, text=True,
+                                      check=True).stdout.strip()
+
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "first")
+            first = git("rev-parse", "HEAD")
+            git("commit", "-q", "--allow-empty", "-m", "on main")
+            on_main = git("rev-parse", "HEAD")
+            git("checkout", "-q", "--detach", first)
+            git("commit", "-q", "--allow-empty", "-m", "on a branch")
+            off_main = git("rev-parse", "HEAD")
+            (work / "step.sh").write_text(script, encoding="utf-8", newline="\n")
+
+            def run(sha: str) -> int:
+                env = dict(os.environ, GITHUB_SHA=sha, GITHUB_REF_NAME="v1.0.0")
+                return subprocess.run([shutil.which("sh"), "-e", "step.sh"], cwd=work, env=env, capture_output=True,
+                                      text=True, check=False).returncode
+
+            # WHEN origin/main is missing, as in a shallow checkout.
+            without_main = run(on_main)
+            git("update-ref", "refs/remotes/origin/main", on_main)
+
+            # AND WHEN tags at each commit are checked.
+            tip, ancestor, branch = run(on_main), run(first), run(off_main)
+
+        # THEN only a commit on main passes, and a missing main refuses.
+        self.assertNotEqual(without_main, 0)
+        self.assertEqual(tip, 0)
+        self.assertEqual(ancestor, 0)
+        self.assertNotEqual(branch, 0)
+
+    def test_the_signing_key_is_read_only_by_the_job_in_the_release_environment(self) -> None:
+        # GIVEN every workflow in the repository (ADR-0614).
+        sign = SIGN_WORKFLOW.read_text(encoding="utf-8")
+        job = job_text(sign, "sign")
+
+        # WHEN the job that imports the key is read.
+        # THEN it declares the release environment, which is what scopes the secret.
+        self.assertIn("    environment: release\n", job)
+        self.assertIn("secrets.GPG_PRIVATE_KEY", job)
+        self.assertIn("secrets.GPG_PASSPHRASE", job)
+
+        # AND no other workflow names the key, and each caller passes secrets
+        # through, since a job calling a reusable workflow cannot declare an environment.
+        for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+            if path == SIGN_WORKFLOW:
+                continue
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                self.assertNotIn("secrets.GPG_", text)
+                if "uses: ./.github/workflows/sign-artifacts.yml" in text:
+                    call = text.split("uses: ./.github/workflows/sign-artifacts.yml", 1)[1]
+                    self.assertIn("    secrets: inherit\n", call)
 
     def test_every_job_waits_for_the_tag_check_and_prerelease_follows_it(self) -> None:
         # GIVEN the repository release workflow.

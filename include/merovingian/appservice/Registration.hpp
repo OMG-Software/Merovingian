@@ -9,6 +9,7 @@
 #include "merovingian/appservice/LoadRegistrationsResult.hpp"
 #include "merovingian/appservice/Namespace.hpp"
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,11 +40,16 @@ namespace merovingian::appservice
 // otherwise this defers to parse_registration_json.
 [[nodiscard]] auto load_registration_file(std::string_view path) -> AppserviceRegistrationParseResult;
 
+// The longest identifier a namespace is matched against: the spec's limit for a user ID and a room alias. std::regex
+// recurses on its input, so nothing longer reaches it (ADR-0613).
+inline constexpr std::size_t max_namespace_match_input_bytes = 255U;
+
 // Matches `value` against `pattern` as a POSIX extended regular expression
 // (spec: "namespace ... regex: A POSIX regular expression"), over the whole
 // identifier (std::regex_match): an unanchored search would let `@_irc_.*`
 // also claim `@evil@_irc_bob:example.org`. An invalid `pattern` never throws —
-// it is treated as matching nothing. This compiles `pattern` on every call;
+// it is treated as matching nothing, and so is a `value` over
+// max_namespace_match_input_bytes. This compiles `pattern` on every call;
 // request paths match through a Namespace, whose pattern is compiled once.
 [[nodiscard]] auto namespace_matches(std::string_view pattern, std::string_view value) noexcept -> bool;
 

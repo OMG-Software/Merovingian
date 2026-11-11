@@ -547,6 +547,13 @@ applies its event to the in-memory store before it releases the stripe. Keep not
 `prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
 itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
 
+## A join sent by another user is refused at receipt (ADR-0612)
+
+The auth rules allow a join for a room's creator citing only the create event, whatever its `sender`, and they must stay
+as the spec writes them. So every path that admits a remote event asks `events::join_names_another_user` after them:
+`ingest_pdu_event` and `verify_and_store_backfilled_event` store a match `rejected`, the membership acceptor answers 403, and
+`authorize_send_join_answer` drops it. A new path that admits a remote event calls it too.
+
 ## Recovering a PDU whose history is missing (A8)
 
 `backfill_missing_pdu_references` (`LocalHttpRouter.cpp`) asks the sending server for what a PDU lacks, using
@@ -724,6 +731,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
   another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
   the same question.
+- `recompute_current_state` removes a key the resolution does not hold, except a row whose event has no state group and
+  that no tip's state names (ADR-0615). `membership_changes` lists the membership rows it corrected: a caller applies each
+  with `apply_membership_to_roster`, after the event's own membership. Pass the event's stream ordering, so `/sync` sees a
+  corrected row.
 - `recompute_current_state` and `store_event_with_bookkeeping` reuse the room's last resolved state while its distinct
   state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
   skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.

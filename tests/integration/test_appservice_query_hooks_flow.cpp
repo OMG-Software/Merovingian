@@ -191,6 +191,86 @@ SCENARIO("an unknown room alias inside an appservice namespace is queried before
     }
 }
 
+// ADR-0613: no identifier over 255 bytes reaches a namespace's regular expression from these unauthenticated routes.
+SCENARIO("A lookup naming an identifier over 255 bytes is refused before any appservice is asked",
+         "[appservice][integration][queryhooks][security][gate-m]")
+{
+    GIVEN("an appservice claiming #_bridge_.* and @_bridge_.*, and a mock server")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-queryhook-long.json";
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto started = merovingian::homeserver::start_client_server(config_with_namespaced_appservice(path, port));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_and_login(runtime, "alice");
+        auto const suffix = std::string{":example.org"};
+        auto const of_length = [&suffix](std::string const& prefix, std::size_t bytes) {
+            return prefix + std::string(bytes - prefix.size() - suffix.size(), 'a') + suffix;
+        };
+        auto const encoded = [](std::string value) {
+            value.replace(0U, 1U, value.front() == '#' ? "%23" : "%40");
+            value.replace(value.find(':'), 1U, "%3A");
+            return value;
+        };
+
+        WHEN("an alias of 256 bytes is resolved")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/directory/room/" + encoded(of_length("#_bridge_", 256U)), token, {}});
+
+            THEN("it is 400 M_INVALID_PARAM")
+            {
+                CHECK(response.response.status == 400U);
+                CHECK(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("a user ID of 256 bytes is looked up, for the profile and for one field")
+        {
+            auto const target = encoded(of_length("@_bridge_", 256U));
+            auto const profile = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/profile/" + target, {}, {}});
+            auto const field = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/profile/" + target + "/displayname", {}, {}});
+
+            THEN("both are 400 M_INVALID_PARAM")
+            {
+                CHECK(profile.response.status == 400U);
+                CHECK(profile.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                CHECK(field.response.status == 400U);
+            }
+        }
+
+        WHEN("an alias of exactly 255 bytes is resolved")
+        {
+            auto captured = std::string{};
+            auto server_thread = std::thread{[&] {
+                run_one_shot_appservice_server(acceptor, tls_mock::json_http_response("404 Not Found", "{}"),
+                                               &captured);
+            }};
+            auto const join = tls_mock::ScopedThreadJoin{server_thread};
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/directory/room/" + encoded(of_length("#_bridge_", 255U)), token, {}});
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("the owning appservice is asked as for any other alias in its namespace")
+            {
+                CHECK(captured.find("/_matrix/app/v1/rooms/") != std::string::npos);
+                CHECK(response.response.status == 404U);
+            }
+        }
+    }
+}
+
 SCENARIO("an unknown alias outside every appservice namespace is not sent to any appservice",
          "[appservice][integration][queryhooks][security]")
 {

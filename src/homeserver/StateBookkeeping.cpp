@@ -8,6 +8,7 @@
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/database/ResolvedStateMemo.hpp"
+#include "merovingian/events/Authorization.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateKey.hpp"
 #include "merovingian/events/StateResolutionRequest.hpp"
@@ -23,8 +24,11 @@
 #include "merovingian/observability/SingleLog.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -537,14 +541,139 @@ namespace
         return key;
     }
 
+    // The rows of `room_id` whose key the resolution does not hold and that came from the room's graph (ADR-0615). A
+    // row whose event has no state group came from the graph only if a tip's state names it, as a snapshot's events do;
+    // otherwise it is an outlier invite or leave the resolution cannot speak to.
+    [[nodiscard]] auto rows_the_resolution_dropped(database::PersistentStore const& store, std::string_view room_id,
+                                                   std::vector<std::string> const& extremities,
+                                                   std::unordered_set<std::string> const& resolved_keys)
+        -> std::vector<database::PersistentStateEvent>
+    {
+        auto dropped = std::vector<database::PersistentStateEvent>{};
+        auto without_group = std::vector<database::PersistentStateEvent>{};
+        if (extremities.empty())
+        {
+            return dropped;
+        }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& row) {
+            if (resolved_keys.contains(state_entry_key(row.event_type, row.state_key)))
+            {
+                return;
+            }
+            (database::find_event_state_group(store, row.event_id).has_value() ? dropped : without_group)
+                .push_back(row);
+        });
+        if (without_group.empty())
+        {
+            return dropped;
+        }
+
+        auto unnamed = std::unordered_set<std::string>{};
+        for (auto const& row : without_group)
+        {
+            unnamed.insert(row.event_id);
+        }
+        auto named = std::unordered_set<std::string>{};
+        auto groups_read = std::unordered_set<std::string>{};
+        for (auto const& extremity : extremities)
+        {
+            auto const group = database::find_event_state_group(store, extremity);
+            if (!group.has_value() || !groups_read.insert(*group).second)
+            {
+                continue;
+            }
+            auto const state = database::read_state_group_full_state(store, *group);
+            if (!state.has_value())
+            {
+                continue;
+            }
+            for (auto const& entry : *state)
+            {
+                if (unnamed.erase(entry.event_id) != 0U)
+                {
+                    named.insert(entry.event_id);
+                }
+            }
+            if (unnamed.empty())
+            {
+                break;
+            }
+        }
+        std::ranges::copy_if(without_group, std::back_inserter(dropped),
+                             [&named](database::PersistentStateEvent const& row) {
+                                 return named.contains(row.event_id);
+                             });
+        return dropped;
+    }
+
+    // The stored event's content.membership, or nullopt.
+    [[nodiscard]] auto membership_of_stored_event(database::PersistentEvent const& event) -> std::optional<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto membership = events::extract_content_membership(parsed.value);
+        return membership.empty() ? std::nullopt : std::optional<std::string>{std::move(membership)};
+    }
+
+    // What the row of a member key this recomputation moved from `previous_event_id` to `resolved_event_id` becomes, if
+    // anything; an empty `resolved_event_id` is a key removed. A row that says other than `join` and is newer than both
+    // events was written with no state behind it (an invite, a federated leave) and stays, as in
+    // reconcile_memberships_with_current_state.
+    [[nodiscard]] auto membership_correction(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string const& user_id, std::string_view previous_event_id,
+                                             std::string_view resolved_event_id, std::uint64_t causing_stream_ordering)
+        -> std::optional<database::MembershipProjection>
+    {
+        auto const* row = database::find_membership_row(store, room_id, user_id);
+        auto membership = std::optional<std::string>{"leave"};
+        auto newest_event = std::uint64_t{0U};
+        if (resolved_event_id.empty())
+        {
+            if (row == nullptr)
+            {
+                return std::nullopt;
+            }
+        }
+        else
+        {
+            auto const resolved = store.events.find(resolved_event_id);
+            if (resolved == store.events.end())
+            {
+                return std::nullopt;
+            }
+            membership = membership_of_stored_event(*resolved);
+            newest_event = resolved->stream_ordering;
+        }
+        if (!membership.has_value())
+        {
+            return std::nullopt;
+        }
+        if (auto const previous = store.events.find(previous_event_id); previous != store.events.end())
+        {
+            newest_event = std::max(newest_event, previous->stream_ordering);
+        }
+        if (row != nullptr &&
+            (row->membership == *membership || (row->membership != "join" && row->stream_ordering > newest_event)))
+        {
+            return std::nullopt;
+        }
+        auto const row_ordering = row == nullptr ? newest_event : row->stream_ordering;
+        return database::MembershipProjection{user_id, std::move(*membership),
+                                              std::max(row_ordering, causing_stream_ordering), std::nullopt};
+    }
+
 } // namespace
 
 auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
-                             rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits)
-    -> CurrentStateRecompute
+                             rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits,
+                             std::uint64_t causing_stream_ordering) -> CurrentStateRecompute
 {
+    auto const extremities = database::find_forward_extremities(store, room_id);
     auto resolution = resolve_extremity_states(
-        store.resolved_state_memo, room_id, policy, limits, database::find_forward_extremities(store, room_id),
+        store.resolved_state_memo, room_id, policy, limits, extremities,
         [&store](std::string const& extremity) {
             return database::find_event_state_group(store, extremity);
         },
@@ -558,7 +687,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
     {
         // F-49: leave the cached current state untouched, and say so.
         log_refused_resolution(room_id, *resolution.refusal);
-        return {CurrentStateRecomputeStatus::refused, std::move(*resolution.refusal)};
+        return {CurrentStateRecomputeStatus::refused, std::move(*resolution.refusal), {}};
     }
     if (!resolution.sorted_group_ids.empty())
     {
@@ -572,19 +701,53 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
     database::for_each_room_state_row(store, room_id, [&current](database::PersistentStateEvent const& row) {
         current[state_entry_key(row.event_type, row.state_key)] = row.event_id;
     });
+    auto corrections = std::vector<database::MembershipProjection>{};
+    auto const correct_membership = [&](std::string const& user_id, std::string_view previous_event_id,
+                                        std::string_view resolved_event_id) {
+        if (auto correction = membership_correction(store, room_id, user_id, previous_event_id, resolved_event_id,
+                                                    causing_stream_ordering);
+            correction.has_value())
+        {
+            corrections.push_back(std::move(*correction));
+        }
+    };
+    auto resolved_keys = std::unordered_set<std::string>{};
+    resolved_keys.reserve(resolution.entries.size());
     for (auto const& entry : resolution.entries)
     {
-        if (auto const held = current.find(state_entry_key(entry.event_type, entry.state_key));
-            held != current.end() && held->second == entry.event_id)
+        auto key = state_entry_key(entry.event_type, entry.state_key);
+        auto const held = current.find(key);
+        if (held == current.end() || held->second != entry.event_id)
         {
-            continue; // unchanged
+            if (!database::store_state(store,
+                                       {std::string{room_id}, entry.event_type, entry.state_key, entry.event_id}))
+            {
+                return {CurrentStateRecomputeStatus::write_failed, {}, {}};
+            }
+            if (entry.event_type == "m.room.member")
+            {
+                correct_membership(entry.state_key, held == current.end() ? std::string_view{} : held->second,
+                                   entry.event_id);
+            }
         }
-        if (!database::store_state(store, {std::string{room_id}, entry.event_type, entry.state_key, entry.event_id}))
-        {
-            return {CurrentStateRecomputeStatus::write_failed, {}};
-        }
+        resolved_keys.insert(std::move(key));
     }
-    return {};
+
+    auto removed_keys = std::vector<std::pair<std::string, std::string>>{};
+    for (auto& row : rows_the_resolution_dropped(store, room_id, extremities, resolved_keys))
+    {
+        if (row.event_type == "m.room.member")
+        {
+            correct_membership(row.state_key, row.event_id, {});
+        }
+        removed_keys.emplace_back(std::move(row.event_type), std::move(row.state_key));
+    }
+    if ((!removed_keys.empty() || !corrections.empty()) &&
+        !database::remove_current_state_rows(store, room_id, removed_keys, corrections))
+    {
+        return {CurrentStateRecomputeStatus::write_failed, {}, {}};
+    }
+    return {CurrentStateRecomputeStatus::resolved, {}, std::move(corrections)};
 }
 
 auto forward_extremities_stay_bounded(database::PersistentStore const& store, std::string_view room_id,

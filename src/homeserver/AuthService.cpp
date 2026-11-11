@@ -1874,7 +1874,8 @@ auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view
     // admin lookup.
     auto const user_id = authenticated_user(const_cast<HomeserverRuntime&>(runtime), access_token);
     auto const* user = user_id.has_value() ? find_user(runtime.database, *user_id) : nullptr;
-    if (user == nullptr || !user->admin)
+    // ADR-0611: an application service asserting a user never holds that user's administrator authority.
+    if (user == nullptr || !user->admin || appservice::decode_masquerade_token(access_token).has_value())
     {
         return std::nullopt;
     }
@@ -1892,6 +1893,11 @@ auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) ->
     if (!user_id.has_value())
     {
         return {std::nullopt, AdminAuthResult::Denial::missing_token};
+    }
+    // ADR-0611: an application service asserting a user never holds that user's administrator authority.
+    if (appservice::decode_masquerade_token(access_token).has_value())
+    {
+        return {std::nullopt, AdminAuthResult::Denial::not_admin};
     }
     auto const* user = find_user(runtime.database, *user_id);
     // The dispatcher sends operator routes here before its general user-token

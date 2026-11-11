@@ -4,6 +4,7 @@ events_sources = files(
   'EventId.cpp',
   'EventSigner.cpp',
   'Redaction.cpp',
+  'MemberJoinSender.cpp',
   'RedactionValidity.cpp',
   'StateResolution.cpp',
   'UnsignedData.cpp',

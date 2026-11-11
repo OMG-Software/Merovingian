@@ -651,7 +651,10 @@ value. Test fixtures that do not exercise persistence select it through
     existing sync wake-up path (`SyncNotifier::publish`, called by the
     ingest caller on an accepted result) stay correct with no separate
     "state diff" plumbing. `current_state` is a cache of this result, never
-    an independent write target, from this path onward.
+    an independent write target, from this path onward. A key the resolution
+    does not hold is deleted with `remove_current_state_rows`, in one
+    transaction with the membership rows it corrects, unless its row's event
+    has no state group and no tip's state names it (ADR-0615).
 
   Wired into `ingest_pdu_event` (`src/homeserver/LocalHttpRouter.cpp`):
   state-before is computed before the event is persisted (a missing

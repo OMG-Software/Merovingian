@@ -3041,6 +3041,35 @@ nothing, all from trusting the worker's view or the hook's transport.
 - **Residual risk:** servers can reach different verdicts on one redaction, depending on when each sees a demotion. A
   redaction sent before a demotion and first judged after it stays withheld.
 
+### A release signed from any ref (0.12.92, ADR-0614)
+
+The GPG key was a repository secret, so a workflow on any pushed branch or tag could read it, and `release.yml` published
+any commit whose version matched the tag. The key is now a secret of the `release` environment, read by one job, and a tag
+must name a commit on `main`. Someone who can push to `main` is outside this control; the `main` ruleset covers them.
+
+### An application service asserting an administrator (0.12.92, ADR-0611)
+
+A registration whose `users` namespace covered a server administrator gave its `as_token` every administrator route.
+`require_admin` and `authenticated_admin_user` now refuse a masquerade token outright. The server-administrator override
+for redactions is judged by user ID and is not covered; the service could send as that user anyway.
+
+### A long identifier against a namespace regex (0.12.92, ADR-0613)
+
+`std::regex` recurses on its input, and two unauthenticated routes gave it a path segment of any length, so one request
+could end the process. The matcher now refuses anything over 255 bytes, the spec's limit for an identifier.
+
+### A forged join for a room's creator (0.12.92, ADR-0612)
+
+The spec's bootstrap clause allows a join for the creator before it looks at the sender. A remote server could use that to
+rejoin a creator who had left. `events::join_names_another_user` refuses such an event on every receipt path. The auth rule
+stays as written, since state resolution re-runs it.
+
+### State from a losing fork (0.12.92, ADR-0615)
+
+Current state was only ever overwritten, so a key that one fork set and the resolution dropped kept taking effect: a member
+stayed joined, a server ACL stayed applied. `recompute_current_state` now removes such keys and corrects the membership
+rows and the roster with them. Nothing is removed when the room has no tips or its resolution is refused.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes
