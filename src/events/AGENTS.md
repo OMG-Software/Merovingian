@@ -14,6 +14,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | `StateResolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
 | `Redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
 | `UnsignedData.cpp` | `without_unsigned` / `without_unsigned_json`: a received PDU without its top-level `unsigned`, which every ingestion path stores it through (ADR-0402) |
+| `MemberJoinSender.cpp` | `join_names_another_user`: one user claiming to join another, refused at receipt and never in the auth rules (ADR-0612) |
 | `RedactionValidity.cpp` | Where a room version keeps `redacts`, and whether a redaction applies to its target ("Handling redactions") |
 
 ## Event IDs are room-version dependent

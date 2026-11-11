@@ -158,6 +158,9 @@ Implemented now:
   store — the ordinary `/send` transaction path above and the membership
   acceptor here — must enforce this gate: a rule enforced on only one of two
   paths into the same store is not enforced at all
+- an `m.room.member` join whose `sender` is not its `state_key` is refused at receipt by `events::join_names_another_user`
+  (`ingest_pdu_event`, backfill, the membership acceptor, a resident's `send_join` answer). The auth rules still allow one
+  for a room's creator, as the spec writes them: state resolution re-runs them (0.12.92, ADR-0612).
 - a resident's answer to this server's `send_join` passes the receipt checks before anything is stored (0.12.70, F-45,
   ADR-0369): a content hash mismatch is redacted, and `authorize_send_join_answer` judges `state` and `auth_chain` in
   dependency order from the answer's own events, dropping what fails and refusing a join the rest does not authorise;

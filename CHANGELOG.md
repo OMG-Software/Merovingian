@@ -2,6 +2,12 @@
 
 Release-gate audit, medium findings
 
+### A join sent by anyone but the user joining is refused (ADR-0612)
+
+The auth rules let any server write a join for a room's creator if it cites only the create event, which put the creator
+back in the room and lifted the limit on what a departed user may read. Such an event is now rejected wherever a remote
+event is admitted. The auth rule itself is unchanged, because it is the spec's and every server must agree on it.
+
 ### A very long identifier cannot crash a namespace match (ADR-0613)
 
 `GET /directory/room/{roomAlias}` and `GET /profile/{userId}` passed an identifier of any length to an application

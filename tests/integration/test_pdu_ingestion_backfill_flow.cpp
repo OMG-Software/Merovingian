@@ -1019,6 +1019,89 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
     }
 }
 
+// ADR-0612: a join naming another user passes the auth rules while it cites only the create event, so a fetched one is
+// refused at receipt like a /send one. It keeps the disposition of an event failing the auth rules.
+SCENARIO("A backfilled join whose sender is not the user joining is stored as rejected",
+         "[pdu_ingestion][backfill][gate-m][forged_join]")
+{
+    GIVEN("a room with a gap, and a peer serving a join for the creator sent by one of its own users")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!backfill-forged:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_id = room_id + ":member";
+        auto const member_bob_id = room_id + ":member:bob";
+
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+        auto const forged = make_remote_event_pdu(room_id, "m.room.member", std::string{local_admin}, remote_member,
+                                                  std::move(content), {create_id}, {create_id}, 3, 10);
+        auto const followup =
+            make_remote_message_pdu(room_id, {forged.event_id}, {create_id, pl_id, member_bob_id}, 4, 20);
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                   certificate.private_key_file);
+        REQUIRE(tls_context_result.ok());
+        auto tls_context = std::move(*tls_context_result.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[remote_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_server || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_runtime();
+        };
+        auto const http_response =
+            merovingian::tests::tls_mock::json_http_response("200 OK", get_missing_events_response(forged.json));
+        auto server_thread = std::thread{[&]() {
+            run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
+        }};
+        [[maybe_unused]] auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("a PDU naming the join as its previous event is ingested")
+        {
+            auto const result = merovingian::homeserver::ingest_pdu_event(runtime, followup);
+            auto const& store = runtime.database.persistent_store;
+
+            THEN("the join is stored as rejected, its after-state keeps the creator's own member event, and the PDU is "
+                 "placed")
+            {
+                CHECK(result.status == PduIngestionStatus::accepted);
+                auto const stored = store.events.find(forged.event_id);
+                REQUIRE(stored != store.events.end());
+                CHECK(stored->status == "rejected");
+                auto const group = merovingian::database::find_event_state_group(store, forged.event_id);
+                REQUIRE(group.has_value());
+                auto const full_state = merovingian::database::read_state_group_full_state(store, *group);
+                REQUIRE(full_state.has_value());
+                auto const creator_entry = std::ranges::find_if(
+                    *full_state, [](merovingian::database::PersistentStateGroupStateEntry const& e) {
+                        return e.event_type == "m.room.member" && e.state_key == local_admin;
+                    });
+                REQUIRE(creator_entry != full_state->end());
+                CHECK(creator_entry->event_id == member_id);
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
 // ADR-0390: an event fetched to fill a gap is held to the operator's policy for the server that wrote it, as one
 // received in /send is. The spec defines no operator-level server deny.
 SCENARIO("A backfilled event written by a server under an admin's deny rule is not stored",

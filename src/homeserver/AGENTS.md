@@ -542,6 +542,13 @@ applies its event to the in-memory store before it releases the stripe. Keep not
 `prepare_store_event_with_state` that releases either lock. `pdu_event_already_stored` takes `runtime.mutex`
 itself, for the `/send` handler's probe and for `handle_pdu_ingest_request`.
 
+## A join sent by another user is refused at receipt (ADR-0612)
+
+The auth rules allow a join for a room's creator citing only the create event, whatever its `sender`, and they must stay
+as the spec writes them. So every path that admits a remote event asks `events::join_names_another_user` after them:
+`ingest_pdu_event` and `verify_and_store_backfilled_event` store a match `rejected`, the membership acceptor answers 403, and
+`authorize_send_join_answer` drops it. A new path that admits a remote event calls it too.
+
 ## Recovering a PDU whose history is missing (A8)
 
 `backfill_missing_pdu_references` (`LocalHttpRouter.cpp`) asks the sending server for what a PDU lacks, using

@@ -32,6 +32,7 @@
 #include "merovingian/events/EventId.hpp"
 #include "merovingian/events/EventSigner.hpp"
 #include "merovingian/events/Limits.hpp"
+#include "merovingian/events/MemberJoinSender.hpp"
 #include "merovingian/events/Redaction.hpp"
 #include "merovingian/events/UnsignedData.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
@@ -2695,6 +2696,11 @@ namespace
                     outcome = MembershipReceiptOutcome::rejected;
                     outcome_reason = "auth_events selection is not permitted for this event";
                 }
+                if (outcome == MembershipReceiptOutcome::accepted && events::join_names_another_user(effective_pdu))
+                {
+                    outcome = MembershipReceiptOutcome::rejected; // ADR-0612
+                    outcome_reason = "a join must be sent by the user joining";
+                }
                 if (outcome == MembershipReceiptOutcome::accepted)
                 {
                     auto auth_events_map = build_auth_event_map_from_entries(
@@ -4300,6 +4306,11 @@ namespace
             outcome = BackfillOutcome::rejected;
             outcome_reason = "auth_events selection is not permitted for this event";
         }
+        if (outcome == BackfillOutcome::accepted && events::join_names_another_user(effective_pdu))
+        {
+            outcome = BackfillOutcome::rejected; // ADR-0612
+            outcome_reason = "a join must be sent by the user joining";
+        }
         auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
@@ -5592,6 +5603,11 @@ namespace
     {
         outcome = ReceiptOutcome::rejected;
         outcome_reason = "auth_events selection is not permitted for this event";
+    }
+    if (outcome == ReceiptOutcome::accepted && events::join_names_another_user(effective_pdu))
+    {
+        outcome = ReceiptOutcome::rejected; // ADR-0612
+        outcome_reason = "a join must be sent by the user joining";
     }
 
     if (outcome == ReceiptOutcome::accepted)

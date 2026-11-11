@@ -3050,6 +3050,12 @@ for redactions is judged by user ID and is not covered; the service could send a
 `std::regex` recurses on its input, and two unauthenticated routes gave it a path segment of any length, so one request
 could end the process. The matcher now refuses anything over 255 bytes, the spec's limit for an identifier.
 
+### A forged join for a room's creator (0.12.92, ADR-0612)
+
+The spec's bootstrap clause allows a join for the creator before it looks at the sender. A remote server could use that to
+rejoin a creator who had left. `events::join_names_another_user` refuses such an event on every receipt path. The auth rule
+stays as written, since state resolution re-runs it.
+
 ### 0.12.71 audit follow-up
 
 - **A remote `unsigned` shown as this server's own (F-70, ADR-0402).** Every path that stores a received PDU removes

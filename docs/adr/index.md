@@ -531,5 +531,6 @@
 * [0605 - A claimed one-time key is erased by moving the last row into the gap](0605-a-claimed-one-time-key-is-erased-by-moving-the-last-row-into-the-gap.md)
 * [0606 - Key backup sessions are indexed and capped per user, counting only what a request adds](0606-key-backup-sessions-are-indexed-and-capped-per-user-net-of-replaced-rows.md)
 * [0611 - An administrator route refuses an application service asserting a user](0611-an-administrator-route-refuses-an-application-service-asserting-a-user.md)
+* [0612 - A join naming another user is refused at receipt, and the auth rule stays as the spec writes it](0612-a-join-naming-another-user-is-refused-at-receipt-and-the-auth-rule-stays-as-the-spec-writes-it.md)
 * [0613 - An identifier over 255 bytes never reaches a namespace regex](0613-an-identifier-over-255-bytes-never-reaches-a-namespace-regex.md)
 * [0614 - The release signing key belongs to an environment, and a tag must name a commit on main](0614-the-release-signing-key-belongs-to-an-environment-and-a-tag-must-name-a-commit-on-main.md)
