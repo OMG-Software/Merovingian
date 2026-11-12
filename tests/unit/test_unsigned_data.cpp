@@ -130,3 +130,40 @@ SCENARIO("Event text is stripped of unsigned, or refused when it cannot be", "[e
         }
     }
 }
+
+SCENARIO("An unsigned member spelt with a JSON escape is stripped like any other", "[events][unsigned][unit][c43]")
+{
+    GIVEN("verbatim event text whose top-level unsigned key is written with a unicode escape")
+    {
+        auto const text = std::string{R"({"unsigned":{"age":5},"type":"x","content":{}})"};
+
+        WHEN("it is stripped")
+        {
+            auto const stripped = merovingian::events::without_unsigned_json(text);
+
+            THEN("no member whose decoded key is unsigned remains")
+            {
+                REQUIRE(stripped.has_value());
+                REQUIRE(stripped->find("age") == std::string::npos);
+                REQUIRE(stripped->find("unsigned") == std::string::npos);
+                REQUIRE(stripped->find(R"("type":"x")") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("text with an escape that does not touch the key")
+    {
+        auto const text = std::string{R"({"type":"x","content":{"body":"café"}})"};
+
+        WHEN("it is stripped")
+        {
+            auto const stripped = merovingian::events::without_unsigned_json(text);
+
+            THEN("it comes back byte for byte")
+            {
+                REQUIRE(stripped.has_value());
+                REQUIRE(*stripped == text);
+            }
+        }
+    }
+}

@@ -158,6 +158,12 @@ C18. When a local user left, rejected an invite, knocked or joined through a rem
 the membership, and for a join the authorising user of another server. A join template naming a user of this server as
 authoriser is refused.
 
+### A remote server can no longer smuggle `unsigned` past the strip with an escaped key (ADR-0710)
+
+C43. A bare `GET /event` answer was kept verbatim, and `unsigned` written with a unicode escape escaped the literal search
+that decides whether to strip it, so the remote server's `unsigned` was stored and served on. The strip now parses any
+text with an escape, and a bare answer is re-serialised as canonical JSON.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

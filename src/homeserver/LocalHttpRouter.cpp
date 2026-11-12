@@ -3824,8 +3824,8 @@ namespace
 
     // Spec: GET /_matrix/federation/v1/event/{eventId} returns a Transaction
     // object whose "pdus" array contains the requested PDU. Extract and return
-    // the first PDU as canonical JSON; fall back to returning the raw body when
-    // it already looks like a single PDU.
+    // the first PDU as canonical JSON; fall back to the body, also as canonical
+    // JSON, when it already looks like a single PDU.
     [[nodiscard]] auto extract_pdu_from_event_response(std::string_view body) -> std::optional<std::string>
     {
         if (body.empty() || body.front() != '{')
@@ -3852,10 +3852,15 @@ namespace
             }
             return std::nullopt;
         }
-        // No Transaction wrapper: return the body verbatim if it is a JSON object.
+        // No Transaction wrapper: the body is the PDU. It is re-serialised as the `pdus` branch does, so that what is
+        // stored is canonical bytes and a key spelt with an escape is spelt literally (C43, ADR-0710).
         if (std::holds_alternative<canonicaljson::Object>(parsed.value.storage()))
         {
-            return std::string{body};
+            auto const serialized = canonicaljson::serialize_canonical(parsed.value);
+            if (serialized.error == canonicaljson::CanonicalJsonError::none)
+            {
+                return serialized.output;
+            }
         }
         return std::nullopt;
     }

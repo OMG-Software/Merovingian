@@ -39,8 +39,10 @@ auto without_unsigned(canonicaljson::Value const& event) -> canonicaljson::Value
 
 auto without_unsigned_json(std::string_view event_json) -> std::optional<std::string>
 {
-    // Cheap exit for the common case: a PDU that never names the key is not parsed again.
-    if (event_json.find("\"unsigned\"") == std::string_view::npos)
+    // Cheap exit for the common case: a PDU that never names the key is not parsed again. The key may be spelt with
+    // a JSON escape (`"unsigned"` is `unsigned` once decoded, and verbatim bytes from a remote server keep it),
+    // so text with any `\u` escape is parsed too (C43, ADR-0710).
+    if (event_json.find("\"unsigned\"") == std::string_view::npos && event_json.find("\\u") == std::string_view::npos)
     {
         return std::string{event_json};
     }
