@@ -605,3 +605,4 @@
 * [0655 - An unread count parses a bounded number of bytes, and a room that is not sent is not counted](0655-an-unread-count-parses-a-bounded-number-of-bytes-and-an-idle-room-is-not-counted.md)
 * [0656 - /context and /initialSync examine a bounded number of rows and walk the room in place](0656-context-and-initialsync-examine-a-bounded-number-of-rows-and-walk-the-room-in-place.md)
 * [0657 - Every list of a sync filter holds at most one hundred entries](0657-every-list-of-a-sync-filter-holds-at-most-one-hundred-entries.md)
+* [0658 - A sync serves the joined rooms that can have news, and the most recently active when there are too many](0658-a-sync-serves-the-joined-rooms-that-can-have-news-and-the-most-recent-when-there-are-too-many.md)

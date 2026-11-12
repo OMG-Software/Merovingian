@@ -16,9 +16,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -117,11 +120,10 @@ SCENARIO("a /sync reads the rows of its own rooms, not the server-wide tables", 
             auto const members_before = store.membership_rows_examined.value();
             auto const body = sync_body(runtime, token, "?timeout=0&since=" + *next);
 
-            THEN("each joined room costs a state lookup, not a scan of the state table")
+            THEN("a room that cannot have news costs no state read, and certainly not a scan of the state table")
             {
                 REQUIRE((joined_rooms(body) == nullptr || joined_rooms(body)->empty()));
                 auto const state_rows = store.state_rows_examined.value() - state_before;
-                REQUIRE(state_rows > 0U);
                 REQUIRE(state_rows <= 20U);
                 REQUIRE(store.membership_rows_examined.value() - members_before <= 400U);
             }
@@ -233,6 +235,118 @@ SCENARIO("an idle incremental /sync does not count the unread events of a room i
             {
                 REQUIRE((joined_rooms(body) == nullptr || joined_rooms(body)->empty()));
                 REQUIRE(store.sync_unread_rows_examined.value() == before);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A runtime in which alice is in `rooms` rooms, with the cap set to `cap`; returns the rooms, oldest first.
+struct Fixture final
+{
+    hs::ClientServerStartResult started{};
+    std::string token{};
+    std::vector<std::string> rooms{};
+};
+
+[[nodiscard]] auto make_fixture(std::size_t rooms, std::uint32_t cap) -> Fixture
+{
+    auto fixture = Fixture{hs::start_client_server(merovingian::tests::caps_config(100U, 100U, 100U)), {}, {}};
+    REQUIRE(fixture.started.started);
+    fixture.token = merovingian::tests::register_and_login_alice(fixture.started.runtime);
+    for (auto index = std::size_t{0U}; index < rooms; ++index)
+    {
+        fixture.rooms.push_back(create_room(fixture.started.runtime, fixture.token));
+    }
+    fixture.started.runtime.limits.max_sync_rooms = cap;
+    return fixture;
+}
+
+auto send_text(hs::ClientServerRuntime& runtime, std::string const& token, std::string const& room,
+               std::string const& txn) -> void
+{
+    auto const sent = hs::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + room + "/send/m.room.message/" + txn, token,
+                  R"({"msgtype":"m.text","body":"news"})"});
+    REQUIRE(sent.response.status == 200U);
+}
+
+} // namespace
+
+SCENARIO("a room past the room cap still gets its news on an incremental sync", "[sync][c34][security]")
+{
+    GIVEN("a user in eight rooms and a cap of three")
+    {
+        auto fixture = make_fixture(8U, 3U);
+        auto& runtime = fixture.started.runtime;
+
+        WHEN("an initial sync is made")
+        {
+            auto const body = sync_body(runtime, fixture.token, "");
+
+            THEN("the three most recently active rooms are served")
+            {
+                auto const* joined = joined_rooms(body);
+                REQUIRE(joined != nullptr);
+                REQUIRE(joined->size() == 3U);
+                for (auto index = std::size_t{5U}; index < 8U; ++index)
+                {
+                    REQUIRE(object_member_as_object(*joined, fixture.rooms[index]) != nullptr);
+                }
+            }
+        }
+
+        WHEN("a room that is not among the first three gets a message after the user has synced")
+        {
+            auto const first = sync_body(runtime, fixture.token, "");
+            auto const* next = merovingian::tests::string_member(first, "next_batch");
+            REQUIRE(next != nullptr);
+            send_text(runtime, fixture.token, fixture.rooms[4], "late");
+            auto const body = sync_body(runtime, fixture.token, "?timeout=0&since=" + *next);
+
+            THEN("the incremental sync delivers it")
+            {
+                auto const* joined = joined_rooms(body);
+                REQUIRE(joined != nullptr);
+                REQUIRE(joined->size() == 1U);
+                REQUIRE(object_member_as_object(*joined, fixture.rooms[4]) != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("an incremental sync's per-room work does not grow with the user's idle rooms", "[sync][c34][security]")
+{
+    GIVEN("one user in a single room and another in eight rooms with a cap of three, each with news in one room")
+    {
+        auto const work_of = [](std::size_t rooms, std::uint32_t cap) {
+            auto fixture = make_fixture(rooms, cap);
+            auto& runtime = fixture.started.runtime;
+            auto const first = sync_body(runtime, fixture.token, "");
+            auto const* next = merovingian::tests::string_member(first, "next_batch");
+            REQUIRE(next != nullptr);
+            send_text(runtime, fixture.token, fixture.rooms[rooms == 1U ? 0U : 4U], "late");
+            auto& store = runtime.homeserver.database.persistent_store;
+            auto const state_before = store.state_rows_examined.value();
+            auto const receipts_before = store.receipt_rows_examined.value();
+            auto const body = sync_body(runtime, fixture.token, "?timeout=0&since=" + *next);
+            REQUIRE(joined_rooms(body) != nullptr);
+            REQUIRE(joined_rooms(body)->size() == 1U);
+            return std::pair{store.state_rows_examined.value() - state_before,
+                             store.receipt_rows_examined.value() - receipts_before};
+        };
+
+        WHEN("each makes an incremental sync")
+        {
+            auto const single = work_of(1U, 1000U);
+            auto const many = work_of(8U, 3U);
+
+            THEN("the state rows read are the same, the idle rooms having cost nothing")
+            {
+                REQUIRE(single.first > 0U);
+                REQUIRE(many.first == single.first);
             }
         }
     }

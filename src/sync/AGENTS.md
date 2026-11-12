@@ -459,3 +459,12 @@ Each list (`types`, `not_types`, `senders`, `not_senders`, `rooms`, `not_rooms`,
 `max_filter_list_entries` (100). `filter_list_cap_problem` finds an over-cap list in an uploaded, inline or stored filter;
 `GET /sync`, `/messages`, `/context` and the upload call it and answer 400 `M_INVALID_PARAM`. The lenient parsers do
 not refuse, and a new endpoint that matches a filter's lists against rows with a plain scan calls it too.
+
+
+## Which joined rooms a classic sync serves (ADR-0658)
+
+`select_sync_rooms` finds the candidate rooms from the user's own `join` membership rows (never by walking every room on
+the server), and an incremental sync drops a room that cannot have news (no event, typing change, account-data row or
+receipt above `since`) before it is charged to `max_sync_rooms`. Past the cap the most recently active rooms are served and
+a room with news beyond it is skipped, as it always was. A new source of room news must be added to the check, or a room
+whose only news it is would be dropped.

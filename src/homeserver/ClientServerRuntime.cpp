@@ -1732,7 +1732,7 @@ namespace
         {
             if (filter.user_id != user_id)
             {
-                continue;
+                return;
             }
             ++summary.count;
             if (summary.identical_filter_id.has_value())
@@ -1743,7 +1743,7 @@ namespace
             {
                 summary.identical_filter_id = filter.filter_id;
             }
-        }
+        });
         return summary;
     }
 
@@ -5958,6 +5958,97 @@ namespace
     {
         auto rows = AccountDataByRoom{};
         database::for_each_user_account_data(store, user, [&rows](database::PersistentAccountData const& data) {
+    // The most recent event stream position in `room_id`, of any status; 0 when it holds none. One index lookup.
+    [[nodiscard]] auto room_latest_event_ordering(database::PersistentStore const& store, std::string_view room_id)
+        -> std::uint64_t
+    {
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const count = static_cast<std::ptrdiff_t>(std::ranges::size(rows));
+        return count == 0 ? std::uint64_t{0U} : rows[count - 1].stream_ordering;
+    }
+
+    // The joined rooms a classic /sync does per-room work for (ADR-0654, ADR-0658). Candidates come from the user's
+    // own membership rows and the room index, in the order of `database.rooms`. On an incremental sync (`incremental`)
+    // a room is left out, and not charged to max_sync_rooms, when none of the things that put a room in the response
+    // can be true of it: an event above `since`, a typing change above `since`, an account-data row of the user above
+    // `since`, or a receipt row above `since`. Each is an index lookup or a read of the room's own rows, and the test
+    // is a superset of what the room builder emits, so no room with news is left out. Past max_sync_rooms the rooms
+    // with the most recent event are served, ties by room ID. A room that has news and is past the cap is not served by
+    // this sync, and the next_batch still moves on: the same as before this check existed, when the 1001st room with
+    // news was dropped (ADR-0658).
+    [[nodiscard]] auto select_sync_rooms(ClientServerRuntime const& rt, database::PersistentStore const& store,
+                                         std::string_view user, sync::SyncFilter const& filter, bool incremental,
+                                         std::uint64_t since_ordering, std::uint64_t since_sync_stream_id,
+                                         AccountDataByRoom const& user_account_data) -> std::vector<LocalRoom const*>
+    {
+        struct Candidate final
+        {
+            LocalRoom const* room{nullptr};
+            std::uint64_t activity{0U};
+        };
+        auto candidates = std::vector<Candidate>{};
+        database::for_each_user_membership_row(store, user, [&](database::PersistentMembership const& membership) {
+            if (membership.membership != "join")
+            {
+                return;
+            }
+            auto const* room = find_local_room(rt.homeserver.database, membership.room_id);
+            if (room == nullptr || !joined(*room, user) ||
+                (filter.present && !sync::room_passes_filter(filter.room, room->room_id)))
+            {
+                return;
+            }
+            candidates.push_back({room, room_latest_event_ordering(store, room->room_id)});
+        });
+        std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+            return left.room < right.room;
+        });
+        candidates.erase(std::ranges::unique(candidates, {}, &Candidate::room).begin(), candidates.end());
+
+        if (incremental)
+        {
+            std::erase_if(candidates, [&](Candidate const& candidate) {
+                auto const& room_id = candidate.room->room_id;
+                if (candidate.activity > since_ordering ||
+                    room_typing_stream_id_for(rt.homeserver, room_id) > since_sync_stream_id)
+                {
+                    return false;
+                }
+                if (auto const rows = user_account_data.find(room_id);
+                    rows != user_account_data.end() &&
+                    std::ranges::any_of(rows->second, [&](database::PersistentAccountData const* row) {
+                        return row->stream_id > since_sync_stream_id;
+                    }))
+                {
+                    return false;
+                }
+                return !std::ranges::any_of(database::receipts_in_room(store, room_id),
+                                            [&](database::PersistentReceipt const* receipt) {
+                                                return receipt->stream_id > since_sync_stream_id;
+                                            });
+            });
+        }
+
+        if (candidates.size() > rt.limits.max_sync_rooms)
+        {
+            std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+                return left.activity != right.activity ? left.activity > right.activity
+                                                       : left.room->room_id < right.room->room_id;
+            });
+            candidates.resize(rt.limits.max_sync_rooms);
+            std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+                return left.room < right.room;
+            });
+        }
+        auto served = std::vector<LocalRoom const*>{};
+        served.reserve(candidates.size());
+        for (auto const& candidate : candidates)
+        {
+            served.push_back(candidate.room);
+        }
+        return served;
+    }
+
             rows[data.room_id].push_back(&data);
         });
         return rows;
@@ -6399,9 +6490,6 @@ namespace
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
-        // Joined rooms that passed the room filter and so got per-room work, capped by max_sync_rooms (ADR-0654), not
-        // only those that end up in the response.
-        auto processed_rooms = std::size_t{0U};
 
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users, Server behaviour). Resolved once per request and
@@ -6439,21 +6527,16 @@ namespace
         // The user's account data, read once for every room below and the global section (ADR-0440).
         auto const user_account_data = read_user_account_data(store, user);
 
-        for (auto const& room : rt.homeserver.database.rooms)
+        // The joined rooms this sync does per-room work for (ADR-0654, ADR-0658): found from the user's own membership
+        // rows, not by walking every room on the server; an incremental sync leaves out a room that cannot have news
+        // without charging it to max_sync_rooms; and when more rooms remain than the cap the most recently active are
+        // served.
+        auto const served_rooms = select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state,
+                                                    since_ordering, since_sync_stream_id, user_account_data);
+
+        for (auto const* const served_room : served_rooms)
         {
-            if (join_count >= rt.limits.max_sync_rooms || !joined(room, user))
-            {
-                continue;
-            }
-            if (filter.present && !sync::room_passes_filter(filter.room, room.room_id))
-            {
-                continue;
-            }
-            if (processed_rooms >= rt.limits.max_sync_rooms)
-            {
-                break;
-            }
-            ++processed_rooms;
+            auto const& room = *served_room;
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
