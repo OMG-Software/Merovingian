@@ -22,9 +22,11 @@ findings that needed validation.
 * The worker profile now kills `TIOCSTI` and `TIOCLINUX`; the decoder's allowlist already refused both.
 * The supervisor spawns the worker with `POSIX_SPAWN_SETSID` and `/dev/null` on stdin. `merovingian-fed-worker` calls
   `setsid()` itself where the C library lacks the flag and refuses to start if it cannot. The thumbnail decoder's child
-  calls `setsid()` before `exec`. stdout and stderr still carry the logs.
+  calls `setsid()` before `exec`. stdout and stderr still carry the logs. Main's seccomp profile admits `setsid`, since
+  a child runs those calls under main's filter; without it every worker start and thumbnail decode was killed.
 * Tests: `[terminal_injection]` runs both filters against a pseudo-terminal that is the child's controlling terminal;
-  `[worker_session]` checks that a spawned worker leads its own session with no terminal and `/dev/null` for stdin.
+  `[worker_session]` checks that a spawned worker leads its own session with no terminal and `/dev/null` for stdin,
+  that main's profile admits `setsid`, and that a process confined by main's profile still gets a thumbnail.
 
 ### The published provenance check pins the release workflow and the ref (ADR-0732)
 

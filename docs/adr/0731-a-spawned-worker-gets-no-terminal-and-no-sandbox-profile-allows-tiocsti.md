@@ -42,6 +42,13 @@ Chosen option: the two layers.
   leader, which covers a C library without the flag; a failure stops the worker. stdout and stderr are kept for logs.
 * The thumbnail decoder's forked child calls `setsid()` before `exec`, and exits 127 if it fails. Its stdio was already
   two pipes and `/dev/null`.
+* Main's seccomp profile admits `setsid`. A filter survives `fork` and `exec` (another can only be stacked on it), so
+  the spawn's `setsid`, the decoder child's and the worker's fallback all run under main's filter. Without the entry the
+  kernel killed every worker start and every thumbnail decode with `SIGSYS`; the tests that spawned children without
+  main's filter installed did not see it. The worker's fallback (`getsid` then `setsid`) is compiled only where
+  `<spawn.h>` lacks `POSIX_SPAWN_SETSID`, so `getsid` need not be admitted. Moving the calls after `exec` was rejected:
+  the child is still under main's filter there. `[worker_session]` in `test_seccomp_hardening.cpp` runs `setsid` under
+  main's real profile, and a thumbnail scenario with the same tag decodes from a process confined by it.
 
 Neither layer is enough alone. A session leader without a controlling terminal acquires one when it opens a terminal
 without `O_NOCTTY`, so a worker that can open the operator's terminal (no Landlock, `allow_without_landlock=true`) could

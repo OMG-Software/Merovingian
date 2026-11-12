@@ -245,6 +245,42 @@ SCENARIO("Only the main seccomp profile permits descriptor-bound owner-only data
     }
 }
 
+// ADR-0731: main spawns the federation worker with POSIX_SPAWN_SETSID and the decoder's forked child calls setsid()
+// before exec. Both run under main's filter, which a child keeps across fork and exec, so main's profile must admit it;
+// without it the kernel killed every worker start and every thumbnail decode with SIGSYS.
+SCENARIO("Main's seccomp profile lets a spawned child leave the server's session",
+         "[platform][seccomp][linux][worker_session]")
+{
+    GIVEN("a child of a process that is not a process group leader")
+    {
+        WHEN("the child installs main's profile with a kill default and calls setsid")
+        {
+            auto const pid = ::fork();
+            REQUIRE(pid >= 0);
+            if (pid == 0)
+            {
+                if (!merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS))
+                {
+                    ::syscall(__NR_exit_group, 20);
+                    __builtin_unreachable();
+                }
+                auto const session = ::setsid();
+                ::syscall(__NR_exit_group, session == ::getpid() ? 0 : 21);
+                __builtin_unreachable();
+            }
+            auto status = int{};
+            REQUIRE(::waitpid(pid, &status, 0) == pid);
+
+            THEN("the call is admitted and the child leads a session of its own")
+            {
+                INFO("signalled=" << WIFSIGNALED(status) << " signal=" << (WIFSIGNALED(status) ? WTERMSIG(status) : 0));
+                REQUIRE(WIFEXITED(status));
+                REQUIRE(WEXITSTATUS(status) == 0);
+            }
+        }
+    }
+}
+
 SCENARIO("Inherited main seccomp permits only the private creation mask before worker hardening",
          "[platform][seccomp][linux][worker-private-mask]")
 {

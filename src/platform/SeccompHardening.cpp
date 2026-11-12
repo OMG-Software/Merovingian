@@ -308,6 +308,11 @@ namespace
 #elif defined(__x86_64__) || defined(__aarch64__)
         ALLOW_SYSCALL(436),
 #endif
+        // setsid (ADR-0731): main spawns the federation worker with POSIX_SPAWN_SETSID, and the thumbnail decoder's
+        // forked child calls setsid() before exec, so neither child holds the terminal of the shell that started the
+        // server. Both run in the child under this filter (a filter survives fork and exec; only another one can be
+        // stacked on it), so the call must be here. It takes no argument and changes only the calling process.
+        ALLOW_SYSCALL(__NR_setsid),
 
         // ── Threads and synchronisation ────────────────────────────────────
         ALLOW_SYSCALL(__NR_futex),

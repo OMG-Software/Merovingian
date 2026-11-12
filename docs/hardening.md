@@ -240,7 +240,9 @@ Now the worker profile also kills `TIOCSTI` and `TIOCLINUX` (the decoder's
 allowlist already refused both), the supervisor spawns the worker with
 `POSIX_SPAWN_SETSID` and `/dev/null` on stdin, `merovingian-fed-worker` calls
 `setsid()` itself first where the C library lacks that flag, and the decoder's
-forked child calls `setsid()` before `exec`. stdout and stderr are kept for
+forked child calls `setsid()` before `exec`. Main's profile admits `setsid` for
+that reason: a seccomp filter survives `fork` and `exec`, so both calls run under
+it. stdout and stderr are kept for
 logs; the commands that change a terminal's settings (`TCSETS`, `TIOCSWINSZ`)
 stay allowed, which can garble it but run nothing (ADR-0731).
 `[terminal_injection]` in `tests/unit/test_seccomp_hardening.cpp` runs both

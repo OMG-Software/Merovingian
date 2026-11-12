@@ -14,6 +14,7 @@
 #include "merovingian/platform/SignalHardening.hpp"
 
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -91,13 +92,17 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     // ADR-0731: the worker must not share the terminal of the shell that started the server. Main spawns it in a
-    // session of its own where the C library has POSIX_SPAWN_SETSID; elsewhere the worker leaves main's session here,
-    // before it reads anything a remote server sent. A new session has no controlling terminal.
+    // session of its own where the C library has POSIX_SPAWN_SETSID (the supervisor is built against the same
+    // <spawn.h>); elsewhere the worker leaves main's session here, before it reads anything a remote server sent. A new
+    // session has no controlling terminal. Only that fallback calls getsid: main's seccomp filter, which the worker
+    // still runs under here, does not admit it.
+#ifndef POSIX_SPAWN_SETSID
     if (::getsid(0) != ::getpid() && ::setsid() < 0)
     {
         std::cerr << "merovingian-fed-worker: cannot start a session of its own: " << std::strerror(errno) << '\n';
         return 1;
     }
+#endif
 
     auto const args = merovingian::federation_worker::parse_worker_args(argc, argv);
     if (args.error.has_value())

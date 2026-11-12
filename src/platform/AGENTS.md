@@ -91,7 +91,11 @@ This module is security-critical. Changes here affect the server's attack surfac
    with `O_ASYNC`, `FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP` and `TIOCSPGRP` in the worker profile, and gives the decoder an
    allowlist of commands. The worker profile also kills `TIOCSTI` and `TIOCLINUX`, which write into a terminal
    (ADR-0731); never allow either in any profile, whatever the kernel's `legacy_tiocsti` setting. A new command for the
-   decoder is added there with a test in `test_seccomp_hardening.cpp` that runs the real filter in a forked child. The decoder has no `newfstatat` or `statx` (ADR-0643): a filter cannot read
+   decoder is added there with a test in `test_seccomp_hardening.cpp` that runs the real filter in a forked child.
+   Main's profile admits `setsid` (ADR-0731): a spawned child runs under main's filter for its whole life (a filter
+   survives `fork` and `exec`, and the child's own filter only adds restrictions), so a call a child makes, before
+   `exec` or before its own filter, must be on main's list. Test a spawn path with main's filter installed, never only
+   without it. The decoder has no `newfstatat` or `statx` (ADR-0643): a filter cannot read
    a path, so only `fstat` is safe.
 
 ## Platform support
