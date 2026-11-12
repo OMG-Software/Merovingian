@@ -238,7 +238,8 @@ defects on executed paths; a clean run does not prove that all paths are safe.
 - Documentation-only changes do not require a version bump. For other changes,
   increment the version once when creating the branch. Update all locations in
   [versioning](versioning.md) together.
-- Update `CHANGELOG.md` for every change. Use the
+- Update `CHANGELOG.md` for every change, in the
+  [changelog format](versioning.md#changelog-format). Use the
   [documentation update table](AGENTS.md) to find the other required updates.
 - Record lasting design decisions and rejected alternatives in the
   [ADR register](adr/index.md). Keep settled rules here or in their owning guide.

@@ -45,6 +45,8 @@ report any unresolved conflict or unmet requirement. See
   [ADR-0543](docs/adr/0543-adr-numbers-are-assigned-in-order-gaps-are-allowed-and-a-number-is-never-reused.md).
 - Record changes for each version in CHANGELOG.md, which starts at 1.0.0. `CHANGELOG-pre-release.md` holds the 0.x
   entries and is never added to ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
+  Each version is `# Version x.y.z` with `## Features`, `## Security Fixes`, `## Bug fixes` and `## Release notes`;
+  see the [changelog format](docs/versioning.md#changelog-format).
 - Ignore `.clwb` folder.
 - Ignore directories starting with `build` in the project root (Meson build output).
 - Always work in feature or bug branches, never main.

@@ -623,3 +623,4 @@
 * [0738 - One BSD example config whose configuration directory each package fills in](0738-one-bsd-example-config-whose-configuration-directory-each-package-fills-in.md)
 * [0739 - Main reads a worker's store through readers opened before the sandbox](0739-main-reads-a-workers-store-through-readers-opened-before-the-sandbox.md)
 * [0740 - The changelog starts at 1.0.0, and the pre-release entries are a frozen record](0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)
+* [0741 - Each changelog version has Features, Security Fixes, Bug fixes and Release notes](0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)
