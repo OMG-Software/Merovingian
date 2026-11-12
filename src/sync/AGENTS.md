@@ -446,3 +446,9 @@ through `for_each_room_membership_row` and its receipts through `receipts_in_roo
 `max_unread_bytes_parsed` (512 KiB); when the next event does not fit the count stops and is a lower bound, as at
 `max_unread_rows_examined`. Any new reader that parses sender-sized events per room takes a byte budget too. In
 `sync_json` the "nothing new" check for a room runs before its counts.
+
+## Room reads that skip rows a reader may not see take an examination budget (ADR-0656)
+
+`/context` (each side of the event) and `/initialSync` walk `room_in_stream_order` in place and count every row they look
+at, visible or not, against `max_messages_events_examined`, as `/messages` does; when it ends a walk early the `start`
+or `end` token is the last row examined. Never copy a room's events into a vector to step through them.

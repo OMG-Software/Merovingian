@@ -10721,24 +10721,30 @@ namespace
         auto visibility = sync::HistoryVisibility{store, user_id};
         auto aggregations = make_bundled_aggregations(store, visibility, user_id, ignored_senders);
 
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events.room_in_stream_order(room_id))
+        // The room's rows in stream order, read in place: the target is found by its stream ordering and the walks
+        // below start there, so a request costs the rows it examines, never a copy of the room (ADR-0656).
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const row_count = static_cast<std::size_t>(std::ranges::size(rows));
+        auto target_index = static_cast<std::size_t>(
+            std::ranges::lower_bound(rows, target.stream_ordering, {}, &database::PersistentEvent::stream_ordering) -
+            std::ranges::begin(rows));
+        while (target_index < row_count &&
+               rows[static_cast<std::ptrdiff_t>(target_index)].event_id != target.event_id &&
+               rows[static_cast<std::ptrdiff_t>(target_index)].stream_ordering == target.stream_ordering)
         {
-            // ADR-0064 phase B2: events_before/events_after page through the
-            // timeline, so a rejected or soft-failed event is excluded the
-            // same as sync's and /messages'. `target` itself is handled by
-            // the caller (a rejected/soft-failed target_event_id 404s before
-            // this function is even called), so it is always present here.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            entries.push_back(&event);
+            ++target_index;
         }
-        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
-            return candidate->event_id == target.event_id;
-        });
-        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+        // ADR-0064 phase B2: events_before/events_after page through the timeline, so a rejected or soft-failed event
+        // is excluded the same as sync's and /messages'. `target` itself is handled by the caller (a rejected or
+        // soft-failed target_event_id 404s before this function is even called).
+        auto const hidden_status = [](database::PersistentEvent const& event) {
+            return event.status == "rejected" || event.status == "soft_failed";
+        };
+        // Every row looked at, visible or not, counts against the examination budget /messages has, for each of the
+        // two walks (ADR-0656).
+        auto examined = std::size_t{0U};
+        auto examined_after = std::size_t{0U};
+        auto const examination_budget = rt.limits.max_messages_events_examined;
 
         // RoomEventFilter.rooms/not_rooms gate the whole response: this
         // endpoint is inherently single-room, so a room list that excludes
@@ -10753,26 +10759,45 @@ namespace
         auto chunk_senders = std::unordered_set<std::string>{target.sender_user_id};
         auto events_before = canonicaljson::Array{};
         auto start_token = std::to_string(target.stream_ordering);
+        auto last_examined_before = target.stream_ordering;
+        auto last_examined_after = target.stream_ordering;
         if (room_allowed && target_index > 0U)
         {
             for (auto i = target_index; i > 0U && events_before.size() < before_limit; --i)
             {
-                auto const* candidate = entries[i - 1U];
-                if (!passes_room_event_filter(filter.timeline, *candidate))
+                if (examined >= examination_budget)
+                {
+                    break;
+                }
+                ++examined;
+                auto const& candidate = rows[static_cast<std::ptrdiff_t>(i - 1U)];
+                if (hidden_status(candidate))
+                {
+                    last_examined_before = candidate.stream_ordering;
+                    continue;
+                }
+                last_examined_before = candidate.stream_ordering;
+                if (!passes_room_event_filter(filter.timeline, candidate))
                 {
                     continue;
                 }
-                if (withheld_as_ignored(ignored_senders, *candidate))
+                if (withheld_as_ignored(ignored_senders, candidate))
                 {
                     continue;
                 }
-                if (!visibility.can_see(*candidate))
+                if (!visibility.can_see(candidate))
                 {
                     continue;
                 }
-                events_before.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
-                chunk_senders.insert(candidate->sender_user_id);
-                start_token = std::to_string(candidate->stream_ordering);
+                events_before.push_back(aggregations.apply(candidate, client_event_with_id(store, candidate)));
+                chunk_senders.insert(candidate.sender_user_id);
+                start_token = std::to_string(candidate.stream_ordering);
+            }
+            // The budget ended the walk before the page was full: the token is the last row examined, so a
+            // /messages request from it carries on (as /messages does when its own budget ends, ADR-0470).
+            if (examined >= examination_budget && events_before.size() < before_limit)
+            {
+                start_token = std::to_string(last_examined_before);
             }
         }
 
@@ -10786,25 +10811,39 @@ namespace
         auto last_returned_event_id = target.event_id;
         if (room_allowed)
         {
-            for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
+            for (auto i = target_index + 1U; i < row_count && events_after.size() < after_limit; ++i)
             {
-                auto const* candidate = entries[i];
-                if (!passes_room_event_filter(filter.timeline, *candidate))
+                if (examined_after >= examination_budget)
+                {
+                    break;
+                }
+                ++examined_after;
+                auto const& candidate = rows[static_cast<std::ptrdiff_t>(i)];
+                last_examined_after = candidate.stream_ordering;
+                if (hidden_status(candidate))
                 {
                     continue;
                 }
-                if (withheld_as_ignored(ignored_senders, *candidate))
+                if (!passes_room_event_filter(filter.timeline, candidate))
                 {
                     continue;
                 }
-                if (!visibility.can_see(*candidate))
+                if (withheld_as_ignored(ignored_senders, candidate))
                 {
                     continue;
                 }
-                events_after.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
-                chunk_senders.insert(candidate->sender_user_id);
-                end_token = std::to_string(candidate->stream_ordering);
-                last_returned_event_id = candidate->event_id;
+                if (!visibility.can_see(candidate))
+                {
+                    continue;
+                }
+                events_after.push_back(aggregations.apply(candidate, client_event_with_id(store, candidate)));
+                chunk_senders.insert(candidate.sender_user_id);
+                end_token = std::to_string(candidate.stream_ordering);
+                last_returned_event_id = candidate.event_id;
+            }
+            if (examined_after >= examination_budget && events_after.size() < after_limit)
+            {
+                end_token = std::to_string(last_examined_after);
             }
         }
 
@@ -11570,37 +11609,51 @@ namespace
         }
 
         auto const& store = rt.homeserver.database.persistent_store;
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events.room_in_stream_order(room_id))
-        {
-            // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
-            if (event.status != "rejected" && event.status != "soft_failed")
-            {
-                entries.push_back(&event);
-            }
-        }
-
-        // Room History Visibility (CSAZ-3): only events the user may see. For a user who has
-        // left, that stops at their departure, because nothing received after it is visible.
+        // Room History Visibility (CSAZ-3): only events the user may see. For a user who has left, that stops at
+        // their departure, because nothing received after it is visible. The room's rows are walked newest first in
+        // place, and every row looked at counts against the examination budget /messages has, so a reader whose
+        // newest rows are all hidden from them costs the budget and not the room's history (ADR-0656).
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
-        for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+        auto last_examined = std::optional<std::uint64_t>{};
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const budget = rt.limits.max_messages_events_examined;
+        auto examined = std::size_t{0U};
+        for (auto index = static_cast<std::size_t>(std::ranges::size(rows)); index > 0U; --index)
         {
-            if (chunk.size() >= limit)
+            if (chunk.size() >= limit || examined >= budget)
             {
                 break;
             }
-            if (!visibility.can_see(**it))
+            ++examined;
+            auto const& event = rows[static_cast<std::ptrdiff_t>(index - 1U)];
+            // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                last_examined = event.stream_ordering;
+                continue;
+            }
+            last_examined = event.stream_ordering;
+            if (!visibility.can_see(event))
             {
                 continue;
             }
             if (chunk.empty())
             {
-                start_token = std::to_string((*it)->stream_ordering);
+                start_token = std::to_string(event.stream_ordering);
             }
-            end_token = std::to_string((*it)->stream_ordering);
-            chunk.push_back(client_event_with_id(store, **it));
+            end_token = std::to_string(event.stream_ordering);
+            chunk.push_back(client_event_with_id(store, event));
+        }
+        // The budget ended the walk before the page was full: the tokens stand at the last row examined.
+        if (examined >= budget && chunk.size() < limit && last_examined.has_value())
+        {
+            if (chunk.empty())
+            {
+                start_token = std::to_string(*last_examined);
+            }
+            end_token = std::to_string(*last_examined);
         }
         return {std::move(chunk), std::move(start_token), std::move(end_token)};
     }

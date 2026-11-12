@@ -573,7 +573,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_sync_rooms` | `1000` | 1..10,000; the joined rooms one `/sync` serves (ADR-0654) |
 | `max_sync_events_per_room` | `100` | 1..1,000 |
 | `max_search_events_scanned` | `10000` | 1..1,000,000 |
-| `max_messages_events_examined` | `10000` | 1..1,000,000 |
+| `max_messages_events_examined` | `10000` | 1..1,000,000; also the rows `/context` (per side) and `/initialSync` examine (ADR-0656) |
 | `max_messages_page_size` | `500` | 1..1,000 |
 | `max_context_events` | `100` | 1..1,000 |
 | `max_search_page_size` | `100` | 1..1,000 |

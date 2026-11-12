@@ -341,6 +341,14 @@ every sync, however large the events were. A count now parses at most 512 KiB of
 bound, as it already was at 1,000 rows. Counts of ordinary events are exact. An incremental sync also no longer counts a
 joined room it is not going to send.
 
+### /context and /initialSync stop at an examination budget (ADR-0656)
+
+Run-3 finding C39. Both endpoints walked the room's events until they had a page of events the reader may see, so a reader
+for whom everything near the page is hidden made the server walk the whole history under the runtime lock. They now
+examine at most `server.client_api.max_messages_events_examined` rows (the budget `/messages` already had; `/context`
+once for each side of the event), without copying the room first, and when the budget ends the `start`/`end` tokens stand
+at the last row examined so the client can carry on.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

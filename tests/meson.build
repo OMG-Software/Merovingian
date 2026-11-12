@@ -914,6 +914,7 @@ shell = find_program('sh')
       'integration/test_receipt_thread_admission_flow.cpp',
       'integration/test_receipt_edu_commit_flow.cpp',
       'integration/test_sync_per_room_reads_flow.cpp',
+      'integration/test_room_read_examination_budget_flow.cpp',
       'integration/test_stored_invite_caps_flow.cpp',
       'integration/test_security_issues_460_463_flow.cpp',
       'integration/test_server_signing_key_lifecycle_flow.cpp',
