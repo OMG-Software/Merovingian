@@ -778,6 +778,13 @@ ADR-0600): a PDU that leaves those groups unchanged reuses the result and still
 applies it through the normal write path. A recomputation parses each stored
 event once however many groups name it. Folding a change into the previous
 result is not done, because state resolution is not associative (ADR-0601).
+The state before an event is resolved and stored once per set of distinct prev
+groups (`StateBeforeMemo`, ADR-0694): a later event naming the same groups reads
+the group that holds it, every prev_event naming one group is that group, and
+`record_event_state` chains the event's after-state off the group of its state
+before, so a rejected or non-state event adds no rows. A freshly resolved state
+before is stored as `sb:<event_id>`, a delta off a resolved group that holds no
+key the resolution dropped where there is one.
 While a refusal lasts each accepted
 state event that is a tip still writes its own `current_state` row, so a ban applies; the
 residual is that a state event resolution would have reverted can stay current

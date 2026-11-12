@@ -13,6 +13,7 @@ database_sources = files(
   'PostgresqlExecution.cpp',
   'PostgresqlResultDeleter.cpp',
   'ResolvedStateMemo.cpp',
+  'StateBeforeMemo.cpp',
   'RoomAliasTable.cpp',
   'RedactionView.cpp',
   'PostgresqlStore.cpp',

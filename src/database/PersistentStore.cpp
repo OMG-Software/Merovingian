@@ -2704,6 +2704,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     }
     auto const& room_id = snapshot.room_id;
     store.resolved_state_memo.forget_room(room_id);
+    store.state_before_memo.forget_room(room_id);
     ++store.room_state_revisions[room_id];
 
     // Replace this room's slice of the store: drop every existing row keyed
@@ -4763,6 +4764,7 @@ auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
     }
     // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    store.state_before_memo.forget_room(existing->room_id);
     note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
@@ -4826,6 +4828,7 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     }
     // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    store.state_before_memo.forget_room(existing->room_id);
     note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);

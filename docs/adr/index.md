@@ -586,3 +586,4 @@
 * [0712 - A space hierarchy request is answered by main, not by a worker snapshot](0712-a-space-hierarchy-request-is-answered-by-main-not-by-a-worker-snapshot.md)
 * [0713 - A server's signing keys are read by server name, and a remote key document is bounded](0713-a-servers-signing-keys-are-read-by-server-name-and-a-key-document-is-bounded.md)
 * [0693 - The auth rules read each auth event once, into an index](0693-the-auth-rules-read-each-auth-event-once-into-an-index.md)
+* [0694 - The state before an event is resolved and stored once per set of prev groups](0694-the-state-before-an-event-is-resolved-and-stored-once-per-set-of-prev-groups.md)

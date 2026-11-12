@@ -25,6 +25,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
 | `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
 | `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
+| `StateBeforeMemo.cpp` | `StateBeforeMemo`, the group holding the state before an event by its distinct prev groups, bounded and in memory only (ADR-0694) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
@@ -226,7 +227,7 @@ the hole, so row order means nothing. The table has no lock: a reader needs excl
 the sender), so a writer cannot leave the counts wrong. A hydrating loader inserts each tip with no sender and calls
 `rebuild_forward_extremity_servers` once the events are indexed (ADR-0602). `PersistentStore::resolved_state_memo` is read
 under `runtime.mutex` only. Anything that changes a stored event's JSON or status calls `forget_room`, or a later resolution
-reuses a result that read the old value (ADR-0600).
+reuses a result that read the old value (ADR-0600). `state_before_memo` is forgotten at the same points (ADR-0694).
 
 `PersistentStore::access_tokens` and `refresh_tokens` are `CredentialTable<Row>` (header-only,
 `include/merovingian/database/CredentialTable.hpp`), not vectors: they own their rows, show them read-only and index them

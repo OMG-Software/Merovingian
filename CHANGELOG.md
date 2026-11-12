@@ -200,6 +200,16 @@ their product. Each distinct auth event is now copied and read into an index onc
 fields up in it, and rules 9.6 and 9.8 count the current entries at or above the sender's level instead of walking
 them. Decisions are unchanged; a 9.6 refusal no longer names the entry (ADR-0693).
 
+### The state before an event is resolved and stored once
+
+Every PDU with more than one prev_event resolved its prev_events' state afresh under the runtime lock, whatever its
+outcome, and stored the result as a group chained off the first prev_event's group; when the resolution dropped a key
+that group held, the group was a full snapshot of the room's state. A remote member naming the same two old events in a
+stream of small PDUs, even rejected ones, cost a resolution and up to the whole room state in stored rows each. The
+state before an event is now read once per distinct prev group, a set of prev groups that has been resolved is answered
+from the group holding its result, and that result is stored once, chained off a resolved group that holds every key
+it keeps; the event's after-state is chained off it, so a rejected or non-state event adds no rows (ADR-0694).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

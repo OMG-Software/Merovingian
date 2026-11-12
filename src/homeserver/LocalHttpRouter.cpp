@@ -2935,8 +2935,8 @@ namespace
                     state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
                 auto const state_after =
                     compute_state_after(state_before.state, accepted_event_id, event_type, state_key);
-                auto const state_group =
-                    record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids, state_after, true);
+                auto const state_group = record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids,
+                                                            state_before, state_after, true);
                 if (!state_group.has_value())
                 {
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
@@ -4443,19 +4443,21 @@ namespace
         // against the state before it; it must then be stored as rejected with
         // after-state equal to state_before so it cannot influence later state.
 
+        // What compute_state_before gave, when it was asked: record_event_state keeps it as a group (ADR-0694).
+        auto computed_state_before = std::optional<StateBeforeResult>{};
         auto const known_state_before = [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
             if (forced_state_before.has_value())
             {
                 return *forced_state_before;
             }
-            auto const computed =
+            computed_state_before =
                 compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids,
                                      state_resolution_limits(runtime.config.security().federation.state_resolution));
-            if (!computed.ok)
+            if (!computed_state_before->ok)
             {
                 return std::nullopt;
             }
-            return computed.state;
+            return computed_state_before->state;
         }();
         // ADR-0069: historical state events pulled in by the /state_ids
         // fallback may have prev_events whose state groups are not recorded
@@ -4533,6 +4535,9 @@ namespace
                 forced_state_before.has_value()
                     ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
                                                      envelope.prev_event_ids, std::nullopt, after, false)
+                : computed_state_before.has_value() && computed_state_before->ok
+                    ? record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                         envelope.prev_event_ids, *computed_state_before, after, false)
                     : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
                                          envelope.prev_event_ids, after, false);
             if (!group.has_value())
@@ -5912,8 +5917,9 @@ namespace
             outcome == ReceiptOutcome::rejected
                 ? state_before.state
                 : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
-        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                                    envelope.prev_event_ids, state_after, becomes_forward_extremity);
+        auto const state_group =
+            record_event_state(runtime.database.persistent_store, room_id, envelope.event_id, envelope.prev_event_ids,
+                               state_before, state_after, becomes_forward_extremity);
         if (!state_group.has_value())
         {
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +

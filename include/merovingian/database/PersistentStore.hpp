@@ -83,6 +83,7 @@
 #include "merovingian/database/RowGroupIndex.hpp"
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/StateBeforeMemo.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
@@ -536,6 +537,9 @@ struct PersistentStore final
     ForwardExtremityTable forward_extremities{};
     // The last resolution of each room's forward extremities (ADR-0600). In memory only.
     ResolvedStateMemo resolved_state_memo{};
+    // The group holding the state before an event, by its distinct prev groups (ADR-0694). Forgotten with
+    // `resolved_state_memo`, for the same reasons.
+    StateBeforeMemo state_before_memo{};
     // How many times each room's current state, or the status or JSON of one of its events, has changed
     // (`room_state_revision`, ADR-0624). In memory only.
     std::unordered_map<std::string, std::uint64_t> room_state_revisions{};

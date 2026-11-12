@@ -609,6 +609,10 @@ value. Test fixtures that do not exercise persistence select it through
   in memory only and never persisted: the last resolved state of at most 256
   rooms and 131072 rows, keyed by each room's sorted distinct state groups.
   `set_event_status`, `replace_event_json` and `apply_room_snapshot` forget the room.
+  `PersistentStore::state_before_memo` is a `StateBeforeMemo` (ADR-0694), also in
+  memory only: at most 1024 entries, the oldest dropped first, each naming the
+  group that holds the state before an event for a room, a resolution context and
+  sorted distinct prev groups. The same three writers forget the room.
 
   **In-memory indexes (F-07, F-15, ADR-0325).** The three tables are mirrored in
   memory by `StateGroupTable`, `StateGroupEntryTable` and `EventStateGroupTable`

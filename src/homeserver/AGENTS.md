@@ -761,6 +761,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
   skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.
   Resolution is over all tips and is never folded into the previous result: it is not associative (ADR-0601).
+- A path that records an inbound event's state passes `compute_state_before`'s `StateBeforeResult` to
+  `record_event_state`, so the state before is kept as a group and remembered for its distinct prev groups
+  (`StateBeforeMemo`, ADR-0694); a rejected or non-state event then adds no state rows. Never chain an event's
+  after-state off its first prev_event's group when the state before was resolved.
 - A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
   Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
