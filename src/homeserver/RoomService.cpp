@@ -2783,6 +2783,10 @@ namespace
                                                 rooms::RoomVersionPolicy const& policy) -> canonicaljson::Array
     {
         auto kept = canonicaljson::Array{};
+        // The position in `kept` of each (type, state_key) already there: a later entry for the same state replaces
+        // it, as the later state event would, so a record holds one entry per state however many were sent (C31).
+        auto position_of = std::map<std::pair<std::string, std::string>, std::size_t>{};
+        auto considered = std::size_t{0U};
         auto create_seen = false;
         for (auto const& entry : entries)
         {
@@ -2808,13 +2812,22 @@ namespace
                 continue;
             }
             create_seen = create_seen || *type == "m.room.create";
-            kept.push_back(entry);
+            ++considered;
+            auto const [slot, inserted] = position_of.try_emplace({*type, *state_key}, kept.size());
+            if (inserted)
+            {
+                kept.push_back(entry);
+            }
+            else
+            {
+                kept[slot->second] = entry;
+            }
         }
-        if (kept.size() > federation::max_invite_room_state_entries || (policy.create_event_is_room_id && !create_seen))
+        if (considered > federation::max_invite_room_state_entries || (policy.create_event_is_room_id && !create_seen))
         {
             log_diagnostic("room.knock.state_list_dropped",
                            {
-                               {"entries", std::to_string(kept.size()),                        false},
+                               {"entries", std::to_string(considered),                         false},
                                {"reason",  "over the entry limit or missing the create event", false}
             },
                            observability::LogEventSeverity::warning);

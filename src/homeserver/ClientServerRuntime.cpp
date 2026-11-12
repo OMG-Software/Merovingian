@@ -1410,8 +1410,10 @@ namespace
                                                        std::string_view user_id) -> canonicaljson::Array
     {
         auto result = canonicaljson::Array{};
-        auto const invite = database::find_invite(store, room_id, user_id);
-        if (!invite.has_value())
+        // By reference: the record is read once per sync, and a copy of up to a user's whole byte allowance is not
+        // made for it (C31, ADR-0708).
+        auto const* const invite = database::find_invite_row(store, room_id, user_id);
+        if (invite == nullptr)
         {
             return result;
         }
@@ -1450,7 +1452,7 @@ namespace
         // verified knock_room_state in the user's invite record (ADR-0243); this
         // server holds no state for that room. The record is read here only because
         // the user's membership is knock.
-        if (database::find_invite(store, room_id, user_id).has_value())
+        if (database::find_invite_row(store, room_id, user_id) != nullptr)
         {
             return build_invite_state_events_array(store, room_id, user_id);
         }

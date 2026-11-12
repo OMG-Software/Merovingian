@@ -145,6 +145,12 @@ C04. One remote server could keep up to 16 GiB of invite records here, spread ov
 per-user bytes and a count per server were bounded. A sending server may now hold 64 MiB of invites in all, remote invites
 together 256 MiB, and one invite's `invite_room_state` is limited to 64 KiB (a 400 `M_INVALID_PARAM` over it).
 
+### A user's knocks are capped in bytes and keep one entry per state (ADR-0708)
+
+C31. A user could store about 128 MiB of knock state their own server chose, and every `/sync` of theirs copied and parsed
+all of it under the runtime lock. A user's knock records are now limited to 2 MiB in all, a resident's `knock_room_state`
+keeps the last entry for each state, and `/sync` reads the record without copying it.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

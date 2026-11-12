@@ -3396,7 +3396,24 @@ namespace
     if (invite_is_knock(invite))
     {
         auto const others = charged.size() - (held != nullptr && quota_of(*held) == quota_group ? 1U : 0U);
-        return store.max_remote_knocks_per_user > 0U && others + 1U > store.max_remote_knocks_per_user;
+        if (store.max_remote_knocks_per_user > 0U && others + 1U > store.max_remote_knocks_per_user)
+        {
+            return true;
+        }
+        if (store.max_remote_knock_bytes_per_user == 0U)
+        {
+            return false;
+        }
+        // C31: the bytes of the user's other knock records, at most `max_remote_knocks_per_user` rows.
+        auto knock_bytes = invite_bytes(invite);
+        for (auto const position : charged)
+        {
+            if (&store.invites[position] != held)
+            {
+                knock_bytes += invite_bytes(store.invites[position]);
+            }
+        }
+        return knock_bytes > store.max_remote_knock_bytes_per_user;
     }
 
     auto const origin_group = invite_origin_group_of(local, invite);

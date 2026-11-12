@@ -674,7 +674,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   the per-user index (`index_to_device_recipients`, ADR-0618) and never walks the queue per message.
 - The invite handler asks `database::invite_is_over_store_caps` before it signs and again on the signed record, and answers
   403 `M_FORBIDDEN` past the limits (ADR-0619). `knock_room` asks it before the exchange. What a knock keeps of the
-  resident's answer goes through `bounded_knock_room_state` before any signature check (ADR-0620).
+  resident's answer goes through `bounded_knock_room_state` before any signature check (ADR-0620); it keeps one entry
+  per (type, state_key), the last, and a user's knock records are capped in bytes (`max_remote_knock_bytes_per_user`,
+  2 MiB), because every `/sync` reads them under the lock (C31, ADR-0708). `build_invite_state_events_array` and
+  `build_knock_state_events_array` read the record by reference (`find_invite_row`), never `find_invite`'s copy.
 - A client transaction ID is part of an idempotency key with the request's device (`authenticated_request_device_id`),
   never the user alone, on `/send`, `/redact` and `/sendToDevice` (ADR-0380); an `eventType` or `txnId` over 255 bytes
   is `400 M_INVALID_PARAM` before the lookup (`client_txn_part_is_too_long`). Only the to-device `client_txn_ids`

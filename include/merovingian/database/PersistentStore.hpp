@@ -322,6 +322,9 @@ struct PersistentStore final
     std::uint64_t max_remote_invite_bytes_per_user{33554432U};
     std::uint32_t max_remote_invites_per_origin{16384U};
     std::uint32_t max_remote_knocks_per_user{128U};
+    // The bytes of one user's knock records (the knock event and the resident's stored room state). Every /sync of the
+    // user reads them all, so this bounds that work too (C31, ADR-0708). Zero disables the bound.
+    std::uint64_t max_remote_knock_bytes_per_user{2097152U};
     std::uint32_t remote_invite_origin_share_divisor{8U};
     // The bytes one sending server may have stored across all local users, and the bytes all remote invites may
     // take together, whatever the number of local users (C04, ADR-0707). Zero disables a bound.

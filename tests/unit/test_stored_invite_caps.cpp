@@ -533,3 +533,59 @@ SCENARIO("all remote invites together are bounded in bytes whatever the number o
         }
     }
 }
+
+SCENARIO("a user's knock records are bounded in bytes", "[database][invite][knock][security][c31]")
+{
+    GIVEN("a user holding 60 of 100 knock bytes")
+    {
+        auto store = capped_store();
+        store.max_remote_knocks_per_user = 100U;
+        store.max_remote_knock_bytes_per_user = 100U;
+        auto const knock = [](std::string const& room, std::size_t bytes) {
+            auto record = invite_from(victim, room, bytes);
+            record.resident_server = "remote.example";
+            return record;
+        };
+        auto const store_knock = [&](std::string const& room, std::size_t bytes) {
+            return db::store_membership_projection(store, room, {std::string{victim}, "knock", 1U, knock(room, bytes)});
+        };
+        REQUIRE(store_knock(room_number(1U), 60U));
+
+        WHEN("the user knocks with exactly the remaining 40 bytes")
+        {
+            THEN("it is stored: the limit itself is allowed")
+            {
+                REQUIRE(store_knock(room_number(2U), 40U));
+            }
+        }
+
+        WHEN("the user knocks with one byte more")
+        {
+            auto const stored = store_knock(room_number(2U), 41U);
+
+            THEN("it is refused and nothing is written")
+            {
+                REQUIRE_FALSE(stored);
+                REQUIRE(store.invites.size() == 1U);
+            }
+        }
+
+        WHEN("the first knock is re-recorded larger but within the limit")
+        {
+            THEN("the record it replaces is not counted twice")
+            {
+                REQUIRE(store_knock(room_number(1U), 100U));
+            }
+        }
+
+        WHEN("the first knock is withdrawn and the freed bytes are used")
+        {
+            REQUIRE(db::delete_invite(store, room_number(1U), victim));
+
+            THEN("the bytes are available again")
+            {
+                REQUIRE(store_knock(room_number(2U), 100U));
+            }
+        }
+    }
+}

@@ -1094,12 +1094,35 @@ SCENARIO("What a knock keeps of a resident's knock_room_state is bounded in coun
             }
             auto const response = knock_answering(answer_with(list));
 
-            THEN("they are kept")
+            THEN("the knock stands and the repeats of one state are merged into its last entry (C31)")
             {
                 CAPTURE(response.body);
                 REQUIRE(response.status == 200U);
-                REQUIRE(record()->invite_state_events_json.size() ==
-                        merovingian::federation::max_invite_room_state_entries);
+                auto const kept = record();
+                REQUIRE(kept.has_value());
+                REQUIRE(kept->invite_state_events_json.size() == 1U);
+                REQUIRE(kept->invite_state_events_json.front().find(R"("depth":16)") != std::string::npos);
+            }
+        }
+
+        WHEN("the resident repeats every summary type many times")
+        {
+            auto list = merovingian::canonicaljson::Array{};
+            list.push_back(signed_state("m.room.create", "", R"({"room_version":"10","creator":"@c:d"})", 1));
+            for (auto round = 0; round < 3; ++round)
+            {
+                list.push_back(signed_state("m.room.topic", "", R"({"topic":"t"})", 2 + round));
+                list.push_back(signed_state("m.room.name", "", R"({"name":"n"})", 5 + round));
+            }
+            auto const response = knock_answering(answer_with(list));
+
+            THEN("one entry per state is kept, so a record never holds more than the summary types and the member")
+            {
+                CAPTURE(response.body);
+                REQUIRE(response.status == 200U);
+                auto const kept = record();
+                REQUIRE(kept.has_value());
+                REQUIRE(kept->invite_state_events_json.size() == 3U);
             }
         }
 
