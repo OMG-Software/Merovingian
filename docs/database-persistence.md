@@ -952,13 +952,22 @@ value. Test fixtures that do not exercise persistence select it through
 - `database::reload_room(store, room_id)` re-reads a single room's rows (room,
   membership, invites, events, state, the room's state groups with their entries and
   its events' state-group mappings (ADR-0064; federation reads judge an event on
-  its recorded group and fail closed without one), and the event-relation tables scoped to
+  its recorded group and fail closed without one), the room's forward extremities (1.0.1,
+  ADR-0733), and the event-relation tables scoped to
   that room's events) from the backing database and replaces this store's
   in-memory copy of that room. Implemented for both SQLite and PostgreSQL with
   parameterised, room_id-scoped queries (never a full-table re-read). A no-op
   (returns `true`) for the `memory` backend. Used by the federation worker to
   refresh its otherwise-stale `PersistentStore` snapshot — see
   [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-consistency-model).
+- `database::fill_store_from_room_snapshots(store, snapshots)` builds a store from room
+  snapshots in one pass: each table is inserted once and each index rebuilt once, where a
+  `reload_room` per room would cost rooms times rows (`EventTable::insert_all` merges the
+  stream order of everything it holds). `database::load_room_ids(store)` lists every room ID,
+  sorted, from one statement, and `database::public_signing_keys_of_server(store, name, cap)`
+  copies a server's public key columns from memory under `server_signing_keys_mutex`, never a
+  row that holds a secret. They are what main serves a federation worker, which opens no
+  database (1.0.1, C44, ADR-0733).
 - `database::reconstruct_event_relations(store)` re-derives every
   `PersistentEvent::prev_event_ids`/`auth_event_ids`/`signatures` from the flat
   `event_edges`/`event_auth`/`event_signatures` tables. Those fields are only
@@ -1395,7 +1404,7 @@ read-write connection rolls it back (ADR-0159). A failed room snapshot logs `roo
 with its stage and extended SQLite code, and a connection whose open-time pragmas fail logs
 `connection.rejected` with the code.
 
-A room reload (`reload_room`) reads the room's eleven tables in one read transaction, so its rows
+A room reload (`reload_room`) reads the room's twelve tables (the forward extremities since 1.0.1) in one read transaction, so its rows
 come from one committed state: `BEGIN DEFERRED` on SQLite, whose first read takes SHARED until the
 end (main's commits wait for it), and `REPEATABLE READ READ ONLY` on PostgreSQL. The worker's
 whole-store startup load stays one statement per table, so it never holds SQLite's SHARED lock for

@@ -71,6 +71,8 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     autocommit reads let a commit between them give the worker state naming an event its snapshot lacks. The snapshot
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
+    The snapshot carries the room's forward extremities too (ADR-0733): the federation worker opens no database and
+    builds its whole store from snapshots main sends (`fill_store_from_room_snapshots`).
 
 11. **The to-device queue is bounded in rows, age and bytes, per device and per user, and read through its indexes**
     (ADR-0335, ADR-0336, ADR-0618). `index_to_device_recipients` gathers all the queues of every user a batch names through

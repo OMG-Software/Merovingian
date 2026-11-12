@@ -815,6 +815,19 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
     -> std::optional<RoomReloadSnapshot>;
 auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void;
+// Builds a store from room snapshots (ADR-0733): the federation worker's start-up fill, before its runtime hydrates.
+// No snapshot's room may already be in `store`. Each table is inserted once and each index rebuilt once, so the cost
+// is the rows, where apply_room_snapshot per room would cost rooms times rows. Returns the number of rooms added.
+auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomReloadSnapshot> snapshots) -> std::size_t;
+// The ID of every room the database holds, sorted, from one read on a connection of its own (ADR-0733): what main
+// lists for a federation worker's start-up fill. nullopt for a store with no database and on a connection or query
+// failure.
+[[nodiscard]] auto load_room_ids(PersistentStore const& store) -> std::optional<std::vector<std::string>>;
+// Main's answer to a federation worker's key lookup (ADR-0733): `server_name`'s rows as this store holds them, at most
+// `max_rows`, public columns only, skipping any row that holds a secret (this server's own keys). Reads memory under
+// server_signing_keys_mutex, never the database.
+[[nodiscard]] auto public_signing_keys_of_server(PersistentStore const& store, std::string_view server_name,
+                                                 std::size_t max_rows) -> std::vector<PersistentServerSigningKey>;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
@@ -1672,6 +1685,12 @@ namespace detail
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // Backend half of load_room_ids: every room ID, sorted, from one statement on a connection of its own.
+    [[nodiscard]] auto load_room_ids_from_backend(PersistentStore const& store)
+        -> std::optional<std::vector<std::string>>;
+    [[nodiscard]] auto load_room_ids_from_sqlite(std::string const& path) -> std::optional<std::vector<std::string>>;
+    [[nodiscard]] auto load_room_ids_from_postgresql(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<std::vector<std::string>>;
     // Backend half of refresh_remote_signing_keys: `server_name`'s rows from
     // server_signing_keys, selecting server_name, key_id, public_key,
     // valid_until_ts and expired_ts only (never secret_key, so each row's secret_key is

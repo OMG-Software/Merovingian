@@ -4,6 +4,7 @@
 
 #include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentEventStateGroup.hpp"
+#include "merovingian/database/PersistentForwardExtremity.hpp"
 #include "merovingian/database/PersistentInvite.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentRoom.hpp"
@@ -41,6 +42,9 @@ struct RoomReloadSnapshot final
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
+    // The room's forward extremities, read in the same transaction (ADR-0733): a federation worker builds its whole
+    // store from these snapshots, and its make_leave and make_knock templates build on the tips.
+    std::vector<PersistentForwardExtremity> forward_extremities{};
     // A memory-backed store has no database to read: nothing to apply (apply_room_snapshot returns at once).
     bool nothing_to_apply{false};
 };

@@ -246,6 +246,12 @@ prepared state row now moves the revision after the row is written, as well as a
 * A frame that cannot be written whole now ends the IPC channel: it is marked unhealthy and shut down, so the supervisor
   replaces the worker. Before, `send_response` ignored the failure and the channel kept reporting healthy with its
   stream broken (ADR-0734). Test: `[c44][write-failure]`.
+* A room snapshot (`load_room_snapshot`, `reload_room`) now carries the room's forward extremities and a reload replaces
+  them, charged to the server of each tip's sender. `fill_store_from_room_snapshots` builds a whole store from snapshots
+  in one pass with every index a hydrated store has, `load_room_ids` lists every room ID from one statement, and
+  `public_signing_keys_of_server` copies a server's public key columns from memory, never a row with a secret: the
+  database halves of what main will serve the worker. Tests: `[c44][snapshot-tips]`, `[c44][snapshot-fill]`,
+  `[c44][room-ids]`, `[c44][server-keys]`.
 
 ## 1.0.0
 

@@ -1419,6 +1419,16 @@ namespace
         {
             return std::nullopt;
         }
+        // The room's tips (ADR-0733): a federation worker no longer loads the table whole, so a room's own snapshot
+        // brings them, from the same read as the events they name.
+        if (!read_table("forward_extremities",
+                        "SELECT room_id, event_id FROM forward_extremities WHERE room_id = ?1 ORDER BY event_id",
+                        [&](sqlite3_stmt& row) {
+                            snapshot.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
+                        }))
+        {
+            return std::nullopt;
+        }
         if (snapshot.events.empty())
         {
             return snapshot;
@@ -2054,6 +2064,41 @@ namespace detail
             return std::nullopt;
         }
         return keys;
+    }
+
+    auto load_room_ids_from_sqlite(std::string const& path) -> std::optional<std::vector<std::string>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path, true);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto room_ids = std::vector<std::string>{};
+        if (!load_rows_bound(**connection, "SELECT room_id FROM rooms ORDER BY room_id", {},
+                             [&room_ids](sqlite3_stmt& row) {
+                                 room_ids.push_back(column_text(row, 0));
+                             }))
+        {
+            return std::nullopt;
+        }
+        return room_ids;
+    }
+
+    auto load_room_ids_from_backend(PersistentStore const& store) -> std::optional<std::vector<std::string>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_room_ids_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_room_ids_from_sqlite(store.sqlite_path);
     }
 
     auto load_remote_signing_keys_from_backend(PersistentStore const& store, std::string_view server_name)

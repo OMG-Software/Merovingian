@@ -2814,6 +2814,105 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
         }
     }
     std::ignore = store.events.insert_all(std::move(snapshot.events));
+    // The room's tips are the snapshot's (ADR-0733), each charged to the server of its event's sender.
+    store.forward_extremities.erase_room(room_id);
+    for (auto& tip : snapshot.forward_extremities)
+    {
+        auto const event = store.events.find(tip.event_id);
+        auto const sender = event != store.events.end() ? event->sender_user_id : std::string{};
+        std::ignore = store.forward_extremities.insert(std::move(tip), sender);
+    }
+}
+
+auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomReloadSnapshot> snapshots) -> std::size_t
+{
+    // Each table is inserted once: EventTable::insert_all merges the stream order of everything it holds, so a call
+    // per room would cost rooms times rows.
+    auto events = std::vector<PersistentEvent>{};
+    auto groups = std::vector<PersistentStateGroup>{};
+    auto group_entries = std::vector<PersistentStateGroupStateEntry>{};
+    auto mappings = std::vector<PersistentEventStateGroup>{};
+    auto tips = std::vector<PersistentForwardExtremity>{};
+    auto rooms_added = std::size_t{0U};
+    for (auto& snapshot : snapshots)
+    {
+        if (snapshot.nothing_to_apply)
+        {
+            continue;
+        }
+        if (snapshot.room.has_value())
+        {
+            store.rooms.push_back(std::move(*snapshot.room));
+            ++rooms_added;
+        }
+        std::ranges::move(snapshot.memberships, std::back_inserter(store.memberships));
+        std::ranges::move(snapshot.invites, std::back_inserter(store.invites));
+        std::ranges::move(snapshot.state, std::back_inserter(store.state));
+        for (auto& event : snapshot.events)
+        {
+            for (auto const& prev_id : event.prev_event_ids)
+            {
+                store.event_edges.push_back({event.event_id, prev_id});
+            }
+            for (auto const& auth_id : event.auth_event_ids)
+            {
+                store.event_auth.push_back({event.event_id, auth_id});
+            }
+            for (auto const& signature : event.signatures)
+            {
+                store.event_signatures.push_back(
+                    {event.event_id, signature.server_name, signature.key_id, signature.signature});
+            }
+            events.push_back(std::move(event));
+        }
+        std::ranges::move(snapshot.state_groups, std::back_inserter(groups));
+        std::ranges::move(snapshot.state_group_state, std::back_inserter(group_entries));
+        std::ranges::move(snapshot.event_state_groups, std::back_inserter(mappings));
+        std::ranges::move(snapshot.forward_extremities, std::back_inserter(tips));
+    }
+    std::ignore = store.events.insert_all(std::move(events));
+    std::ignore = store.state_groups.insert_all(std::move(groups));
+    store.state_group_state.insert_all(std::move(group_entries));
+    store.event_state_groups.insert_all(std::move(mappings));
+    for (auto& tip : tips)
+    {
+        auto const event = store.events.find(tip.event_id);
+        auto const sender = event != store.events.end() ? event->sender_user_id : std::string{};
+        std::ignore = store.forward_extremities.insert(std::move(tip), sender);
+    }
+    rebuild_state_index(store);
+    rebuild_membership_index(store);
+    rebuild_key_indexes(store);
+    rebuild_redaction_state(store);
+    return rooms_added;
+}
+
+[[nodiscard]] auto load_room_ids(PersistentStore const& store) -> std::optional<std::vector<std::string>>
+{
+    return detail::load_room_ids_from_backend(store);
+}
+
+[[nodiscard]] auto public_signing_keys_of_server(PersistentStore const& store, std::string_view server_name,
+                                                 std::size_t max_rows) -> std::vector<PersistentServerSigningKey>
+{
+    auto keys = std::vector<PersistentServerSigningKey>{};
+    auto const lock = store.server_signing_keys_mutex.acquire();
+    for (auto const& held : store.server_signing_keys)
+    {
+        if (keys.size() >= max_rows)
+        {
+            break;
+        }
+        // A row with a secret is one of this server's own keys: never copied, not even its public half.
+        if (held.server_name != server_name || !held.secret_key.empty())
+        {
+            continue;
+        }
+        auto key = PersistentServerSigningKey{held.server_name, held.key_id, held.public_key, held.valid_until_ts, {}};
+        key.expired_ts = held.expired_ts;
+        keys.push_back(std::move(key));
+    }
+    return keys;
 }
 
 namespace

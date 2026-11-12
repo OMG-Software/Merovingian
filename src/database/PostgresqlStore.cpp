@@ -2379,6 +2379,24 @@ namespace
             }
         }
 
+        // The room's tips (ADR-0733), from the same snapshot as the events they name.
+        auto tips = connection.execute({"postgresql_reload_forward_extremities",
+                                        "SELECT room_id, event_id FROM forward_extremities WHERE room_id = $1 "
+                                        "ORDER BY event_id",
+                                        {{room_id_str, false}}});
+        if (!tips.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("forward_extremities");
+        for (auto const& row : tips.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                snapshot.forward_extremities.push_back({row[0], row[1]});
+            }
+        }
+
         if (snapshot.events.empty())
         {
             return snapshot;
@@ -2587,6 +2605,40 @@ namespace detail
             return std::nullopt;
         }
         return std::move(result.rows.front()[0]);
+    }
+
+    auto load_room_ids_from_postgresql(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<std::vector<std::string>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        auto result =
+            opened.connection.execute({"postgresql_load_room_ids", "SELECT room_id FROM rooms ORDER BY room_id", {}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto room_ids = std::vector<std::string>{};
+        room_ids.reserve(result.rows.size());
+        for (auto& row : result.rows)
+        {
+            if (!row.empty())
+            {
+                room_ids.push_back(std::move(row.front()));
+            }
+        }
+        return room_ids;
     }
 
     auto load_remote_signing_keys_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
