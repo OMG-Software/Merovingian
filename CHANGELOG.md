@@ -163,6 +163,7 @@ authoriser is refused.
 C43. A bare `GET /event` answer was kept verbatim, and `unsigned` written with a unicode escape escaped the literal search
 that decides whether to strip it, so the remote server's `unsigned` was stored and served on. The strip now parses any
 text with an escape, and a bare answer is re-serialised as canonical JSON.
+The regression test now writes the key with a real escape (the first version spelt it literally and could not fail).
 
 ### Federation reads of main's store now hold the runtime lock (ADR-0711)
 
@@ -358,6 +359,12 @@ Run-3 finding C09. Each list of a filter (`types`, `not_types`, `senders`, `not_
 uploaded, when it is given inline to `GET /sync`, `/messages` or `/context`, and when a filter stored before the cap is used
 by a sync. Before, one filter with 100,000 patterns made every sync that used it match each pattern against every row
 under the runtime lock.
+### A federated join commits its answer in few transactions and writes the auth chain with the lock released (ADR-0714)
+
+C03. A federated join committed every auth-chain event and every member row of the resident's answer separately, under the
+runtime lock, so the number of commits was chosen by the resident. The auth chain is now written in one transaction with
+`runtime.mutex` released, and the member rows in one transaction. The state-array and member commits still hold the lock,
+because they write `current_state` and membership rows; the ADR records what releasing them needs.
 
 ## 1.0.0
 

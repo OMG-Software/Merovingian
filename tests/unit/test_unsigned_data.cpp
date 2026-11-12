@@ -135,7 +135,7 @@ SCENARIO("An unsigned member spelt with a JSON escape is stripped like any other
 {
     GIVEN("verbatim event text whose top-level unsigned key is written with a unicode escape")
     {
-        auto const text = std::string{R"({"unsigned":{"age":5},"type":"x","content":{}})"};
+        auto const text = std::string{R"({"unsigne\u0064":{"age":5},"type":"x","content":{}})"};
 
         WHEN("it is stripped")
         {
@@ -153,7 +153,7 @@ SCENARIO("An unsigned member spelt with a JSON escape is stripped like any other
 
     GIVEN("text with an escape that does not touch the key")
     {
-        auto const text = std::string{R"({"type":"x","content":{"body":"café"}})"};
+        auto const text = std::string{R"({"type":"x","content":{"body":"caf\u00e9"}})"};
 
         WHEN("it is stripped")
         {

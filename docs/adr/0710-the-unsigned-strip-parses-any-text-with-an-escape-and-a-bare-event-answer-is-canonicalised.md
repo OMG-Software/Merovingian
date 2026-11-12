@@ -7,7 +7,7 @@
 
 ADR-0402 stores every received PDU without its top-level `unsigned`. `events::without_unsigned_json` returned its input
 unchanged when the literal bytes `"unsigned"` were absent. Most paths pass canonical bytes, but the event-fetch path kept a
-remote server's bare PDU answer verbatim, so a key written `unsigned` (the same key once decoded) was stored, then
+remote server's bare PDU answer verbatim, so a key written `unsigne\u0064` (the same key once decoded) was stored, then
 served to other servers as this server's copy (run-3 finding C43).
 
 ## Considered Options

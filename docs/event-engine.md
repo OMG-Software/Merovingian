@@ -1232,7 +1232,7 @@ client's `unsigned` is built from what this server computes (`replaces_state`, `
 `transaction_id`, `membership` and `prev_content` through `sync::ViewerEventUnsigned`), in `client_event_with_id`
 and in sliding sync alike, never from a stored copy with a list of keys removed. `age` is not served.
 `without_unsigned_json` skips the parse only for text that holds neither `"unsigned"` nor a `\u` escape, because a key
-written as `unsigned` decodes to `unsigned`; the `GET /event` answer without a `pdus` wrapper is re-serialised as
+written as `unsigne\u0064` decodes to `unsigned`; the `GET /event` answer without a `pdus` wrapper is re-serialised as
 canonical JSON, so stored remote events are canonical bytes (C43, ADR-0710).
 
 ### The algorithm
