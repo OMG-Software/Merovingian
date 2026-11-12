@@ -305,6 +305,9 @@ prepared state row now moves the revision after the row is written, as well as a
   main's SQLite file for reading or writing). `test_worker_db_uri.cpp` is now `test_worker_table_load_profile.cpp`
   (tag `[worker_table_profile]`): its configuration, argument, URI-pipe and grant-script scenarios went with what they
   tested; the PostgreSQL worker-role scenario is removed.
+* A worker whose store main does not fill (main is stopping, or refused the room list) now stops with "the store could
+  not be filled from main" instead of "database schema validation failed", which named a database the worker never
+  opens. Test: `[c44][fill-store]`.
 ### A sliding sync connection keeps a bounded number of bytes of its lists (ADR-0663)
 
 A sliding sync connection keeps a copy of its request's lists and its `conn_id` for an hour, and nothing bounded their size, so one account could hold tens of GiB of the main process. A list may now name at most 16 `room_types` and 16 `not_room_types` and 16 ranges, a `conn_id` and a list name are at most 255 bytes, a request may keep at most 64 KiB of lists, and one device's connections together at most 256 KiB; over any of these the request is 400 `M_INVALID_PARAM` and no connection state is created. The idle-connection sweep no longer walks every user's connections: they are kept in an index ordered by last use, so a request pays for the connections it removes.

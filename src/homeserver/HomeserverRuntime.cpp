@@ -1037,6 +1037,18 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // one the caller will see via NRVO in the returned
     // `RuntimeStartResult`).
     runtime.audit_sink_scope->reset(runtime.database);
+    // ADR-0733: a federation worker's store is filled from main. When main does not answer (it is stopping, or it
+    // refused the request), say so: the schema message below would send an operator looking at a database the worker
+    // never opens.
+    if (opts.fill_store && !runtime.database.opened)
+    {
+        log_diagnostic("start.rejected",
+                       {
+                           {"opened", "false",                                   false},
+                           {"reason", "the store could not be filled from main", false}
+        });
+        return {false, "the store could not be filled from main", {}};
+    }
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
