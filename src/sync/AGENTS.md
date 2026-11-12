@@ -431,3 +431,11 @@ sync receipts extension and its wake check) or `database::receipts_of_user_in_ro
 count). A threaded receipt (`thread_id` other than `main`) is accepted by the POST handler only for the thread root or
 an event that belongs to that thread (`receipt_event_is_in_thread`), and `store_receipt` caps a user's threaded rows in
 a room. A test proves cost with `receipt_rows_examined`, not time.
+
+## Classic sync reads per-room rows through the room indexes (ADR-0654)
+
+`sync_json` reads a room's state through `find_current_state_event_id` / `for_each_room_state_row`, its memberships
+through `for_each_room_membership_row` and its receipts through `receipts_in_room`; never loop `store.state`,
+`store.memberships` or `store.receipts` per room. Joined rooms that pass the room filter are counted in
+`processed_rooms` before any per-room work and the loop stops at `max_sync_rooms`. Tests prove cost with
+`state_rows_examined`, `membership_rows_examined` and `receipt_rows_examined`.

@@ -381,7 +381,8 @@ struct PersistentStore final
     std::unordered_map<std::string, std::vector<std::size_t>> state_room_index{};
     std::size_t state_indexed_rows{0U};
     // Rows of `state` that `find_current_state_event_id` and `for_each_room_state_row` looked at: one per
-    // index hit or visited row, every row of a fallback scan. A test proves a reader's cost by it, not by time.
+    // index hit or visited row, every row of a fallback scan. A test proves a reader's cost by it, not by time
+    // (ADR-0654).
     ExaminedRows state_rows_examined{};
     std::vector<PersistentStateTransition> state_transitions{};
     // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)

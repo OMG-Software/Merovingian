@@ -4831,19 +4831,29 @@ namespace
         {
             return room->members.size();
         }
-        return static_cast<std::size_t>(std::ranges::count_if(
-            rt.homeserver.database.persistent_store.memberships, [&](database::PersistentMembership const& membership) {
-                return membership.room_id == room_id && membership.membership == "join";
-            }));
+        auto count = std::size_t{0U};
+        database::for_each_room_membership_row(rt.homeserver.database.persistent_store, room_id,
+                                               [&](database::PersistentMembership const& membership) {
+                                                   if (membership.membership == "join")
+                                                   {
+                                                       ++count;
+                                                   }
+                                               });
+        return count;
     }
 
     [[nodiscard]] auto invited_member_count(database::PersistentStore const& store, std::string_view room_id)
         -> std::size_t
     {
-        return static_cast<std::size_t>(
-            std::ranges::count_if(store.memberships, [&](database::PersistentMembership const& membership) {
-                return membership.room_id == room_id && membership.membership == "invite";
-            }));
+        // The room's own membership rows, through the index (ADR-0437), not every row on the server.
+        auto count = std::size_t{0U};
+        database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& membership) {
+            if (membership.membership == "invite")
+            {
+                ++count;
+            }
+        });
+        return count;
     }
 
     // Spec: GET /_matrix/client/v3/sync §JoinedRoom summary
@@ -4876,13 +4886,13 @@ namespace
         }
         else
         {
-            for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
-            {
-                if (membership.room_id == room_id && membership.membership == "join")
-                {
-                    add(membership.user_id);
-                }
-            }
+            database::for_each_room_membership_row(rt.homeserver.database.persistent_store, room_id,
+                                                   [&](database::PersistentMembership const& membership) {
+                                                       if (membership.membership == "join")
+                                                       {
+                                                           add(membership.user_id);
+                                                       }
+                                                   });
         }
         return heroes;
     }
@@ -5311,24 +5321,20 @@ namespace
                                                         LazySelectorRef lazy = std::nullopt) -> canonicaljson::Array
     {
         auto state_events = canonicaljson::Array{};
-        for (auto const& state_entry : store.state)
-        {
-            if (state_entry.room_id != room_id)
-            {
-                continue;
-            }
+        // The room's own state rows through the state index (ADR-0344), in storage order.
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state_entry) {
             auto const event = store.events.find(state_entry.event_id);
             if (event == store.events.end() ||
                 !sync::event_passes_filter(filter, state_entry.event_type, event->sender_user_id))
             {
-                continue;
+                return;
             }
             if (lazy.has_value() && !keep_lazily(lazy->get(), state_entry.event_type, state_entry.state_key, *event))
             {
-                continue;
+                return;
             }
             state_events.push_back(client_event_with_id(store, *event));
-        }
+        });
         return state_events;
     }
 
@@ -5571,12 +5577,7 @@ namespace
         auto earliest_above = store.events.end();
         auto ids = std::vector<std::string>{};
         auto above = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
-        for (auto const& entry : store.state)
-        {
-            if (entry.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& entry) {
             auto const event = store.events.find(entry.event_id);
             if (event != store.events.end() && event->stream_ordering > position)
             {
@@ -5585,10 +5586,10 @@ namespace
                     earliest_above = event;
                 }
                 above.emplace_back(*event);
-                continue;
+                return;
             }
             ids.push_back(entry.event_id);
-        }
+        });
         if (earliest_above == store.events.end())
         {
             return build_current_state_events_array(store, filter, room_id, lazy);
@@ -5878,14 +5879,13 @@ namespace
     [[nodiscard]] auto joined_membership_changed_since(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id, std::uint64_t since_ordering) -> bool
     {
-        auto const state_entry = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        if (state_entry == store.state.end())
+        // The state index (ADR-0344), not a scan of the whole state table, for every joined room of every sync.
+        auto const member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        if (!member_event_id.has_value())
         {
             return false;
         }
-        auto const event = store.events.find(state_entry->event_id);
+        auto const event = store.events.find(*member_event_id);
         if (event == store.events.end() || event->stream_ordering <= since_ordering)
         {
             return false;
@@ -6399,6 +6399,9 @@ namespace
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
+        // Joined rooms that passed the room filter and so got per-room work, capped by max_sync_rooms (ADR-0654), not
+        // only those that end up in the response.
+        auto processed_rooms = std::size_t{0U};
 
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users, Server behaviour). Resolved once per request and
@@ -6446,6 +6449,11 @@ namespace
             {
                 continue;
             }
+            if (processed_rooms >= rt.limits.max_sync_rooms)
+            {
+                break;
+            }
+            ++processed_rooms;
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
