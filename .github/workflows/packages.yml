@@ -5,28 +5,30 @@ on:
     branches: [main, 'codex/**', 'alpha-release']
   pull_request:
     branches: [main]
-  # release.yml calls this workflow for a v* tag, so a release ships the .deb and
-  # .rpm packages these jobs build and gate (ADR-0650). Staging, signing and
-  # publishing `latest` run only for a push to main, so they skip there.
+  # release.yml calls this workflow for a v* tag, so a tagged release ships
+  # exactly the packages `latest` does, staged and signed by the same jobs
+  # (ADR-0650, ADR-0652). Staging and signing run for a push to main or a v*
+  # tag; publishing `latest` runs only for main, so it skips for a tag.
   workflow_call:
 jobs:
-  # ADR-0580: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
-  # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
+  # ADR-0580, ADR-0653: every job below that needs nothing else waits for this one. The analyses join the runner queue
+  # when a pull request is pushed, the build and test jobs a few seconds later behind their own gates, and the package
+  # jobs a minute after that, so with the runners free each tier takes them in that order. The jobs that wait use
   # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
-  queue-after-analyses:
-    name: Queue after Sonar and CodeQL
+  queue-after-build-and-test:
+    name: Queue after the build and test jobs
     runs-on: ubuntu-latest
     permissions: {}
     timeout-minutes: 5
     steps:
-      - name: Let the long jobs queue
-        run: "true"
+      - name: Let the analyses and the build and test jobs queue first
+        run: sleep 60
 
   # A .deb installs only on the Ubuntu release it was built on, because its
   # sonames come from that release (as for the Fedora RPMs, ADR-0376), so each
   # supported release gets its own package (ADR-0650).
   deb:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: Ubuntu ${{ matrix.release }} package
     runs-on: ubuntu-latest
@@ -38,8 +40,9 @@ jobs:
             image: ubuntu:24.04
           - release: '26.04'
             image: ubuntu:26.04
-          - release: rolling
-            image: ubuntu:rolling
+          # The interim release, pinned by release as ci.yml tests it (ADR-0652).
+          - release: '26.10'
+            image: ubuntu:26.10
     container: ${{ matrix.image }}
     permissions:
       contents: read
@@ -86,8 +89,8 @@ jobs:
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       # Every release builds merovingian_<version>_<arch>.deb; the release it
-      # was built on goes into the name, from the image itself, so `rolling`
-      # becomes the number of the release it is today.
+      # was built on goes into the name, read from the image itself, so every
+      # published package names the platform it installs on (ADR-0652).
       - name: Name the package after its Ubuntu release
         run: |
           . /etc/os-release
@@ -121,7 +124,7 @@ jobs:
         run: test "${RESULT}" = success
 
   static-linux-fallback:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: Static Linux fallback binary
     runs-on: ubuntu-latest
@@ -184,7 +187,7 @@ jobs:
           retention-days: 30
 
   rpm:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: Fedora RPM package (${{ matrix.image }})
     runs-on: ubuntu-latest
@@ -195,8 +198,8 @@ jobs:
         include:
           - image: fedora:44
             artifact: rpm-package-fc44
-          - image: fedora:latest
-            artifact: rpm-package-latest
+          - image: fedora:45
+            artifact: rpm-package-fc45
     container: ${{ matrix.image }}
     permissions:
       contents: read
@@ -286,7 +289,7 @@ jobs:
         run: test "${RESULT}" = success
 
   freebsd-pkg:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: FreeBSD package
     runs-on: ubuntu-latest
@@ -300,6 +303,8 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          release: '15'
           prepare: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
               gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
@@ -311,6 +316,9 @@ jobs:
             pkg add ./merovingian-*.pkg
             cp scripts/check-startup-hardening-gate.sh /tmp/check-startup-hardening-gate.sh
             su -m nobody -c "sh /tmp/check-startup-hardening-gate.sh /usr/local/bin/merovingian-server"
+            # Name the package after the FreeBSD major release it was built on (ADR-0652).
+            major="$(freebsd-version -u | cut -d. -f1)"
+            for f in merovingian-*.pkg; do mv "$f" "${f%.pkg}-freebsd${major}.pkg"; done
       - name: Attest FreeBSD package
         uses: actions/attest-build-provenance@v4
         with:
@@ -321,7 +329,7 @@ jobs:
           path: merovingian-*.pkg
 
   openbsd-pkg:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: OpenBSD package
     runs-on: ubuntu-latest
@@ -343,7 +351,13 @@ jobs:
             sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \
               --require-pkg-config "libsodium libpng16 libturbojpeg" \
               meson ninja git bison gmake libsodium postgresql-client curl png jpeg
-          run: sh scripts/build-openbsd-pkg.sh
+          # The package's own name is in its +CONTENTS, so the file can name the
+          # OpenBSD release it was built on (ADR-0652).
+          run: |
+            set -e
+            sh scripts/build-openbsd-pkg.sh
+            release="$(uname -r)"
+            for f in merovingian-*.tgz; do mv "$f" "${f%.tgz}-openbsd${release}.tgz"; done
       - name: Attest OpenBSD package
         uses: actions/attest-build-provenance@v4
         with:
@@ -354,7 +368,7 @@ jobs:
           path: merovingian-*.tgz
 
   netbsd-pkg:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: NetBSD package
     runs-on: ubuntu-latest
@@ -393,7 +407,13 @@ jobs:
             # refuses. Remove it if the image already has it, so base headers,
             # libraries and pkg-config files are the only OpenSSL in sight.
             if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
-          run: sh scripts/build-netbsd-pkg.sh
+          # The package's own name is in its +CONTENTS, so the file can name the
+          # NetBSD release it was built on (ADR-0652).
+          run: |
+            set -e
+            sh scripts/build-netbsd-pkg.sh
+            release="$(uname -r | sed 's/_.*//')"
+            for f in merovingian-*.tgz; do mv "$f" "${f%.tgz}-netbsd${release}.tgz"; done
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v4
         with:
@@ -404,7 +424,7 @@ jobs:
           path: merovingian-*.tgz
 
   debian-pkg:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: Debian trixie package
     runs-on: ubuntu-latest
@@ -457,6 +477,15 @@ jobs:
           setpriv --reuid=merovingian --regid=merovingian --init-groups \
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
+      # As the Ubuntu packages are named: -debian13.deb, from the image itself
+      # (ADR-0652). The Complement step attaches the package it tested under the
+      # unsuffixed -debian.deb name, so the two never collide in a release.
+      - name: Name the package after its Debian release
+        run: |
+          . /etc/os-release
+          for f in merovingian_*.deb; do
+            mv "$f" "${f%.deb}-debian${VERSION_ID}.deb"
+          done
       - name: Attest Debian package
         uses: actions/attest-build-provenance@v4
         with:
@@ -468,7 +497,7 @@ jobs:
           retention-days: 30
 
   docker-image:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: Docker image startup gate
     runs-on: ubuntu-latest
@@ -599,7 +628,7 @@ jobs:
         run: docker logs hs1 || true
 
   rhel-rpm:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: RHEL-compatible (AlmaLinux 10) RPM
     runs-on: ubuntu-latest
@@ -681,7 +710,7 @@ jobs:
   # RPM under its own dist tag (ADR-0650). The Tumbleweed leg keeps the name the
   # main ruleset requires.
   opensuse-rpm:
-    needs: queue-after-analyses
+    needs: queue-after-build-and-test
     if: ${{ !cancelled() }}
     name: OpenSUSE ${{ matrix.flavour }} RPM
     runs-on: ubuntu-latest
@@ -693,7 +722,7 @@ jobs:
             image: opensuse/tumbleweed
             # A rolling release: dup moves the image to the live snapshot.
             sync: dup
-            dist: .opensuse
+            dist: .tumbleweed
             artifact: opensuse-rpm-package
           - flavour: Leap 16.0
             image: opensuse/leap:16.0
@@ -809,16 +838,19 @@ jobs:
 
   stage-package-assets:
     name: Stage unsigned package assets
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A push to main stages `latest`; a v* tag (release.yml calls this workflow)
+    # stages the tagged release from the same list (ADR-0652).
+    if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      # Each Ubuntu package already names its release (-ubuntu24.04 and so on),
-      # so they can land directly in packages/. All three are required: a
-      # missing one stops staging.
+      # Every package names the platform it installs on (-ubuntu26.04,
+      # -debian13, .fc45, .el10, .tumbleweed, .leap16, -freebsd15, -openbsd7.x,
+      # -netbsd10.x, linux-static), so all land directly in packages/ without
+      # colliding (ADR-0652). Every one is required: a missing one stops staging.
       - uses: actions/download-artifact@v8
         with:
           name: ubuntu-deb-package-24.04
@@ -829,44 +861,24 @@ jobs:
           path: packages/
       - uses: actions/download-artifact@v8
         with:
-          name: ubuntu-deb-package-rolling
+          name: ubuntu-deb-package-26.10
+          path: packages/
+      - uses: actions/download-artifact@v8
+        with:
+          name: debian-package
           path: packages/
       - uses: actions/download-artifact@v8
         with:
           name: static-linux-fallback-package
           path: packages/
-      # Each Fedora RPM carries its release's dist tag (.fc44, .fc45), so their
-      # file names are unique and can land directly in packages/.
       - uses: actions/download-artifact@v8
         with:
           name: rpm-package-fc44
           path: packages/
       - uses: actions/download-artifact@v8
         with:
-          name: rpm-package-latest
+          name: rpm-package-fc45
           path: packages/
-      - uses: actions/download-artifact@v8
-        with:
-          name: freebsd-package
-          path: packages/
-      # OpenBSD and NetBSD both emit merovingian-<version>.tgz; download to
-      # separate dirs and re-suffix so the flat release bundle does not collide.
-      - uses: actions/download-artifact@v8
-        with:
-          name: openbsd-package
-          path: packages-openbsd/
-      - uses: actions/download-artifact@v8
-        with:
-          name: netbsd-package
-          path: packages-netbsd/
-      # The Debian trixie job builds merovingian_<ver>_<arch>.deb with no
-      # release in the name; download to a separate dir and re-suffix it.
-      - uses: actions/download-artifact@v8
-        with:
-          name: debian-package
-          path: packages-debian/
-      # RHEL and OpenSUSE RPMs carry distinct dist tags (.el10 / .opensuse /
-      # .leap16) so their filenames are unique and can land directly in packages/.
       - uses: actions/download-artifact@v8
         with:
           name: rhel-rpm-package
@@ -879,17 +891,18 @@ jobs:
         with:
           name: opensuse-leap-rpm-package
           path: packages/
-      - name: Disambiguate BSD tarball and Debian package names
-        run: |
-          for f in packages-openbsd/*.tgz; do
-            mv "$f" "packages/$(basename "${f%.tgz}")-openbsd.tgz"
-          done
-          for f in packages-netbsd/*.tgz; do
-            mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
-          done
-          for f in packages-debian/*.deb; do
-            mv "$f" "packages/$(basename "${f%.deb}")-debian.deb"
-          done
+      - uses: actions/download-artifact@v8
+        with:
+          name: freebsd-package
+          path: packages/
+      - uses: actions/download-artifact@v8
+        with:
+          name: openbsd-package
+          path: packages/
+      - uses: actions/download-artifact@v8
+        with:
+          name: netbsd-package
+          path: packages/
       - name: Generate license summary
         run: python scripts/generate-license-summary.py packages/merovingian.licenses.json
 
@@ -919,7 +932,7 @@ jobs:
     # GitHub implicitly ANDs a bare expression with success(), and that default
     # success() returns false when any job in the broader dependency graph was
     # skipped (e.g. a job whose own `if` is false). failure() looks at that whole
-    # graph too, the queue-after-analyses gate included (ADR-0580), so signing
+    # graph too, the queue-after-build-and-test gate included (ADR-0580), so signing
     # checks the jobs it depends on by name: staging succeeded and no package
     # job failed or was cancelled, whatever the gate did.
     if: |

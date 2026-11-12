@@ -7,13 +7,13 @@
 # libjpeg8-devel, sqlite3-devel, ninja, pkgconf).
 #
 # The dist tag is forced so the filename is unambiguous in the release bundle
-# alongside the Fedora and RHEL RPMs: .opensuse (Tumbleweed) unless
+# alongside the Fedora and RHEL RPMs: .tumbleweed unless
 # MEROVINGIAN_RPM_DIST names another, as packages.yml does for Leap 16.0
 # (.leap16, ADR-0650).
 set -e
 
 VERSION="1.0.0"
-DIST="${MEROVINGIAN_RPM_DIST:-.opensuse}"
+DIST="${MEROVINGIAN_RPM_DIST:-.tumbleweed}"
 case "${DIST}" in
     .[a-z]*) ;;
     *)

@@ -325,7 +325,7 @@
 * [0373 - A fallback event records the room's current state as its state before](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) — Supersedes the state-before and consequence wording of ADR-0225
 * [0374 - Forward extremities are bounded for events that add no state](0374-forward-extremities-are-bounded-for-events-that-add-no-state.md)
 * [0375 - A refused recomputation of current state is a status, not a success](0375-a-refused-recomputation-of-current-state-is-a-status-not-a-success.md)
-* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
+* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md) — Partly superseded by ADR-0652: Fedora 45 replaces fedora:latest
 * [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
 * [0378 - Probe ELF hardening in memory, and keep NetBSD refused](0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)
 
@@ -500,7 +500,7 @@
 * [0569 - A long-poll with nothing to return parks in a registry and gives up its sync-pool thread](0569-a-long-poll-with-nothing-to-return-parks-in-a-registry-and-gives-up-its-sync-pool-thread.md)
 * [0570 - sync_max_in_flight bounds parked waits, not sync-pool threads](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
 * [0574 - Media downloads are streamed from the database in chunks](0574-media-downloads-are-streamed-from-the-database-in-chunks.md)
-* [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)
+* [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md) — Extended by ADR-0653: package jobs wait behind a later gate
 * [0581 - Room aliases are indexed in a table class and capped per user and per room](0581-room-aliases-are-indexed-in-a-table-class-and-capped-per-user-and-per-room.md)
 * [0582 - A user holds at most 200 devices, a device name at most 256 bytes, and a device-list announcement is linear](0582-a-user-holds-at-most-200-devices-a-device-name-at-most-256-bytes-and-a-device-list-announcement-is-linear.md)
 * [0583 - An event builds only on events of its own room](0583-an-event-builds-only-on-events-of-its-own-room.md)
@@ -562,3 +562,5 @@
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
 * [0651 - The v1.0.0 tag moves to the release-workflow fix without a version bump](0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)
+* [0652 - Fixed build-and-test and package platform lists, and a tag ships what latest ships](0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)
+* [0653 - Analyses, then build and test jobs, then packages take runners](0653-analyses-then-build-and-test-then-packages-take-runners.md)

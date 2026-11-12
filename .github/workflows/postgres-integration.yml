@@ -14,8 +14,20 @@ on:
     - cron: "47 2 * * 1"
 
 jobs:
+  # ADR-0580, ADR-0653: a build and test job, so it joins the runner queue after the analyses, as ci.yml's do.
+  # `!cancelled()`: it still runs if the gate fails, because a skipped required check counts as passed.
+  queue-after-analyses:
+    name: Queue after the analyses
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Let the analyses queue first
+        run: "true"
 
   postgres-integration:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       CC: clang

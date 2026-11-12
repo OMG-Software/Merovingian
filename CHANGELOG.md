@@ -28,6 +28,32 @@ Merovingian 1.0.0 is the first production release. It follows the release-gate s
 * `tests/tooling/test_expected_skips.py`: a build script named in a workflow comment no longer counts as a test run
   that needs `--skip-job`, and a `--skip-job` that appears only in a comment no longer satisfies the check.
 
+### CI and packaging workflows
+
+No version bump: these change only the workflows, packaging specs and their tooling, and no shipped binary.
+
+* Build and test run on exactly RHEL 10 (AlmaLinux), openSUSE Leap 16 and Tumbleweed, Fedora 44 and 45, Ubuntu 26.04 and
+  26.10, Debian 13, FreeBSD 15, OpenBSD and NetBSD. Every image is pinned by release: `ubuntu:rolling` became
+  `ubuntu:26.10` (job `ubuntu-interim-build-and-test`, check `ubuntu-26.10-build-and-test`), `fedora:latest` became
+  `fedora:45`, and the FreeBSD VMs run `release: '15'`. Ubuntu 24.04 is packaged but no longer built and tested
+  (ADR-0652).
+* `latest` and every tag ship the same x86_64 set: Ubuntu 24.04, 26.04 and 26.10, Debian 13, Fedora 44 and 45, RHEL 10,
+  openSUSE Leap 16 and Tumbleweed, the static Linux tarball, FreeBSD 15 `.pkg`, OpenBSD and NetBSD. `release.yml` now
+  calls `packages.yml` and publishes its signed set, so a tag gains the Debian, static, FreeBSD, OpenBSD and NetBSD
+  packages and no longer publishes its own glibc Linux and FreeBSD tarballs. Debian 12 is not packaged; the static
+  tarball covers it (ADR-0652).
+* Every package names its platform, set by the job that built it before attestation: `-debian13.deb`,
+  `-freebsd15.pkg`, `-openbsd<release>.tgz`, `-netbsd<release>.tgz`, and openSUSE Tumbleweed's `.tumbleweed` (was
+  `.opensuse`).
+* The three RPM specs build with `--buildtype=release`, so every package uses the hardened profile.
+* `publish_complement_evidence.py` attaches the tested `-debian13.deb` as `-debian.deb`, since a tag now has its own
+  `-debian13.deb`, and refuses a package not named as `latest` names it.
+* CI joins the runner queue in three tiers: the analyses first, then the build and test jobs (now including
+  `postgres-integration.yml` and `reproducible-build.yml`) behind instant gates, then the package jobs behind
+  `queue-after-build-and-test`, which waits 60 seconds (ADR-0653).
+* `check-release-readiness.sh` looks for attestations, `SHA256SUMS`, signing and the SBOM in `packages.yml`. The
+  tooling tests pin both platform lists, the package names and the hardened profile.
+
 ### Documentation
 
 * `docs/versioning.md`: the scheme from 1.0.0 is `MAJOR.MINOR.BUILD`. `BUILD` is bumped once per branch as `PATCH` was.

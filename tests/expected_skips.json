@@ -194,7 +194,7 @@
       "landlock",
       "root-container"
     ],
-    "ubuntu-rolling": [
+    "ubuntu-interim": [
       "landlock",
       "root-container"
     ],

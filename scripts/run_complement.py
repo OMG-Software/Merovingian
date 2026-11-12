@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Run Complement against a Merovingian Debian trixie package (ADR-0234).
 
-    run_complement.py --package merovingian_<v>_amd64-debian.deb \\
+    run_complement.py --package merovingian_<v>_amd64-debian13.deb \\
         --sha256sums SHA256SUMS --signature SHA256SUMS.asc --work-dir DIR
 
     run_complement.py --package local.deb --unsigned --work-dir DIR

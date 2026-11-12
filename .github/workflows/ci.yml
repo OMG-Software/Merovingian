@@ -15,7 +15,7 @@ on:
 
 jobs:
 
-  # ADR-0580: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
+  # ADR-0580, ADR-0653: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
   # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
   # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
   queue-after-analyses:
@@ -28,10 +28,12 @@ jobs:
         run: "true"
 
   # ── Linux ──────────────────────────────────────────────────────────────────
-  # One leg per Ubuntu LTS on GitHub's own runner image, each pinned by release
-  # rather than `ubuntu-latest`, so a label migration cannot drop a release
-  # unnoticed (ADR-0650). The 26.04 leg keeps the check name the main ruleset
-  # requires; the interim release runs in a container below.
+  # One leg per Ubuntu LTS that CI builds and tests on GitHub's own runner image,
+  # each pinned by release rather than `ubuntu-latest`, so a label migration
+  # cannot drop a release unnoticed (ADR-0650). The 26.04 leg keeps the check
+  # name the main ruleset requires; the interim release runs in a container
+  # below. Ubuntu 24.04 is packaged (packages.yml) but not built and tested
+  # here: the build-and-test and packaging release lists differ (ADR-0652).
   ubuntu-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
@@ -44,9 +46,6 @@ jobs:
           - check: ubuntu-build-and-test
             runner: ubuntu-26.04
             release: '26.04'
-          - check: ubuntu-24.04-build-and-test
-            runner: ubuntu-24.04
-            release: '24.04'
     env:
       CC: clang
       CXX: clang++
@@ -137,15 +136,18 @@ jobs:
           retention-days: 14
 
   # ── Ubuntu interim release ─────────────────────────────────────────────────
-  # GitHub has runner images for LTS releases only, so the current interim
-  # release (ubuntu:rolling) builds in a container on the default runner, as
-  # Debian does below.
-  ubuntu-rolling-build-and-test:
+  # GitHub has runner images for LTS releases only, so the interim release
+  # builds in a container on the default runner, as Debian does below. The
+  # image is pinned by release, never `ubuntu:rolling`, so the release CI tests
+  # is the one packages.yml ships (ADR-0652); move it when the next interim
+  # release replaces this one.
+  ubuntu-interim-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
+    name: ubuntu-26.10-build-and-test
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:rolling
+      image: ubuntu:26.10
     env:
       CC: clang
       CXX: clang++
@@ -190,28 +192,28 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
-          key: ccache-ubuntu-rolling-ci-${{ github.run_id }}
-          restore-keys: ccache-ubuntu-rolling-ci-
+          key: ccache-ubuntu-interim-ci-${{ github.run_id }}
+          restore-keys: ccache-ubuntu-interim-ci-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-ubuntu-rolling --skip-job ubuntu-rolling
+        run: sh scripts/build-linux.sh --builddir build-ubuntu-interim --skip-job ubuntu-interim
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-ubuntu-rolling/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-ubuntu-rolling/meson-logs/testlog.txt \
+          if [ -f build-ubuntu-interim/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-ubuntu-interim/meson-logs/testlog.txt \
               | tail -n 300
           fi
 
       - name: Conformance gate
-        run: sh scripts/check-conformance-gate.sh build-ubuntu-rolling
+        run: sh scripts/check-conformance-gate.sh build-ubuntu-interim
 
       - name: Packaging sanity gate
-        run: meson test -C build-ubuntu-rolling packages-workflow-tooling --print-errorlogs
+        run: meson test -C build-ubuntu-interim packages-workflow-tooling --print-errorlogs
 
       - name: Validate Phase 1 configuration gates
-        run: bash scripts/validate-phase1-config.sh build-ubuntu-rolling
+        run: bash scripts/validate-phase1-config.sh build-ubuntu-interim
 
   # -- Real listener coverage + link-time hardening enforcement --------------
   # The main ubuntu-build-and-test job above builds in Meson's default (debug)
@@ -328,7 +330,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [fedora:44, fedora:latest]
+        image: [fedora:44, fedora:45]
     container:
       image: ${{ matrix.image }}
     env:
@@ -697,6 +699,8 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          release: '15'
           run: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
             if ! sh scripts/build-bsd.sh --builddir build --skip-job freebsd; then

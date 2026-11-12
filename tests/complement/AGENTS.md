@@ -33,7 +33,7 @@ are this project's own tests.
 
 ```bash
 python3 scripts/run_complement.py \
-    --package merovingian_<version>_amd64-debian.deb \
+    --package merovingian_<version>_amd64-debian13.deb \
     --sha256sums SHA256SUMS --signature SHA256SUMS.asc \
     --work-dir ../complement-<version>
 ```
@@ -55,7 +55,7 @@ release evidence. `--allow-without-landlock` passes
 To build the image by hand:
 
 ```bash
-cp merovingian_<version>_amd64-debian.deb tests/complement/artifact/merovingian.deb
+cp merovingian_<version>_amd64-debian13.deb tests/complement/artifact/merovingian.deb
 docker build --build-arg MEROVINGIAN_DEB_SHA256=<its SHA-256> --tag merovingian-complement tests/complement
 ```
 

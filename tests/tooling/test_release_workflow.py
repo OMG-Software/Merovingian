@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 SIGN_WORKFLOW = WORKFLOWS_DIR / "sign-artifacts.yml"
-STAGE_SCRIPT = REPO_ROOT / "scripts" / "stage-release-tarball.sh"
+PACKAGES_WORKFLOW = WORKFLOWS_DIR / "packages.yml"
 
 
 def job_text(workflow: str, job: str) -> str:
@@ -210,23 +210,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # GIVEN the repository release workflow.
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN the packages are built and published.
-        # THEN both builds need check-tag, and the published release's
-        # prerelease flag is check-tag's output rather than a constant.
-        self.assertIn("needs: check-tag", job_text(workflow, "linux-release-package"))
-        self.assertIn("needs: check-tag", job_text(workflow, "freebsd-release-package"))
+        # WHEN the release gates, the packages and the publish job are read.
+        # THEN each build needs check-tag, publishing waits for all of them, and the
+        # published release's prerelease flag is check-tag's output rather than a constant.
+        for job in ("linux-release-evidence", "freebsd-release-evidence", "distro-packages"):
+            with self.subTest(job=job):
+                self.assertIn("needs: check-tag", job_text(workflow, job))
         publish = job_text(workflow, "publish-release")
-        self.assertIn("- check-tag", publish)
+        for job in ("check-tag", "linux-release-evidence", "freebsd-release-evidence", "distro-packages"):
+            with self.subTest(publish_needs=job):
+                self.assertIn(f"      - {job}\n", publish)
         self.assertIn("prerelease: ${{ needs.check-tag.outputs.prerelease == 'true' }}", publish)
         self.assertNotIn("prerelease: true", workflow)
 
-    def test_hardened_linux_and_freebsd_packages_are_built(self) -> None:
+    def test_hardened_linux_and_freebsd_builds_gate_the_release(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN release assets are built.
-        # THEN both supported package jobs use the hardened profile.
+        # WHEN the release gates run.
+        # THEN both platforms build and test with the hardened profile, FreeBSD on its
+        # 15.x line, and the readiness gate runs.
         self.assertIn(
             "sh scripts/build-linux.sh --builddir build-linux-release --profile hardened",
             workflow,
@@ -235,86 +239,80 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened",
             workflow,
         )
+        self.assertIn("release: '15'\n", job_text(workflow, "freebsd-release-evidence"))
         self.assertIn("sh scripts/check-release-readiness.sh", workflow)
-
-    def test_release_tarballs_are_staged_from_meson_install_with_both_workers(self) -> None:
-        # GIVEN the repository release workflow and its staging script.
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        script = STAGE_SCRIPT.read_text(encoding="utf-8")
-
-        # WHEN release assets are staged.
-        # THEN both platforms stage through the script, which installs with
-        # Meson and requires both workers, and the Linux job installs the image
-        # codecs the thumbnail worker is built from.
-        self.assertIn('sh scripts/stage-release-tarball.sh build-linux-release "${package_root}"', workflow)
-        self.assertIn('sh scripts/stage-release-tarball.sh build-freebsd-release "${package_root}"', workflow)
-        self.assertNotIn("cp build-", workflow)
-        self.assertIn("meson install", script)
-        self.assertIn("libexec/merovingian/merovingian-fed-worker", script)
-        self.assertIn("libexec/merovingian/merovingian-thumbnail-worker", script)
-        linux = job_text(workflow, "linux-release-package")
+        # AND the Linux gate installs the image codecs the thumbnail worker is built from.
+        linux = job_text(workflow, "linux-release-evidence")
         self.assertIn("libpng-dev", linux)
         self.assertIn("libturbojpeg0-dev", linux)
-        self.assertIn("png libjpeg-turbo", job_text(workflow, "freebsd-release-package"))
+        self.assertIn("png libjpeg-turbo", job_text(workflow, "freebsd-release-evidence"))
 
-    def test_release_packages_include_system_package_scaffolds(self) -> None:
-        # GIVEN the repository release workflow and its staging script.
+    def test_a_tag_ships_the_packages_latest_ships_and_no_build_of_its_own(self) -> None:
+        # GIVEN the release workflow, and packages.yml, which builds `latest` (ADR-0652).
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        script = STAGE_SCRIPT.read_text(encoding="utf-8")
 
-        # WHEN release assets are staged.
-        # THEN Debian, RPM, and BSD package scaffolds are copied into the release tarballs.
-        self.assertIn("packaging/deb", script)
-        self.assertIn("packaging/rpm", script)
-        self.assertIn("packaging/freebsd", script)
-        self.assertIn("packaging/openbsd", script)
-        self.assertIn("packaging/netbsd", script)
-        self.assertIn("libsodium-dev", workflow)
-        self.assertIn("libpq-dev", workflow)
-        self.assertIn("libsodium postgresql17-client", workflow)
+        # WHEN its assets are read.
+        # THEN it publishes only what packages.yml signed in this run: no glibc or
+        # FreeBSD tarball of its own build, no staging or signing of its own.
+        self.assertNotIn("stage-release-tarball.sh", workflow)
+        self.assertNotIn(".tar.gz", workflow.split("cat > release-notes.md")[0])
+        self.assertNotIn("uses: ./.github/workflows/sign-artifacts.yml", workflow)
+        publish = job_text(workflow, "publish-release")
+        self.assertIn("name: signed-packages\n", publish)
+        self.assertIn("release-assets/*", publish)
+        # AND the packages are called with the secrets packages.yml's signing job needs.
+        self.assertIn("    secrets: inherit\n", job_text(workflow, "distro-packages"))
 
     def test_sbom_and_licence_summary_are_staged_before_signing(self) -> None:
-        # GIVEN the repository release workflow.
-        workflow = WORKFLOW.read_text(encoding="utf-8")
+        # GIVEN packages.yml, which stages both `latest` and every tagged release.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN the release assets are staged.
-        stage = job_text(workflow, "stage-release-assets")
+        # WHEN the package assets are staged.
+        stage = job_text(workflow, "stage-package-assets")
 
         # THEN the SBOM (both formats) and the licence summary are generated
         # into the unsigned assets before they are uploaded for signing, so
         # each is published with a detached signature.
         self.assertIn("python scripts/generate_sbom.py", stage)
-        self.assertIn("--spdx release-assets/merovingian.spdx.json", stage)
-        self.assertIn("--cyclonedx release-assets/merovingian.cdx.json", stage)
+        self.assertIn("--spdx packages/merovingian.spdx.json", stage)
+        self.assertIn("--cyclonedx packages/merovingian.cdx.json", stage)
         self.assertIn('--commit "${{ github.sha }}"', stage)
-        self.assertIn("generate-license-summary.py release-assets/merovingian.licenses.json", stage)
-        self.assertLess(stage.index("generate_sbom.py"), stage.index("name: unsigned-release-assets"))
-        self.assertNotIn("generate-license-summary", job_text(workflow, "publish-release"))
+        self.assertIn("generate-license-summary.py packages/merovingian.licenses.json", stage)
+        self.assertLess(stage.index("generate_sbom.py"), stage.index("name: unsigned-packages"))
+        self.assertNotIn("generate-license-summary", job_text(WORKFLOW.read_text(encoding="utf-8"), "publish-release"))
 
     def test_release_publishes_assets_and_checksums(self) -> None:
-        # GIVEN the repository release workflow.
+        # GIVEN the repository release workflow and packages.yml.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN release packages are published.
-        # THEN the workflow generates checksums and uploads a GitHub release.
-        self.assertIn("sha256sum", workflow)
-        self.assertIn("sha256 -q", workflow)
+        # THEN staging writes SHA256SUMS over every asset before signing, the notes list
+        # it, and the workflow uploads a GitHub release.
+        stage = job_text(packages, "stage-package-assets")
+        self.assertIn("sha256sum packages/* > packages/SHA256SUMS", stage)
+        self.assertLess(stage.index("SHA256SUMS"), stage.index("name: unsigned-packages"))
+        self.assertIn("done < release-assets/SHA256SUMS", workflow)
         self.assertIn("softprops/action-gh-release@", workflow)
 
     def test_release_attaches_slsa_provenance_attestation(self) -> None:
-        # GIVEN the repository release workflow.
+        # GIVEN the repository release workflow and packages.yml.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN release packages are published.
-        # THEN each artifact carries a SLSA provenance attestation generated by
-        # actions/attest-build-provenance and verifiable with `gh attestation verify`.
-        # The job must also declare the `attestations: write` permission that the
-        # action requires to publish to the repository attestation store.
-        self.assertIn("attest-build-provenance", workflow)
-        self.assertIn("attestations: write", workflow)
-        self.assertIn("id-token: write", workflow)
+        # THEN each package carries a SLSA provenance attestation generated by
+        # actions/attest-build-provenance in the job that built it, and the release
+        # workflow grants the called jobs the permissions the action requires.
+        calling = job_text(workflow, "distro-packages")
+        self.assertIn("attestations: write", calling)
+        self.assertIn("id-token: write", calling)
+        for job in ("deb", "debian-pkg", "static-linux-fallback", "rpm", "rhel-rpm", "opensuse-rpm",
+                    "freebsd-pkg", "openbsd-pkg", "netbsd-pkg"):
+            with self.subTest(job=job):
+                self.assertIn("uses: actions/attest-build-provenance@", job_text(packages, job))
 
     def test_release_notes_record_compiler_dependency_and_test_evidence(self) -> None:
         # GIVEN the repository release workflow.
@@ -366,10 +364,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         builds = [
             # (job, build script, the package that provides each module on that runner)
-            ("linux-release-package", "build-linux.sh",
+            ("linux-release-evidence", "build-linux.sh",
              {"libsodium": "libsodium-dev", "openssl": "libssl-dev", "libpq": "libpq-dev",
               "libcurl": "libcurl4-openssl-dev"}),
-            ("freebsd-release-package", "build-bsd.sh",
+            ("freebsd-release-evidence", "build-bsd.sh",
              {"libsodium": "libsodium", "openssl": "openssl", "libpq": "postgresql17-client",
               "libcurl": "curl"}),
         ]

@@ -6,7 +6,7 @@
 # and the entrypoint). Nothing is compiled here: Complement must test the
 # binary that ships (ADR-0233).
 #
-#   cp merovingian_<version>_amd64-debian.deb tests/complement/artifact/merovingian.deb
+#   cp merovingian_<version>_amd64-debian13.deb tests/complement/artifact/merovingian.deb
 #   docker build \
 #       --build-arg MEROVINGIAN_DEB_SHA256=<the package's SHA-256> \
 #       --tag merovingian-complement tests/complement

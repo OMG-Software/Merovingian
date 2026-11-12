@@ -32,7 +32,10 @@ RUN_CONFIG = tomllib.loads((REPO_ROOT / "tests" / "complement" / "run.toml").rea
 MAINTAINER_KEY = RUN_CONFIG["release"]["maintainer_key"]
 REPOSITORY = RUN_CONFIG["release"]["repository"]
 VERSION = "0.12.55"
-PACKAGE_NAME = f"merovingian_{VERSION}_amd64-debian.deb"
+# The candidate as the rolling latest release names it, and the name the publisher
+# attaches it under, beside the tag's own -debian13.deb build (ADR-0652).
+PACKAGE_NAME = f"merovingian_{VERSION}_amd64-debian13.deb"
+ATTACHED_NAME = f"merovingian_{VERSION}_amd64-debian.deb"
 SERVER = b"\x7fELF the shipped server"
 
 SOURCE = {"commit": "f" * 40, "ref": "refs/heads/main", "workflow": ".github/workflows/packages.yml"}
@@ -351,10 +354,32 @@ class PublisherTests(unittest.TestCase):
         upload = [line for line in calls.splitlines() if line.startswith("gh release upload")]
         self.assertEqual(len(upload), 1)
         for name in (self.results.name, f"{self.results.name}.asc", self.log.name, f"{self.log.name}.asc",
-                     PACKAGE_NAME, f"{PACKAGE_NAME}.asc"):
+                     f"{ATTACHED_NAME} ", f"{ATTACHED_NAME}.asc"):
             self.assertIn(name, upload[0])
         self.assertIn(f"--repo {REPOSITORY}", upload[0])
         self.assertNotIn("--clobber", upload[0])
+        # AND the tested package goes up as -debian.deb, never under the -debian13.deb
+        # name the release's own Debian 13 build already has (ADR-0652).
+        self.assertNotIn(PACKAGE_NAME, upload[0])
+
+    def test_a_package_not_named_as_latest_names_it_is_refused(self) -> None:
+        # GIVEN results that record a package whose name is not a Debian package of
+        # the rolling latest release.
+        renamed = self.package.with_name(f"merovingian_{VERSION}_amd64.deb")
+        self.package.rename(renamed)
+        self.package = renamed
+        self.package_signature = self.package_signature.rename(self.workdir / f"{renamed.name}.asc")
+        self.write_results(release_evidence=True)
+        payload = json.loads(self.results.read_text(encoding="utf-8"))
+        payload["package"]["name"] = renamed.name
+        self.results.write_text(json.dumps(payload), encoding="utf-8")
+        # WHEN it is published.
+        result = self.publish()
+        # THEN it is refused before anything is signed or uploaded.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not a Debian package from the rolling latest release", result.stderr)
+        self.assertNotIn("--detach-sign", self.calls())
+        self.assertNotIn("gh release upload", self.calls())
 
     def test_results_that_are_not_evidence_are_never_published(self) -> None:
         # GIVEN results recorded from an unsigned run.

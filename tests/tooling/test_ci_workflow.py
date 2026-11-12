@@ -31,16 +31,19 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-linux.sh --builddir build-fedora", workflow)
 
     def test_every_fedora_release_with_a_published_rpm_runs_the_suite(self) -> None:
-        # GIVEN the packages workflow publishes an RPM for Fedora 44 and for fedora:latest,
-        # and each links against its own release's libraries (Fedora 44 has OpenSSL 3,
-        # Fedora 45 has OpenSSL 4).
+        # GIVEN the packages workflow publishes an RPM for Fedora 44 and for Fedora 45, and
+        # each links against its own release's libraries (Fedora 44 has OpenSSL 3, Fedora 45
+        # has OpenSSL 4).
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
         job = workflow.split("  fedora-suite:")[1].split("\n  fedora-build-and-test:")[0]
 
         # WHEN the Fedora build-and-test job's matrix is read
         # THEN the full suite runs on both, and a failure on one still reports the other.
         self.assertIn("image: ${{ matrix.image }}", job)
-        self.assertRegex(job, r"image: \[\s*fedora:44,\s*fedora:latest\s*\]")
+        # AND each is pinned by release, never fedora:latest, so the release CI tests is the
+        # one packages.yml ships (ADR-0652).
+        self.assertRegex(job, r"image: \[\s*fedora:44,\s*fedora:45\s*\]")
+        self.assertNotIn("fedora:latest", workflow)
         self.assertIn("fail-fast: false", job)
 
         # AND the two builds keep separate compiler caches.
@@ -146,17 +149,17 @@ class CiWorkflowTests(unittest.TestCase):
 
         # WHEN the Tier 1 Linux distro matrix is checked.
         # THEN Debian trixie, RHEL-compatible (AlmaLinux 10), the Ubuntu interim
-        # release, and OpenSUSE Tumbleweed and Leap 16.0 each have a container job
+        # release (26.10), and OpenSUSE Tumbleweed and Leap 16.0 each have a container job
         # that builds and runs the full test suite, covering distro-specific
         # package names and glibc versions (ADR-0650).
         for job in (
             "debian-build-and-test:",
             "rhel-build-and-test:",
-            "ubuntu-rolling-build-and-test:",
+            "ubuntu-interim-build-and-test:",
             "opensuse-build-and-test:",
         ):
             self.assertIn(job, workflow)
-        for image in ("debian:trixie", "almalinux:10", "ubuntu:rolling", "opensuse/tumbleweed", "opensuse/leap:16.0"):
+        for image in ("debian:trixie", "almalinux:10", "ubuntu:26.10", "opensuse/tumbleweed", "opensuse/leap:16.0"):
             self.assertIn(image, workflow)
         # THEN each job installs distro-specific library packages.
         self.assertIn("libopenssl-devel", workflow)   # OpenSUSE OpenSSL
@@ -167,7 +170,10 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN each job runs the same Linux build wrapper used by Ubuntu and Fedora.
         self.assertIn("sh scripts/build-linux.sh --builddir build-debian", workflow)
         self.assertIn("sh scripts/build-linux.sh --builddir build-rhel", workflow)
-        self.assertIn("sh scripts/build-linux.sh --builddir build-ubuntu-rolling --skip-job ubuntu-rolling", workflow)
+        self.assertIn("sh scripts/build-linux.sh --builddir build-ubuntu-interim --skip-job ubuntu-interim", workflow)
+        # AND the interim release is pinned and its check names the release (ADR-0652).
+        self.assertNotIn("image: ubuntu:rolling", workflow)
+        self.assertIn("    name: ubuntu-26.10-build-and-test\n", workflow)
         opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
         self.assertIn('sh scripts/build-linux.sh --builddir "${BUILDDIR}" --skip-job ${{ matrix.skip_job }}', opensuse)
         self.assertIn("builddir: build-opensuse\n", opensuse)
@@ -443,7 +449,7 @@ class CiWorkflowTests(unittest.TestCase):
         # GIVEN the main ruleset requires checks by exact name, and a matrix job with no
         # `name` reports "<job> (<values>)" for each leg, which matches none of them.
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-        ubuntu = workflow.split("\n  ubuntu-build-and-test:")[1].split("\n  ubuntu-rolling-build-and-test:")[0]
+        ubuntu = workflow.split("\n  ubuntu-build-and-test:")[1].split("\n  ubuntu-interim-build-and-test:")[0]
         opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
 
         # WHEN the Ubuntu and OpenSUSE matrices are read
@@ -452,11 +458,12 @@ class CiWorkflowTests(unittest.TestCase):
             self.assertIn("    name: ${{ matrix.check }}\n", job)
             self.assertIn("fail-fast: false", job)
         # AND Ubuntu runs on each LTS runner image by its release, never on ubuntu-latest,
-        # so a label migration cannot drop a release unnoticed (ADR-0650).
+        # so a label migration cannot drop a release unnoticed (ADR-0650). 26.04 is the only
+        # LTS built and tested; 24.04 is packaged only (ADR-0652).
         self.assertIn("runs-on: ${{ matrix.runner }}", ubuntu)
         self.assertNotIn("ubuntu-latest", ubuntu)
-        for check, runner in (("ubuntu-build-and-test", "ubuntu-26.04"), ("ubuntu-24.04-build-and-test", "ubuntu-24.04")):
-            self.assertIn(f"- check: {check}\n            runner: {runner}\n", ubuntu)
+        self.assertIn("- check: ubuntu-build-and-test\n            runner: ubuntu-26.04\n", ubuntu)
+        self.assertNotIn("ubuntu-24.04", ubuntu)
         # AND each leg keeps its own compiler cache and artifact.
         self.assertIn("key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}", ubuntu)
         self.assertIn("name: merovingian-linux-ubuntu${{ matrix.release }}-${{ github.sha }}", ubuntu)
@@ -466,6 +473,40 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("- check: opensuse-leap-build-and-test\n            image: opensuse/leap:16.0\n", opensuse)
         self.assertIn("zypper --non-interactive ${{ matrix.sync }}", opensuse)
         self.assertIn('if [ "${attempt}" = 3 ]; then', opensuse)
+
+    def test_build_and_test_runs_on_exactly_the_supported_platforms(self) -> None:
+        # GIVEN the owner's build-and-test list (ADR-0652): RHEL 10, openSUSE Leap 16 and
+        # Tumbleweed, Fedora 44 and 45, Ubuntu 26.04 and 26.10, Debian 13, FreeBSD 15,
+        # OpenBSD and NetBSD.
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the container images, runner images and VM releases the jobs build on are read
+        images = set(re.findall(r"(?m)^\s+image: ([a-z][^\s$]*)$", workflow))
+        images |= {f"fedora:{release}" for release in re.findall(r"fedora:([0-9]+)", workflow)}
+        runners = set(re.findall(r"(?m)^\s+runner: (ubuntu-[0-9.]+)$", workflow))
+
+        # THEN they are exactly that list, and no job builds on a moving tag
+        self.assertEqual(
+            images,
+            {
+                "ubuntu:26.10",
+                "fedora:44",
+                "fedora:45",
+                "debian:trixie",
+                "almalinux:10",
+                "opensuse/tumbleweed",
+                "opensuse/leap:16.0",
+            },
+        )
+        self.assertEqual(runners, {"ubuntu-26.04"})
+        for moving in ("ubuntu:rolling", "fedora:latest", "debian:latest", "debian:stable"):
+            self.assertNotIn(f"image: {moving}", workflow)
+        self.assertNotIn("fedora:latest", workflow)
+        # AND FreeBSD is pinned to its 15.x line, beside the OpenBSD and NetBSD VM jobs.
+        freebsd = workflow.split("\n  freebsd-build-and-test:")[1].split("\n  openbsd-build-and-test:")[0]
+        self.assertIn("release: '15'\n", freebsd)
+        for job in ("openbsd-build-and-test:", "netbsd-build-and-test:"):
+            self.assertIn(f"\n  {job}\n", workflow)
 
     def test_conformance_and_packaging_capability_gates_are_present(self) -> None:
         # GIVEN the repository CI workflow.

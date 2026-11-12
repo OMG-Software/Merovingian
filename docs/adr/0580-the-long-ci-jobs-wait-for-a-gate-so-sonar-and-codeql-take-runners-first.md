@@ -1,6 +1,6 @@
 # The long CI jobs wait for a gate, so Sonar and CodeQL take runners first
 
-* Status: accepted
+* Status: accepted (extended by [ADR-0653](0653-analyses-then-build-and-test-then-packages-take-runners.md): package jobs wait behind a later gate)
 * Deciders: James Chapman
 * Date: 2026-11-07
 

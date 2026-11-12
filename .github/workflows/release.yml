@@ -2,7 +2,10 @@ name: release
 
 # Every v* tag publishes a versioned GitHub release (ADR-0597). The tag must be
 # exactly v<meson.build version>; check-tag refuses any other before a package
-# is built. The rolling `latest` release comes from packages.yml, not here.
+# is built. The packages are the ones the rolling `latest` release ships: this
+# workflow calls packages.yml, whose own jobs build, stage and sign them for the
+# tag (ADR-0652). The hardened Linux and FreeBSD jobs here are release gates and
+# the source of the release evidence; their builds are not published.
 on:
   push:
     tags:
@@ -56,15 +59,15 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
-  linux-release-package:
+  # The full suite on a hardened Linux build, the release gates, and the
+  # evidence the release notes carry. The build is not an asset: Linux ships as
+  # the distribution packages and the static tarball (ADR-0652).
+  linux-release-evidence:
+    name: Linux release gates and evidence
     needs: check-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required by actions/attest-build-provenance to publish SLSA
-      # provenance attestations to the repository's attestations store.
-      attestations: write
-      id-token: write
     env:
       CC: clang
       CXX: clang++
@@ -80,7 +83,7 @@ jobs:
           python-version: '3.x'
 
       # libpng-dev and libturbojpeg0-dev build merovingian-thumbnail-worker,
-      # which stage-release-tarball.sh requires. Every pkg-config module that
+      # which the evidence covers. Every pkg-config module that
       # scripts/build-linux.sh checks needs its -dev package here; this step
       # runs only for a v* tag, so a missing one is first seen on release day
       # (ADR-0651).
@@ -113,7 +116,7 @@ jobs:
           key: ccache-linux-release-${{ github.run_id }}
           restore-keys: ccache-linux-release-
 
-      - name: Build hardened Linux package
+      - name: Build and test hardened Linux
         run: sh scripts/build-linux.sh --builddir build-linux-release --profile hardened --skip-job release-linux
 
       - name: Collect release evidence
@@ -128,28 +131,6 @@ jobs:
       - name: Check release readiness metadata
         run: sh scripts/check-release-readiness.sh
 
-      - name: Stage Linux release package
-        run: |
-          package_root="merovingian-${GITHUB_REF_NAME}-linux-x86_64"
-          sh scripts/stage-release-tarball.sh build-linux-release "${package_root}"
-          tar -czf "${package_root}.tar.gz" "${package_root}"
-          sha256sum "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
-
-      - name: Attest Linux release package
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
-
-      - name: Upload Linux release package
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-linux-${{ github.ref_name }}
-          path: |
-            merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
-            merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Upload Linux release evidence
         uses: actions/upload-artifact@v7
         with:
@@ -158,15 +139,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  freebsd-release-package:
+  # As linux-release-evidence, on FreeBSD 15. The FreeBSD asset is the .pkg
+  # packages.yml builds, not a tarball (ADR-0652).
+  freebsd-release-evidence:
+    name: FreeBSD release gates and evidence
     needs: check-tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required by actions/attest-build-provenance to publish SLSA
-      # provenance attestations to the repository's attestations store.
-      attestations: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v7
@@ -174,36 +154,21 @@ jobs:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
 
-      - name: Build hardened FreeBSD package
+      - name: Build and test hardened FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          release: '15'
           run: |
-            tag="${GITHUB_REF_NAME}"
+            set -e
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
             sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened --skip-job release-freebsd
             sh scripts/collect-release-evidence.sh "FreeBSD x86_64" build-freebsd-release release-evidence-freebsd-x86_64.md || true
             sh scripts/check-release-readiness.sh
-            package_root="merovingian-${tag}-freebsd-x86_64"
-            sh scripts/stage-release-tarball.sh build-freebsd-release "${package_root}"
-            tar -czf "${package_root}.tar.gz" "${package_root}"
-            digest="$(sha256 -q "${package_root}.tar.gz")"
-            printf '%s  %s\n' "${digest}" "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
-
-      - name: Attest FreeBSD release package
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
-
-      - name: Upload FreeBSD release package
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-freebsd-${{ github.ref_name }}
-          path: |
-            merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
-            merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 30
+            # The VM action copies the workspace back over one connection;
+            # without the build tree that is megabytes, not gigabytes.
+            rm -rf build-freebsd-release
 
       - name: Upload FreeBSD release evidence
         uses: actions/upload-artifact@v7
@@ -213,8 +178,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # ADR-0650: the tag's .deb and .rpm packages, one per distribution release,
-  # built, installed and booted by the same jobs as on every pull request.
+  # ADR-0650, ADR-0652: every package the tag ships, one per platform release,
+  # built with the hardened profile, installed and booted by the same jobs as on
+  # every pull request, then staged with the SBOM, licence summary and SHA256SUMS
+  # and GPG-signed by packages.yml's own staging and signing jobs, as for `latest`.
   distro-packages:
     name: Distribution packages
     needs: check-tag
@@ -226,128 +193,23 @@ jobs:
       contents: write
       attestations: write
       id-token: write
-
-  stage-release-assets:
-    name: Stage unsigned release assets
-    needs:
-      - linux-release-package
-      - freebsd-release-package
-      - distro-packages
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # No job here pushes; the publish step takes its token as an input.
-          persist-credentials: false
-      - name: Download Linux release package
-        uses: actions/download-artifact@v8
-        with:
-          name: release-linux-${{ github.ref_name }}
-          path: release-assets/
-      - name: Download FreeBSD release package
-        uses: actions/download-artifact@v8
-        with:
-          name: release-freebsd-${{ github.ref_name }}
-          path: release-assets/
-      # Each of these names its distribution release (-ubuntu24.04, .fc44,
-      # .el10, .opensuse, .leap16), so they land side by side. The Debian
-      # trixie package is not among them: the Complement step attaches the
-      # trixie package it tested under that name, and never replaces an asset
-      # (docs/release-process.md, "Complement").
-      - name: Download Ubuntu 24.04 package
-        uses: actions/download-artifact@v8
-        with:
-          name: ubuntu-deb-package-24.04
-          path: release-assets/
-      - name: Download Ubuntu 26.04 package
-        uses: actions/download-artifact@v8
-        with:
-          name: ubuntu-deb-package-26.04
-          path: release-assets/
-      - name: Download Ubuntu rolling package
-        uses: actions/download-artifact@v8
-        with:
-          name: ubuntu-deb-package-rolling
-          path: release-assets/
-      - name: Download Fedora 44 package
-        uses: actions/download-artifact@v8
-        with:
-          name: rpm-package-fc44
-          path: release-assets/
-      - name: Download Fedora latest package
-        uses: actions/download-artifact@v8
-        with:
-          name: rpm-package-latest
-          path: release-assets/
-      - name: Download RHEL-compatible package
-        uses: actions/download-artifact@v8
-        with:
-          name: rhel-rpm-package
-          path: release-assets/
-      - name: Download OpenSUSE Tumbleweed package
-        uses: actions/download-artifact@v8
-        with:
-          name: opensuse-rpm-package
-          path: release-assets/
-      - name: Download OpenSUSE Leap 16.0 package
-        uses: actions/download-artifact@v8
-        with:
-          name: opensuse-leap-rpm-package
-          path: release-assets/
-      - name: Write package checksums
-        working-directory: release-assets
-        run: |
-          for f in *.deb *.rpm; do
-            sha256sum "$f" > "$f.sha256"
-          done
-      # Staged before signing, so the SBOM and the licence summary get detached
-      # signatures like every package (ADR-0598).
-      - name: Generate SBOM
-        run: |
-          python scripts/generate_sbom.py \
-            --spdx release-assets/merovingian.spdx.json \
-            --cyclonedx release-assets/merovingian.cdx.json \
-            --commit "${{ github.sha }}" \
-            --repository "${{ github.repository }}"
-      - name: Generate license summary
-        run: python scripts/generate-license-summary.py release-assets/merovingian.licenses.json
-      - name: Upload unsigned release assets
-        uses: actions/upload-artifact@v7
-        with:
-          name: unsigned-release-assets
-          path: release-assets/*
-          if-no-files-found: error
-          retention-days: 30
-
-  sign-release-assets:
-    name: GPG-sign release assets
-    needs: stage-release-assets
-    # GitHub implicitly ANDs a bare expression with success(), and that default
-    # success() returns false when any job in the broader dependency graph was
-    # skipped (e.g. optional retry jobs). Using !failure() && !cancelled() plus an
-    # explicit result check makes signing depend only on the staging job outcome.
-    if: |
-      !failure() &&
-      !cancelled() &&
-      needs.stage-release-assets.result == 'success'
-    uses: ./.github/workflows/sign-artifacts.yml
-    with:
-      source_artifact_name: unsigned-release-assets
-      output_artifact_name: signed-release-assets
-    # The key is a secret of the `release` environment, which the called job
-    # declares; a job that calls a reusable workflow cannot (ADR-0614).
+    # packages.yml's signing job calls sign-artifacts.yml, whose key is a secret
+    # of the `release` environment that the called job declares (ADR-0614).
     secrets: inherit
 
   publish-release:
     needs:
       - check-tag
-      - sign-release-assets
+      - linux-release-evidence
+      - freebsd-release-evidence
+      - distro-packages
+    # A called workflow's result is success only when none of its jobs failed;
+    # a skipped signing job leaves no signed-packages artifact, and the download
+    # below then fails the publish.
     if: |
       !failure() &&
       !cancelled() &&
-      needs.sign-release-assets.result == 'success'
+      needs.distro-packages.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -358,10 +220,11 @@ jobs:
           # No job here pushes; the publish step takes its token as an input.
           persist-credentials: false
 
+      # Uploaded by packages.yml's sign-package-assets in this same run.
       - name: Download signed release assets
         uses: actions/download-artifact@v8
         with:
-          name: signed-release-assets
+          name: signed-packages
           path: release-assets/
 
       - name: Download Linux release evidence
@@ -382,33 +245,30 @@ jobs:
           cat > release-notes.md <<'EOF'
           ## Release assets
 
-          This tag publishes hardened-profile packages built by GitHub Actions.
+          This tag publishes hardened-profile x86_64 packages built by GitHub Actions, the
+          same set the rolling `latest` release carries. Every package names the platform it
+          installs on, and installs only on that release:
 
-          Included assets:
-
-          - Linux x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
-          - FreeBSD x86_64 tarball, detached GPG signature (`.asc`), and SHA-256 checksum
-          - `.deb` packages for Ubuntu 24.04 LTS, 26.04 LTS and the current interim release,
-            each named after the release it installs on (`-ubuntu<release>.deb`)
-          - `.rpm` packages for Fedora 44 and the current Fedora (`.fc<release>`), RHEL 10 and
-            compatible distributions (`.el10`), openSUSE Tumbleweed (`.opensuse`) and openSUSE
+          - `.deb` for Ubuntu 24.04 LTS, 26.04 LTS and 26.10 (`-ubuntu<release>.deb`) and
+            Debian 13 (`-debian13.deb`)
+          - `.rpm` for Fedora 44 and 45 (`.fc44`, `.fc45`), RHEL 10 and compatible
+            distributions (`.el10`), openSUSE Tumbleweed (`.tumbleweed`) and openSUSE
             Leap 16.0 (`.leap16`)
-          - each package with a detached GPG signature (`.asc`) and SHA-256 checksum. A package
-            installs only on the release it names
-          - SBOM in SPDX 2.3 (`merovingian.spdx.json`) and CycloneDX 1.5 (`merovingian.cdx.json`) JSON, each with a detached GPG signature
-          - Machine-readable license summary (`merovingian.licenses.json`) and its detached GPG signature
-
-          Each tarball holds `bin/` and `libexec/merovingian/`. The server and the thumbnail
-          worker look for their helper binaries under the build's install prefix, which the
-          tarball records in `INSTALL-PREFIX`; install both directories there.
+          - a FreeBSD 15 `.pkg` (`-freebsd15.pkg`), and OpenBSD and NetBSD packages
+            (`-openbsd<release>.tgz`, `-netbsd<release>.tgz`)
+          - a static Linux tarball (`-linux-static-x86_64.tar.gz`) for any other Linux
+          - SBOM in SPDX 2.3 (`merovingian.spdx.json`) and CycloneDX 1.5 (`merovingian.cdx.json`) JSON
+          - a machine-readable license summary (`merovingian.licenses.json`)
+          - `SHA256SUMS`, listing every file above
+          - a detached GPG signature (`.asc`) for every file above
 
           Validation performed by this workflow:
 
           - the tag names the version in `meson.build`
-          - hardened Linux and FreeBSD builds
-          - full Meson test suites on both platforms
-          - every Ubuntu, Debian and Fedora package installed and its server booted through the
-            startup hardening gate
+          - hardened Linux and FreeBSD builds with full Meson test suites
+          - every package built with the hardened profile by the same jobs as on every pull
+            request; every Ubuntu, Debian and Fedora package and the FreeBSD package installed
+            and its server booted through the startup hardening gate
           - phase 1 configuration validation on Linux
           - unsafe-source gate
           - release-readiness metadata gate
@@ -416,20 +276,22 @@ jobs:
 
           Verification:
 
-          - SLSA provenance: `gh attestation verify <tarball or package> --repo OMG-Software/Merovingian`
+          - SLSA provenance: `gh attestation verify <package> --repo OMG-Software/Merovingian`
           - GPG signature: `gpg --verify <file>.asc <file>` (import the maintainer key from `docs/release-process.md`)
+          - checksums: `sha256sum --check --ignore-missing SHA256SUMS`
 
           ## Complement
 
-          The maintainer runs the external Complement suite against this version's Debian
-          trixie package before tagging, and attaches the result to this release once it is
-          published (`docs/release-process.md`, "Complement"):
+          The maintainer runs the external Complement suite against this version's Debian 13
+          package from the rolling `latest` release before tagging, and attaches the result to
+          this release once it is published (`docs/release-process.md`, "Complement"):
 
           - `complement-results-<version>.json`: the package, server binary and image tested,
             the Complement commit, the skip list the run was judged by, and the verdict
           - `complement-<version>.jsonl`: the raw `go test -json` log
-          - `merovingian_<version>_amd64-debian.deb`: the package that was tested, built
-            from this tag's commit; its SHA-256 and its server binary's are in the results
+          - `merovingian_<version>_amd64-debian.deb`: the package that was tested, built from
+            this tag's commit by the `latest` run and attached under that name, apart from this
+            release's own `-debian13.deb`; its SHA-256 and its server binary's are in the results
 
           Each has a detached signature by the maintainer key:
           `gpg --verify complement-results-<version>.json.asc complement-results-<version>.json`.
@@ -446,10 +308,9 @@ jobs:
             exit 1
           fi
           sed -i "s/<version>/${version}/g" release-notes.md
-          for sumfile in release-assets/*.sha256; do
-            [ -f "$sumfile" ] || continue
-            printf -- '- `%s`\n' "$(cat "$sumfile")" >> release-notes.md
-          done
+          while IFS= read -r line; do
+            printf -- '- `%s`\n' "$line" >> release-notes.md
+          done < release-assets/SHA256SUMS
 
           printf '\n## Release evidence\n\n' >> release-notes.md
           printf 'Compiler version, link-time hardening confirmation, pinned dependency versions, test log summary, and the mandatory fuzz target list for each platform build in this release.\n\n' >> release-notes.md

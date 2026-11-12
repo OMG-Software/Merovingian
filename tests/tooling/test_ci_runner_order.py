@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sonar and CodeQL take a runner as soon as a pull request is pushed (ADR-0580).
+"""The analyses take runners first, then the build and test jobs, then the packages (ADR-0580, ADR-0653).
 
 GitHub Actions has no job priority. Every workflow a push triggers creates its jobs at once, and the account runs at most
 20 at a time; the rest wait in a queue. A job with `needs:` does not join that queue until what it needs has finished.
@@ -16,10 +16,29 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 # Hosted runners the account may use at once (GitHub Free for organisations).
 RUNNER_CAP = 20
-GATE = "queue-after-analyses"
-GATED_WORKFLOWS = ("ci.yml", "packages.yml")
-# The two long analyses that must not wait: about an hour and half an hour.
-ANALYSES = (("sonarcloud.yml", "sonarcloud"), ("codeql.yml", "analyze"))
+# Each gated workflow's gate. The build and test workflows join the queue right after the analyses; the package
+# workflow waits longer, so its jobs join after the build and test jobs (ADR-0653).
+BUILD_AND_TEST_GATE = "queue-after-analyses"
+PACKAGE_GATE = "queue-after-build-and-test"
+GATES = {
+    "ci.yml": BUILD_AND_TEST_GATE,
+    "postgres-integration.yml": BUILD_AND_TEST_GATE,
+    "reproducible-build.yml": BUILD_AND_TEST_GATE,
+    "packages.yml": PACKAGE_GATE,
+}
+GATED_WORKFLOWS = tuple(GATES)
+# Workflows whose gated jobs feed further jobs (aggregates, staging, signing).
+WORKFLOWS_WITH_DOWNSTREAM_JOBS = ("ci.yml", "packages.yml")
+# The analyses that must not wait, in the order the owner ranks them: Sonar (about an hour), CodeQL, then the two
+# sanitizer suites. Every other analysis needs nothing either; CodeRabbit runs on its own service, not on these runners.
+ANALYSES = (
+    ("sonarcloud.yml", "sonarcloud"),
+    ("codeql.yml", "analyze"),
+    ("sanitizers.yml", "tsan"),
+    ("sanitizers.yml", "asan-ubsan"),
+)
+# The package gate's delay, in seconds: long enough for the build and test gates to finish and their jobs to queue.
+MINIMUM_PACKAGE_DELAY = 30
 
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*$", re.MULTILINE)
 
@@ -71,12 +90,12 @@ def job_if(job: str) -> str | None:
     return value
 
 
-def downstream_of_the_gate(workflow_jobs: dict[str, str]) -> list[str]:
+def downstream_of_the_gate(workflow_jobs: dict[str, str], gate: str) -> list[str]:
     """Jobs that wait for the gate through another job: the gate is an ancestor, not a direct need."""
     found: list[str] = []
     for job_id, job in workflow_jobs.items():
         pending = list(needs(job))
-        if GATE in pending:
+        if gate in pending:
             continue
         seen: set[str] = set()
         while pending:
@@ -85,7 +104,7 @@ def downstream_of_the_gate(workflow_jobs: dict[str, str]) -> list[str]:
                 continue
             seen.add(ancestor)
             pending.extend(needs(workflow_jobs[ancestor]))
-        if GATE in seen:
+        if gate in seen:
             found.append(job_id)
     return found
 
@@ -142,12 +161,12 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                 self.assertEqual(needs(job), [], "an analysis behind another job starts later and finishes later")
 
     def test_given_the_long_workflows_when_a_job_needs_nothing_else_then_it_waits_for_the_gate(self) -> None:
-        for workflow in GATED_WORKFLOWS:
-            # GIVEN the workflows that hold the OS builds and the packages.
+        for workflow, gate in GATES.items():
+            # GIVEN the workflows that hold the builds and tests and the packages.
             workflow_jobs = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))
-            self.assertIn(GATE, workflow_jobs, f"{workflow} has no gate")
+            self.assertIn(gate, workflow_jobs, f"{workflow} has no gate")
             for job_id, job in workflow_jobs.items():
-                if job_id == GATE:
+                if job_id == gate:
                     continue
                 with self.subTest(workflow=workflow, job=job_id):
                     # WHEN each other job is read.
@@ -155,17 +174,18 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                     self.assertNotEqual(needs(job), [], "a job needing nothing starts with the analyses")
                     # AND one that waits for the gate still runs if the gate fails: a job skipped because what it
                     # needs failed reports a skipped check, and a skipped required check counts as passed.
-                    if GATE in needs(job):
+                    if gate in needs(job):
                         self.assertEqual(job_if(job), "${{ !cancelled() }}")
 
     def test_given_a_job_behind_the_gate_through_another_when_its_condition_is_read_then_it_ignores_the_gate(
         self,
     ) -> None:
-        for workflow in GATED_WORKFLOWS:
+        for workflow, gate in GATES.items():
             # GIVEN the jobs that have the gate as an ancestor but do not need it directly.
             workflow_jobs = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))
-            downstream = downstream_of_the_gate(workflow_jobs)
-            self.assertNotEqual(downstream, [], f"{workflow}: no job found behind the gate; is the parser right?")
+            downstream = downstream_of_the_gate(workflow_jobs, gate)
+            if workflow in WORKFLOWS_WITH_DOWNSTREAM_JOBS:
+                self.assertNotEqual(downstream, [], f"{workflow}: no job found behind the gate; is the parser right?")
             for job_id in downstream:
                 with self.subTest(workflow=workflow, job=job_id):
                     # WHEN its condition is read.
@@ -187,10 +207,10 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                         )
 
     def test_given_the_gate_when_it_runs_then_it_is_quick_and_never_skipped(self) -> None:
-        for workflow in GATED_WORKFLOWS:
+        for workflow, gate_id in GATES.items():
             with self.subTest(workflow=workflow):
                 # GIVEN the gate job.
-                gate = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))[GATE]
+                gate = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))[gate_id]
 
                 # WHEN its definition is read.
                 # THEN it has no condition and no dependency, so it runs on every event the workflow runs on.
@@ -200,6 +220,25 @@ class TheAnalysesTakeRunnersFirst(unittest.TestCase):
                 self.assertIn("permissions: {}", gate)
                 self.assertNotIn("uses:", gate)
                 self.assertRegex(gate, r"(?m)^    timeout-minutes: [1-5]$")
+
+    def test_given_the_gates_when_their_steps_are_read_then_packages_queue_after_the_build_and_test_jobs(self) -> None:
+        for workflow, gate_id in GATES.items():
+            with self.subTest(workflow=workflow):
+                # GIVEN a gated workflow's gate.
+                gate = jobs((WORKFLOWS / workflow).read_text(encoding="utf-8"))[gate_id]
+
+                # WHEN what it runs is read.
+                command = re.search(r"(?m)^        run: (.+)$", gate)
+                self.assertIsNotNone(command, f"{workflow}: the gate runs no single command")
+
+                # THEN a build and test gate finishes at once, so those jobs queue right after the analyses,
+                if gate_id == BUILD_AND_TEST_GATE:
+                    self.assertEqual(command.group(1).strip(), '"true"')
+                # AND the package gate waits first, so the package jobs queue after the build and test jobs.
+                else:
+                    delay = re.fullmatch(r"sleep ([0-9]+)", command.group(1).strip())
+                    self.assertIsNotNone(delay, f"{workflow}: the package gate does not wait")
+                    self.assertGreaterEqual(int(delay.group(1)), MINIMUM_PACKAGE_DELAY)
 
 
 if __name__ == "__main__":

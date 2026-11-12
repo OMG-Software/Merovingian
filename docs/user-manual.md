@@ -152,12 +152,12 @@ each tagged release carries the same `.deb` and `.rpm` packages.
 apt install ./merovingian_X.Y.Z_amd64-ubuntu26.04.deb
 
 # Debian trixie example
-apt install ./merovingian_X.Y.Z_amd64-debian.deb
+apt install ./merovingian_X.Y.Z_amd64-debian13.deb
 
 # Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
 dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
 
-# openSUSE example: .opensuse is Tumbleweed, .leap16 is Leap 16.0
+# openSUSE example: .tumbleweed is Tumbleweed, .leap16 is Leap 16.0
 zypper install merovingian-X.Y.Z-1.leap16.x86_64.rpm
 
 # FreeBSD example
