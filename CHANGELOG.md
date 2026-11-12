@@ -320,6 +320,13 @@ one database transaction per receipt while holding the runtime lock. Its accepte
 transaction, found through the receipt indexes, and when the table is full the oldest receipts of remote users are evicted
 from an ordered index, so the cost is bounded by the EDU. A local user's receipts are still never evicted.
 
+### The ACL checks of one request share a step budget (ADR-0653)
+
+Run-3 finding C38. The step budget of a server ACL check was per check, so one `m.receipt` EDU naming hundreds of rooms
+could run hundreds of full-budget checks under the runtime lock. All the checks of one EDU (or one relayed frame) now
+spend from a single budget of 1,000,000 glob steps, a single check is limited to 100,000, and the answer for an ACL and a
+server name is remembered, so asking again costs nothing.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

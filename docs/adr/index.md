@@ -600,3 +600,4 @@
 * [0666 - The recency and name sort keys are read per room through the indexes](0666-the-recency-and-name-sort-keys-are-read-per-room-through-the-indexes.md)
 * [0651 - Receipts are read through room and user indexes, and a threaded receipt must be related to its thread](0651-receipts-are-read-through-room-and-user-indexes-and-a-threaded-receipt-must-be-related-to-its-thread.md)
 * [0652 - A receipt EDU commits in one transaction, and the oldest remote rows are evicted from an ordered index](0652-a-receipt-edu-commits-in-one-transaction-and-remote-rows-are-evicted-from-an-ordered-index.md)
+* [0653 - The ACL checks of one request share a step budget, and their answers are remembered](0653-the-acl-checks-of-one-request-share-a-step-budget-and-their-answers-are-remembered.md)

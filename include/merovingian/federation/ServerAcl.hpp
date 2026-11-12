@@ -4,6 +4,7 @@
 
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/ServerAclEvaluation.hpp"
 #include "merovingian/federation/ServerAclEvent.hpp"
 
@@ -22,8 +23,9 @@ inline constexpr auto server_acl_max_patterns = std::size_t{4096U};
 inline constexpr auto server_acl_max_pattern_length = std::size_t{255U};
 
 // The glob steps one ACL check may spend over all of its patterns. A real ACL needs about the pattern count times the
-// server name length; past this the check stops and refuses the server (ADR-0640).
-inline constexpr auto server_acl_max_glob_steps = std::size_t{1'000'000U};
+// server name length (4096 patterns against a 24-character name is about 100,000); past this the check stops and
+// refuses the server (ADR-0640, ADR-0653). A request spends from a ServerAclBudget as well.
+inline constexpr auto server_acl_max_glob_steps = std::size_t{100'000U};
 
 // Parses the content of an m.room.server_acl state event. Missing or
 // malformed fields fall back to the spec defaults (empty lists, allow
@@ -43,6 +45,10 @@ inline constexpr auto server_acl_max_glob_steps = std::size_t{1'000'000U};
 // Lists against a single server name. The server name's port is ignored.
 [[nodiscard]] auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl) -> ServerAclEvaluation;
 
+// As above, spending from `budget`, which the caller shares across every check of one EDU or request (ADR-0653).
+[[nodiscard]] auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl, ServerAclBudget& budget)
+    -> ServerAclEvaluation;
+
 // Loads the current m.room.server_acl state event for a room and parses
 // its content. Returns std::nullopt when the room has no ACL event.
 [[nodiscard]] auto load_room_server_acl(database::PersistentStore const& store, std::string_view room_id)
@@ -52,5 +58,11 @@ inline constexpr auto server_acl_max_glob_steps = std::size_t{1'000'000U};
 // Rooms with no ACL event allow all servers.
 [[nodiscard]] auto room_server_acl_allows(database::PersistentStore const& store, std::string_view room_id,
                                           std::string_view server_name) -> bool;
+
+// As above, for a request that checks several rooms or servers: every check spends from the one `budget`, and the
+// answer for an (ACL event, server name) pair is remembered, so asking again costs no glob step (ADR-0653). The cache
+// has its own mutex, so a check may run under any lock.
+[[nodiscard]] auto room_server_acl_allows(database::PersistentStore const& store, std::string_view room_id,
+                                          std::string_view server_name, ServerAclBudget& budget) -> bool;
 
 } // namespace merovingian::federation

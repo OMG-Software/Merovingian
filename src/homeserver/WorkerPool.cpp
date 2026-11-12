@@ -27,6 +27,7 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
@@ -866,10 +867,12 @@ namespace
             return {};
         }
         auto const guard = RuntimeLock{runtime.mutex};
+        // One budget for the checks of the whole relayed frame (ADR-0653).
+        auto budget = federation::ServerAclBudget{};
         for (auto const server : servers)
         {
             if (!server.empty() &&
-                !federation::room_server_acl_allows(runtime.database.persistent_store, room_id, server))
+                !federation::room_server_acl_allows(runtime.database.persistent_store, room_id, server, budget))
             {
                 return "server is denied by room ACL";
             }

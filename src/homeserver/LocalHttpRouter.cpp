@@ -59,6 +59,7 @@
 #include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/federation/Security.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
@@ -1944,6 +1945,8 @@ namespace
                 auto users_looked_at = std::size_t{0U};
                 auto receipt_budget_spent = false;
                 auto accepted = std::vector<database::PersistentReceipt>{};
+                // One ACL step budget for the whole EDU, however many rooms it names (ADR-0653).
+                auto acl_budget = federation::ServerAclBudget{};
                 for (auto const& room_member : *root)
                 {
                     // A peer chooses how many rooms and users the EDU names; only so many are looked at, and the
@@ -1960,7 +1963,7 @@ namespace
                     // rooms, and one stale room_id must not discard the rest.
                     if (!room_has_local_membership(*rt, room_member.key) ||
                         !federation::room_server_acl_allows(rt->database.persistent_store, room_member.key,
-                                                            envelope.origin))
+                                                            envelope.origin, acl_budget))
                     {
                         // FED-8: receipts are keyed by room, not a top-level
                         // room_id. Check the authenticated origin before any
