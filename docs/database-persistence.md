@@ -113,7 +113,7 @@ value. Test fixtures that do not exercise persistence select it through
   takes the smaller expiry, and retires a current row written with an expiry at once (the SQL upsert applies the same
   rule, so concurrent writers cannot raise an expiry). A row that holds a secret, this server's own key, never takes an
   expiry: such a write returns false. Both loaders and the backend half of `refresh_remote_signing_keys` select the
-  column (the worker role is granted it in `provision-federation-worker-role.sql`), and nothing deletes or prunes a
+  column, and nothing deletes or prunes a
   row by `valid_until_ts`.
 - Media bytes are not hydrated (ADR-0119). The SQLite and PostgreSQL loaders read
   `media_blobs` without its `bytes` column; `prepare_media_blob_read` (under the
@@ -552,8 +552,8 @@ value. Test fixtures that do not exercise persistence select it through
     and this keeps the convention consistent with the rest of the schema.
     In C++, `PersistentStateGroup::parent_state_group_id` is
     `std::optional<std::string>` (`nullopt` ⇔ the empty-string sentinel).
-    `state_group_edges` is vestigial and unused — see "Federation worker
-    least-privilege role" below for whether it should eventually be dropped.
+    `state_group_edges` is vestigial and unused — see "Every table
+    classified" below for whether it should eventually be dropped.
   - `state_group_state (state_group_id, event_type, state_key, event_id)` —
     one group's own rows: the full state for a snapshot group
     (`parent_state_group_id` empty), or just the changed entries for a
@@ -1123,163 +1123,30 @@ persisted and hydrated.
 - The schema's v1 `push_rules` table is unused: push rules are kept as `m.push_rules`
   account data (ADR-0204, see above).
 
-## Federation worker least-privilege role (ADR-0062 part 2)
+## Federation worker database access (ADR-0733, ADR-0736)
 
-> **Superseded on 1.0.1 (C44, [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)).**
-> The worker opens no database on either backend: its configuration copy is switched to the
-> `memory` backend and main sends it the rows it reads over the IPC channel. A login handed
-> over `--db-uri-fd` is closed unread. The rest of this section describes the arrangement
-> it replaced.
+The federation worker (`merovingian-fed-worker`) opens no database on either backend (1.0.1, run-3 finding C44,
+[ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)). Its configuration copy
+is switched to the `memory` backend with every database location cleared, and main fills its store over the IPC
+channel: the room list, each room's snapshot (`load_room_snapshot`, read by main in one transaction closed before the
+first page is sent), and on a key-cache miss one server's public signing keys from main's memory. A compromised
+worker therefore holds no descriptor, lock, login or Landlock grant on main's database.
 
-The out-of-process federation worker (`merovingian-fed-worker`,
-`src/federation_worker/`) is the process most exposed to hostile input (see
-`src/federation_worker/AGENTS.md`). Before 0.12.13 finding N1 part 2, it
-opened the database with the *same* PostgreSQL login as main, so a
-compromised worker could `SELECT` `server_signing_keys.secret_key` (still
-ciphertext, but exactly what decrypts it once the operator master key is
-recovered by an unrelated bug — see ADR-0062 part 1) and every other
-credential-bearing table, even though no worker code path ever reads them.
+Until 1.0.1 a PostgreSQL worker connected with a separate, SELECT-only login (ADR-0062 part 2), configured by
+`federation.worker.database_uri_file` and `federation.worker.allow_shared_database_credentials` and provisioned by a
+`provision-federation-worker-role.sql` script. That arrangement is retired: both keys are refused at parse with an
+error naming the key, main reads no worker URI file and hands the worker no credential, and the script is deleted
+([ADR-0736](adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md)). After upgrading, remove the two lines
+and drop the worker's role (`DROP ROLE`) once no worker uses it.
 
-**Do not use `peer` authentication for main's role** (ISO-8, ADR-0147). The
-worker runs under main's uid, and Landlock does not govern `connect()` to a
-Unix socket, so a compromised worker can reach PostgreSQL's local socket; with
-`peer` (or `ident`) PostgreSQL would log it in as main's role on the uid alone,
-undoing the separate login below. Use `scram-sha-256` or certificate
-authentication for both roles.
-
-Two independent mechanisms close this, together:
-
-1. **A separate login, not `SET ROLE`.** `SET ROLE`-based separation was
-   rejected for this boundary specifically: a session holding the *login*
-   role that granted a restricted role can always `RESET ROLE` back to it,
-   so a compromised worker holding the original login credential gains
-   nothing from a restricted role it can trivially undo. Only a distinct
-   login credential the worker process never holds in the first place is a
-   real boundary — see ADR-0062's "Options considered and rejected". The new
-   config key `federation.worker.database_uri_file` names a secret file
-   holding this login's connection URI. Main reads and validates it exactly
-   like `database.uri_file` (owner-only, regular file, TOCTOU-safe —
-   `validate_existing_secret_file_metadata` in `src/main.cpp`) and hands the
-   bytes to each worker shard over a third inherited pipe fd
-   (`homeserver::kWorkerDbUriFd`, `--db-uri-fd` on the child's argv) — the
-   worker itself never opens this file. `federation_worker::
-   apply_worker_database_uri` then sets `database.worker_conninfo_override`
-   on the worker's own in-memory `Config` copy and clears `uri_file`,
-   `runtime_role`, and `migration_role`: the separate role connects
-   directly with its own grants, never attempting a `SET ROLE` against roles
-   it was never made a member of. `packaging/postgresql/
-   provision-federation-worker-role.sql` provisions the role; see that
-   file's header comment for the full GRANT SQL and the reasoning behind
-   each statement. It grants `SELECT` only — never `INSERT`/`UPDATE`/
-   `DELETE` — since the worker's own `PersistentStore` is a read-only
-   snapshot for room-scoped federation reads and every write it needs is
-   relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 3; the
-   one exception found during review, `state_conflict_resolver`, covered
-   below, was removed by ADR-0064).
-
-2. **A load profile for PostgreSQL-backed workers.**
-   `database::TableLoadProfile` and `database::table_load_profile_includes`
-   (`include/merovingian/database/PersistentStore.hpp`) decide which tables
-   `open_postgresql_persistent_store`'s row loader hydrates.
-   `TableLoadProfile::federation_worker` is an **allowlist**
-   (`database::federation_worker_table_allowlist`), not a denylist: a table
-   absent from it is excluded by default, so a future migration's new table
-   — secret-bearing or not — is unreadable by the worker until someone adds
-   it to the allowlist deliberately. The full allowlist, derived by tracing
-   every `FederationRuntimeState` callback the worker does NOT override to
-   the `PersistentStore` field it reads (see the array's own doc comment in
-   `PersistentStore.hpp` for the file:line citation behind each row):
-
-   | Table | Why the worker needs it |
-   |---|---|
-   | `rooms` | `make_join`/`make_leave`/`make_knock` templates, `query/directory`, space hierarchy |
-   | `membership` | `query/directory` (servers joined to an aliased room), space hierarchy member counts |
-   | `current_state` | membership-template auth_events, `room_version_resolver`, `room_server_acl_provider`, space hierarchy join-rule/space checks |
-   | `events` | membership-template forward extremities, `backfill`, `state`, `state_ids`, `get_missing_events` |
-   | `event_edges` | `reconstruct_event_relations` populates `PersistentEvent::prev_event_ids` from this table — without it, every event's prev_events read back empty for the routes above |
-   | `event_auth` | same `reconstruct_event_relations` dependency, for `auth_event_ids` (auth-chain walks in `state`/`state_ids`) |
-   | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
-   | `room_aliases` | `query/directory` (`find_room_alias`) |
-   | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
-   | `state_groups` | federation `/state` and `/state_ids` answer from the state group recorded for the event (ADR-0363); also `ServerEventFilter`'s visibility judgement (ADR-0064) |
-   | `state_group_state` | the same, for a group's own delta/snapshot rows |
-   | `event_state_groups` | the same, for the event → state group mapping (an event with none has no answerable state: 404) |
-   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read comes from here (ADR-0318) |
-   | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
-
-   `server_signing_keys` needs a genuine caveat: the worker's remote-key
-   cache legitimately reads and writes this table (caching *other* servers'
-   public keys — `federation::find_cached_remote_key` /
-   `store_server_signing_key`, `src/homeserver/LocalHttpRouter.cpp:1857-
-   1871`), so excluding the whole table would break that. What must never be
-   exposed is this server's *own* `secret_key` column. The fix is
-   column-level, in two independent places: `load_persistent_rows`
-   (`src/database/PostgresqlStore.cpp`) uses a worker-specific 4-column
-   `SELECT` that never names `secret_key` at all, leaving
-   `PersistentServerSigningKey::secret_key` empty for every worker-loaded
-   row; and `provision-federation-worker-role.sql` grants
-   `SELECT (server_name, key_id, public_key, valid_until_ts, expired_ts)` — a
-   PostgreSQL column-level grant — so even a bug that widened the C++ query
-   back to five columns would be refused at the database. The worker's
-   *write* attempt (caching a freshly-fetched key) is expected to fail under
-   this SELECT-only grant, as it does on SQLite, where the worker's connection
-   is read-only. The resolver therefore returns the key it fetched and verified
-   directly, never a read-back of the cache (ADR-0238, 0.12.59); before that it
-   read the key back after the failed write, found nothing, and refused every
-   server the worker had not cached at start-up. The worker keeps a resolved
-   remote in its in-memory `runtime.remotes`, so the failed write costs at most
-   one fetch per server and key per worker start.
-
-   The worker's mirror of this table is a snapshot taken when it started, so a
-   key main cached afterwards used to be invisible to it and the first PDU main
-   had authenticated from that server waited on a second fetch (discovery, a
-   fresh connection and a TLS handshake) in the worker. The resolver the worker
-   runs is built with `KeyMirrorRefresh::on_miss`: when it finds no usable key in
-   the mirror it first calls `database::refresh_remote_signing_keys`, which
-   re-reads that one server's rows with the same five-column `SELECT` (never
-   `secret_key`; `detail::load_remote_signing_keys_from_sqlite` and
-   `…_from_postgresql`) and merges them into the mirror under
-   `server_signing_keys_mutex`, leaving a row that holds a secret alone. Only a
-   miss in the database too falls through to a fetch. The row was verified and
-   persisted by main under the same seven-day cap (`cache_remote_server_keys`),
-   so the worker trusts it no longer than main does; it is the trust the worker
-   already places in the rows it loaded at start-up. Main's mirror is
-   authoritative and never re-reads
-   ([ADR-0263](adr/0263-a-federation-worker-reads-public-keys-main-cached-before-fetching.md)).
-
-   Every table `PersistentStore` can hold that is **not** in the allowlist is
-   read by no worker-local code path — verified table by table during review
-   and listed under "Every table classified" below. This code-path audit is
-   separate from what the backend hydrates: the profile gates PostgreSQL
-   hydration only. SQLite's `open_sqlite_persistent_store()` accepts a profile
-   but currently uses it only to open the database read-only for the worker;
-   `load_persistent_rows()` then uses the full loader without applying the
-   allowlist. Consequently, a SQLite-backed federation worker holds data such
-   as user password hashes, token hashes and stored signing-key ciphertext
-   that the PostgreSQL worker profile excludes. Media blob bytes remain
-   read-on-demand rather than all being hydrated.
-   Read-only mode prevents writes to the file; it does not provide this
-   in-memory least-privilege boundary. This remains an open gap requiring
-   profile-aware SQLite hydration and a regression test.
-
-   **One dormant write path found during review, since removed:**
-   `state_conflict_resolver` called `database::store_state` (a write to
-   `current_state`) when a PDU's ingestion result carried a populated
-   `state_conflict`, and was wired unconditionally. Nothing ever set
-   `state_conflict`, so it was never invoked from the worker or from main.
-   ADR-0064 deleted the resolver, `PduStateConflictContext` and
-   `PduIngestionResult::state_conflict`.
-
-   `federation_worker_table_allowlist` (C++) and
-   `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list
-   are the two authoritative places for "which tables the worker can read"
-   and must name the exact same set — `tests/unit/test_worker_db_uri.cpp`
-   parses both from the source tree and asserts they match, so the two
-   cannot drift silently.
+`TableLoadProfile::federation_worker` and `database::federation_worker_table_allowlist` remain: a store opened with
+that profile hydrates only the allowlisted tables and never selects `server_signing_keys.secret_key`. No worker opens
+such a store any more; in the worker the profile only turns on asking main for a server's keys on a miss
+(`LocalDatabase::remote_signing_keys_read_through`).
 
 ### Every table classified
 
-`tests/unit/test_worker_db_uri.cpp` also asserts every table
+`tests/unit/test_worker_table_load_profile.cpp` asserts every table
 `migrations/*.sql` creates falls into exactly one of three buckets, so a new
 migration's table cannot go unclassified:
 
@@ -1329,36 +1196,6 @@ migration's table cannot go unclassified:
   table-reading implementations are wired but never invoked inside the
   worker.
 - **Read by every process, not profile-gated** (1 table): `schema_migrations`.
-
-**Explicit, logged opt-out:** `federation.worker.
-allow_shared_database_credentials=true` lets the worker share main's login
-when a separate role cannot be provisioned, restoring the pre-0.12.13-part-2
-behaviour. `config::validate()` rejects `database.backend=postgresql` with
-`security.federation.enabled=true` and an empty `database_uri_file` unless
-this is set (`src/config/Config.cpp`), and `homeserver::WorkerPool::
-WorkerPool` logs `CRITICAL` on every startup while it applies, so the
-downgrade cannot go unnoticed. Ignored entirely for
-`database.backend=sqlite`: a single shared file offers no PostgreSQL role
-boundary. The SQLite connection is read-only in the worker, but the current
-SQLite row loader uses full hydration and does not enforce the worker table-load
-profile. The profile therefore is not an in-memory protection on SQLite yet
-(see the open gap above and ADR-0062 part 2, "Positive Consequences").
-
-**Migration role never reachable from the worker.** The worker's own
-connection always passes empty `runtime_role`/`migration_role` to
-`open_postgresql_persistent_store` (cleared by `apply_worker_database_uri`),
-so it can never `SET ROLE` to `:migration_role` even if a compromised worker
-tried — and in the normal startup order the worker only ever connects after
-main has already brought the schema to `current_schema_version()`, so the
-migration branch inside `open_postgresql_persistent_store` (`schema.version <
-current_schema_version()`) is unreachable from a worker connection in
-practice regardless.
-
-**No role is created by a migration.** PostgreSQL roles are cluster-level
-objects, not part of any one database's schema, so — consistent with
-`provision-roles.sql` — `provision-federation-worker-role.sql` is a
-separate, operator-run provisioning script, never a file under
-`migrations/`.
 
 ### Security audit follow-up (0.12.17)
 

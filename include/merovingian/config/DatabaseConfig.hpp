@@ -30,15 +30,6 @@ struct DatabaseConfig final
     std::string migration_role{};
     std::string runtime_role{};
     std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
-    // Process-local override for the federation worker's own database
-    // connection string (ADR-0062 part 2). Never parsed from a config file
-    // and never logged: `federation_worker::apply_worker_database_uri`
-    // populates this on the worker's own in-memory Config copy, from bytes
-    // main handed it over the inherited kWorkerDbUriFd pipe, immediately
-    // before `bootstrap_local_database` opens the store. When non-empty it
-    // takes priority over `uri_file` for that one open. Main's own Config
-    // (and every other process) always leaves this empty.
-    std::string worker_conninfo_override{};
 };
 
 } // namespace merovingian::config

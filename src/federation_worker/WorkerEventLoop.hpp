@@ -19,16 +19,11 @@ public:
     // at spawn time (see homeserver::WorkerSupervisor::spawn_and_connect and
     // federation_worker::read_ipc_auth_key). run() reads exactly the key from
     // it and never opens the operator master-key file itself — see ADR-0062.
-    // db_uri_fd: ADR-0062 part 2. The read end of the pipe main writes a
-    // separate, least-privilege database connection URI into, when one
-    // applies (database.backend=postgresql and no
-    // allow_shared_database_credentials opt-out). An invalid (default
-    // FileDescriptor{}) value means no separate URI was delivered: run()
-    // then leaves the worker's own copy of database.uri_file/runtime_role/
-    // migration_role untouched, so it opens the database exactly as main
-    // does.
-    WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, core::FileDescriptor db_uri_fd,
-                    config::Config config, std::uint32_t threads, std::uint32_t shard_index = 0U);
+    // The worker opens no database and is handed no database credential
+    // (ADR-0733, ADR-0736): run() clears every database location from
+    // `config` and fills an in-memory store from main.
+    WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, config::Config config,
+                    std::uint32_t threads, std::uint32_t shard_index = 0U);
     ~WorkerEventLoop() = default;
 
     WorkerEventLoop(WorkerEventLoop const&) = delete;
@@ -45,7 +40,6 @@ public:
 private:
     core::FileDescriptor ipc_fd_;
     core::FileDescriptor ipc_key_fd_;
-    core::FileDescriptor db_uri_fd_;
     config::Config config_;
     std::uint32_t threads_{};
     std::uint32_t shard_index_{};

@@ -297,9 +297,8 @@ SCENARIO("The worker IPC socket pair keeps the child's end off the fixed fd numb
                 try
                 {
                     auto const [server, client] = merovingian::homeserver::make_worker_ipc_socketpair();
-                    auto const fixed = std::array<int, 3>{merovingian::homeserver::kWorkerIpcFd,
-                                                          merovingian::homeserver::kWorkerIpcKeyFd,
-                                                          merovingian::homeserver::kWorkerDbUriFd};
+                    auto const fixed = std::array<int, 2>{merovingian::homeserver::kWorkerIpcFd,
+                                                          merovingian::homeserver::kWorkerIpcKeyFd};
                     if (std::ranges::find(fixed, client.get()) != fixed.end())
                     {
                         code = 10; // the child's end is on a fixed fd number

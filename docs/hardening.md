@@ -354,18 +354,17 @@ and `src/media/thumbnail_worker_main.cpp`):
 When federation is enabled, `merovingian-server` spawns `merovingian-fed-worker`
 and communicates through an `AF_UNIX SOCK_STREAM` socket pair created with
 `SOCK_CLOEXEC` before the child is spawned via `posix_spawn`. The worker
-inherits the client fd at file descriptor 3 (`--ipc-fd`), the read end of a
+inherits the client fd at file descriptor 3 (`--ipc-fd`) and the read end of a
 one-shot pipe carrying the IPC auth key at file descriptor 4 (`--ipc-key-fd`,
-see below), and — when `database.backend=postgresql` and a separate worker
-database role applies (ADR-0062 part 2, see below) — the read end of a third
-one-shot pipe carrying that role's connection URI at file descriptor 5
-(`--db-uri-fd`). All three are placed by `posix_spawn_file_actions_adddup2`,
+see below). Both are placed by `posix_spawn_file_actions_adddup2`,
 which clears `FD_CLOEXEC` only on the child's copies. Every other fd is
-`FD_CLOEXEC` and does not survive the exec. None of the three sources is
-allowed to sit on fd 3, 4 or 5 in main: when one does (for example the socket
+`FD_CLOEXEC` and does not survive the exec. Neither source is
+allowed to sit on fd 3 or 4 in main: when one does (for example the socket
 pair returns fds 0 and 3 because main runs with stdin closed),
 `make_worker_ipc_socketpair` and `make_worker_secret_pipe` first move it past
-fd 5 with `F_DUPFD_CLOEXEC`. A source already on its own target would make
+fd 4 with `F_DUPFD_CLOEXEC`. Until 1.0.1 a third pipe at fd 5 (`--db-uri-fd`)
+carried a PostgreSQL worker login; the worker opens no database now, and the
+argument is refused as unknown (ADR-0736). A source already on its own target would make
 the `adddup2` a same-fd `dup2`, which some libcs treat as a no-op that leaves
 `FD_CLOEXEC` set, and the worker would start without that fd; a source on
 another target would be overwritten before its own `dup2` ran. The last file
@@ -416,29 +415,11 @@ separate process on the same host:
   before the Landlock rules are built, and its store is filled by main over the
   IPC channel. A SHARED lock it held on main's SQLite file used to make every
   write in main wait its busy timeout and fail; it now holds no descriptor,
-  lock, login or Landlock grant on main's database. The PostgreSQL login below
-  is still handed over `--db-uri-fd` until it is retired, and the worker closes
-  it unread.
-* **A separate, least-privilege database login, delivered the same way**
-  (ADR-0062 part 2, superseded by ADR-0733): when `database.backend=postgresql`,
-  `WorkerPool::WorkerPool` reads `federation.worker.database_uri_file` once
-  (same owner-only-file validation as `database.uri_file`) and hands each
-  `WorkerSupervisor` its own `core::SecretBuffer` copy of the bytes.
-  `spawn_and_connect` creates a third `pipe2(O_CLOEXEC)` pipe
-  (`homeserver::make_worker_db_uri_pipe`, a generalization of
-  `make_worker_key_pipe` that keeps the read end off all three fixed child fd
-  numbers), writes the URI, and adds a third `adddup2` onto fd 5
-  (`homeserver::kWorkerDbUriFd`, `--db-uri-fd 5`) — again only when a separate
-  URI actually applies; a SQLite backend or the
-  `allow_shared_database_credentials=true` opt-out means neither the flag nor
-  the pipe exist at all. The worker (`federation_worker::
-  read_worker_database_uri`) reads until EOF (bounded to 4096 bytes, unlike
-  the fixed-length auth key), rejects an empty or oversized result, and
-  `federation_worker::apply_worker_database_uri` sets the delivered URI as the
-  worker's own connection override while clearing `database.uri_file`,
-  `runtime_role`, and `migration_role` on its config copy — so the worker
-  never has a path to main's credentials file and never attempts a `SET ROLE`
-  onto a role it was never granted membership of.
+  lock, login or Landlock grant on main's database. The separate PostgreSQL
+  worker login of ADR-0062 part 2 is retired with it: main reads no worker URI
+  file and hands no credential to the child, and the two configuration keys
+  that configured it are refused at parse
+  ([ADR-0736](adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md)).
 * **Linux Landlock filesystem restriction (ADR-0062 part 3):**
   `federation_worker::main()` calls `platform::apply_worker_landlock()`
   immediately before the worker seccomp filter below (Landlock's three
@@ -447,12 +428,12 @@ separate process on the same host:
   event loop starts or handles any inbound request. It queries
   the kernel's Landlock ABI version, builds a rights mask downgraded to
   whatever that ABI supports, and grants exactly the paths
-  `platform::build_worker_landlock_rules()` derives from the worker's own
-  config copy, which names no database (ADR-0733), so no database directory is
-  granted: a fixed set of best-effort, read-only or
+  `platform::build_worker_landlock_rules()` returns, none of which comes from
+  the database keys (ADR-0733, ADR-0736), so no database directory is granted
+  even to a configuration that still names one: a fixed set of best-effort, read-only or
   read-execute OS-integration paths (CA trust store candidates, resolver
   configuration, NSS/dynamic-linker library directories, timezone data).
-  The master key file, both database URI files, TLS private keys and every
+  The master key file, the database URI file, TLS private keys and every
   `appservice.registration_files` entry (which hold the appservice tokens) are
   never in the rule set, and the worker refuses to start if any rule covers
   one of them — a rule on a directory grants everything beneath it. The

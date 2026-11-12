@@ -753,15 +753,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "federation.worker.apply_hardening");
     }
-    if (current.federation_worker().database_uri_file != next.federation_worker().database_uri_file)
-    {
-        add_change(plan, "federation.worker.database_uri_file");
-    }
-    if (current.federation_worker().allow_shared_database_credentials !=
-        next.federation_worker().allow_shared_database_credentials)
-    {
-        add_change(plan, "federation.worker.allow_shared_database_credentials");
-    }
     if (current.federation_worker().allow_without_landlock != next.federation_worker().allow_without_landlock)
     {
         add_change(plan, "federation.worker.allow_without_landlock");

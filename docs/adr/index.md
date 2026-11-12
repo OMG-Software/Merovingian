@@ -593,3 +593,4 @@
 * [0733 - The federation worker opens no database; main sends it what it reads](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)
 * [0734 - A failed IPC write ends the channel](0734-a-failed-ipc-write-ends-the-channel.md)
 * [0735 - A worker may have main read a room only under a permit main issued, and only once](0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)
+* [0736 - The retired worker database keys are refused at parse](0736-the-retired-worker-database-keys-are-refused-at-parse.md)

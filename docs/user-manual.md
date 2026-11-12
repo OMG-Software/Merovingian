@@ -1417,8 +1417,8 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 | `federation.worker.ipc_max_dispatch_queue_bytes` | `134217728` (128 MiB) | Cap on the bytes of those queued frames. `0` disables the cap (not recommended). **Requires restart.** |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
-| `federation.worker.database_uri_file` | `/etc/merovingian/fed-worker-db-uri` | Secret file holding a PostgreSQL connection URI for a **separate, least-privilege** worker login (ADR-0062 part 2) — see [`docs/database-persistence.md`](database-persistence.md), "Federation worker least-privilege role", and `packaging/postgresql/provision-federation-worker-role.sql`. Required (the file must exist and be readable) when `database.backend=postgresql` and federation is enabled, unless `allow_shared_database_credentials=true`. Ignored for `database.backend=sqlite`. Same secret-file permission rules as `database.uri_file` (owner-only, regular file). |
-| `federation.worker.allow_shared_database_credentials` | `false` | Explicit opt-out: lets the worker connect with main's own database credentials instead of a separate role, when `database_uri_file` is not provisioned. Every startup logs `CRITICAL` while this applies. Ignored for `database.backend=sqlite`. |
+| `federation.worker.database_uri_file` | — | **Retired in 1.0.1 (ADR-0736).** The federation worker opens no database (ADR-0733), so a configuration that still sets this key is refused at start-up with an error naming it. Remove the line; the worker's PostgreSQL role and its login can be dropped (`DROP ROLE`). |
+| `federation.worker.allow_shared_database_credentials` | — | **Retired in 1.0.1 (ADR-0736).** Refused at start-up with an error naming it, like `database_uri_file` above. Remove the line. |
 | `federation.worker.allow_without_landlock` | `false` | Explicit opt-out (ADR-0062 part 3): the worker restricts its own filesystem access with Linux Landlock before handling any inbound request. **Requires Linux 5.13+ with Landlock enabled** (`CONFIG_SECURITY_LANDLOCK=y`, and included in the `lsm=` boot parameter if that parameter is set). On a kernel without Landlock the worker refuses to start unless this is `true`, in which case it runs with **no filesystem sandbox** and logs `CRITICAL` on every start — a worker compromised through a memory-safety bug can then open any file this process's Unix permissions allow, including the operator master key and TLS private keys. Any other Landlock failure (not merely "unavailable") is always fatal regardless of this setting. |
 
 The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
@@ -3162,8 +3162,8 @@ until that failure is resolved.
    original roles, memberships and login credentials **before** restoring;
    archive ownership and grants depend on them. The provisioning scripts use
    `CREATE ROLE`, so do not blindly rerun them against roles that already exist.
-   Ensure both main and the worker connect to the restored database, with their
-   original separate privilege boundaries.
+   Ensure main connects to the restored database with its original privilege
+   boundaries. The federation worker opens no database (ADR-0733).
 
    PostgreSQL, after the deployment's roles exist (the example login/database
    owner is `merovingian`):
@@ -3204,7 +3204,8 @@ until that failure is resolved.
    signing key and server name with the recovery record. Through the loopback
    client listener, check `/_matrix/client/versions`, authenticate a known test
    account, read existing room history and download an existing media item.
-   Confirm both main and worker database access work without widening grants.
+   Confirm main's database access works without widening grants, and that
+   each federation worker reports it filled its store from main.
 6. Stop the isolated instance before transferring it to the live deployment,
    then restore the intended listener/proxy exposure and network access. Keep
    the original stopped. Retain the pre-restore and pre-upgrade recovery sets;

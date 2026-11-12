@@ -1,6 +1,6 @@
 # Federation worker holds no secret files; secrets arrive over inherited fds
 
-* Status: accepted
+* Status: accepted; part 2 (the worker's separate PostgreSQL login) and the SQLite directory grant of part 3 are superseded by [ADR-0733](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md) and [ADR-0736](0736-the-retired-worker-database-keys-are-refused-at-parse.md) (2026-11-12)
 * Deciders: James Chapman
 * Date: 2026-09-21
 

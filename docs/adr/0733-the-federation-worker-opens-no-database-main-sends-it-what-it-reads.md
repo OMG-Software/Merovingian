@@ -76,7 +76,7 @@ master-key path is cleared); it is given no database path, URI, descriptor or La
   (ADR-0358, ADR-0359); it now holds no policy rules on either backend.
 * **Retirement.** `federation.worker.database_uri_file`, `federation.worker.allow_shared_database_credentials`,
   `--db-uri-fd`, `database.worker_conninfo_override` and the PostgreSQL worker role script go; the two keys are refused
-  at parse with an error naming the key.
+  at parse with an error naming the key ([ADR-0736](0736-the-retired-worker-database-keys-are-refused-at-parse.md)).
 * **Writes on the channel.** A failed write ends the channel ([ADR-0734](0734-a-failed-ipc-write-ends-the-channel.md)):
   large answers make a stalled write plausible, and a half-written frame breaks the stream for good.
 
@@ -117,6 +117,9 @@ master-key path is cleared); it is given no database path, URI, descriptor or La
 
 * Supersedes part 2 of [ADR-0062](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
   (the worker's PostgreSQL login) and its SQLite Landlock grant (part 3)
+* Followed by [ADR-0734](0734-a-failed-ipc-write-ends-the-channel.md),
+  [ADR-0735](0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md) and
+  [ADR-0736](0736-the-retired-worker-database-keys-are-refused-at-parse.md)
 * Related [ADR-0161](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md),
   [ADR-0360](0360-the-worker-guards-its-store-with-a-reader-writer-lock-taken-only-for-the-swap.md),
   [ADR-0623](0623-a-workers-room-reloads-are-coalesced-per-room-on-one-thread.md)

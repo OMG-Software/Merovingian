@@ -623,11 +623,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   and main reads a room for it only under a permit main issued on that channel, once.** The worker's configuration copy
   is switched to the memory backend with every database location cleared before its Landlock rules are built and before
   its runtime starts. Main reads on its snapshot pool, never under `runtime.mutex`, in one read transaction that has
-  ended before the first page is sent. Never give the worker a database path, URI, descriptor or Landlock grant, and
-  never add a worker read that does not come through main.
+  ended before the first page is sent. Never give the worker a database path, URI, descriptor, credential or
+  Landlock grant, and never add a worker read that does not come through main; the 1.0.0 keys that configured a
+  worker login are refused at parse (ADR-0736).
   Why: read-only stops writes, not locks: a SHARED lock the worker held on main's SQLite file made every write in main
   wait its busy timeout and fail, and its PostgreSQL login could exhaust connections, hold advisory locks and pin the
-  xmin horizon (run-3 C44; ADR-0733, ADR-0735).
+  xmin horizon (run-3 C44; ADR-0733, ADR-0735, ADR-0736).
   Source: `src/federation_worker/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **An inbound event's tip status is asked of `homeserver::event_may_become_forward_extremity`, and its limit is per sender's
@@ -1299,9 +1300,10 @@ media-fetch-pool task.
 
 - **Every table a migration creates is classified for the federation worker in the commit that adds it:
   in `federation_worker_table_allowlist`, in the set of tables the worker never reads in
-  `tests/unit/test_worker_db_uri.cpp`, or as ungated infrastructure.**
-  Why: `test_worker_db_uri.cpp` parses every `CREATE TABLE` in `migrations/*.sql` and fails on an unclassified or
-  stale name, so the worker's database access never silently covers a table nobody decided it may read.
+  `tests/unit/test_worker_table_load_profile.cpp`, or as ungated infrastructure.**
+  Why: `test_worker_table_load_profile.cpp` parses every `CREATE TABLE` in `migrations/*.sql` and fails on an
+  unclassified or stale name, so the `federation_worker` load profile never silently covers a table nobody decided it
+  may hold.
   Source: `migrations/AGENTS.md`.
 
 - **The whole schema is one v1 migration, frozen from 1.0.0; a ledger naming a migration
@@ -1485,11 +1487,11 @@ media-fetch-pool task.
   [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
 
 - **Landlock path rules for the federation worker must come from
-  `build_worker_landlock_rules()`, derived from the worker's own config copy or a documented,
-  best-effort fixed system path — never a hard-coded secret file path.**
-  Why: the whole point of the ruleset is to name the paths the worker's own config exposes
-  (since 1.0.1 none: it names no database, ADR-0733) plus generic OS-integration paths, and to *never* name the
-  master key file, either database URI file, or TLS private keys. A second, drifting
+  `build_worker_landlock_rules()`, as documented, best-effort fixed system paths — never a hard-coded
+  secret file path, and never a rule derived from the database keys.**
+  Why: the ruleset names generic OS-integration paths only; the worker opens no database, so no database
+  directory is granted even to a configuration that still names one (ADR-0733, ADR-0736). It must *never* name
+  the master key file, the database URI file, or TLS private keys. A second, drifting
   hard-coded list is exactly the kind of duplication that silently diverges from the first.
   Source: `src/platform/AGENTS.md`,
   [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).

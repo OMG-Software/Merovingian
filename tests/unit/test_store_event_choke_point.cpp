@@ -12,7 +12,7 @@
 // is not one of the reviewed, documented exceptions below, so that
 // regression cannot recur unnoticed.
 //
-// Style follows tests/unit/test_worker_db_uri.cpp's source-tree consistency
+// Style follows tests/unit/test_worker_table_load_profile.cpp's source-tree consistency
 // scenarios: reads the checked-in .cpp files directly (not runtime data) via
 // MEROVINGIAN_TEST_SOURCE_ROOT.
 

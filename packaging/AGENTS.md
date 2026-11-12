@@ -16,7 +16,7 @@ Contains the package metadata and init scripts for each supported OS.
 | `systemd/` | `merovingian.service` unit file |
 | `openrc/` | OpenRC init script |
 | `rc.d/` | BSD `rc.d` script |
-| `postgresql/` | `provision-roles.sql` — provisions separate migration/runtime PostgreSQL roles for production deployments; `provision-federation-worker-role.sql` — provisions the federation worker role |
+| `postgresql/` | `provision-roles.sql` — provisions separate migration/runtime PostgreSQL roles for production deployments (the federation worker opens no database and has no role of its own, ADR-0733) |
 
 ## Rules
 

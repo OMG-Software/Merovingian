@@ -864,15 +864,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         opened = database::open_persistent_store(std::move(existing_state));
         break;
     case config::DatabaseBackend::postgresql: {
-        // ADR-0062 part 2: the federation worker never reads database.uri_file
-        // itself. When federation_worker::apply_worker_database_uri has set
-        // worker_conninfo_override on this process's own Config copy (from
-        // bytes handed over the inherited kWorkerDbUriFd pipe), that value
-        // takes priority over reading any file. Every other process leaves it
-        // empty, so this is a no-op there.
-        auto const conninfo = !config.database().worker_conninfo_override.empty()
-                                  ? config.database().worker_conninfo_override
-                                  : read_database_uri_file(config.database().uri_file);
+        auto const conninfo = read_database_uri_file(config.database().uri_file);
         opened = conninfo.empty()
                      ? database::PersistentStoreOpenResult{false, "PostgreSQL connection URI is missing or empty", {}}
                      : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,

@@ -565,12 +565,12 @@ threat it closes; the controls above are the standing defences these reinforce.
   the worker — today's or a future one — can open the file even by accident.
   See [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
 
-  **Part 2, PostgreSQL: closed.** A PostgreSQL-backed worker now connects
-  with a *separate, least-privilege login* (`federation.worker.
-  database_uri_file`, provisioned by `packaging/postgresql/
-  provision-federation-worker-role.sql`), handed over a third inherited pipe
-  fd (`homeserver::kWorkerDbUriFd`) the same way the IPC auth key is — the
-  worker never opens that file itself. `SET ROLE`-based separation was
+  **Part 2, PostgreSQL: closed, then superseded in 1.0.1.** A PostgreSQL-backed
+  worker connected with a *separate, least-privilege login* (the retired
+  `federation.worker.database_uri_file`, provisioned by a since-deleted
+  `provision-federation-worker-role.sql`), handed over a third inherited pipe
+  fd the same way the IPC auth key is — the worker never opened that file
+  itself. `SET ROLE`-based separation was
   rejected: a session holding the login role that granted a restricted role
   can always `RESET ROLE` back to it, so only a distinct login credential
   closes this. The provisioned role has no `SELECT` on `server_signing_keys`
@@ -583,8 +583,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   or the other excluded tables' credential material — into its own process
   memory even when running in the explicit, `CRITICAL`-logged
   `allow_shared_database_credentials=true` opt-out mode. See
-  `docs/database-persistence.md`, "Federation worker least-privilege role",
-  for the full table list and the SQL.
+  `docs/database-persistence.md`, "Federation worker database access",
+  for the table list.
 
   **SQLite: not applicable, unchanged.** A single shared SQLite file offers
   no role boundary to separate — the worker keeps opening the same file
@@ -598,10 +598,12 @@ threat it closes; the controls above are the standing defences these reinforce.
   would still write), and its Landlock grant on the database directory is
   read-only, so even a raw writable `open()` fails.
 
-  **Superseded in 1.0.1 (C44, ADR-0733):** the worker opens no database on
-  either backend and gets no Landlock grant on the database directory; main
-  sends it the rows it reads over the IPC channel. The two paragraphs above
-  describe the arrangement this replaced.
+  **Superseded in 1.0.1 (C44, ADR-0733, ADR-0736):** the worker opens no
+  database on either backend, holds no database login, and gets no Landlock
+  grant on the database directory; main sends it the rows it reads over the
+  IPC channel. The two configuration keys and the `--db-uri-fd` argument
+  that delivered the worker's login are retired and refused. The two
+  paragraphs above describe the arrangement this replaced.
 
   **Part 3, Linux Landlock: closed.** The worker now restricts its own
   filesystem access with `platform::apply_worker_landlock()`
@@ -663,13 +665,15 @@ threat it closes; the controls above are the standing defences these reinforce.
   COMMIT in main wait its 5 s busy timeout and fail while the worker's channel stayed healthy. On
   PostgreSQL its SELECT-only login could exhaust connections, hold main's migration advisory lock, and
   pin the xmin horizon with a transaction left open. The worker now opens no database on either
-  backend: its configuration copy names none and gets no Landlock grant, and main sends it each room
+  backend: its configuration copy names none, it is handed no login and gets no Landlock grant
+  (ADR-0736), and main sends it each room
   it reads over the IPC channel, read in a transaction main closes before the first page is sent, and
   only under a permit main issued. Residual: the worker still reads every room main lists, and a
   crash-looping worker makes main read every room once per restart, bounded by the supervisor's
   back-off. See
-  [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md) and
-  [ADR-0735](adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md).
+  [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md),
+  [ADR-0735](adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md) and
+  [ADR-0736](adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md).
 - **A compromised worker could open any socket family (ISO-8,
   2026-09-29 security audit, closed):** `socket()` and `socketpair()` were
   unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker

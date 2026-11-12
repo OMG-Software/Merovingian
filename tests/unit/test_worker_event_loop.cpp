@@ -57,7 +57,6 @@ SCENARIO("WorkerEventLoop construction captures shard index", "[federation-worke
         {
             auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
                                         FileDescriptor{FileDescriptor::invalid},
-                                        FileDescriptor{FileDescriptor::invalid},
                                         merovingian::config::Config{},
                                         1U,
                                         5U};
@@ -76,9 +75,8 @@ SCENARIO("WorkerEventLoop defaults to shard 0 when omitted", "[federation-worker
     {
         WHEN("it is constructed")
         {
-            auto loop =
-                WorkerEventLoop{FileDescriptor{FileDescriptor::invalid}, FileDescriptor{FileDescriptor::invalid},
-                                FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U};
+            auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
+                                        FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U};
 
             THEN("shard index defaults to 0")
             {
@@ -100,7 +98,6 @@ SCENARIO("WorkerEventLoop run exits when the IPC fd is invalid", "[federation-wo
         // ever reaching the key exchange, not throw.
         auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
                                     make_valid_key_fd(),
-                                    FileDescriptor{FileDescriptor::invalid},
                                     merovingian::config::Config{},
                                     1U,
                                     3U};

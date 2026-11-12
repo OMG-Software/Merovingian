@@ -16,7 +16,6 @@ auto clear_database_location(config::Config& config) noexcept -> void
     database.uri_file.clear();
     database.migration_role.clear();
     database.runtime_role.clear();
-    database.worker_conninfo_override.clear();
 }
 
 } // namespace merovingian::federation_worker

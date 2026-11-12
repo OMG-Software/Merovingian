@@ -2,7 +2,6 @@ federation_worker_lib = static_library(
   'merovingian-federation-worker',
   sources: files(
     'ParsedWorkerArgs.cpp',
-    'DbUriFd.cpp',
     'IpcKeyFd.cpp',
     'StoreReadGuard.cpp',
     'WorkerDatabaseConfig.cpp',

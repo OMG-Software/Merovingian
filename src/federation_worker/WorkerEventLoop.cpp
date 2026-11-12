@@ -24,7 +24,6 @@
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation_worker/DbUriFd.hpp"
 #include "merovingian/federation_worker/IpcKeyFd.hpp"
 #include "merovingian/federation_worker/RoomReloadCoalescer.hpp"
 #include "merovingian/federation_worker/StoreReadGuard.hpp"
@@ -771,12 +770,10 @@ namespace
 
 } // namespace
 
-WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd,
-                                 core::FileDescriptor db_uri_fd, config::Config config, std::uint32_t threads,
-                                 std::uint32_t shard_index)
+WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, config::Config config,
+                                 std::uint32_t threads, std::uint32_t shard_index)
     : ipc_fd_{std::move(ipc_fd)}
     , ipc_key_fd_{std::move(ipc_key_fd)}
-    , db_uri_fd_{std::move(db_uri_fd)}
     , config_{std::move(config)}
     , threads_{threads}
     , shard_index_{shard_index}
@@ -821,9 +818,6 @@ auto WorkerEventLoop::run() -> void
     // ADR-0733: this process opens no database. Its copy names none (main.cpp cleared it before Landlock; cleared again
     // here whoever built the loop), so the runtime opens an in-memory store, which main fills over the channel below.
     federation_worker::clear_database_location(config_);
-    // A server on PostgreSQL still hands a worker login over --db-uri-fd until that plumbing is retired: it is closed
-    // here unread.
-    db_uri_fd_ = core::FileDescriptor{};
 
     // Create the IPC channel first; the blocking key exchange completes here
     // before the runtime starts. Both peers derive the same frame cap from the

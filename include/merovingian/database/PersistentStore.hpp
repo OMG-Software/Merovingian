@@ -162,11 +162,9 @@ namespace merovingian::database
 //                       1857-1871, federation/RemoteKeyCache.cpp. Column-
 //                       restricted: the worker load path (see
 //                       PostgresqlStore.cpp load_persistent_rows) never
-//                       selects the secret_key column, and
-//                       provision-federation-worker-role.sql grants SELECT
-//                       on exactly the other four columns — so this entry
-//                       never exposes this server's own signing secret even
-//                       though the table name is shared with it.
+//                       selects the secret_key column — so this entry never
+//                       exposes this server's own signing secret even though
+//                       the table name is shared with it.
 //
 //   state_groups        federation /state and /state_ids answer from the state
 //                       group recorded for the event (ADR-0363), and
@@ -184,10 +182,12 @@ namespace merovingian::database
 // login_tokens/openid_tokens/account_threepids and every other credential or
 // per-user table — is either relayed to main over IPC when the worker
 // genuinely needs it, or never read by the worker at all. See
-// docs/database-persistence.md, "Federation worker least-privilege role",
+// docs/database-persistence.md, "Federation worker database access",
 // for the full classification of every table migrations/*.sql creates
 // (cross-checked against this array by
-// tests/unit/test_worker_db_uri.cpp).
+// tests/unit/test_worker_table_load_profile.cpp). Since ADR-0733 the worker
+// opens no database and main sends it its rooms and keys, so this list bounds
+// what a federation_worker-profile store hydrates, not a worker's own reads.
 inline constexpr std::array<std::string_view, 13> federation_worker_table_allowlist{
     "rooms",
     "membership",
@@ -208,7 +208,7 @@ inline constexpr std::array<std::string_view, 13> federation_worker_table_allowl
 // `federation_worker` allows only federation_worker_table_allowlist; a
 // table absent from it is never hydrated by the worker regardless of
 // backend. Pure and header-testable: exercised directly by
-// tests/unit/test_worker_db_uri.cpp without a database connection.
+// tests/unit/test_worker_table_load_profile.cpp without a database connection.
 [[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
     -> bool
 {

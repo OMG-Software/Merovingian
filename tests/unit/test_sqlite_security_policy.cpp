@@ -103,8 +103,10 @@ SCENARIO("Production SQLite worker bootstrap cannot persist changes", "[database
     }
 }
 #if defined(__linux__)
-SCENARIO("Landlocked production SQLite worker cannot open main's database for writing",
-         "[database][iso4][iso4_landlock]")
+// ADR-0733: the worker's Landlock rules grant no database directory, so a landlocked worker cannot open main's
+// SQLite file at all, for reading as well as writing, and cannot take the read lock C44 was about.
+SCENARIO("Landlocked production SQLite worker cannot open main's database at all",
+         "[database][iso4][iso4_landlock][c44]")
 {
     GIVEN("main's initialized SQLite database and the real kernel Landlock API")
     {
@@ -144,14 +146,14 @@ SCENARIO("Landlocked production SQLite worker cannot open main's database for wr
                 {
                     ::_exit(11);
                 }
-                auto worker = merovingian::homeserver::bootstrap_local_database(
-                    config, {}, merovingian::database::TableLoadProfile::federation_worker);
-                if (!worker.opened || worker.persistent_store.rooms.size() != 1U)
+                auto read = merovingian::core::FileDescriptor{::open(path.c_str(), O_RDONLY | O_CLOEXEC)};
+                if (read.valid())
                 {
                     ::_exit(12);
                 }
-                if (merovingian::database::store_room(worker.persistent_store,
-                                                      {"!worker:example.org", "@a:example.org"}))
+                auto worker = merovingian::homeserver::bootstrap_local_database(
+                    config, {}, merovingian::database::TableLoadProfile::federation_worker);
+                if (worker.opened)
                 {
                     ::_exit(13);
                 }
@@ -159,7 +161,7 @@ SCENARIO("Landlocked production SQLite worker cannot open main's database for wr
             }
             auto status = int{};
             REQUIRE(::waitpid(pid, &status, 0) == pid);
-            THEN("the worker remains functional but even a raw writable open is denied")
+            THEN("neither a raw open nor a store open of main's database succeeds, and main still writes")
             {
                 REQUIRE(WIFEXITED(status));
                 REQUIRE(WEXITSTATUS(status) == 0);

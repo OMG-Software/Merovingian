@@ -420,17 +420,9 @@ namespace
         // server_signing_keys is the one allowlisted table with a column
         // restriction: the federation worker profile omits `secret_key`
         // entirely from the SELECT list (never just filters it client-side),
-        // so a worker connecting with the least-privilege role in
-        // packaging/postgresql/provision-federation-worker-role.sql — which
-        // grants SELECT on exactly server_name/key_id/public_key/
-        // valid_until_ts, never secret_key — can still read this table for
-        // its own legitimate purpose (caching OTHER servers' public keys via
-        // federation::remote_key_cache_probe/remote_key_resolver;
-        // src/homeserver/LocalHttpRouter.cpp:1857-1871) without ever being
-        // able to select this server's own signing secret, even under a bug
-        // that widened `full`-style access elsewhere. See
-        // docs/database-persistence.md, "Federation worker least-privilege
-        // role".
+        // so a store opened with that profile holds OTHER servers' public keys
+        // and never this server's own signing secret, even under a bug that
+        // widened `full`-style access elsewhere.
         if (profile == TableLoadProfile::full)
         {
             auto server_signing_keys =
@@ -2658,8 +2650,8 @@ namespace detail
         {
             return std::nullopt;
         }
-        // The same four columns the worker role is granted and the start-up load
-        // selects: secret_key is never named, and the role could not read it.
+        // The same columns the federation_worker start-up load selects:
+        // secret_key is never named.
         auto result = opened.connection.execute(
             {"postgresql_load_remote_signing_keys",
              "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "

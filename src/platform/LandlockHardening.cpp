@@ -4,7 +4,6 @@
 #include "merovingian/platform/LandlockHardening.hpp"
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/platform/LandlockAccess.hpp"
 #include "merovingian/platform/LandlockAddRuleOutcome.hpp"
@@ -127,23 +126,14 @@ namespace
 } // namespace
 #endif // __linux__
 
-auto build_worker_landlock_rules(config::Config const& config) -> std::vector<LandlockPathRule>
+auto build_worker_landlock_rules([[maybe_unused]] config::Config const& config) -> std::vector<LandlockPathRule>
 {
     auto rules = std::vector<LandlockPathRule>{};
 
-    // ---- Database (config-derived; never hard-coded) -----------------------
-    // Only the SQLite backend needs a filesystem grant: PostgreSQL is
-    // reached over a network socket (already unrestricted by Landlock, which
-    // only governs filesystem actions), authenticated with the URI ADR-0062
-    // part 2 delivers over an inherited fd, never a path the worker opens.
-    if (config.database().backend == config::DatabaseBackend::sqlite && !config.database().sqlite_path.empty())
-    {
-        auto const dir = std::filesystem::path{config.database().sqlite_path}.parent_path();
-        auto const dir_str = dir.empty() ? std::string{"."} : dir.string();
-        // No write/create/remove grant for the database, journal or WAL index.
-        // Workers use READONLY SQLite against main's DELETE-mode database.
-        rules.push_back({.path = dir_str, .access = LandlockAccess::read_only, .required = true});
-    }
+    // ---- No database ---------------------------------------------------------
+    // The worker opens no database: main sends it every row it reads (ADR-0733). Nothing here is derived from the
+    // database keys, whatever the configuration passed in names, so main's SQLite directory is never granted even to
+    // a caller that did not clear them first.
 
     // ---- TLS / CA trust store (best-effort: distro-dependent) --------------
     // Mirrors http::detect_system_ca_trust()'s candidate file/directory list
@@ -197,8 +187,8 @@ auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<s
     for (auto const* path :
          {&config.security().secrets.master_key_file, &config.listeners().client.tls_private_key_file,
           &config.listeners().federation.tls_private_key_file, &config.database().uri_file,
-          &config.federation_worker().database_uri_file, &config.security().registration.token_file,
-          &config.server().email.password_file, &config.server().turn.shared_secret_file})
+          &config.security().registration.token_file, &config.server().email.password_file,
+          &config.server().turn.shared_secret_file})
     {
         if (!path->empty())
         {

@@ -42,7 +42,6 @@
 #include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <algorithm>
@@ -1408,18 +1407,6 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     return serialize_event_query_ingest_result(result);
 }
 
-namespace
-{
-
-    // ADR-0062: validate the opened file and read directly into locked memory.
-    // No stream buffer or transient plaintext string crosses the IPC boundary.
-    [[nodiscard]] auto read_worker_database_uri_file(std::string const& path) -> std::optional<core::SecretBuffer>
-    {
-        return platform::read_secure_secret_line(path, 4096U);
-    }
-
-} // namespace
-
 auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t request_id, std::string_view type) -> bool
 {
     // sign_request used to be answered by signing whatever the worker sent with
@@ -1515,40 +1502,6 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
     }
 
-    // ADR-0062 part 2 (finding N1): derive the worker's separate database
-    // connection URI ONCE, here, the same way the auth key above is derived
-    // once rather than per-supervisor. SQLite offers no role to separate --
-    // the worker keeps opening the same file there, so this section is
-    // skipped entirely and every supervisor below gets an empty
-    // worker_database_uri_material (no --db-uri-fd is ever passed).
-    auto worker_database_uri = std::optional<core::SecretBuffer>{};
-    if (runtime_.config.database().backend == config::DatabaseBackend::postgresql)
-    {
-        worker_database_uri = read_worker_database_uri_file(cfg_.database_uri_file);
-        if (worker_database_uri.has_value())
-        {
-            LOG_INFO("Federation worker: using a separate least-privilege database login "
-                     "(federation.worker.database_uri_file configured)");
-        }
-        else if (cfg_.allow_shared_database_credentials)
-        {
-            LOG_CRITICAL("Federation worker: federation.worker.database_uri_file is not set or unreadable; the worker "
-                         "will share main's PostgreSQL login credentials, including read access to "
-                         "server_signing_keys.secret_key (federation.worker.allow_shared_database_credentials=true). "
-                         "See ADR-0062 part 2.");
-        }
-        else
-        {
-            // config::validate() already rejects this combination before the
-            // server can start; this is the fail-closed backstop for any
-            // caller that constructs a WorkerPool without going through that
-            // validation path (e.g. an embedder or a future admin API).
-            throw std::runtime_error{
-                "federation.worker.database_uri_file is required when database.backend=postgresql and "
-                "security.federation.enabled=true, unless federation.worker.allow_shared_database_credentials=true"};
-        }
-    }
-
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
@@ -1560,11 +1513,8 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         auto key_material = core::SecretBuffer{
             std::span<std::uint8_t const>{derived_auth_key->bytes.data(), derived_auth_key->bytes.size()}
         };
-        auto db_uri_material =
-            worker_database_uri.has_value() ? core::SecretBuffer{worker_database_uri->bytes()} : core::SecretBuffer{};
-        auto supervisor =
-            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
-                                               std::move(key_material), max_frame_bytes, std::move(db_uri_material));
+        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
+                                                             i, std::move(key_material), max_frame_bytes);
         supervisor->set_max_in_flight(cfg_.ipc_max_in_flight_requests);
         supervisor->set_dispatch_queue_limits(cfg_.ipc_max_dispatch_queue_count, cfg_.ipc_max_dispatch_queue_bytes);
 

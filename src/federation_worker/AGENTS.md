@@ -13,10 +13,9 @@ because it is the process most exposed to hostile input, holds as little trust a
 
 | File | Responsibility |
 |---|---|
-| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC, IPC-key, and (when present) db-uri fds, applies worker hardening, runs the event loop |
-| `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
+| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC and IPC-key fds, applies worker hardening, runs the event loop |
+| `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` (optional, default 0); anything else, the retired `--db-uri-fd` included, is refused (ADR-0736) |
 | `IpcKeyFd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
-| `DbUriFd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
 | `RoomReloadCoalescer.cpp` | `RoomReloadCoalescer`: merges a room's `room_sync` notifications into a bounded number of reloads (rule 6, ADR-0623) |
@@ -58,15 +57,16 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    Never give the worker a database path, URI, descriptor or Landlock grant again, and never add a worker read that
    does not come through main. `RuntimeStartOptions::database_load_profile` stays
    `database::TableLoadProfile::federation_worker`: it switches on the key read-through below and skips main's
-   start-up work. A PostgreSQL server still hands the worker a login over `--db-uri-fd` until that plumbing is
-   retired; `run()` closes it unread.
+   start-up work. Main hands the worker no database credential: the PostgreSQL worker login, its two
+   configuration keys and `--db-uri-fd` are retired, the keys refused at parse
+   ([ADR-0736](../../docs/adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md)).
 3. **The worker restricts its own filesystem access with Linux Landlock (ADR-0062 part 3),
    applied before the worker seccomp filter and before anything below.** `main.cpp` calls
    `platform::apply_worker_landlock()` with the rules `platform::build_worker_landlock_rules()`
-   derives from the worker's own config copy, which names no database (rule 2): a fixed set of
+   returns, none of which comes from the database keys (rule 2), whatever the config names: a fixed set of
    best-effort OS-integration paths (CA trust store, resolver configuration, NSS/dynamic-linker
    library directories, timezone data), and never the database directory. The secret check runs
-   against the operator's own configuration: the master key file, both database URI files, and TLS
+   against the operator's own configuration: the master key file, the database URI file, and TLS
    private keys are never granted.
    Landlock's three syscalls are not on the worker seccomp allowlist below, so this must run
    first. On a kernel without Landlock the worker refuses to start unless
@@ -179,11 +179,11 @@ worker under the filter and is the regression test for it.
 
 ## Testing
 
-- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` and `--db-uri-fd` validation
+- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` validation and the refusal of
+  the retired `--db-uri-fd` (tag `[args][c44]`)
 - `tests/unit/test_federation_worker_ipc_key_fd.cpp` — `read_ipc_auth_key` / `clear_master_key_file` (tag `[worker_key_fd]`)
-- `tests/unit/test_worker_db_uri.cpp` — config validation matrix, `--db-uri-fd` argv parsing, `read_worker_database_uri`,
-  `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
-  (tag `[worker_db_uri]`)
+- `tests/unit/test_worker_table_load_profile.cpp` — `database::table_load_profile_includes`, the classification of
+  every migration table, and the key pipe's empty-material refusal (tag `[worker_table_profile]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
 - `tests/unit/test_worker_relay_frame.cpp` — `worker_relay_frame` and `relay_to_main` (tag `[relay-frame]`)
 - `tests/unit/test_worker_hardening_threads.cpp` — forked real-kernel proof (tag `[worker_hardening]`) that a
@@ -192,10 +192,13 @@ worker under the filter and is the regression test for it.
   without seccomp or Landlock
 - `tests/unit/test_worker_landlock.cpp` — `apply_worker_landlock` fail-closed paths with injected
   `LandlockHardeningOps`, `build_worker_landlock_rules` allowlist content, ABI rights downgrade,
-  config parsing/reload classification, and a forked real-kernel enforcement scenario (tag
-  `[worker_landlock]`)
+  config parsing/reload classification, no database grant on either backend (tag `[c44][landlock-no-database]`),
+  and a forked real-kernel enforcement scenario (tag `[worker_landlock]`)
 - `tests/unit/test_worker_database_config.cpp` — `clear_database_location` leaves no database location on either
-  backend (tag `[c44][worker-database-config]`)
+  backend (tag `[c44][worker-database-config]`), and the retired keys are refused at parse, by name
+  (tag `[c44][retired-worker-database-keys]`)
+- `tests/unit/test_sqlite_security_policy.cpp` — a landlocked child cannot open main's SQLite file for reading or
+  writing (tag `[iso4_landlock][c44]`, real kernel)
 - `tests/unit/test_store_read_guard.cpp` — `StoreReadGuard`, including `reload_room_from` holding no store lock
   across main's read (tag `[c44][reload-from]`)
 - `tests/unit/test_worker_room_snapshot_fill.cpp` — filling a store from main's snapshots and refreshing the key
@@ -203,9 +206,6 @@ worker under the filter and is the regression test for it.
 - `tests/integration/test_federation_worker_flow.cpp` — event loop and IPC relay behaviour; a real worker on a
   SQLite server opens no database and, stopped with SIGSTOP, cannot block main's writes (tag
   `[c44][worker-no-database]`)
-- `tests/integration/test_postgresql_persistence_flow.cpp` — the `federation_worker` load-profile scenario against a
-  live PostgreSQL role lacking `SELECT` on `server_signing_keys` (gated by
-  `MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE`; skipped without a live PostgreSQL test environment)
 
 ## Key docs
 

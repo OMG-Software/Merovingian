@@ -527,7 +527,7 @@ shell = find_program('sh')
       'unit/test_ipc_worker_store_frames.cpp',
       'unit/test_federation_worker_args.cpp',
       'unit/test_federation_worker_ipc_key_fd.cpp',
-      'unit/test_worker_db_uri.cpp',
+      'unit/test_worker_table_load_profile.cpp',
       'unit/test_worker_relay_binding.cpp',
       'unit/test_worker_relay_frame.cpp',
       'unit/test_worker_supervisor.cpp',
@@ -549,8 +549,7 @@ shell = find_program('sh')
       'unit/test_read_markers.cpp',
     ),
     include_directories: inc,
-    # Test-only: lets test_worker_db_uri.cpp locate
-    # packaging/postgresql/provision-federation-worker-role.sql and
+    # Test-only: lets test_worker_table_load_profile.cpp locate
     # migrations/*.sql in the source tree to cross-check them against the
     # C++ allowlist, the same -DMEROVINGIAN_TEST_* pattern used below for
     # locating sibling test binaries. Never defined for a production target.

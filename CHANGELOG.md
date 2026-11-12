@@ -236,7 +236,7 @@ the row was written to memory. A send_join answered in between read the old row 
 that later send_joins kept serving with the superseded state event, such as old power levels or join rules. Applying a
 prepared state row now moves the revision after the row is written, as well as at prepare (ADR-0697).
 
-### The federation worker opens no database; main sends it what it reads (ADR-0733, ADR-0734, ADR-0735)
+### The federation worker opens no database; main sends it what it reads (ADR-0733, ADR-0734, ADR-0735, ADR-0736)
 
 * On SQLite a compromised federation worker could hold a read lock on main's database file and make every write in main
   fail after its 5 s busy timeout, while its IPC channel stayed healthy (run-3 finding C44,
@@ -274,12 +274,23 @@ prepared state row now moves the revision after the row is written, as well as a
   across the request (`StoreReadGuard::reload_room_from`). A key-cache miss asks main for the server's public keys
   (`PersistentStore::remote_signing_key_source`), in the PDU and X-Matrix key lookup as well as the resolver, so a key
   main already verified is used without discovering its server first. On SQLite the worker no longer holds users, token hashes, the sealed
-  signing secret, account data, keys, to-device rows or policy rules. A PostgreSQL server's worker login, still handed
-  over `--db-uri-fd`, is closed unread. Tests: `[integration][c44][worker-no-database]` (a real worker on a SQLite
+  signing secret, account data, keys, to-device rows or policy rules. Tests: `[integration][c44][worker-no-database]` (a real worker on a SQLite
   server holds no descriptor of the database or its journals, and while it is stopped with SIGSTOP a write that does
   not wait succeeds in main; it reloads once continued), `[c44][worker-database-config]`, `[c44][key-source]` and
   `[c44][reload-from]`; the existing real-worker `[integration][worker]` scenarios (`[fed10-worker-http]`,
   `[txn-dedupe]`, `[f21]`) cover the key lookup.
+* **Upgrade note:** `federation.worker.database_uri_file` and `federation.worker.allow_shared_database_credentials`
+  are retired and refused at start-up, each with an error naming the key, so a 1.0.0 PostgreSQL deployment with
+  federation enabled must remove the `database_uri_file` line before 1.0.1 starts; the worker's role can then be
+  dropped (ADR-0736). Main no longer reads a worker URI file or validates it, hands no credential to the worker, and
+  passes no `--db-uri-fd` (the worker refuses it as unknown); `database.worker_conninfo_override`, the worker's
+  `DbUriFd` reader, `kWorkerDbUriFd` and `packaging/postgresql/provision-federation-worker-role.sql` are removed.
+  `build_worker_landlock_rules` derives no rule from the database keys, so no database directory is granted even to a
+  configuration that still names one. Tests: `[c44][retired-worker-database-keys]`, `[args][c44]` (the retired
+  argument), `[c44][landlock-no-database]` and `[iso4_landlock][c44]` (a landlocked child on a real kernel cannot open
+  main's SQLite file for reading or writing). `test_worker_db_uri.cpp` is now `test_worker_table_load_profile.cpp`
+  (tag `[worker_table_profile]`): its configuration, argument, URI-pipe and grant-script scenarios went with what they
+  tested; the PostgreSQL worker-role scenario is removed.
 
 ## 1.0.0
 
