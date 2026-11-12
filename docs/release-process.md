@@ -198,6 +198,12 @@ git push origin v<version>
 ```
 
 GitHub Actions publishes the release assets, SBOM included, for that tag.
+The jobs in `release.yml` run only for a tag, so `tests/tooling` checks on
+every pull request that each release build job installs a package for every
+pkg-config module its build script checks. A tag is never moved once anything
+has been published under it. The one moved tag is `v1.0.0`: its first run
+failed before publishing, and the owner moved it to the fix commit without a
+version bump ([ADR-0651](adr/0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)).
 The scheduled dependency-triage workflow keeps a separate vulnerability report
 artifact.
 

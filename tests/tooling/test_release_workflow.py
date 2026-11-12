@@ -39,6 +39,22 @@ def check_tag_script(workflow: str, step_name: str = "Compare the tag with meson
     return "\n".join(kept) + "\n"
 
 
+def installed_packages(job: str) -> set[str]:
+    """The package arguments of a job's apt-get install and pkg install commands.
+
+    Only those commands count, so a package named in a comment, a commented-out install
+    command, or a `curl` call in another step does not. Backslash continuations are joined,
+    then each line loses its comment (a `#` at the start or after whitespace, which keeps
+    `${VAR#prefix}`) before the install command is looked for."""
+    packages: set[str] = set()
+    for line in re.sub(r"\\\n", " ", job).splitlines():
+        command = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+        match = re.search(r"(?:\bapt-get|\bpkg) install\b(.*)", command)
+        if match is not None:
+            packages.update(word for word in match.group(1).split() if not word.startswith("-"))
+    return packages
+
+
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_release_notes_say_where_the_complement_evidence_is(self) -> None:
         # GIVEN the repository release workflow.
@@ -321,6 +337,59 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("release-evidence-freebsd-", workflow)
         self.assertIn("## Package checksums", workflow)
         self.assertIn("## Release evidence", workflow)
+
+    def test_only_active_install_command_arguments_count_as_installed(self) -> None:
+        # GIVEN a job that names packages in comments, in a commented-out install command and
+        # in a curl call, beside one real apt-get install and one real pkg install.
+        job = (
+            "      # libcurl4-openssl-dev is named here only\n"
+            "      - run: curl -fsSL https://example.invalid\n"
+            "          # apt-get install -y libcurl4-openssl-dev\n"
+            "          #pkg install curl\n"
+            "          sudo apt-get install -y \\\n"
+            "            bison \\\n"
+            "            flex  # libpq-dev\n"
+            "          pkg install -y meson ${PKG#prefix}  # libsodium\n"
+        )
+
+        # WHEN its installed packages are read.
+        installed = installed_packages(job)
+
+        # THEN only the active commands' package arguments count.
+        self.assertEqual({"bison", "flex", "meson", "${PKG#prefix}"}, installed)
+
+    def test_each_release_build_installs_every_module_its_build_script_checks(self) -> None:
+        # GIVEN the release workflow and the pkg-config modules each build script refuses to
+        # build without. These jobs run only for a v* tag, so nothing else exercises their
+        # install lists: v1.0.0's first run failed on "missing pkg-config module: libcurl"
+        # (ADR-0651).
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        builds = [
+            # (job, build script, the package that provides each module on that runner)
+            ("linux-release-package", "build-linux.sh",
+             {"libsodium": "libsodium-dev", "openssl": "libssl-dev", "libpq": "libpq-dev",
+              "libcurl": "libcurl4-openssl-dev"}),
+            ("freebsd-release-package", "build-bsd.sh",
+             {"libsodium": "libsodium", "openssl": "openssl", "libpq": "postgresql17-client",
+              "libcurl": "curl"}),
+        ]
+
+        for job, script, packages in builds:
+            with self.subTest(job=job):
+                checked = re.findall(r"^check_pkg_config_module (\S+)$",
+                                     (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8"),
+                                     re.MULTILINE)
+                installed = installed_packages(job_text(workflow, job))
+
+                # WHEN the job's install step is compared with the script's checks.
+                missing = [module for module in checked if packages.get(module) not in installed]
+
+                # THEN the script checks something, every module it checks has a known package,
+                # and the job installs that package.
+                self.assertTrue(checked, f"no check_pkg_config_module lines found in {script}")
+                self.assertEqual([], [m for m in checked if m not in packages],
+                                 f"{script} checks a module this test has no {job} package for")
+                self.assertEqual([], missing, f"{job} does not install the package for these modules")
 
 
 # Run-3 audit, supply-chain.release-verification.attestation-recipe-accepts-any-workflow-and-ref (ADR-0732). With

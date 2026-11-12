@@ -80,7 +80,10 @@ jobs:
           python-version: '3.x'
 
       # libpng-dev and libturbojpeg0-dev build merovingian-thumbnail-worker,
-      # which stage-release-tarball.sh requires.
+      # which stage-release-tarball.sh requires. Every pkg-config module that
+      # scripts/build-linux.sh checks needs its -dev package here; this step
+      # runs only for a v* tag, so a missing one is first seen on release day
+      # (ADR-0651).
       - name: Install dependencies
         run: |
           sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
@@ -90,6 +93,7 @@ jobs:
             clang \
             catch2 \
             flex \
+            libcurl4-openssl-dev \
             libpng-dev \
             libpq-dev \
             libsodium-dev \
