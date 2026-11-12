@@ -542,6 +542,8 @@ Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 r
 
 `server.client_api` budgets bound room timelines, paging, scan work, sliding-sync state and transient sessions. A higher timeline maximum allows a larger client-requested limit; it does not make the client request more messages automatically. Search context can multiply work by page size, so tune both together. A bounded `/sync` room list is not a capacity guarantee for a user's entire room set.
 
+A sliding-sync connection also keeps at most 64 KiB of its request's lists, and one device's connections 256 KiB together; a list may name at most 16 `room_types`, 16 `not_room_types` and 16 ranges, and a `conn_id` or list name is at most 255 bytes. Over any of these the request is `400 M_INVALID_PARAM`. These are fixed limits, not configuration keys (ADR-0663).
+
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
 
 `max_create_room_invites` and `max_create_room_initial_state` limit the entries of one `POST /createRoom` (ADR-0316). Each entry stores one event while the server holds its global lock, so a request past either cap is refused with HTTP 400 `M_TOO_LARGE` before anything is stored. A user listed twice in `invite` is invited once, and the raw list length is what is counted.

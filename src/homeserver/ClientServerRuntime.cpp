@@ -7039,13 +7039,10 @@ namespace
         auto const now = std::chrono::steady_clock::now();
         auto& connections = runtime.sliding_sync_connections;
 
-        for (auto it = connections.begin(); it != connections.end();)
-        {
-            // A default-constructed last_used is the clock's epoch and so reads as
-            // arbitrarily old; every entry is stamped immediately after insertion,
-            // so only genuinely idle connections match here.
-            it = (now - it->second.last_used) > sliding_sync_idle_ttl ? connections.erase(it) : std::next(it);
-        }
+        // The idle ones are at the front of the table's last_used index: the work is the connections removed, not the
+        // connections of every user (ADR-0663). Every entry is stamped when it is made, so only genuinely idle
+        // connections are removed here.
+        connections.erase_idle(now, sliding_sync_idle_ttl);
 
         // A poll on a connection that already exists needs no room made for it.
         // Reserving a slot unconditionally meant a device sitting at exactly the
@@ -7057,10 +7054,11 @@ namespace
         }
 
         auto const prefix = sliding_sync_device_prefix(user, device_id);
-        auto owned = std::vector<std::map<std::string, sync::SlidingSyncConnectionState>::iterator>{};
-        for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
+        auto const& states = connections.states();
+        auto owned = std::vector<std::pair<std::chrono::steady_clock::time_point, std::string>>{};
+        for (auto it = states.lower_bound(prefix); it != states.end() && it->first.starts_with(prefix); ++it)
         {
-            owned.push_back(it);
+            owned.emplace_back(it->second.last_used, it->first);
         }
         auto const cap = static_cast<std::size_t>(std::max(1U, max_per_device));
         if (owned.size() < cap)
@@ -7069,14 +7067,37 @@ namespace
         }
 
         // Keep the cap-1 most recently used, leaving room for the new connection.
-        std::ranges::sort(owned, [](auto const& left, auto const& right) {
-            return left->second.last_used < right->second.last_used;
-        });
+        std::ranges::sort(owned);
         auto const to_evict = owned.size() - (cap - 1U);
         for (auto index = std::size_t{0U}; index < to_evict; ++index)
         {
-            connections.erase(owned[index]);
+            connections.erase(owned[index].second);
         }
+    }
+
+    // The bytes of list configuration the device's other connections keep (committed and pending), for the
+    // per-device budget (ADR-0663). Walks at most sliding_sync_connections_per_device entries of one device's
+    // key range, so the work does not grow with what a client sends. Caller holds runtime.mutex.
+    [[nodiscard]] auto sliding_sync_other_connections_bytes(HomeserverRuntime const& runtime, std::string_view user,
+                                                            std::string_view device_id, std::string const& conn_key)
+        -> std::uint64_t
+    {
+        auto const prefix = sliding_sync_device_prefix(user, device_id);
+        auto total = std::uint64_t{0U};
+        auto const& connections = runtime.sliding_sync_connections.states();
+        for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
+        {
+            if (it->first == conn_key)
+            {
+                continue;
+            }
+            total += sync::sliding_sync_retained_bytes(it->second.list_configs);
+            if (it->second.pending_response.has_value())
+            {
+                total += sync::sliding_sync_retained_bytes(it->second.pending_response->list_configs);
+            }
+        }
+        return total;
     }
 
     // MSC4186 "Changes to `timeline_limit`": the joined rooms whose timeline this request will resend
@@ -7199,8 +7220,18 @@ namespace
         prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key,
                                        rt.limits.sliding_sync_connections_per_device);
 
-        auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
-        conn.last_used = std::chrono::steady_clock::now();
+        // ADR-0663: the lists this request would make the connection keep, with those of the device's other
+        // connections, stay within the per-device byte budget. Refused before the entry is created.
+        if (sync::sliding_sync_retained_bytes(ssreq) +
+                sliding_sync_other_connections_bytes(rt.homeserver, user, device_id, conn_key) >
+            rt.limits.sliding_sync.retained_bytes_per_device)
+        {
+            return DispatchResult{DispatchResult::Status::complete,
+                                  err(400U, "M_INVALID_PARAM", "this device's sliding sync connections hold too much"),
+                                  {}};
+        }
+
+        auto& conn = rt.homeserver.sliding_sync_connections.touch(conn_key, std::chrono::steady_clock::now());
 
         // MSC4186 does not let a server assume that a completed HTTP response
         // reached the client. Only a later request carrying the returned pos

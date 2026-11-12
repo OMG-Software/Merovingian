@@ -11,6 +11,7 @@ sync_sources = files(
   'RoomAccess.cpp',
   'RoomReadAccess.cpp',
   'StateGroupLookup.cpp',
+  'SlidingSyncConnectionTable.cpp',
   'SlidingSyncExtensions.cpp',
   'SlidingSyncParser.cpp',
   'SlidingSyncRoomBuilder.cpp',

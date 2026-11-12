@@ -594,3 +594,4 @@
 * [0734 - A failed IPC write ends the channel](0734-a-failed-ipc-write-ends-the-channel.md)
 * [0735 - A worker may have main read a room only under a permit main issued, and only once](0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)
 * [0736 - The retired worker database keys are refused at parse](0736-the-retired-worker-database-keys-are-refused-at-parse.md)
+* [0663 - A sliding sync connection keeps a bounded number of bytes of its lists](0663-a-sliding-sync-connection-keeps-a-bounded-number-of-bytes-of-its-lists.md)

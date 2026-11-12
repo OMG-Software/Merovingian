@@ -79,6 +79,8 @@ MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the 
 uses `conn.last_event_ordering` as the since-baseline so repeated `timeout=0` polls return
 a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
+The connections are a `SlidingSyncConnectionTable` (map plus an index by `last_used`): change them only through `touch`, `erase` and `erase_idle`, so the idle sweep pops from the index front and never walks every user's connections (ADR-0663).
+
 ## Sliding sync timelines
 
 A room's `timeline` is the newest `timeline_limit` events the user may see, after its delta
@@ -120,7 +122,7 @@ request that names many:
 joined. `parse_sliding_sync_request` clamps `timeline_limit` to
 `sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions,
 `required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
-(the handler answers a violation 400 `M_INVALID_PARAM`).
+(the handler answers a violation 400 `M_INVALID_PARAM`). It also caps `room_types`/`not_room_types` (16 each), ranges (16) per list, a `conn_id` and list name (255 bytes) and the bytes of lists a request would make a connection keep (64 KiB; `sliding_sync_retained_bytes`); `sliding_sync_json` refuses a request that would take the device's connections past 256 KiB together, before creating its entry (ADR-0663). A new field a connection stores copies into `sliding_sync_retained_bytes`.
 
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
