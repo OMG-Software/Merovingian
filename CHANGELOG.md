@@ -236,7 +236,7 @@ the row was written to memory. A send_join answered in between read the old row 
 that later send_joins kept serving with the superseded state event, such as old power levels or join rules. Applying a
 prepared state row now moves the revision after the row is written, as well as at prepare (ADR-0697).
 
-### The federation worker opens no database; main sends it what it reads (ADR-0733, ADR-0734)
+### The federation worker opens no database; main sends it what it reads (ADR-0733, ADR-0734, ADR-0735)
 
 * On SQLite a compromised federation worker could hold a read lock on main's database file and make every write in main
   fail after its 5 s busy timeout, while its IPC channel stayed healthy (run-3 finding C44,
@@ -256,6 +256,15 @@ prepared state row now moves the revision after the row is written, as well as a
   exactly (bytes that are not UTF-8 and integers past 2^53 included), are packed into pages that fit the frame cap, and
   a row too big for any page refuses the room instead of being cut. The worker's `RoomSnapshotAssembler` refuses pages
   out of order, of another room or generation, or holding another room's rows. Tests: `[c44][worker-store-frames]`.
+* Main answers the worker's store requests (`WorkerSnapshotService`, on a pool of its own, one thread per shard). A room
+  is read only under a permit main issued on that channel, each consumed once: the room list (read once per channel)
+  permits one read of each listed room, and each `room_sync` main sends permits one read at a generation it sent
+  (recorded before the notification goes out). Later pages come from memory, each once, in order, for at most 60 s. No
+  lock is held across a read, never `runtime.mutex`, and the read transaction has ended before page 0 is sent. A key
+  lookup is answered from main's memory, public columns, at most 256 rows (ADR-0735). Tests:
+  `[c44][worker-snapshot-service]` (permits, a race for one permit, no lock across the read, paging and expiry) and
+  `[integration][c44][worker-snapshot-lock]` (a real SQLite file: a write without waiting is refused during the read
+  and succeeds when page 0 is ready).
 
 ## 1.0.0
 

@@ -59,6 +59,7 @@ This is the largest and most complex module — read this file carefully before 
 | `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
+| `WorkerSnapshotService.cpp` | Main's answers to a federation worker's store requests (room list, room snapshot pages, public server keys; ADR-0733). A room is read only under a permit main issued on that channel, consumed once (ADR-0735); no lock and never `runtime.mutex` across a read |
 | `WorkerSupervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `MinimalWorkerEnv.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
@@ -549,6 +550,12 @@ permit (`federation::verified_request_relay_digests`), and each handler hashes t
 `IpcChannel::consume_pending_relay` once the mutex is held, answering a refusal with the provider's empty answer. A new
 relay that reaches data the worker's role cannot read gets a `WorkerRelayKind`, a case in
 `verified_request_relay_digests`, and this check; a relay of data the worker may read needs none.
+
+The worker's store requests (`room_list_request`, `room_snapshot_request`, `server_keys_request`) are answered by
+`WorkerSnapshotService` on `snapshot_pool_`, never on `handler_pool_` and never under `runtime.mutex` (ADR-0733). A room is
+read for a worker only under a permit: the channel's one room listing, or a `room_sync` main sent, which
+`notify_room_changed` records before it sends the notification (ADR-0735). Never add a path that reads a room because a
+worker named it.
 
 Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take

@@ -5,38 +5,41 @@
 
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/crypto/MasterKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/InviteAcceptResult.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/InviteRoomState.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
-#include "merovingian/federation/InviteRoomState.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/WorkerIpcLimits.hpp"
-#include "merovingian/ipc/IpcChannel.hpp"
+#include "merovingian/homeserver/WorkerSnapshotService.hpp"
+#include "merovingian/homeserver/WorkerSnapshotSources.hpp"
 #include "merovingian/ipc/FederationIpcFrames.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/FileMetadataSupport.hpp"
@@ -1441,11 +1444,46 @@ auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t req
     return true;
 }
 
+namespace
+{
+
+    // Where the workers' store comes from (ADR-0733): a store of its own holding only where main's database is, so a
+    // read opens its own connection, closes its transaction before it returns, and touches no row of main's live store
+    // and never runtime.mutex. Keys come from main's memory under the store's own key mutex.
+    [[nodiscard]] auto make_snapshot_service(HomeserverRuntime& runtime) -> std::unique_ptr<WorkerSnapshotService>
+    {
+        auto const& main_store = runtime.database.persistent_store;
+        auto source = database::PersistentStore{};
+        source.backend = main_store.backend;
+        source.sqlite_path = main_store.sqlite_path;
+        source.postgresql_conninfo = main_store.postgresql_conninfo;
+        source.postgresql_runtime_role = main_store.postgresql_runtime_role;
+        auto sources = WorkerSnapshotSources{};
+        sources.list_rooms = [source]() {
+            return database::load_room_ids(source);
+        };
+        sources.read_room = [source](std::string_view room_id) {
+            return database::load_room_snapshot(source, room_id);
+        };
+        sources.server_keys = [&main_store](std::string_view server_name, std::size_t max_rows) {
+            return database::public_signing_keys_of_server(main_store, server_name, max_rows);
+        };
+        sources.now = []() {
+            return std::chrono::steady_clock::now();
+        };
+        return std::make_unique<WorkerSnapshotService>(
+            std::move(sources), ipc::worker_store_page_budget(worker_ipc_frame_bytes(runtime.config)));
+    }
+
+} // namespace
+
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
     : cfg_{cfg}
     , runtime_{runtime}
     , handler_pool_{cfg_.relay_threads}
+    , snapshot_service_{make_snapshot_service(runtime)}
+    , snapshot_pool_{cfg_.shards > 0U ? cfg_.shards : 1U}
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
 {
@@ -1681,6 +1719,19 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                         ch->send_response(id, overload_response_for(type));
                     }
                 }
+                else if (type == "room_list_request" || type == "room_snapshot_request" ||
+                         type == "server_keys_request")
+                {
+                    // The worker's store (ADR-0733): answered on the snapshot pool, under the channel's in-flight
+                    // cap, with no runtime.mutex. Permits are checked by the service before any read (ADR-0735).
+                    if (!submit_limited(snapshot_pool_, ch, [this, ch, id, type, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, snapshot_service_->answer(ch, type, json));
+                        }))
+                    {
+                        ch->send_response(id, ipc::serialize_worker_store_refusal(type, "overloaded"));
+                    }
+                }
                 else if (type == "room_sync_result")
                 {
                     // Fire-and-forget notification from the worker reporting the
@@ -1791,6 +1842,8 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
         return next;
     }();
 
+    // The permit is recorded before the notification is sent, so a worker that reloads at once finds it (ADR-0735).
+    snapshot_service_->permit_reload(ch, room_id, generation);
     if (!ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation)))
     {
         LOG_WARNING("Federation worker pool: room_sync notification could not be sent for room_id=" +
@@ -1819,6 +1872,7 @@ auto WorkerPool::stop() noexcept -> void
     // and keeps TSan-instrumented teardown paths from deadlocking around a
     // channel whose dispatch thread has already been joined.
     handler_pool_.request_stop();
+    snapshot_pool_.request_stop();
 
     for (auto& worker : workers_)
     {

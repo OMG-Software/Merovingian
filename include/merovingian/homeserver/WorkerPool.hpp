@@ -4,12 +4,13 @@
 
 #include "merovingian/config/FederationWorkerConfig.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
+#include "merovingian/homeserver/WorkerSnapshotService.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
@@ -274,6 +275,10 @@ private:
     // and enqueues; running the handlers here keeps a slow handler from
     // stalling every later queued frame on the same channel.
     net::ThreadPool handler_pool_;
+    // Answers the workers' store requests (C44, ADR-0733, ADR-0735): its own pool, one thread per shard, so a room
+    // read never waits behind relays and never runs under runtime.mutex. Made before any worker starts.
+    std::unique_ptr<WorkerSnapshotService> snapshot_service_;
+    net::ThreadPool snapshot_pool_;
     std::string worker_path_;
     std::string config_path_;
     std::vector<std::unique_ptr<WorkerSupervisor>> workers_{};

@@ -75,6 +75,7 @@ homeserver_sources = files(
   'MinimalWorkerEnv.cpp',
   'WorkerIpcLimits.cpp',
   'WorkerPool.cpp',
+  'WorkerSnapshotService.cpp',
   'WorkerSupervisor.cpp',
   'PendingStreamOrdering.cpp',
   'PublishedStreamOrdering.cpp',

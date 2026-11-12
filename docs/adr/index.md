@@ -592,3 +592,4 @@
 * [0697 - A room's state revision moves after the in-memory state write](0697-a-rooms-state-revision-moves-after-the-in-memory-state-write.md)
 * [0733 - The federation worker opens no database; main sends it what it reads](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)
 * [0734 - A failed IPC write ends the channel](0734-a-failed-ipc-write-ends-the-channel.md)
+* [0735 - A worker may have main read a room only under a permit main issued, and only once](0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)
