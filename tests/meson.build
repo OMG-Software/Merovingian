@@ -898,6 +898,7 @@ shell = find_program('sh')
       'integration/test_login_throttle_http_flow.cpp',
       'integration/test_login_token_flow.cpp',
       'integration/test_uia_session_pool_flow.cpp',
+      'integration/test_validation_session_cap_flow.cpp',
       'integration/test_media_reservation_sweep_flow.cpp',
       'integration/test_otk_cap_flow.cpp',
       'integration/test_otk_signature_validation_flow.cpp',

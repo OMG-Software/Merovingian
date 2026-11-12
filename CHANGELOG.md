@@ -383,6 +383,10 @@ an hour of minting at the default rate.
 
 User-interactive authentication sessions are shared by all users, and a full pool used to drop the oldest session whoever held it, so one account sending challenge-provoking requests could keep a victim from finishing a device deletion, a login token request or a registration. A session now belongs to its owner (the user, or for registration the client address) and is valid only for that owner. An owner holds at most 16, replacing its own oldest, and a full pool answers a new challenge with 429 `M_LIMIT_EXCEEDED` instead of evicting another owner's session. A request that carries a valid session no longer mints a spare one first.
 
+### The validation session cap is per client, not per proxy (ADR-0684)
+
+The cap on open identity validation sessions (password reset, email and phone registration, 3PID requests) counted sessions by the TCP peer address. Behind a reverse proxy every client has the proxy's address, so the per-client cap of 16 was one cap for the whole server and one client could use it up for everyone. It is now counted per client address as the rate limiter resolves it: trusted proxies and `X-Forwarded-For` honoured, IPv6 clients grouped by prefix.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

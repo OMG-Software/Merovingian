@@ -720,6 +720,8 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (shape, `id_access_token`, trusted `id_server`) before `create_room`, and are sent afterwards with
   `invite_user_by_threepid(..., max_total_seconds)` under the one ADR-0079 slot and `invite_deadline` of the remote
   invites; each call's timeouts are clamped to what is left of the deadline (ADR-0474). A failure leaves the room.
+- The cap on open identity validation sessions (`record_identity_validation_session`) is counted per `rate_limit_client_key`,
+  never `req.remote_addr`: behind a proxy the raw peer is shared by every client (C10, ADR-0684).
 - `GET /relations?recurse=true` walks at most 3 levels and offers at most 2048 events beyond the first level; it
   continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
 - `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its

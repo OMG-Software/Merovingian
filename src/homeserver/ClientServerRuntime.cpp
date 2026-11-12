@@ -14863,9 +14863,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "no randomness for a session ID");
             }
-            session = record_identity_validation_session(rt, std::string{password_reset_purpose}, "email", address,
-                                                         body->client_secret, req.remote_addr, body->send_attempt, *sid,
-                                                         {}, {});
+            session = record_identity_validation_session(
+                rt, std::string{password_reset_purpose}, "email", address, body->client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *sid, {}, {});
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -15154,9 +15154,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // bind can recover the medium/address. The IS is the validation
             // authority: the session starts unvalidated and add/bind ask the IS
             // (getValidated3pid) whether its owner completed validation (AUTH-5).
-            auto* session = record_identity_validation_session(rt, "register", "email", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link);
+            auto* session =
+                record_identity_validation_session(rt, "register", "email", normalized_address, client_secret,
+                                                   rate_limit_client_key(req, rt.homeserver.config.server()),
+                                                   body->send_attempt, *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -15257,9 +15258,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Key the local session by the IS-issued sid (see register/email). The
             // country is preserved so the later bind can recover the MSISDN locale.
-            auto* session = record_identity_validation_session(rt, "register", "msisdn", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link, country);
+            auto* session = record_identity_validation_session(
+                rt, "register", "msisdn", normalized_address, client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *is_sid, base_url,
+                id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -16143,9 +16145,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = record_identity_validation_session(rt, "account-3pid", "email", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link);
+            auto* session =
+                record_identity_validation_session(rt, "account-3pid", "email", normalized_address, client_secret,
+                                                   rate_limit_client_key(req, rt.homeserver.config.server()),
+                                                   body->send_attempt, *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -16249,9 +16252,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = record_identity_validation_session(rt, "account-3pid", "msisdn", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link, country);
+            auto* session = record_identity_validation_session(
+                rt, "account-3pid", "msisdn", normalized_address, client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *is_sid, base_url,
+                id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
