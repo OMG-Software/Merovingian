@@ -1376,6 +1376,15 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
+// A policy rule change, the administrator's `admin_actions` row and its `audit_log` row in ONE transaction (C49,
+// ADR-0687): the rule is in force exactly when both rows exist. `audit` is bounded and stamped here and joins the
+// in-memory window only after the commit. False, with nothing changed, when the rule is invalid (removal: unknown) or
+// the write fails.
+[[nodiscard]] auto commit_policy_rule_with_audit(PersistentStore& store, PersistentPolicyRule rule,
+                                                 PersistentAdminAction action, PersistentAuditEvent audit) -> bool;
+[[nodiscard]] auto commit_policy_rule_removal_with_audit(PersistentStore& store, std::string_view rule_id,
+                                                         PersistentAdminAction action, PersistentAuditEvent audit)
+    -> bool;
 // Security audit run-2 F-12 (ADR-0339): the most bytes of content one account-data row may hold.
 // store_account_data and both capped forms refuse a row over it, so rows the server writes itself
 // (m.tag) are bounded by the same limit as a client's PUT. Every /sync parses each row into a DOM

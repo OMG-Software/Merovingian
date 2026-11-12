@@ -13912,18 +13912,17 @@ namespace
             auto const rule = database::PersistentPolicyRule{
                 path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,
             };
-            if (!database::store_policy_rule(rt.homeserver.database.persistent_store, rule))
+            // C49 (ADR-0687): the rule, the admin_actions row and the audit row commit together or not at all.
+            if (!database::commit_policy_rule_with_audit(
+                    rt.homeserver.database.persistent_store, rule,
+                    {std::string{admin_user}, "trust_safety.policy_rule.upsert", rule.rule_id},
+                    local_audit_row(observability::AuditCategory::policy, "trust_safety.policy_rule.upsert", admin_user,
+                                    rule.rule_id, rule.action)))
             {
                 return err(500U, "M_UNKNOWN", "policy rule persistence failed");
             }
-            if (!database::append_admin_action(
-                    rt.homeserver.database.persistent_store,
-                    {std::string{admin_user}, "trust_safety.policy_rule.upsert", rule.rule_id}))
-            {
-                return err(500U, "M_UNKNOWN", "admin action persistence failed");
-            }
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
-                               "trust_safety.policy_rule.upsert", admin_user, rule.rule_id, rule.action);
+            remember_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                                 "trust_safety.policy_rule.upsert", admin_user, rule.rule_id, rule.action);
             return resp(200U, "{}");
         }
         if (req.method == "DELETE")
@@ -13934,17 +13933,23 @@ namespace
                 return err(400U, "M_BAD_JSON", "policy rule path must include scope and entity");
             }
             auto const rule_id = path->scope + ':' + path->entity;
-            if (!database::delete_policy_rule(rt.homeserver.database.persistent_store, rule_id))
+            if (std::ranges::none_of(rt.homeserver.database.persistent_store.policy_rules,
+                                     [&rule_id](database::PersistentPolicyRule const& held) {
+                                         return held.rule_id == rule_id;
+                                     }))
             {
                 return err(404U, "M_NOT_FOUND", "policy rule not found");
             }
-            if (!database::append_admin_action(rt.homeserver.database.persistent_store,
-                                               {std::string{admin_user}, "trust_safety.policy_rule.delete", rule_id}))
+            if (!database::commit_policy_rule_removal_with_audit(
+                    rt.homeserver.database.persistent_store, rule_id,
+                    {std::string{admin_user}, "trust_safety.policy_rule.delete", rule_id},
+                    local_audit_row(observability::AuditCategory::policy, "trust_safety.policy_rule.delete", admin_user,
+                                    rule_id, "deleted")))
             {
-                return err(500U, "M_UNKNOWN", "admin action persistence failed");
+                return err(500U, "M_UNKNOWN", "policy rule persistence failed");
             }
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
-                               "trust_safety.policy_rule.delete", admin_user, rule_id, "deleted");
+            remember_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                                 "trust_safety.policy_rule.delete", admin_user, rule_id, "deleted");
             return resp(200U, "{}");
         }
 

@@ -2118,18 +2118,6 @@ namespace
         return all_deleted;
     }
 
-    // The audit row of an administrator's account action, as `append_local_audit` would write it, for the writers that
-    // commit it with the state change (ADR-0629).
-    [[nodiscard]] auto account_action_audit_row(observability::AuditCategory category, std::string_view event_type,
-                                                std::string_view actor, std::string_view target,
-                                                std::string_view reason) -> database::PersistentAuditEvent
-    {
-        return {std::string{observability::audit_category_name(category)}, std::string{event_type},
-                observability::bounded_utf8(actor, observability::max_audit_field_bytes),
-                observability::sanitized_audit_target(target),
-                observability::bounded_utf8(reason, observability::max_audit_field_bytes)};
-    }
-
 } // namespace
 
 // Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
@@ -2154,12 +2142,11 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     // completed) writes the flag again and no second row.
     auto const first_deactivation = !user->deactivated;
     auto const flag_persisted =
-        first_deactivation
-            ? database::commit_user_deactivation_with_audit(
-                  runtime.database.persistent_store, user_id,
-                  account_action_audit_row(observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
-                                           audit.target, audit.reason))
-            : database::set_user_deactivated(runtime.database.persistent_store, user_id);
+        first_deactivation ? database::commit_user_deactivation_with_audit(
+                                 runtime.database.persistent_store, user_id,
+                                 local_audit_row(observability::AuditCategory::auth, "auth.account_deactivated",
+                                                 audit.actor, audit.target, audit.reason))
+                           : database::set_user_deactivated(runtime.database.persistent_store, user_id);
     if (!flag_persisted)
     {
         return make_operation_result(false, {}, "deactivation persistence failed", 500U);
@@ -2255,7 +2242,7 @@ auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admi
     // ADR-0629: the state change and its audit row are one transaction.
     if (!database::commit_user_account_state_with_audit(
             runtime.database.persistent_store, user_id, suspended, locked,
-            account_action_audit_row(observability::AuditCategory::admin, audit_event, admin_id, user_id, reason_code)))
+            local_audit_row(observability::AuditCategory::admin, audit_event, admin_id, user_id, reason_code)))
     {
         return make_operation_result(false, {}, "failed to persist account state", 500U);
     }

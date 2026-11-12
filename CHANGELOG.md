@@ -395,6 +395,10 @@ The password reset mail is sent at most once a minute per address across all ses
 
 Every user or event report loaded the newest 1000 rows of its type from `audit_log` under the global lock to find a repeat (a sort of the whole table on PostgreSQL), the 20 reports a minute that the reporting routes declare was never applied, and a user could report any number of distinct remote user IDs. Reports are now judged from an in-memory index filled once at start-up from the stored rows, each user is limited to 20 reports a minute and 100 distinct reports a day (a further one is 429 `M_LIMIT_EXCEEDED`; a repeat is still acknowledged without a second row), so one user can no longer fill the administrators' listing.
 
+### A policy rule change and its audit row commit together (ADR-0687)
+
+An administrator's policy rule change (adding or removing a rule, or the review action on either admin surface) committed the rule, then an `admin_actions` row, then a best-effort audit row whose result was ignored; the review action wrote its audit row before the rule. A storage failure in between left a rule in force with no audit row, or an audit row for a rule that was never stored. The rule, its `admin_actions` row and its audit row are now one transaction, as account moderation has been since ADR-0629, and a store that cannot write all three refuses the change with 500.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -29,6 +29,13 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
 auto remember_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                           std::string_view actor, std::string_view target, std::string_view reason) -> void;
 
+// The durable audit row an administrator's action writes, bounded and sanitised exactly as `append_local_audit` does,
+// for a writer that commits it with the state change (ADR-0629, ADR-0687). Pair it with `remember_local_audit` after
+// the commit.
+[[nodiscard]] auto local_audit_row(observability::AuditCategory category, std::string_view event_type,
+                                   std::string_view actor, std::string_view target, std::string_view reason)
+    -> database::PersistentAuditEvent;
+
 // Combined diagnostic + audit-routing helper (0.5.0). The five
 // high-signal failure call sites (rate_limit.exceeded, login.rejected,
 // access_token.rejected, request.rejected, registration_policy.denied)

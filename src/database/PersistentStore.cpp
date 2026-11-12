@@ -7054,6 +7054,98 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
     return true;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto policy_rule_upsert_statement(PersistentPolicyRule const& rule) -> PreparedStatement
+    {
+        return record_statement("upsert_policy_rule",
+                                "INSERT INTO policy_rules VALUES ($1, $2, $3, $4, $5) ON CONFLICT (rule_id) DO UPDATE "
+                                "SET scope = $2, entity = $3, action = $4, reason = $5",
+                                {
+                                    {rule.rule_id, false},
+                                    {rule.scope,   false},
+                                    {rule.entity,  false},
+                                    {rule.action,  false},
+                                    {rule.reason,  false}
+        });
+    }
+
+    [[nodiscard]] auto admin_action_insert_statement(PersistentAdminAction const& action) -> PreparedStatement
+    {
+        return record_statement("append_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
+                                {
+                                    {action.admin_user_id, false},
+                                    {action.action,        false},
+                                    {action.target,        false}
+        });
+    }
+
+    auto mirror_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> void
+    {
+        auto existing = std::ranges::find_if(store.policy_rules, [&rule](PersistentPolicyRule const& current) {
+            return current.rule_id == rule.rule_id;
+        });
+        if (existing != store.policy_rules.end())
+        {
+            *existing = std::move(rule);
+            return;
+        }
+        store.policy_rules.push_back(std::move(rule));
+    }
+
+} // namespace
+
+[[nodiscard]] auto commit_policy_rule_with_audit(PersistentStore& store, PersistentPolicyRule rule,
+                                                 PersistentAdminAction action, PersistentAuditEvent audit) -> bool
+{
+    if (rule.rule_id.empty() || rule.scope.empty() || rule.entity.empty() || rule.action.empty())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements =
+        std::vector<PreparedStatement>{policy_rule_upsert_statement(rule), admin_action_insert_statement(action),
+                                       audit_insert_statement("policy_rule_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    mirror_policy_rule(store, std::move(rule));
+    store.admin_actions.push_back(std::move(action));
+    remember_audit_event(store, std::move(audit));
+    return true;
+}
+
+[[nodiscard]] auto commit_policy_rule_removal_with_audit(PersistentStore& store, std::string_view rule_id,
+                                                         PersistentAdminAction action, PersistentAuditEvent audit)
+    -> bool
+{
+    if (rule_id.empty())
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.policy_rules, [rule_id](PersistentPolicyRule const& current) {
+        return current.rule_id == rule_id;
+    });
+    if (existing == store.policy_rules.end())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("delete_policy_rule", "DELETE FROM policy_rules WHERE rule_id = $1", {public_value(rule_id)}),
+        admin_action_insert_statement(action), audit_insert_statement("policy_rule_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    store.policy_rules.erase(existing);
+    store.admin_actions.push_back(std::move(action));
+    remember_audit_event(store, std::move(audit));
+    return true;
+}
+
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool
 {
     if (rule.rule_id.empty() || rule.scope.empty() || rule.entity.empty() || rule.action.empty())

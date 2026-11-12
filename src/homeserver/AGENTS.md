@@ -922,6 +922,9 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
   passing `via_appservice` to `send_event_as_user` (ADR-0628). A new use of `LocalUser::admin` goes through
   `authenticated_admin_user` or `require_admin`.
 - `upgrade_room_options` copies `m.federate: false` and no other custom create property (ADR-0627).
+- `commit_policy_rule_with_audit` / `commit_policy_rule_removal_with_audit` write a policy rule change, its `admin_actions` row and
+  its audit row in one transaction, and only then `remember_local_audit` (C49, ADR-0687). Never write the audit row before the
+  rule it describes, and never call `append_local_audit` for a rule change. `local_audit_row` builds the durable row.
 - `set_local_user_moderation` and `deactivate_user_account` commit the state change with its audit row
   (`commit_user_account_state_with_audit`, `commit_user_deactivation_with_audit`) and only then `remember_local_audit`
   (ADR-0629). Do not return to `append_local_audit` after the write.

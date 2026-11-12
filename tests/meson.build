@@ -557,6 +557,7 @@ shell = find_program('sh')
       'unit/test_push_pusher_store.cpp',
       'unit/test_openid_token_store.cpp',
       'unit/test_safety_report_index.cpp',
+      'unit/test_policy_rule_commit.cpp',
       'unit/test_read_markers.cpp',
     ),
     include_directories: inc,
