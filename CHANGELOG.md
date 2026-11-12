@@ -236,6 +236,17 @@ the row was written to memory. A send_join answered in between read the old row 
 that later send_joins kept serving with the superseded state event, such as old power levels or join rules. Applying a
 prepared state row now moves the revision after the row is written, as well as at prepare (ADR-0697).
 
+### The federation worker opens no database; main sends it what it reads (ADR-0733, ADR-0734)
+
+* On SQLite a compromised federation worker could hold a read lock on main's database file and make every write in main
+  fail after its 5 s busy timeout, while its IPC channel stayed healthy (run-3 finding C44,
+  `resource-exhaustion.sqlite-worker.read-lock-held-by-compromised-worker-fails-every-main-write`). On PostgreSQL its
+  SELECT-only login could still exhaust connections, hold advisory locks or pin the vacuum horizon. The worker is to get
+  every row it reads from main over its IPC channel, on both backends (ADR-0733).
+* A frame that cannot be written whole now ends the IPC channel: it is marked unhealthy and shut down, so the supervisor
+  replaces the worker. Before, `send_response` ignored the failure and the channel kept reporting healthy with its
+  stream broken (ADR-0734). Test: `[c44][write-failure]`.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -590,3 +590,5 @@
 * [0695 - A room's tips from senders without power share one cap, that power holders are exempt from](0695-a-rooms-tips-from-senders-without-power-share-one-cap-that-power-holders-are-exempt-from.md)
 * [0696 - An ingest that writes a current-state row commits under the runtime lock](0696-an-ingest-that-writes-a-current-state-row-commits-under-the-runtime-lock.md)
 * [0697 - A room's state revision moves after the in-memory state write](0697-a-rooms-state-revision-moves-after-the-in-memory-state-write.md)
+* [0733 - The federation worker opens no database; main sends it what it reads](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)
+* [0734 - A failed IPC write ends the channel](0734-a-failed-ipc-write-ends-the-channel.md)

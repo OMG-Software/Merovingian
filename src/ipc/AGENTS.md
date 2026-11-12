@@ -40,7 +40,7 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    fixed; escaping's is payload-dependent and can push a near-cap response over the frame limit
    (ADR-0043).
 
-6. **Every frame a process writes is valid UTF-8, and only a failed read ends a channel.** The reader
+6. **Every frame a process writes is valid UTF-8, and only a failed read or write ends a channel.** The reader
    parses frames with `canonicaljson::parse_json`, which refuses invalid UTF-8, so `ipc_json_str` copies
    only valid sequences and writes U+FFFD for the rest (ADR-0321). A `fed_request` field that holds bytes
    a remote server chose (`target`, header `v`, `body`) goes through `append_lossless_member`, which sends
@@ -48,7 +48,10 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    same. An authenticated frame whose payload does not parse (an integer past 2^53 - 1, bad UTF-8) is logged
    and dropped by `reader_loop`, and the waiter of a response is released through `read_frame_routing`,
    which reads `{"id":N,"reply_to":M` from the front: keep that prefix first in `build_frame`. Only
-   `read_frame` failing (length, short read, AEAD authentication) marks the channel unhealthy (ADR-0322).
+   `read_frame` failing (length, short read, AEAD authentication) marks the channel unhealthy (ADR-0322), and on the
+   sending side only a `write_frame` that fails after encryption (ADR-0734): the cipher has moved on, so a frame not
+   written whole breaks the stream for good. `end_after_failed_write` marks the channel unhealthy and shuts the socket
+   down; a refusal before encryption (over the cap, no memory) keeps the channel. Never ignore a failed write again.
    Never put a clamp for one value in place of this; the next value has the same effect.
 
 7. **A pending request carries main-owned identity and EDU digests, never worker JSON (FED-12, F-74, ADR-0142,

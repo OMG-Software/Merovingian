@@ -345,14 +345,31 @@ auto IpcChannel::write_frame(std::string_view plaintext) noexcept -> bool
         return false;
     }
 
+    // ADR-0734: from here on the stream cipher has advanced. A frame that is not written whole leaves the peer's
+    // decryptor one frame behind and every later frame unreadable, so a failure ends the channel: it is marked
+    // unhealthy (the supervisor replaces an unhealthy worker, ADR-0323) and both directions are shut down, which wakes
+    // the reader and with it every waiter. Nothing that failed before this point changed the stream, and it keeps the
+    // channel.
     if (!cipher_->encrypt(std::span<uint8_t const>{reinterpret_cast<uint8_t const*>(plaintext.data()), pt_len},
                           std::span<uint8_t>{ct.data(), ct_len}))
     {
+        end_after_failed_write();
         return false;
     }
 
     auto const net_len = htonl(ct_len);
-    return raw_send_exact(&net_len, 4U) && raw_send_exact(ct.data(), ct_len);
+    if (!raw_send_exact(&net_len, 4U) || !raw_send_exact(ct.data(), ct_len))
+    {
+        end_after_failed_write();
+        return false;
+    }
+    return true;
+}
+
+auto IpcChannel::end_after_failed_write() noexcept -> void
+{
+    healthy_.store(false);
+    std::ignore = ::shutdown(fd_.get(), SHUT_RDWR);
 }
 
 auto IpcChannel::read_frame() noexcept -> std::optional<std::string>

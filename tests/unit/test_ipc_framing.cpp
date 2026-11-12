@@ -135,9 +135,16 @@ struct ChannelPair final
     return result;
 }
 
-[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U) -> ChannelPair
+// client_socket, when given, receives a second descriptor of the client's socket, for a test that shuts it down.
+[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U,
+                                     merovingian::core::FileDescriptor* client_socket = nullptr) -> ChannelPair
 {
     auto [server_fd, client_fd] = make_socketpair();
+    if (client_socket != nullptr)
+    {
+        *client_socket = merovingian::core::FileDescriptor{::fcntl(client_fd.get(), F_DUPFD_CLOEXEC, 0)};
+        REQUIRE(client_socket->valid());
+    }
 
     auto pair = ChannelPair{};
     auto server_ex = std::exception_ptr{};
@@ -1967,5 +1974,54 @@ SCENARIO("a pending request admits each relay permit of its verified request onc
         pair.client->send_response(parent, R"({"type":"fed_response"})");
         REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
         std::ignore = reply.get();
+    }
+}
+
+// ADR-0734: a frame written in part leaves the peer's decryptor behind, so every later frame is unreadable. Before,
+// send_response ignored the failure and the channel still reported healthy, so the supervisor kept a broken worker.
+SCENARIO("A frame that cannot be written ends the channel", "[ipc][channel][c44][write-failure]")
+{
+    GIVEN("a channel pair whose client socket no longer reads")
+    {
+        auto client_socket = merovingian::core::FileDescriptor{};
+        auto pair = make_channel_pair(0U, &client_socket);
+        REQUIRE(::shutdown(client_socket.get(), SHUT_RD) == 0);
+        REQUIRE(pair.server->healthy());
+
+        WHEN("the server sends a response to it")
+        {
+            pair.server->send_response(1U, R"({"type":"reply","ok":true})");
+
+            THEN("the server's channel is no longer healthy")
+            {
+                CHECK_FALSE(pair.server->healthy());
+            }
+        }
+        WHEN("the server sends a notification to it")
+        {
+            auto const sent = pair.server->send_notification(R"({"type":"room_sync","room_id":"!r:example.org"})");
+
+            THEN("the send fails and the server's channel is no longer healthy")
+            {
+                CHECK_FALSE(sent);
+                CHECK_FALSE(pair.server->healthy());
+            }
+        }
+    }
+    GIVEN("a channel pair with a 64 KiB frame cap")
+    {
+        auto pair = make_channel_pair(64U * 1024U);
+
+        WHEN("the server is asked to send a notification over the cap, which is never encrypted")
+        {
+            auto const sent =
+                pair.server->send_notification(R"({"type":"big","pad":")" + std::string(128U * 1024U, 'x') + R"("})");
+
+            THEN("the send fails but the channel stays healthy")
+            {
+                CHECK_FALSE(sent);
+                CHECK(pair.server->healthy());
+            }
+        }
     }
 }

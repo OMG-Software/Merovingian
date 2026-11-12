@@ -471,6 +471,12 @@ separate process on the same host:
   worker's provider refuses every request (#317, ADR-0078), so a compromised
   worker has neither the key nor a signing oracle. (The outbound `Authorization` header that does cross IPC is our own
   request-bound X-Matrix signature, not a reusable peer credential.)
+* **A frame that cannot be written ends the channel** (1.0.1, C44,
+  [ADR-0734](adr/0734-a-failed-ipc-write-ends-the-channel.md)): once a frame is
+  encrypted the stream has moved on, so a write that fails part way (the 30 s
+  send timeout, a peer that stopped reading) marks the channel unhealthy and
+  shuts the socket down, and the supervisor replaces the worker (ADR-0323). A
+  frame refused before encryption (over the cap) keeps the channel.
 * **No filesystem socket path**: the transport is an `AF_UNIX` socket pair
   with no pathname in the filesystem namespace, so there is no socket file
   to impersonate or intercept via filesystem access.
