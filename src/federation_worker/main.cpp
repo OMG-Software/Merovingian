@@ -89,6 +89,15 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
+    // ADR-0731: the worker must not share the terminal of the shell that started the server. Main spawns it in a
+    // session of its own where the C library has POSIX_SPAWN_SETSID; elsewhere the worker leaves main's session here,
+    // before it reads anything a remote server sent. A new session has no controlling terminal.
+    if (::getsid(0) != ::getpid() && ::setsid() < 0)
+    {
+        std::cerr << "merovingian-fed-worker: cannot start a session of its own: " << std::strerror(errno) << '\n';
+        return 1;
+    }
+
     auto const args = merovingian::federation_worker::parse_worker_args(argc, argv);
     if (args.error.has_value())
     {

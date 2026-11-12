@@ -73,6 +73,49 @@ namespace
 
     constexpr auto worker_fixed_fds = std::array<int, 3>{kWorkerIpcFd, kWorkerIpcKeyFd, kWorkerDbUriFd};
 
+    // The spawn attributes of one worker start. ADR-0731: the worker starts in a session of its own, so it has no
+    // controlling terminal, wherever the C library offers POSIX_SPAWN_SETSID; merovingian-fed-worker calls setsid()
+    // itself first where it does not, so a worker never shares the terminal of the shell that started the server.
+    class WorkerSpawnAttributes
+    {
+    public:
+        WorkerSpawnAttributes()
+        {
+            if (auto const rc = ::posix_spawnattr_init(&m_attributes); rc != 0)
+            {
+                throw std::runtime_error{"posix_spawnattr_init: " + std::string{::strerror(rc)}};
+            }
+#ifdef POSIX_SPAWN_SETSID
+            if (auto const rc = ::posix_spawnattr_setflags(&m_attributes, static_cast<short>(POSIX_SPAWN_SETSID));
+                rc != 0)
+            {
+                std::ignore = ::posix_spawnattr_destroy(&m_attributes);
+                throw std::runtime_error{"posix_spawnattr_setflags(POSIX_SPAWN_SETSID): " +
+                                         std::string{::strerror(rc)}};
+            }
+#endif
+        }
+
+        ~WorkerSpawnAttributes() noexcept
+        {
+            std::ignore = ::posix_spawnattr_destroy(&m_attributes);
+        }
+
+        WorkerSpawnAttributes(WorkerSpawnAttributes const&) = delete;
+        auto operator=(WorkerSpawnAttributes const&) -> WorkerSpawnAttributes& = delete;
+        WorkerSpawnAttributes(WorkerSpawnAttributes&&) = delete;
+        auto operator=(WorkerSpawnAttributes&&) -> WorkerSpawnAttributes& = delete;
+
+        // The attributes, valid while this object lives.
+        [[nodiscard]] auto get() noexcept -> posix_spawnattr_t*
+        {
+            return &m_attributes;
+        }
+
+    private:
+        posix_spawnattr_t m_attributes{};
+    };
+
 } // namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
@@ -420,6 +463,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
     argv.push_back(nullptr);
 
+    auto spawn_attributes = WorkerSpawnAttributes{};
     posix_spawn_file_actions_t file_actions{};
     ::posix_spawn_file_actions_init(&file_actions);
     // Close the server-side fd in the child first.  The socketpair may have
@@ -439,16 +483,25 @@ auto WorkerSupervisor::spawn_and_connect() -> void
         // numbers, so this dup2 cannot collide with either of the other two.
         ::posix_spawn_file_actions_adddup2(&file_actions, db_uri_read_fd.get(), kWorkerDbUriFd);
     }
+    // ADR-0731: the worker never reads stdin, and main's may be the operator's terminal. This action comes last, so
+    // any source the actions above take from fd 0 is placed before fd 0 is replaced. stdout and stderr stay: logs.
+    if (auto const open_rc = ::posix_spawn_file_actions_addopen(&file_actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        open_rc != 0)
+    {
+        ::posix_spawn_file_actions_destroy(&file_actions);
+        throw std::runtime_error{"posix_spawn_file_actions_addopen(/dev/null): " + std::string{::strerror(open_rc)}};
+    }
 
     // Minimal allowlist environment: PATH only (issue #330). The strings and
     // pointer array live for the duration of the posix_spawn call below.
     auto const worker_env = homeserver::build_minimal_worker_env();
 
     pid_t pid{-1};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
     auto const rc =
-        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv.data()),
-                      const_cast<char* const*>(worker_env.argv.data()));
+        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, spawn_attributes.get(),
+                      const_cast<char* const*>(argv.data()), const_cast<char* const*>(worker_env.argv.data()));
+    // NOLINTEND(cppcoreguidelines-pro-type-const-cast)
     ::posix_spawn_file_actions_destroy(&file_actions);
 
     if (rc != 0)

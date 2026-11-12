@@ -595,6 +595,13 @@ namespace
             {
                 ::_exit(127); // Never execute a worker with inherited diagnostic access.
             }
+            // ADR-0731: a session of its own, so the decoder has no controlling terminal even when the server was
+            // started from a shell. setsid() is async-signal-safe; a fresh fork is never a group leader, so it fails
+            // only if something is badly wrong, and then nothing is decoded.
+            if (::setsid() < 0)
+            {
+                ::_exit(127);
+            }
 
             // The parent write-end and child read-end are not needed after dup2.
             // Close them explicitly before the sweep so the sweep does not need to

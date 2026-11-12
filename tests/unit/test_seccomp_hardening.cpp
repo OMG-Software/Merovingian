@@ -24,6 +24,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <tuple>
 #include <utility>
 
@@ -1095,6 +1096,122 @@ SCENARIO("The decoder and worker seccomp filters refuse every command that arran
                 REQUIRE(child_survives(FilterProfile::worker, [](int fd) {
                     return ioctl_call(fd, FIONREAD);
                 }));
+            }
+        }
+    }
+}
+
+// Audit run-3, sandbox.worker-seccomp.ioctl-denylist-admits-tiocsti-on-inherited-terminal (ADR-0731). A server started
+// from a shell hands its worker the shell's terminal. These run the real filter in a forked child whose controlling
+// terminal is a pseudo-terminal it holds open, the one case where the kernel would let TIOCSTI through.
+namespace
+{
+enum class TerminalCallOutcome
+{
+    survived,
+    killed,
+    no_terminal,
+};
+
+// The exit code of a child that could not make a pseudo-terminal its controlling terminal.
+constexpr auto no_terminal_exit = 40;
+
+// Forks a child that opens a pseudo-terminal pair, starts a session and makes the slave its controlling terminal, then
+// installs `profile` and makes ioctl(slave, request, &byte), the call TIOCSTI takes. Reports whether seccomp killed it.
+[[nodiscard]] auto terminal_ioctl_outcome(FilterProfile profile, unsigned long request) -> TerminalCallOutcome
+{
+    auto const pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        auto const master = ::posix_openpt(O_RDWR | O_NOCTTY);
+        auto slave_name = std::array<char, 128>{};
+        if (master < 0 || ::grantpt(master) != 0 || ::unlockpt(master) != 0 ||
+            ::ptsname_r(master, slave_name.data(), slave_name.size()) != 0 || ::setsid() < 0)
+        {
+            ::_exit(no_terminal_exit);
+        }
+        auto const slave = ::open(slave_name.data(), O_RDWR | O_NOCTTY);
+        if (slave < 0 || ::ioctl(slave, TIOCSCTTY, 0) != 0)
+        {
+            ::_exit(no_terminal_exit);
+        }
+        auto installed = true;
+        if (profile == FilterProfile::worker)
+        {
+            installed = merovingian::platform::apply_worker_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS);
+        }
+        else if (profile == FilterProfile::decoder)
+        {
+            installed = merovingian::platform::apply_decoder_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS);
+        }
+        if (!installed)
+        {
+            ::syscall(__NR_exit_group, 20);
+            __builtin_unreachable();
+        }
+        auto byte = char{'x'};
+        std::ignore = ::syscall(__NR_ioctl, slave, request, &byte);
+        ::syscall(__NR_exit_group, 0);
+        __builtin_unreachable();
+    }
+    auto status = int{};
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    if (WIFSIGNALED(status))
+    {
+        REQUIRE(WTERMSIG(status) == SIGSYS);
+        return TerminalCallOutcome::killed;
+    }
+    REQUIRE(WIFEXITED(status));
+    if (WEXITSTATUS(status) == no_terminal_exit)
+    {
+        return TerminalCallOutcome::no_terminal;
+    }
+    REQUIRE(WEXITSTATUS(status) == 0);
+    return TerminalCallOutcome::survived;
+}
+} // namespace
+
+SCENARIO("The worker and decoder seccomp filters refuse to push input into a terminal",
+         "[platform][seccomp][linux][terminal_injection]")
+{
+    GIVEN("a forked child whose controlling terminal is a pseudo-terminal it holds open")
+    {
+        if (terminal_ioctl_outcome(FilterProfile::none, TCGETS) == TerminalCallOutcome::no_terminal)
+        {
+            SKIP("no pseudo-terminal can be opened here");
+        }
+
+        WHEN("no filter is installed")
+        {
+            THEN("TIOCSTI and TIOCLINUX reach the kernel, so a kill below is the filter's doing")
+            {
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::none, TIOCSTI) == TerminalCallOutcome::survived);
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::none, TIOCLINUX) == TerminalCallOutcome::survived);
+            }
+        }
+
+        WHEN("the federation worker filter is installed")
+        {
+            THEN("pushing a byte into the terminal's input and the console ioctl are killed")
+            {
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::worker, TIOCSTI) == TerminalCallOutcome::killed);
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::worker, TIOCLINUX) == TerminalCallOutcome::killed);
+            }
+
+            THEN("reading the terminal's settings, which stdio probes, is still allowed")
+            {
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::worker, TCGETS) == TerminalCallOutcome::survived);
+            }
+        }
+
+        WHEN("the decoder filter is installed")
+        {
+            THEN("both are killed by its allowlist")
+            {
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::decoder, TIOCSTI) == TerminalCallOutcome::killed);
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::decoder, TIOCLINUX) == TerminalCallOutcome::killed);
+                REQUIRE(terminal_ioctl_outcome(FilterProfile::decoder, TCGETS) == TerminalCallOutcome::survived);
             }
         }
     }

@@ -644,6 +644,14 @@ threat it closes; the controls above are the standing defences these reinforce.
   main's uid, so the seccomp argument check is the only barrier on kernels before
   Landlock ABI 6. See
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
+- **A compromised worker could type into the terminal that started the server (run-3 audit NV-1,
+  closed in 1.0.1):** the worker inherited main's stdin and session, and its profile allowed
+  `TIOCSTI`. Started from a shell, on a kernel that still honours legacy `TIOCSTI`, a taken-over
+  worker could queue a command the shell ran when the server stopped. The worker now starts in a
+  session of its own with `/dev/null` for stdin, the decoder's child calls `setsid()`, and both
+  profiles kill `TIOCSTI` and `TIOCLINUX`. Residual: stdout and stderr may still be that terminal,
+  and the commands that change its settings stay allowed; they cannot run anything. See
+  [ADR-0731](adr/0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md).
 - **A compromised worker could open any socket family (ISO-8,
   2026-09-29 security audit, closed):** `socket()` and `socketpair()` were
   unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker

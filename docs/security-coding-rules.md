@@ -127,6 +127,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   were missing `SOCK_CLOEXEC` until the fix landed; see `docs/threat-model.md`).
   Source: `src/net/AGENTS.md`.
 
+- **A spawned worker never holds a terminal, and no sandbox profile allows `TIOCSTI` or `TIOCLINUX`.**
+  Why: a server started from a shell would otherwise hand the worker that shell's terminal, and a taken-over worker
+  could queue keystrokes the shell runs when the server stops, outside every sandbox. The federation worker starts in
+  a session of its own with `/dev/null` for stdin, the decoder's child calls `setsid()`, and both seccomp profiles kill
+  the two commands, so neither layer depends on the kernel's `legacy_tiocsti` setting (ADR-0731).
+  Source: `src/platform/AGENTS.md`, `src/federation_worker/AGENTS.md`.
+
 - **No unchecked narrowing conversions.**
   Why: an implicit narrowing conversion (e.g. `size_t` → `int`) can silently truncate a
   value an attacker controls (a length, a count, an offset), turning a bounds check upstream

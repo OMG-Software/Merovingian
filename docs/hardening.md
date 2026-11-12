@@ -230,6 +230,23 @@ corrects ADR-0053). `tests/unit/test_seccomp_hardening.cpp` installs the real
 filters in forked children and checks each command is killed or allowed. The
 parent also reads at most a bounded thumbnail response whatever
 `max_decode_output_bytes` is (ADR-0641).
+
+**No terminal for a worker (1.0.1).** A server started from a shell (the
+bootstrap-admin step, a debug run) used to hand the federation worker the
+shell's terminal as stdin and as its controlling terminal, and the worker
+profile allowed `TIOCSTI`, which queues bytes the shell runs when the server
+stops. Kernels before Linux 6.2, or with `dev.tty.legacy_tiocsti=1`, honour it.
+Now the worker profile also kills `TIOCSTI` and `TIOCLINUX` (the decoder's
+allowlist already refused both), the supervisor spawns the worker with
+`POSIX_SPAWN_SETSID` and `/dev/null` on stdin, `merovingian-fed-worker` calls
+`setsid()` itself first where the C library lacks that flag, and the decoder's
+forked child calls `setsid()` before `exec`. stdout and stderr are kept for
+logs; the commands that change a terminal's settings (`TCSETS`, `TIOCSWINSZ`)
+stay allowed, which can garble it but run nothing (ADR-0731).
+`[terminal_injection]` in `tests/unit/test_seccomp_hardening.cpp` runs both
+filters against a pseudo-terminal that is the child's controlling terminal, and
+`[worker_session]` in `tests/unit/test_worker_supervisor.cpp` checks what a
+spawned worker was given.
 * These checks run in `src/main.cpp` before any listener is created.
 
 ### Signal handling and graceful shutdown
@@ -351,7 +368,10 @@ pair returns fds 0 and 3 because main runs with stdin closed),
 fd 5 with `F_DUPFD_CLOEXEC`. A source already on its own target would make
 the `adddup2` a same-fd `dup2`, which some libcs treat as a no-op that leaves
 `FD_CLOEXEC` set, and the worker would start without that fd; a source on
-another target would be overwritten before its own `dup2` ran.
+another target would be overwritten before its own `dup2` ran. The last file
+action opens `/dev/null` on the worker's stdin, and the spawn asks for a
+session of its own (`POSIX_SPAWN_SETSID`), so the worker never holds the
+terminal of the shell that started the server (ADR-0731).
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:

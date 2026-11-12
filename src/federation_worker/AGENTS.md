@@ -141,7 +141,9 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 ## Hardening
 
-`main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure). No thread may exist
+`main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure), then leaves main's session with
+`setsid()` when the supervisor's `POSIX_SPAWN_SETSID` has not already done so, and exits 1 if it cannot: the worker
+never holds the terminal of the shell that started the server, and its stdin is `/dev/null` (ADR-0731). No thread may exist
 before the two calls below (ISO-1, [ADR-0082](../../docs/adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):
 the logger writes synchronously until `main.cpp` calls `SingleLog::instance().start_writers()`, which it
 does only after both, so the logger's writer threads inherit the Landlock ruleset and the seccomp filter.

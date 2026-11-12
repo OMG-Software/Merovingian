@@ -561,3 +561,4 @@
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
+* [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)

@@ -4,6 +4,19 @@ Fixes for the findings of the security audit of the 1.0.0 release candidate (run
 confirmed findings (9 high, 30 medium, 9 low, 1 informational), plus in-repository hardening for two of the four
 findings that needed validation.
 
+### A worker cannot type into the terminal that started the server (ADR-0731)
+
+* A server started from a shell (the bootstrap-admin step, a debug run) gave the federation worker that shell's
+  terminal as stdin and controlling terminal, and the worker's seccomp profile allowed `TIOCSTI`. On a kernel that
+  still honours legacy `TIOCSTI`, a taken-over worker could queue a command the shell ran after the server stopped
+  (run-3 needs-validation finding NV-1, `sandbox.worker-seccomp.ioctl-denylist-admits-tiocsti-on-inherited-terminal`).
+* The worker profile now kills `TIOCSTI` and `TIOCLINUX`; the decoder's allowlist already refused both.
+* The supervisor spawns the worker with `POSIX_SPAWN_SETSID` and `/dev/null` on stdin. `merovingian-fed-worker` calls
+  `setsid()` itself where the C library lacks the flag and refuses to start if it cannot. The thumbnail decoder's child
+  calls `setsid()` before `exec`. stdout and stderr still carry the logs.
+* Tests: `[terminal_injection]` runs both filters against a pseudo-terminal that is the child's controlling terminal;
+  `[worker_session]` checks that a spawned worker leads its own session with no terminal and `/dev/null` for stdin.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/TempDirectory.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/homeserver/MinimalWorkerEnv.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
 
@@ -11,11 +13,16 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -344,6 +351,77 @@ SCENARIO("The worker key fd is distinct from the IPC fd and the standard streams
         }
     }
 }
+
+#ifdef __linux__
+// Audit run-3, sandbox.worker-seccomp.ioctl-denylist-admits-tiocsti-on-inherited-terminal (ADR-0731). A server started
+// from a shell must not hand its worker the shell's terminal: the worker gets its own session, so no controlling
+// terminal, and /dev/null for stdin. The stand-in worker is a script that records what it was given; the config path
+// argument names the file it writes. The test points its own stdin at a pipe first, so an inherited stdin shows.
+SCENARIO("A spawned worker has its own session, no controlling terminal and /dev/null for stdin",
+         "[federation][worker-supervisor][security][worker_session]")
+{
+    GIVEN("a stand-in worker that reports its stdin, process ID, session and terminal, and a test stdin on a pipe")
+    {
+        auto const dir =
+            merovingian::tests::temporary_directory() / ("merovingian-worker-session-" + std::to_string(::getpid()));
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        auto const script = dir / "probe-worker";
+        auto const report = dir / "report";
+        {
+            auto out = std::ofstream{script};
+            out << "#!/bin/sh\n"
+                   "{ readlink /proc/$$/fd/0; echo $$; cut -d' ' -f6,7 /proc/$$/stat; } > \"$2.part\" && "
+                   "mv \"$2.part\" \"$2\"\n";
+        }
+        std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+
+        auto stdin_pipe = std::array<int, 2>{-1, -1};
+        REQUIRE(::pipe2(stdin_pipe.data(), O_CLOEXEC) == 0);
+        auto const pipe_read = merovingian::core::FileDescriptor{stdin_pipe[0]};
+        auto const pipe_write = merovingian::core::FileDescriptor{stdin_pipe[1]};
+        auto const saved_stdin = merovingian::core::FileDescriptor{::fcntl(STDIN_FILENO, F_DUPFD_CLOEXEC, 10)};
+        REQUIRE(saved_stdin.get() >= 0);
+
+        WHEN("the supervisor spawns it")
+        {
+            REQUIRE(::dup2(pipe_read.get(), STDIN_FILENO) == STDIN_FILENO);
+            auto key = std::array<std::uint8_t, 32>{};
+            key.fill(0x42U);
+            auto lines = std::vector<std::string>{};
+            {
+                auto supervisor = WorkerSupervisor{script.string(), report.string(), 5U, 0U,
+                                                   merovingian::core::SecretBuffer{std::span<std::uint8_t const>{key}}};
+                // The stand-in speaks no IPC: it writes its report, then exits, and the handshake fails on the
+                // closed socket. The report, written before the exit, is what this scenario checks.
+                CHECK_THROWS(supervisor.start());
+                // Wait for the report, bounded by a count of polls; the outcome, not the time, is asserted.
+                for (auto polls = 0; polls < 1000 && !std::filesystem::exists(report); ++polls)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                }
+                supervisor.stop();
+            }
+            REQUIRE(::dup2(saved_stdin.get(), STDIN_FILENO) == STDIN_FILENO);
+            auto in = std::ifstream{report};
+            for (auto line = std::string{}; std::getline(in, line);)
+            {
+                lines.push_back(line);
+            }
+            std::filesystem::remove_all(dir);
+
+            THEN("its stdin is /dev/null and it leads a session of its own with no controlling terminal")
+            {
+                REQUIRE(lines.size() == 3U);
+                CHECK(lines[0] == "/dev/null");
+                // Fields 6 and 7 of /proc/<pid>/stat: the session ID, equal to the process ID for a session leader,
+                // and tty_nr, 0 for no controlling terminal.
+                CHECK(lines[2] == lines[1] + " 0");
+            }
+        }
+    }
+}
+#endif
 
 SCENARIO("The worker key pipe refuses empty key material", "[federation][worker-supervisor][security][worker_key_fd]")
 {
