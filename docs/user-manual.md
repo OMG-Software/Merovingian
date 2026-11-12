@@ -660,7 +660,7 @@ gateway hosts have all answered promptly within the last hour, and one gateway h
 carry at most an eighth of the batches in flight; a batch over either is dropped like one
 over the whole limit, with the reason in the `scope` of `push.delivery.dropped`, so
 gateways that never answer cannot hold every slot. A gateway never reached since the
-server started shares the other three quarters until it answers once. ADR-0634.
+A gateway is proved by an answer within an eighth of `total_timeout_seconds`; one that answers more slowly (but within half) stops counting as reachable without being counted as a failed delivery, and while the reserve is in use one gateway host carries at most a thirty-second of the budget. ADR-0634, ADR-0721.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each

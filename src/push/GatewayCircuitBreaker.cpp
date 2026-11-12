@@ -85,6 +85,14 @@ auto GatewayCircuitBreaker::record(std::string_view host, bool success, std::chr
     }
 }
 
+auto GatewayCircuitBreaker::record_unproven_answer(std::string_view host) -> void
+{
+    auto const lock = std::lock_guard{mutex_};
+    auto const key = std::string{host};
+    std::ignore = hosts_.erase(key);
+    std::ignore = reachable_.erase(key);
+}
+
 auto GatewayCircuitBreaker::reachable_recently(std::string_view host, std::chrono::steady_clock::time_point now,
                                                GatewayCircuitBreakerPolicy const& policy) const -> bool
 {

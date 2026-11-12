@@ -28,6 +28,11 @@ auto PushBatchAdmission::host_cap(std::size_t max_in_flight) noexcept -> std::si
     return std::max(max_in_flight / 8U, std::min(max_in_flight, std::size_t{2U}));
 }
 
+auto PushBatchAdmission::reserve_host_cap(std::size_t max_in_flight) noexcept -> std::size_t
+{
+    return std::max(host_cap(max_in_flight) / 4U, std::size_t{1U});
+}
+
 auto PushBatchAdmission::admit(std::size_t in_flight, std::size_t max_in_flight, std::span<std::string const> hosts,
                                bool all_hosts_reachable) -> Outcome
 {
@@ -39,7 +44,10 @@ auto PushBatchAdmission::admit(std::size_t in_flight, std::size_t max_in_flight,
     {
         return {std::nullopt, PushBatchRefusal::unproven_share};
     }
-    auto slot = hosts_.try_acquire(hosts, host_cap(max_in_flight));
+    // C48: past the unreserved share a host may carry only a quarter of its usual share, so a few hosts that answer
+    // promptly once cannot take all of the reserve in one burst before their slow answers revoke the proof.
+    auto const in_reserve = in_flight >= global_cap(max_in_flight, false);
+    auto slot = hosts_.try_acquire(hosts, in_reserve ? reserve_host_cap(max_in_flight) : host_cap(max_in_flight));
     if (!slot.has_value())
     {
         return {std::nullopt, PushBatchRefusal::gateway_host};

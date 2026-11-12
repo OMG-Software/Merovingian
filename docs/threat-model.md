@@ -2590,6 +2590,11 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
   most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
   never-seen dead destinations counts as live until each has failed once. Destinations that answer slowly but inside the limit hold at most half of it between them and go after the others (ADR-0720); a first burst to never-seen slow names still fills the queue until each has answered once.
+- **Push delivery slots held by gateways the pushers' owners chose.** Gateways answering just inside the prompt
+  threshold held the reserved quarter of the delivery budget. **Mitigation:** only an answer within an eighth of the
+  timeout proves a host, a slower one revokes the proof, and the reserve limits a host to a quarter of its usual share
+  (ADR-0721). Residual risk: many host keys answering promptly some of the time can still take the reserve; the
+  pusher caps per user bound the keys.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create

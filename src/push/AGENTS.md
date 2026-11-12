@@ -61,7 +61,7 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
    recipient batch starts: a quarter of `max_in_flight_deliveries` is kept for batches whose gateway hosts have all
    answered promptly within the hour (`GatewayCircuitBreaker::reachable_recently`), and one host carries at most an eighth
    of the budget; a refusal is a drop, with its reason in the `scope` of `push.delivery.dropped`. The delivery caps and the
-   breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them.
+   Only an answer within an eighth of the total timeout proves a host (`GatewayCircuitOutcome::reachable`); a slower answer that is within half is `unproven_answer`, which revokes the proof without counting as a failure, and past the unreserved share a host carries at most a quarter of the per-host cap (ADR-0721). breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.
 11. **Glob matching stays linear and never uses `std::regex`** (ADR-0175). Evaluation runs per

@@ -162,8 +162,16 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
             },
                      observability::LogEventSeverity::warning);
         }
-        runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
-                                              std::chrono::steady_clock::now(), breaker_policy);
+        if (outcome == push::GatewayCircuitOutcome::unproven_answer)
+        {
+            // C48: answered, but not promptly: no failure, and no claim on the delivery budget's reserve.
+            runtime.push_gateway_breaker_->record_unproven_answer(*host);
+        }
+        else
+        {
+            runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
+                                                  std::chrono::steady_clock::now(), breaker_policy);
+        }
     }
     // Spec: "Homeservers must cease sending notification requests for these pushkeys and remove the
     // associated pushers." That includes the retries already queued for the pushkey.

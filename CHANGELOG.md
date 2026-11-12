@@ -45,6 +45,13 @@ findings that needed validation.
   kept), and their transactions are sent only when no other destination has one ready. Order per destination is
   unchanged.
 
+### A push gateway that answers slowly no longer holds the delivery reserve (ADR-0721)
+
+* A push gateway is now treated as reachable only if it answers within an eighth of the delivery timeout (3.75 s by
+  default). An answer between that and half the timeout clears the host's failures but removes its proof, so it
+  cannot use the quarter of `server.push.max_in_flight_deliveries` kept for prompt gateways. While that reserve is in
+  use, one gateway host may carry only a quarter of its usual share.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

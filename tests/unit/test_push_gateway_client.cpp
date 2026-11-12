@@ -496,8 +496,19 @@ SCENARIO("an answer slower than half the total timeout counts against the gatewa
             {
                 CHECK(merovingian::push::gateway_circuit_outcome(answered, 100ms, 30s) ==
                       merovingian::push::GatewayCircuitOutcome::reachable);
-                CHECK(merovingian::push::gateway_circuit_outcome(answered, 15000ms, 30s) ==
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 3750ms, 30s) ==
                       merovingian::push::GatewayCircuitOutcome::reachable);
+            }
+        }
+
+        WHEN("it answered after more than an eighth of the timeout but not more than half")
+        {
+            THEN("the answer is unproven: not a failure, but not prompt either (C48)")
+            {
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 3751ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::unproven_answer);
+                CHECK(merovingian::push::gateway_circuit_outcome(answered, 15000ms, 30s) ==
+                      merovingian::push::GatewayCircuitOutcome::unproven_answer);
             }
         }
 
