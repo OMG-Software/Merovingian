@@ -412,8 +412,12 @@ jobs:
 
           Verification:
 
-          - SLSA provenance: `gh attestation verify <tarball or package> --repo OMG-Software/Merovingian`
-          - GPG signature: `gpg --verify <file>.asc <file>` (import the maintainer key from `docs/release-process.md`)
+          - GPG signature, the primary check: `gpg --verify <file>.asc <file>` (import the maintainer key from
+            `docs/release-process.md`)
+          - SLSA provenance of a tarball: `gh attestation verify <tarball> --repo OMG-Software/Merovingian --signer-workflow OMG-Software/Merovingian/.github/workflows/release.yml --source-ref refs/tags/v<version>`
+          - SLSA provenance of a package: `gh attestation verify <package> --repo OMG-Software/Merovingian --signer-workflow OMG-Software/Merovingian/.github/workflows/packages.yml --source-ref refs/tags/v<version>`
+          - Keep both `--signer-workflow` and `--source-ref`: with `--repo` alone the check accepts an attestation
+            made on any branch of the repository
 
           ## Complement
 

@@ -17,6 +17,19 @@ findings that needed validation.
 * Tests: `[terminal_injection]` runs both filters against a pseudo-terminal that is the child's controlling terminal;
   `[worker_session]` checks that a spawned worker leads its own session with no terminal and `/dev/null` for stdin.
 
+### The published provenance check pins the release workflow and the ref (ADR-0732)
+
+* The release notes and `docs/release-process.md` gave `gh attestation verify <file> --repo OMG-Software/Merovingian`,
+  which accepts an attestation made by any workflow on any ref of the repository, including `packages.yml` runs on
+  branches and pull requests (run-3 needs-validation finding NV-2,
+  `supply-chain.release-verification.attestation-recipe-accepts-any-workflow-and-ref`).
+* Every published recipe now names `--signer-workflow` and `--source-ref`: the tarball `release.yml` on
+  `refs/tags/v<version>`, a package `packages.yml` on the same tag, and a file of the rolling `latest` release
+  `packages.yml` on `refs/heads/main`. The release notes fill the version in. The GPG signature is named as the
+  primary check.
+* `AttestationRecipeTests` in `tests/tooling/test_release_workflow.py` fails on any recipe in a Markdown or workflow
+  file that lacks either flag or names the wrong workflow.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

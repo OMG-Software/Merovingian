@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -320,6 +321,89 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("release-evidence-freebsd-", workflow)
         self.assertIn("## Package checksums", workflow)
         self.assertIn("## Release evidence", workflow)
+
+
+# Run-3 audit, supply-chain.release-verification.attestation-recipe-accepts-any-workflow-and-ref (ADR-0732). With
+# `--repo` alone, `gh attestation verify` accepts an attestation made by any workflow on any ref of the repository,
+# and packages.yml attests on every branch it runs on. Every published recipe therefore names the signing workflow
+# and the ref, as scripts/run_complement.py does.
+REPOSITORY = "OMG-Software/Merovingian"
+RECIPE = re.compile(r"gh attestation verify (?P<arguments>[^`\n]+)")
+SIGNER = re.compile(r"--signer-workflow " + re.escape(REPOSITORY) + r"/\.github/workflows/(?P<workflow>release|packages)\.yml(?:\s|$)")
+SOURCE_REF = re.compile(r"--source-ref refs/(?:tags/v<version>|heads/main)(?:\s|$)")
+# Not scanned: history that records what was published then (ADRs, changelogs) and the vendored Matrix spec.
+SKIPPED_DIRECTORIES = {".git", ".worktrees", "subprojects", "node_modules", "adr", "matrix-v1.19-spec"}
+
+
+def recipe_texts() -> dict[Path, str]:
+    """Every Markdown and workflow file a reader is pointed to, with shell line continuations joined."""
+    texts = {}
+    for directory, subdirectories, files in os.walk(REPO_ROOT):
+        subdirectories[:] = [name for name in subdirectories
+                             if name not in SKIPPED_DIRECTORIES and not name.startswith("build")]
+        for name in files:
+            if not name.endswith((".md", ".yml", ".yaml")) or name.startswith("CHANGELOG"):
+                continue
+            path = Path(directory) / name
+            texts[path] = re.sub(r"\\\n\s*", " ", path.read_text(encoding="utf-8"))
+    return texts
+
+
+def recipe_problems(arguments: str) -> list[str]:
+    """What one recipe's arguments lack for the check to bind a release workflow and ref."""
+    problems = []
+    if f"--repo {REPOSITORY}" not in arguments:
+        problems.append("names no --repo")
+    signer = SIGNER.search(arguments)
+    if signer is None:
+        problems.append("does not pin --signer-workflow to release.yml or packages.yml")
+    if SOURCE_REF.search(arguments) is None:
+        problems.append("does not pin --source-ref to refs/tags/v<version> or refs/heads/main")
+    if signer is not None:
+        subject = arguments.split(" ", 1)[0]
+        if "tarball" in subject and signer.group("workflow") != "release":
+            problems.append("a release tarball is attested by release.yml")
+        if "package" in subject and signer.group("workflow") != "packages":
+            problems.append("a package is attested by packages.yml")
+    return problems
+
+
+class AttestationRecipeTests(unittest.TestCase):
+    def test_every_published_attestation_recipe_pins_the_signer_workflow_and_ref(self) -> None:
+        # GIVEN every document and workflow an operator reads.
+        texts = recipe_texts()
+
+        # WHEN each `gh attestation verify` command in them is read.
+        recipes = [(path, match.group("arguments").strip())
+                   for path, text in texts.items() for match in RECIPE.finditer(text)]
+
+        # THEN each names the repository, the workflow that signs that kind of file, and a release ref.
+        for path, arguments in recipes:
+            with self.subTest(file=str(path.relative_to(REPO_ROOT)), recipe=arguments):
+                self.assertEqual(recipe_problems(arguments), [])
+        # AND the release notes and the release guide are among them, so the check is not vacuous.
+        files = {path.relative_to(REPO_ROOT).as_posix() for path, _ in recipes}
+        self.assertIn(".github/workflows/release.yml", files)
+        self.assertIn("docs/release-process.md", files)
+        self.assertGreaterEqual(len(recipes), 5)
+
+    def test_the_recipe_check_refuses_an_unpinned_or_mismatched_recipe(self) -> None:
+        # GIVEN recipes that the published check must never take.
+        unpinned = f"<tarball> --repo {REPOSITORY}"
+        no_ref = f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml"
+        wrong_signer = (f"<package-file> --repo {REPOSITORY} --signer-workflow "
+                        f"{REPOSITORY}/.github/workflows/release.yml --source-ref refs/tags/v<version>")
+        any_branch = (f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml "
+                      "--source-ref refs/heads/codex/x")
+        pinned = (f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml "
+                  "--source-ref refs/tags/v<version>")
+
+        # WHEN each is judged THEN only the pinned one passes.
+        self.assertNotEqual(recipe_problems(unpinned), [])
+        self.assertNotEqual(recipe_problems(no_ref), [])
+        self.assertNotEqual(recipe_problems(wrong_signer), [])
+        self.assertNotEqual(recipe_problems(any_branch), [])
+        self.assertEqual(recipe_problems(pinned), [])
 
 
 if __name__ == "__main__":
