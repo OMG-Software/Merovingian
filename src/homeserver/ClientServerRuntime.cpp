@@ -16972,6 +16972,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to delete this alias");
         }
+        // Spec (Application Service API, "Namespaces"): an exclusive namespace "prevents humans and other application
+        // services from creating/deleting entities in that namespace". The creation paths enforce it; so does this one,
+        // for the creator, a room moderator and a server administrator alike (C40, ADR-0688). Only the owning
+        // appservice, recovered from its masquerade token as on creation, may delete.
+        if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                room_alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
+        }
         if (!database::delete_room_alias(rt.homeserver.database.persistent_store, room_alias))
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete room alias");

@@ -616,3 +616,4 @@
 * [0685 - A password reset address keeps one code per interval and a daily mail cap](0685-a-password-reset-address-keeps-one-code-per-interval-and-a-daily-mail-cap.md)
 * [0686 - Safety reports are judged from an in-memory index and limited per reporter](0686-safety-reports-are-judged-from-an-in-memory-index-and-limited-per-reporter.md)
 * [0687 - A policy rule change commits with its admin action and audit row](0687-a-policy-rule-change-commits-with-its-admin-action-and-audit-row.md)
+* [0688 - Deleting an alias in an exclusive appservice namespace is refused for everyone else](0688-deleting-an-alias-in-an-exclusive-appservice-namespace-is-refused-for-everyone-else.md)

@@ -439,3 +439,65 @@ SCENARIO("The aliases listing returns only the aliases of the room asked about",
         }
     }
 }
+
+// C40 (ADR-0688). Spec: Matrix Application Service API v1.19, "Namespaces": an exclusive namespace "prevents humans and
+// other application services from creating/deleting entities in that namespace".
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md
+SCENARIO("Only the owning application service deletes an alias in its exclusive namespace",
+         "[c40][directory][alias][appservice][exclusive]")
+{
+    GIVEN("a bridge with an exclusive alias namespace and a user who is the recorded creator of an alias in it")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-c40-alias-bridge.json";
+        auto const registration = write_bridge_registration(path);
+        auto started = merovingian::homeserver::start_client_server(caps_config(100U, 100U, registration));
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bridge_room = create_room(rt, as_token);
+        auto const reserved = alias_name("_alias_bridge_del", 0U);
+        auto const bridged = alias_name("_alias_bridge_own", 0U);
+        auto const ordinary = alias_name("plain", 0U);
+        // The alias was recorded for alice before the registration existed, so creation never refused it.
+        REQUIRE(merovingian::database::store_room_alias(rt.homeserver.database.persistent_store,
+                                                        {reserved, bridge_room, "@alice:example.org"}));
+        REQUIRE(put_alias(rt, as_token, bridged, bridge_room).status == 200U);
+        REQUIRE(put_alias(rt, alice, ordinary, create_room(rt, alice)).status == 200U);
+
+        WHEN("the user deletes the reserved alias")
+        {
+            auto const reply = call(rt, "DELETE", alias_path(reserved), alice);
+
+            THEN("it is refused with 400 M_EXCLUSIVE and the alias stays")
+            {
+                REQUIRE(reply.status == 400U);
+                REQUIRE(errcode_of(reply) == "M_EXCLUSIVE");
+                REQUIRE(alias_stored(rt, reserved));
+            }
+        }
+
+        WHEN("the owning bridge deletes its alias")
+        {
+            auto const reply = call(rt, "DELETE", alias_path(bridged), as_token);
+
+            THEN("it is deleted")
+            {
+                REQUIRE(reply.status == 200U);
+                REQUIRE_FALSE(alias_stored(rt, bridged));
+            }
+        }
+
+        WHEN("the user deletes an alias outside the namespace")
+        {
+            auto const reply = call(rt, "DELETE", alias_path(ordinary), alice);
+
+            THEN("it is deleted as before")
+            {
+                REQUIRE(reply.status == 200U);
+                REQUIRE_FALSE(alias_stored(rt, ordinary));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
