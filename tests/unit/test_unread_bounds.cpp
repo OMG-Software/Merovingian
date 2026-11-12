@@ -199,7 +199,7 @@ SCENARIO("read markers read the newest rows only", "[sync][unread][security][gat
         WHEN("the markers are read")
         {
             auto const before = store.sync_unread_rows_examined.value();
-            auto const markers = merovingian::sync::read_markers_for({}, store, room, alice);
+            auto const markers = merovingian::sync::read_markers_for(store, room, alice);
 
             THEN("the user's message reads its thread up to itself, and the walk stopped at the budget")
             {

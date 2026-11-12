@@ -484,6 +484,13 @@ struct PersistentStore final
     // Read receipts, local and federated. Write through store_receipt and
     // remove_receipt so the database row and this mirror stay in step.
     std::vector<PersistentReceipt> receipts{};
+    // Positions in `receipts` of each room's rows and of each (room, user)'s rows (ADR-0651), trusted as the other row
+    // indexes are (ADR-0603). Read through receipts_in_room and receipts_of_user_in_room, never by looping `receipts`;
+    // maintained by store_receipt and remove_receipt, rebuilt after hydration. `receipt_rows_examined` counts the
+    // rows those readers looked at.
+    RowGroupIndex receipt_room_index{};
+    RowGroupIndex receipt_user_room_index{};
+    ExaminedRows receipt_rows_examined{};
     // An erase moves the last row into the gap, so the vector has no meaningful order (ADR-0618).
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     // Positions in `to_device_messages` of each (user, device) queue and of each user's rows (ADR-0618), trusted as
@@ -1360,6 +1367,12 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // Removes the receipt with `receipt`'s key. False if there was none or the
 // delete could not be committed.
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool;
+// The receipt rows of one room, or of one user in one room, read through the receipt indexes (ADR-0651), in no
+// particular order. The pointers are valid until the next receipt write.
+[[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentReceipt const*>;
+[[nodiscard]] auto receipts_of_user_in_room(PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::vector<PersistentReceipt const*>;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
 // Queues every message, with the per-recipient age and count evictions of
 // `enqueue_to_device_message`, in ONE backend transaction: either all of them

@@ -501,6 +501,12 @@ value. Test fixtures that do not exercise persistence select it through
   `homeserver::max_inbound_receipt_entries`; at the cap the oldest receipt of a
   *remote* user is removed, never a local user's. Main only: the table is not in
   `federation_worker_table_allowlist`.
+  Rows are read through `receipt_room_index` and `receipt_user_room_index`
+  (`receipts_in_room`, `receipts_of_user_in_room`, counted in `receipt_rows_examined`), never by
+  looping the vector; the indexes follow the ADR-0603 trust rule and `rebuild_key_indexes`
+  rebuilds them on load. One user holds at most `max_threaded_receipt_rows_per_user_room`
+  (256) rows with a thread root as `thread_id` in one room; a new one is committed with the
+  delete of that user's own oldest (ADR-0651).
 - The v1 schema's media tables carry the upload names and pending uploads.
   - `media.upload_name` (`TEXT NOT NULL DEFAULT ''`, ADR-0211) is the upload's `filename`
     (or the remote server's `Content-Disposition` filename), served back in

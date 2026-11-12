@@ -5057,6 +5057,43 @@ namespace
                                           json_serialize(json_obj(std::move(content))), 0U});
     }
 
+    // The thread `event_id` of `room_id` belongs to, or nullopt when this server holds no such event there (ADR-0651).
+    [[nodiscard]] auto receipt_thread_of_event(database::PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::optional<std::string>
+    {
+        auto const event = store.events.find_in_room(room_id, event_id);
+        if (event == store.events.end())
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        {
+            return std::nullopt;
+        }
+        return sync::event_thread_id(store, *object);
+    }
+
+    // Whether `thread_id` names a thread root of `room_id` (an event in the main timeline) and the event `event_id`
+    // is that root or belongs to its thread (ADR-0651). An event this server does not hold in the room is related to
+    // nothing: the endpoint answers 400 for it.
+    [[nodiscard]] auto receipt_event_is_in_thread(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view event_id, std::string_view thread_id) -> bool
+    {
+        auto const root_thread = receipt_thread_of_event(store, room_id, thread_id);
+        if (!root_thread.has_value() || *root_thread != sync::main_thread_id)
+        {
+            return false;
+        }
+        if (event_id == thread_id)
+        {
+            return true;
+        }
+        auto const event_thread = receipt_thread_of_event(store, room_id, event_id);
+        return event_thread.has_value() && *event_thread == thread_id;
+    }
+
     // Sets one of the user's receipts and wakes /sync. Spec (Receipts): "Each user_id,
     // receipt_type, and categorisation (unthreaded, or thread_id) tuple must be associated with
     // only a single event_id"; database::store_receipt keys the row that way and commits it, so
@@ -5758,9 +5795,11 @@ namespace
         }
 
         auto receipts = sync::ReceiptContentBuilder{};
-        for (auto const& receipt : runtime.database.persistent_store.receipts)
+        // The room's own rows, through the receipt index (ADR-0651), never the whole table.
+        for (auto const* receipt_row : database::receipts_in_room(runtime.database.persistent_store, room_id))
         {
-            if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
+            auto const& receipt = *receipt_row;
+            if (receipt.stream_id <= since_sync_stream_id)
             {
                 continue;
             }
@@ -7425,10 +7464,13 @@ namespace
                     });
                 }
                 bool const has_relevant_receipts =
-                    wants_receipts &&
-                    std::ranges::any_of(rt.homeserver.database.persistent_store.receipts, [&](auto const& r) {
-                        return r.stream_id > since_sync_stream_id && joined_rooms.contains(r.room_id) &&
-                               sync::receipt_visible_to(r.receipt_type, r.user_id, user);
+                    wants_receipts && std::ranges::any_of(joined_rooms, [&](auto const& joined_room) {
+                        return std::ranges::any_of(
+                            database::receipts_in_room(rt.homeserver.database.persistent_store, joined_room),
+                            [&](database::PersistentReceipt const* r) {
+                                return r->stream_id > since_sync_stream_id &&
+                                       sync::receipt_visible_to(r->receipt_type, r->user_id, user);
+                            });
                     });
                 bool const has_relevant_typing =
                     wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
@@ -20577,26 +20619,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
                         }
-                        // A thread_id is "The thread root's event ID (or main)". One naming no event
-                        // in this room is not a thread root; refusing it also bounds the receipt rows
-                        // a user can create to one per event in the room.
+                        // Spec (receipt endpoint, 400): "The `event_id` is not related to the `thread_id`". A
+                        // threaded receipt is accepted when the receipted event is the thread root itself or
+                        // reaches it by an `m.thread` relation (event_thread_id). One event is in one thread, so
+                        // a user cannot file receipts for an event under threads of their choosing; the rows one
+                        // user holds in a room are also capped by store_receipt (ADR-0651). The lookup is by
+                        // the event index and reads one event, not the table.
                         if (!thread_id.empty() && thread_id != sync::main_thread_id &&
-                            std::ranges::none_of(
-                                rt.homeserver.database.persistent_store.events,
-                                [&](database::PersistentEvent const& event) {
-                                    if (event.event_id != thread_id || event.room_id != room_id)
-                                    {
-                                        return false;
-                                    }
-                                    auto const parsed = canonicaljson::parse_lossless(event.json);
-                                    auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                                    return parsed.error == canonicaljson::ParseError::none && object != nullptr &&
-                                           sync::event_thread_id(rt.homeserver.database.persistent_store, *object) ==
-                                               sync::main_thread_id;
-                                }))
+                            !receipt_event_is_in_thread(rt.homeserver.database.persistent_store, room_id, event_id,
+                                                        thread_id))
                         {
-                            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
-                                                "thread_id must be main or the event ID of a thread root in the room");
+                            return dispatch_err(
+                                req, rt, 400U, "M_INVALID_PARAM",
+                                "thread_id must be main or the root of the thread the event belongs to");
                         }
                         log_diagnostic("room.receipt.accepted", {
                                                                     {"actor",        *user,        false},

@@ -289,11 +289,18 @@ namespace
             return resp;
         }
 
-        // One pass over the stored receipts, each kept for its room if that room was asked for.
+        // The rows of each room that was asked for, through the receipt index (ADR-0651), never the whole table.
         auto by_room = std::map<std::string_view, ReceiptContentBuilder, std::less<>>{};
-        for (auto const& receipt : rt.database.persistent_store.receipts)
+        auto rows = std::vector<database::PersistentReceipt const*>{};
+        for (auto const room_id : joined_rooms)
         {
-            if (receipt.stream_id <= since_sync_stream_id || !joined_rooms.contains(receipt.room_id))
+            auto room_rows = database::receipts_in_room(rt.database.persistent_store, room_id);
+            rows.insert(rows.end(), room_rows.begin(), room_rows.end());
+        }
+        for (auto const* receipt_row : rows)
+        {
+            auto const& receipt = *receipt_row;
+            if (receipt.stream_id <= since_sync_stream_id)
             {
                 continue;
             }

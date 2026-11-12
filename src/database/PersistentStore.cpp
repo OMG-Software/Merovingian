@@ -894,6 +894,46 @@ namespace
         }
     }
 
+    // The receipt indexes (ADR-0651): by room, and by (room, user). A receipt's room and user never change in place,
+    // so an upsert that replaces a row leaves both indexes as they are.
+    [[nodiscard]] auto receipt_room_group_of(PersistentReceipt const& row) -> std::string
+    {
+        return row.room_id;
+    }
+    [[nodiscard]] auto receipt_user_room_group_of(PersistentReceipt const& row) -> std::string
+    {
+        return composite_key({row.room_id, row.user_id});
+    }
+    auto sync_receipt_indexes(PersistentStore& store) -> void
+    {
+        if (!store.receipt_room_index.in_step(store.receipts.size()))
+        {
+            store.receipt_room_index.rebuild(store.receipts, receipt_room_group_of);
+        }
+        if (!store.receipt_user_room_index.in_step(store.receipts.size()))
+        {
+            store.receipt_user_room_index.rebuild(store.receipts, receipt_user_room_group_of);
+        }
+    }
+    // Erases the receipt row at `position` by moving the last row into its place, keeping both indexes in step. The
+    // indexes must be in step: every caller syncs them first.
+    auto erase_receipt_position(PersistentStore& store, std::size_t position) -> void
+    {
+        auto& rows = store.receipts;
+        auto const old_count = rows.size();
+        auto const erased_room = receipt_room_group_of(rows[position]);
+        auto const last_room = receipt_room_group_of(rows.back());
+        auto const erased_user_room = receipt_user_room_group_of(rows[position]);
+        auto const last_user_room = receipt_user_room_group_of(rows.back());
+        if (position + 1U != old_count)
+        {
+            rows[position] = std::move(rows.back());
+        }
+        rows.pop_back();
+        store.receipt_room_index.erase_swap(position, erased_room, last_room, old_count);
+        store.receipt_user_room_index.erase_swap(position, erased_user_room, last_user_room, old_count);
+    }
+
     // Erases the rows at `positions` (any order), each by moving the last row into its place, so
     // `to_device_messages` has no meaningful order. Highest first, so the row moved into a gap is never one still
     // to be erased. The indexes must be in step: every caller syncs them first.
@@ -1335,6 +1375,8 @@ auto rebuild_key_indexes(PersistentStore& store) -> void
     store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
     store.to_device_recipient_index.rebuild(store.to_device_messages, to_device_recipient_group_of);
     store.to_device_user_index.rebuild(store.to_device_messages, to_device_user_group_of);
+    store.receipt_room_index.rebuild(store.receipts, receipt_room_group_of);
+    store.receipt_user_room_index.rebuild(store.receipts, receipt_user_room_group_of);
     rebuild_invite_indexes(store);
 }
 
@@ -7077,6 +7119,32 @@ namespace
                left.user_id == right.user_id && left.thread_id == right.thread_id;
     }
 
+    // A receipt filed under a thread root, not the main timeline or no thread (ADR-0651).
+    [[nodiscard]] auto is_threaded_receipt(PersistentReceipt const& receipt) noexcept -> bool
+    {
+        return !receipt.thread_id.empty() && receipt.thread_id != main_receipt_thread_id;
+    }
+
+    [[nodiscard]] auto find_receipt_position(PersistentStore const& store, PersistentReceipt const& key)
+        -> std::optional<std::size_t>
+    {
+        return find_in_group(
+            store.receipt_user_room_index, store.receipts, receipt_user_room_group_of(key), receipt_user_room_group_of,
+            [&key](PersistentReceipt const& current) {
+                return same_receipt_key(current, key);
+            },
+            store.receipt_rows_examined);
+    }
+
+    // Erases the row with `key`'s identity, if there is one. The indexes must be in step.
+    auto erase_receipt_row(PersistentStore& store, PersistentReceipt const& key) -> void
+    {
+        if (auto const position = find_receipt_position(store, key); position.has_value())
+        {
+            erase_receipt_position(store, *position);
+        }
+    }
+
 } // namespace
 
 [[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt,
@@ -7093,15 +7161,51 @@ namespace
     {
         return false;
     }
+    sync_receipt_indexes(store);
+    auto const user_room = receipt_user_room_group_of(receipt);
+    auto const existing = find_receipt_position(store, receipt);
+    // A new threaded row past the cap takes the place of the user's own oldest threaded row in the room (ADR-0651),
+    // so a user cannot grow the table by naming thread after thread. A row that replaces one adds nothing.
+    auto thread_victim = std::optional<PersistentReceipt>{};
+    if (!existing.has_value() && is_threaded_receipt(receipt))
+    {
+        auto count = std::size_t{0U};
+        auto oldest = std::optional<std::size_t>{};
+        for (auto const position : positions_in_group(store.receipt_user_room_index, store.receipts, user_room,
+                                                      receipt_user_room_group_of, store.receipt_rows_examined))
+        {
+            auto const& row = store.receipts[position];
+            if (!is_threaded_receipt(row))
+            {
+                continue;
+            }
+            ++count;
+            if (!oldest.has_value() || row.stream_id < store.receipts[*oldest].stream_id)
+            {
+                oldest = position;
+            }
+        }
+        if (count >= max_threaded_receipt_rows_per_user_room && oldest.has_value())
+        {
+            thread_victim = store.receipts[*oldest];
+        }
+    }
     receipt.stream_id = allocate_sync_stream_id(store);
     auto statements = std::vector<PreparedStatement>{};
-    if (evicted.has_value())
-    {
+    auto const add_delete = [&statements](PersistentReceipt const& victim) {
         statements.push_back(record_statement(
             "delete_receipt",
             "DELETE FROM receipts WHERE room_id = $1 AND receipt_type = $2 AND user_id = $3 AND thread_id = $4",
-            {public_value(evicted->room_id), public_value(evicted->receipt_type), public_value(evicted->user_id),
-             public_value(evicted->thread_id)}));
+            {public_value(victim.room_id), public_value(victim.receipt_type), public_value(victim.user_id),
+             public_value(victim.thread_id)}));
+    };
+    if (evicted.has_value())
+    {
+        add_delete(*evicted);
+    }
+    if (thread_victim.has_value())
+    {
+        add_delete(*thread_victim);
     }
     statements.push_back(record_statement(
         "upsert_receipt",
@@ -7117,28 +7221,29 @@ namespace
     }
     if (evicted.has_value())
     {
-        std::erase_if(store.receipts, [&evicted](PersistentReceipt const& current) {
-            return same_receipt_key(current, *evicted);
-        });
+        erase_receipt_row(store, *evicted);
     }
-    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
-        return same_receipt_key(current, receipt);
-    });
-    if (existing != store.receipts.end())
+    if (thread_victim.has_value())
     {
-        *existing = std::move(receipt);
+        erase_receipt_row(store, *thread_victim);
+    }
+    // An eviction above may have moved rows, so the position is looked up again.
+    if (auto const stored = find_receipt_position(store, receipt); stored.has_value())
+    {
+        store.receipts[*stored] = std::move(receipt);
         return true;
     }
     store.receipts.push_back(std::move(receipt));
+    store.receipt_room_index.note_appended(store.receipts.size(), receipt_room_group_of(store.receipts.back()));
+    store.receipt_user_room_index.note_appended(store.receipts.size(),
+                                                receipt_user_room_group_of(store.receipts.back()));
     return true;
 }
 
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool
 {
-    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
-        return same_receipt_key(current, receipt);
-    });
-    if (existing == store.receipts.end())
+    sync_receipt_indexes(store);
+    if (!find_receipt_position(store, receipt).has_value())
     {
         return false;
     }
@@ -7150,8 +7255,33 @@ namespace
     {
         return false;
     }
-    store.receipts.erase(existing);
+    erase_receipt_row(store, receipt);
     return true;
+}
+
+[[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentReceipt const*>
+{
+    auto rows = std::vector<PersistentReceipt const*>{};
+    for (auto const position : positions_in_group(store.receipt_room_index, store.receipts, std::string{room_id},
+                                                  receipt_room_group_of, store.receipt_rows_examined))
+    {
+        rows.push_back(&store.receipts[position]);
+    }
+    return rows;
+}
+
+[[nodiscard]] auto receipts_of_user_in_room(PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::vector<PersistentReceipt const*>
+{
+    auto rows = std::vector<PersistentReceipt const*>{};
+    for (auto const position :
+         positions_in_group(store.receipt_user_room_index, store.receipts, composite_key({room_id, user_id}),
+                            receipt_user_room_group_of, store.receipt_rows_examined))
+    {
+        rows.push_back(&store.receipts[position]);
+    }
+    return rows;
 }
 
 namespace

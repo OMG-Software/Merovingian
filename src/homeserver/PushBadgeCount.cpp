@@ -103,22 +103,24 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         }
     });
     ++result.table_walks;
-    for (auto const& receipt : store.receipts)
+    for (auto& [room_id, room] : rooms)
     {
-        auto const room = rooms.find(receipt.room_id);
-        if (receipt.user_id != user_id || room == rooms.end() ||
-            (receipt.receipt_type != "m.read" && receipt.receipt_type != "m.read.private"))
+        // This user's rows in this room, through the receipt index (ADR-0651), never the whole table.
+        for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user_id))
         {
-            continue;
+            if (receipt->receipt_type != "m.read" && receipt->receipt_type != "m.read.private")
+            {
+                continue;
+            }
+            auto const event = store.events.find_in_room(receipt->room_id, receipt->event_id);
+            if (event == store.events.end())
+            {
+                continue;
+            }
+            auto& position =
+                receipt->thread_id.empty() ? room.markers.unthreaded : room.markers.threads[receipt->thread_id];
+            position = std::max(position, event->stream_ordering);
         }
-        auto const event = store.events.find_in_room(receipt.room_id, receipt.event_id);
-        if (event == store.events.end())
-        {
-            continue;
-        }
-        auto& markers = room->second.markers;
-        auto& position = receipt.thread_id.empty() ? markers.unthreaded : markers.threads[receipt.thread_id];
-        position = std::max(position, event->stream_ordering);
     }
     ++result.table_walks;
 

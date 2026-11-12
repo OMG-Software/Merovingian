@@ -902,10 +902,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     return resp;
 }
 
-auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+auto read_receipt_markers(homeserver::HomeserverRuntime const& /*rt*/, database::PersistentStore const& store,
                           std::string_view room_id, std::string_view user) -> ReadMarkers
 {
-    return read_markers_for(rt.database.persistent_store.receipts, store, room_id, user);
+    return read_markers_for(store, room_id, user);
 }
 
 } // namespace merovingian::sync

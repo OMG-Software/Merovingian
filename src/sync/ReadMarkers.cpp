@@ -67,18 +67,18 @@ auto ReadMarkers::covers(std::uint64_t stream_ordering, std::string_view thread_
     return thread != threads.end() && stream_ordering <= thread->second;
 }
 
-auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, database::PersistentStore const& store,
-                      std::string_view room_id, std::string_view user) -> ReadMarkers
+auto read_markers_for(database::PersistentStore const& store, std::string_view room_id, std::string_view user)
+    -> ReadMarkers
 {
     // Spec: "Note that users can send both an m.read and m.read.private receipt, both of which are
     // capable of clearing notifications", and "the receipt which is more recent/ahead must be used".
+    // Only this user's rows in this room are read, through the store's receipt index (ADR-0651).
     auto relevant = std::vector<database::PersistentReceipt const*>{};
-    for (auto const& receipt : receipts)
+    for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user))
     {
-        if (receipt.room_id == room_id && receipt.user_id == user &&
-            (receipt.receipt_type == "m.read" || receipt.receipt_type == "m.read.private"))
+        if (receipt->receipt_type == "m.read" || receipt->receipt_type == "m.read.private")
         {
-            relevant.push_back(&receipt);
+            relevant.push_back(receipt);
         }
     }
 

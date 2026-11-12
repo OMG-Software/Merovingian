@@ -423,3 +423,11 @@ already goes through `can_see`, so a new one gets this for free; do not add a pa
 redaction has been applied to are stored in their redacted form, and the serializers add
 `unsigned.redacted_because` with `database::attach_redacted_because` (a new client-facing event serializer must
 call it, and `database::add_redaction_compat`).
+
+## Receipts are read through the store's receipt indexes (ADR-0651)
+
+Never loop `store.receipts` in a request: use `database::receipts_in_room` (ephemeral `m.receipt` events, the sliding
+sync receipts extension and its wake check) or `database::receipts_of_user_in_room` (`read_markers_for`, the push badge
+count). A threaded receipt (`thread_id` other than `main`) is accepted by the POST handler only for the thread root or
+an event that belongs to that thread (`receipt_event_is_in_thread`), and `store_receipt` caps a user's threaded rows in
+a room. A test proves cost with `receipt_rows_examined`, not time.

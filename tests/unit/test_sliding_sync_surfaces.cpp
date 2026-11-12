@@ -424,8 +424,7 @@ SCENARIO("Sliding sync room lists sort by threaded unread notifications and brea
             store, "@bob:example.org", "$alpha-reply", room_ids[0],
             R"({"type":"m.room.message","content":{"body":"reply","m.relates_to":{"rel_type":"m.thread","event_id":"$alpha-root"}}})",
             11U);
-        runtime.database.persistent_store.receipts.push_back(
-            {room_ids[0], "m.read", "@alice:example.org", "$alpha-reply", 0U, 1U, "$alpha-root"});
+        store.receipts.push_back({room_ids[0], "m.read", "@alice:example.org", "$alpha-reply", 0U, 1U, "$alpha-root"});
 
         append_event_from(store, "@bob:example.org", "$beta-one", room_ids[1],
                           R"({"type":"m.room.message","content":{"body":"one"}})", 20U);
