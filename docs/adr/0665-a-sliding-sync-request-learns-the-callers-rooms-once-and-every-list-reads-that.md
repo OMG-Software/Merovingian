@@ -16,7 +16,7 @@ joined rooms and the size of the tables. ADR-0172 bounded the sort comparator an
 ## Considered Options
 
 * A `SlidingSyncRequestLookups` built once per request and passed to every list and every room built.
-* A new index of receipts by room and user in the store.
+* A second index of receipts by room and user, kept for sliding sync.
 * Cache each answer on the connection between requests.
 
 ## Decision Outcome
@@ -27,20 +27,22 @@ the cost, and nothing it holds can go stale or need maintaining by a writer.
 * The joined rooms and the invites come from the user's own membership rows (`for_each_user_membership_row`,
   ADR-0609), checked against the room records once; `is_encrypted` and `room_type` use the room's current state by its
   index (`find_current_state_event_id`, ADR-0344); `m.direct` is parsed once into a set; a room's `m.tag` once per room.
-* The user's `m.read` and `m.read.private` receipts are collected in one pass over the receipts table and grouped by
-  room, and each room's `ReadMarkers` is computed from its own group, once. The same object serves
-  `build_room_response`, so the rooms a response builds share the pass.
+* Each room's `ReadMarkers` is computed once per request by `read_markers_for`, from the user's own receipt rows in that
+  room, read through the store's (room, user) receipt index (`receipts_of_user_in_room`, ADR-0651). The same object
+  serves `build_room_response`, so the rooms a response builds share the answers. An earlier form of this change read
+  the whole receipts table once per request; with the index in the store that pass is no longer needed.
+* The store passed in is the only source of receipts; the lookups take no separate receipt list.
 * The lookups are filled through non-const functions, never `mutable` (ADR-0525); a request owns one on its thread under
   the lock.
 * A room's windowed membership of each list is held in a hash set while the response's per-room config is combined, so
   asking which lists hold a room is a lookup, not a scan of a window that a client-chosen range can make as long as the
   user's room list.
 
-### Rejected: an index of receipts by room and user
+### Rejected: a second index of receipts for sliding sync
 
-Another workstream adds one for classic sync. A second index in this area would need to be correct on every writer
-and on load, to save a single pass per request that the lookups already make. This one pass per request is the work
-bound the brief asks for.
+The store's receipt index (ADR-0651, finding C23) is kept right by every receipt writer and rebuilt on load; /sync, the
+push badge count and sliding sync all read through it. A second index here would need the same care on every writer to
+answer the same question.
 
 ### Rejected: caching answers on the connection
 
@@ -48,7 +50,7 @@ A cached `is_encrypted` or room type is wrong the moment the room's state change
 
 ## Consequences
 
-* One request now costs one pass over the receipts table (the table, not the rooms times it), one pass over the room
-  records, and the user's own rows.
+* One request now costs one pass over the room records and the user's own rows: membership rows, and receipt rows
+  per room through the index. No receipt of another user is read.
 * `by_recency` with `bump_event_types` and `by_name` are read per room through the indexes with a fixed row budget
   (ADR-0666), so no sort key passes over a whole table either.

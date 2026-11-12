@@ -133,11 +133,11 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
     return compute_room_list(rt, user, list, prev_window, store, unread);
 }
 
-auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user, SlidingSyncList const& list,
+auto compute_room_list(homeserver::HomeserverRuntime const& /*rt*/, std::string_view user, SlidingSyncList const& list,
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store,
                        UnreadEventClassifier& unread) -> RoomListResult
 {
-    auto lookups = SlidingSyncRequestLookups{store, user, &rt.database.persistent_store.receipts};
+    auto lookups = SlidingSyncRequestLookups{store, user};
     return compute_room_list(user, list, prev_window, store, unread, lookups);
 }
 

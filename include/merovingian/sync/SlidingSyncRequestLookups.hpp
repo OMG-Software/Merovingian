@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/ReadMarkers.hpp"
 
@@ -22,19 +21,16 @@ inline constexpr std::size_t max_recency_rows_examined{1000U};
 
 // What one sliding sync request needs to know about the caller's rooms, each learned once per request and then
 // answered from memory (ADR-0665): the rooms the user is joined to and invited to (from the user's own membership
-// rows), the rooms of their `m.direct`, their `m.read` and `m.read.private` receipts grouped by room, and, per room,
-// its type, whether it is a favourite, and its read markers. Without it every list, for every joined room, scanned the
-// whole membership, state or receipt table, so a list cost the rooms times the table.
+// rows), the rooms of their `m.direct`, and, per room, its type, whether it is a favourite, and its read markers (from
+// the user's own receipt rows in the room, through the receipt index, ADR-0651). Without it every list, for every
+// joined room, scanned the whole membership, state or receipt table, so a list cost the rooms times the table.
 //
 // A request owns one, on its thread and under runtime.mutex; it is not thread-safe and its caches fill through
 // non-const functions (ADR-0525). It reads `store` only, which must outlive it and not change while it is used.
 class SlidingSyncRequestLookups final
 {
 public:
-    // `receipts` is where the read receipts are read from; by default `store.receipts`. A caller whose receipts live
-    // beside a store it reads events from (the runtime's) names them.
-    SlidingSyncRequestLookups(database::PersistentStore const& store, std::string_view user,
-                              std::vector<database::PersistentReceipt> const* receipts = nullptr);
+    SlidingSyncRequestLookups(database::PersistentStore const& store, std::string_view user);
 
     // The rooms the user is joined to that the store holds a room record for, in no particular order.
     [[nodiscard]] auto joined_rooms() -> std::vector<std::string> const&;
@@ -54,7 +50,7 @@ public:
     // content.type of the room's m.room.create event, or empty.
     [[nodiscard]] auto room_type(std::string_view room_id) -> std::string const&;
 
-    // Where the user has read up to in `room_id` (see read_markers_for).
+    // Where the user has read up to in `room_id` (see read_markers_for), read once per room and request.
     [[nodiscard]] auto read_markers(std::string_view room_id) -> ReadMarkers const&;
 
     // The stream ordering of the room's newest event whose type is in `bump_types` (any event when empty), 0 when it
@@ -69,30 +65,23 @@ public:
     // Event rows `recency` has parsed or compared, in total: a test proves the cost by count.
     [[nodiscard]] auto recency_rows_visited() const noexcept -> std::uint64_t;
 
-    // Rows of the receipts table and of the user's memberships looked at: a test proves the passes happen once per
-    // request by count, not by time.
-    [[nodiscard]] auto receipt_rows_visited() const noexcept -> std::uint64_t;
+    // Rows of the user's memberships looked at: a test proves the pass happens once per request by count, not by time.
     [[nodiscard]] auto membership_rows_visited() const noexcept -> std::uint64_t;
 
 private:
     auto load_memberships() -> void;
     auto load_direct() -> void;
-    auto load_receipts() -> void;
 
     database::PersistentStore const* m_store;
-    std::vector<database::PersistentReceipt> const* m_receipts;
     std::string m_user;
     bool m_memberships_loaded{false};
     std::vector<std::string> m_joined{};
     std::unordered_set<std::string> m_invited{};
     bool m_direct_loaded{false};
     std::unordered_set<std::string> m_direct{};
-    bool m_receipts_loaded{false};
-    std::unordered_map<std::string, std::vector<database::PersistentReceipt>> m_receipts_by_room{};
     std::unordered_map<std::string, bool> m_favourites{};
     std::unordered_map<std::string, std::string> m_room_types{};
     std::unordered_map<std::string, ReadMarkers> m_markers{};
-    std::uint64_t m_receipt_rows_visited{0U};
     std::uint64_t m_membership_rows_visited{0U};
     std::uint64_t m_recency_rows_visited{0U};
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> m_recency{};

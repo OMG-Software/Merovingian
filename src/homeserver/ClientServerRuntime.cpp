@@ -7426,7 +7426,7 @@ namespace
         auto list_results = std::map<std::string, sync::RoomListResult>{};
         auto const build_list_windows = [&]() {
             unread_classifier.emplace(store, user, rt.limits.max_push_rules_per_user, history_visibility);
-            request_lookups.emplace(store, user, &rt.homeserver.database.persistent_store.receipts);
+            request_lookups.emplace(store, user);
             for (auto const& [list_name, list] : ssreq.lists)
             {
                 auto const empty_prev = std::vector<std::string>{};

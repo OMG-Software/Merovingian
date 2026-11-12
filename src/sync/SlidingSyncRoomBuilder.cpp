@@ -641,7 +641,7 @@ auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscripti
     return combined;
 }
 
-auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
+auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
@@ -655,7 +655,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     auto own_lookups = std::optional<SlidingSyncRequestLookups>{};
     if (lookups == nullptr)
     {
-        lookups = &own_lookups.emplace(store, user, &rt.database.persistent_store.receipts);
+        lookups = &own_lookups.emplace(store, user);
     }
 
     auto resp = SlidingSyncRoomResponse{};

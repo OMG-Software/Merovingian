@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Security audit run 3, finding C07: a sliding sync request learns the caller's rooms from the user's own rows, and the
-// receipts table once, however many rooms and lists it names (ADR-0665).
+// user's own receipt rows through the receipt index, however many rooms and lists it names (ADR-0665, ADR-0651).
 //
 // Spec: MSC4186 list `filters` (is_invite, is_encrypted, room_types) and the `by_notification_count` sort.
 
@@ -41,7 +41,8 @@ auto add_state(db::PersistentStore& store, std::string const& room_id, std::stri
 
 // `rooms` rooms: alice is joined to the even ones, invited to every fifth odd one, bob is joined to all. Every third
 // room is encrypted and every room has a create event of type "m.space" when its number is divisible by four.
-// `receipts` read receipts of bob's, and one of alice's for room 0.
+// `receipts` read receipts of other users, and one of alice's for room 0, all written through the store so the receipt
+// index is in step.
 [[nodiscard]] auto build_store(std::size_t rooms, std::size_t receipts) -> db::PersistentStore
 {
     auto store = db::PersistentStore{};
@@ -76,15 +77,15 @@ auto add_state(db::PersistentStore& store, std::string const& room_id, std::stri
     {
         auto receipt = db::PersistentReceipt{};
         receipt.room_id = room_name(number % rooms);
-        receipt.user_id = "@bob:example.org";
+        receipt.user_id = "@reader" + std::to_string(number) + ":example.org";
         receipt.event_id = "$create" + std::to_string(number % rooms);
-        store.receipts.push_back(std::move(receipt));
+        REQUIRE(db::store_receipt(store, std::move(receipt)));
     }
     auto own = db::PersistentReceipt{};
     own.room_id = room_name(0U);
     own.user_id = alice;
     own.event_id = "$create0";
-    store.receipts.push_back(std::move(own));
+    REQUIRE(db::store_receipt(store, std::move(own)));
     db::rebuild_membership_index(store);
     db::rebuild_state_index(store);
     return store;
@@ -135,15 +136,17 @@ SCENARIO("A request's lookups answer the filters from the user's own rows", "[sy
     }
 }
 
-SCENARIO("A request's lookups read the receipts table once for every room", "[sync][sliding-sync][c07][unit]")
+SCENARIO("A request's lookups read only the user's own receipt rows", "[sync][sliding-sync][c07][c23][unit]")
 {
-    GIVEN("a store with 400 receipts and 200 rooms")
+    GIVEN("a store with 400 receipts of other users and one of alice's, over 200 rooms")
     {
         auto const store = build_store(200U, 400U);
+        REQUIRE(store.receipts.size() == 401U);
         auto lookups = sync::SlidingSyncRequestLookups{store, alice};
 
         WHEN("the read markers of every room are asked for, twice")
         {
+            auto const before = store.receipt_rows_examined.value();
             for (auto pass = 0; pass < 2; ++pass)
             {
                 for (auto number = std::size_t{0U}; number < 200U; ++number)
@@ -152,9 +155,11 @@ SCENARIO("A request's lookups read the receipts table once for every room", "[sy
                 }
             }
 
-            THEN("the receipts were visited once each, not once per room")
+            auto const examined = store.receipt_rows_examined.value() - before;
+
+            THEN("only alice's one row was examined, once: not the table, and not once per pass")
             {
-                REQUIRE(lookups.receipt_rows_visited() == store.receipts.size());
+                REQUIRE(examined == 1U);
             }
             THEN("alice's own receipt is the one that counts for her, and a room without one reads nothing")
             {

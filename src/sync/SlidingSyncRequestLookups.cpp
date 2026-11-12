@@ -111,10 +111,8 @@ namespace
 
 } // namespace
 
-SlidingSyncRequestLookups::SlidingSyncRequestLookups(database::PersistentStore const& store, std::string_view user,
-                                                     std::vector<database::PersistentReceipt> const* receipts)
+SlidingSyncRequestLookups::SlidingSyncRequestLookups(database::PersistentStore const& store, std::string_view user)
     : m_store{&store}
-    , m_receipts{receipts != nullptr ? receipts : &store.receipts}
     , m_user{user}
 {
 }
@@ -246,24 +244,6 @@ auto SlidingSyncRequestLookups::room_type(std::string_view room_id) -> std::stri
     return m_room_types.emplace(key, std::move(type)).first->second;
 }
 
-auto SlidingSyncRequestLookups::load_receipts() -> void
-{
-    if (m_receipts_loaded)
-    {
-        return;
-    }
-    m_receipts_loaded = true;
-    // One pass over the receipts table for the whole request, keeping the user's read receipts by room.
-    for (auto const& receipt : *m_receipts)
-    {
-        ++m_receipt_rows_visited;
-        if (receipt.user_id == m_user && (receipt.receipt_type == "m.read" || receipt.receipt_type == "m.read.private"))
-        {
-            m_receipts_by_room[receipt.room_id].push_back(receipt);
-        }
-    }
-}
-
 auto SlidingSyncRequestLookups::read_markers(std::string_view room_id) -> ReadMarkers const&
 {
     auto const key = std::string{room_id};
@@ -271,10 +251,8 @@ auto SlidingSyncRequestLookups::read_markers(std::string_view room_id) -> ReadMa
     {
         return found->second;
     }
-    load_receipts();
-    auto const rows = m_receipts_by_room.find(key);
-    auto const none = std::vector<database::PersistentReceipt>{};
-    auto markers = read_markers_for(rows == m_receipts_by_room.end() ? none : rows->second, *m_store, room_id, m_user);
+    // Only the user's own rows in this room, through the receipt index (ADR-0651): never a pass over the table.
+    auto markers = read_markers_for(*m_store, room_id, m_user);
     return m_markers.emplace(key, std::move(markers)).first->second;
 }
 
@@ -346,11 +324,6 @@ auto SlidingSyncRequestLookups::room_name(std::string_view room_id) -> std::stri
 auto SlidingSyncRequestLookups::recency_rows_visited() const noexcept -> std::uint64_t
 {
     return m_recency_rows_visited;
-}
-
-auto SlidingSyncRequestLookups::receipt_rows_visited() const noexcept -> std::uint64_t
-{
-    return m_receipt_rows_visited;
 }
 
 auto SlidingSyncRequestLookups::membership_rows_visited() const noexcept -> std::uint64_t
