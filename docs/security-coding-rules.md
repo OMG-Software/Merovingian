@@ -600,14 +600,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the `pdu_ingest`, `membership_ingest`, `invite_ingest` and `edu_ingest` handlers judge the rule again, and the first three
   read the room's current `m.room.server_acl` from main's store for the transport origin and the verified sender's server.
   A new relay does the same.
-  Why: a worker's store holds no policy rules (PostgreSQL) or a start-up snapshot (SQLite), and a room's ACL only
+  Why: a worker's store holds no policy rules (since 1.0.1 on either backend, ADR-0733), and a room's ACL only
   after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.70 a denied
   origin or server kept federating (F-21, F-24; ADR-0358, ADR-0359).
   Source: `src/federation/AGENTS.md`, `src/federation_worker/AGENTS.md`.
 
 - **The worker reads its store only through the `StoreReadGuard`, and never waits on another process under it.** Store-reading
-  providers are wrapped in the shared lock before any provider that relays is installed; a reload reads the database with no
-  lock and takes the exclusive lock only for the in-memory swap; anything borrowed from a table (state-group views, state
+  providers are wrapped in the shared lock before any provider that relays is installed; a reload asks main for the room with
+  no lock and takes the exclusive lock only for the in-memory swap; anything borrowed from a table (state-group views, state
   indexes) is copied before the lock is released.
   Why: the tables have no lock and a reload rewrites a room table by table, so an unguarded reader raced the writer and could
   see a room with no ACL (F-27, ADR-0360).
@@ -619,6 +619,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `current_state` row or membership.
   Why: a limit an attacker can fill must not keep out a moderator's ban or demotion, and one operator runs as many
   server names as it likes (ADR-0374, ADR-0602, ADR-0695).
+- **The federation worker opens no database, on either backend; every row it reads comes from main over its IPC channel,
+  and main reads a room for it only under a permit main issued on that channel, once.** The worker's configuration copy
+  is switched to the memory backend with every database location cleared before its Landlock rules are built and before
+  its runtime starts. Main reads on its snapshot pool, never under `runtime.mutex`, in one read transaction that has
+  ended before the first page is sent. Never give the worker a database path, URI, descriptor or Landlock grant, and
+  never add a worker read that does not come through main.
+  Why: read-only stops writes, not locks: a SHARED lock the worker held on main's SQLite file made every write in main
+  wait its busy timeout and fail, and its PostgreSQL login could exhaust connections, hold advisory locks and pin the
+  xmin horizon (run-3 C44; ADR-0733, ADR-0735).
+  Source: `src/federation_worker/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **An inbound event's tip status is asked of `homeserver::event_may_become_forward_extremity`, and its limit is per sender's
+  server, never per room.** An event that cites a current tip is never refused. An accepted event that is not a tip writes
+  no `current_state` row or membership.
+  Why: a limit one server can fill would let its forks keep out another server's ban or demotion (ADR-0374, ADR-0602).
   Source: `src/homeserver/AGENTS.md`.
 
 - **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied
@@ -633,16 +648,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: each call holds a request thread for the round trip, on surfaces reachable before authentication (F-42, ADR-0361).
   Source: `src/homeserver/AGENTS.md`.
 
-- **A federation worker re-reads only public signing keys, and only on a miss.** The one
-  table a worker reads after start-up is `server_signing_keys`, through
-  `federation::KeyMirrorRefresh::on_miss`, for the server whose signature it is verifying.
-  `database::refresh_remote_signing_keys` selects `server_name, key_id, public_key,
-  valid_until_ts` and never `secret_key`, and is enabled only for the `federation_worker`
-  load profile (`LocalDatabase::remote_signing_keys_read_through`). Do not widen that query,
-  read other tables on demand, or give main's resolver the same flag.
-  Why: only main writes those rows, after verifying the key and capping it at seven days, so
-  the worker trusts nothing it did not already trust at start-up; a wider read would hand the
-  most exposed process data it has no need for (ADR-0263).
+- **A federation worker asks main for public signing keys only, and only on a miss.** Its key mirror
+  starts empty (ADR-0733). On a miss, `cached_pdu_key_lookup` and the resolver
+  (`federation::KeyMirrorRefresh::on_miss`) both call `database::refresh_remote_signing_keys` for the
+  server whose signature is being verified; in the worker that sends `server_keys_request` through
+  `PersistentStore::remote_signing_key_source`. Main answers from its in-memory table with
+  `database::public_signing_keys_of_server`: public columns only, never a row that holds a secret, at
+  most 256 rows, never the network. The worker takes only the named server's rows without a secret.
+  Both sides are enabled only for the `federation_worker` load profile
+  (`LocalDatabase::remote_signing_keys_read_through`). Do not widen either side, ask main for any other
+  table on demand, or give main's lookups the same flag.
+  Why: only main writes those rows, after verifying the key and capping it at seven days, so the
+  worker trusts nothing main does not; a wider answer would hand the most exposed process data it has
+  no need for (ADR-0263, ADR-0733).
   Source: `src/federation_worker/AGENTS.md`.
 
 - **Every room-scoped federation read checks that the authenticated origin is in the room.**
@@ -1470,7 +1488,7 @@ media-fetch-pool task.
   `build_worker_landlock_rules()`, derived from the worker's own config copy or a documented,
   best-effort fixed system path — never a hard-coded secret file path.**
   Why: the whole point of the ruleset is to name the paths the worker's own config exposes
-  (the SQLite database directory) plus generic OS-integration paths, and to *never* name the
+  (since 1.0.1 none: it names no database, ADR-0733) plus generic OS-integration paths, and to *never* name the
   master key file, either database URI file, or TLS private keys. A second, drifting
   hard-coded list is exactly the kind of duplication that silently diverges from the first.
   Source: `src/platform/AGENTS.md`,

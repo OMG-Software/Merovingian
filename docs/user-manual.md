@@ -1425,8 +1425,10 @@ The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
 socket pair inherited at spawn. Every frame is encrypted with an ephemeral
 `crypto_kx` key exchange and `crypto_secretstream_xchacha20poly1305` AEAD —
 no sensitive material crosses the channel in plaintext. The server signing
-key is never forwarded; the worker reads it from the same database, and
-client access tokens are stripped from every request before forwarding. If
+key never reaches the worker, which never signs, and client access tokens are
+stripped from every request before forwarding. The worker opens no database:
+main sends it the rooms it serves, and a server's public signing keys, over
+this channel (1.0.1, ADR-0733). If
 the worker crashes, the supervisor restarts it with exponential back-off
 (1s, 2s, 4s, 8s, capped at 30s).
 
@@ -3094,7 +3096,7 @@ pg_restore --list "$backup/database.dump" > "$backup/database.list"
 
 **SQLite:** with the server stopped, use SQLite's backup command rather than
 copying a file while it may be written. The server currently pins DELETE
-journal mode, and worker reads refuse WAL databases.
+journal mode.
 
 ```bash
 sqlite3 -readonly /var/lib/merovingian/merovingian.sqlite3 ".backup '$backup/database.sqlite3'"

@@ -340,3 +340,81 @@ SCENARIO("Main answers a worker's key lookup with public columns, never its own 
         }
     }
 }
+
+SCENARIO("A worker's key mirror refreshes from main's answer, taking only the asked server's public rows",
+         "[database][c44][server-keys][key-source]")
+{
+    GIVEN("an in-memory worker store whose key source answers as main would, plus rows it should never take")
+    {
+        auto store = db::PersistentStore{};
+        auto asked = std::vector<std::string>{};
+        store.remote_signing_key_source =
+            [&asked](std::string_view server_name) -> std::optional<std::vector<db::PersistentServerSigningKey>> {
+            asked.emplace_back(server_name);
+            auto rows = std::vector<db::PersistentServerSigningKey>{};
+            rows.emplace_back(std::string{remote_server}, "ed25519:a", "public-a", 5000U);
+            rows.emplace_back("third.example", "ed25519:c", "public-c", 7000U);
+            rows.emplace_back(std::string{remote_server}, "ed25519:s", "public-s", 9000U, "secretbox:v1:c2VjcmV0");
+            return rows;
+        };
+
+        WHEN("the remote server's keys are refreshed")
+        {
+            auto const refreshed = db::refresh_remote_signing_keys(store, remote_server);
+
+            THEN("the source is asked once for that server, and only its row without a secret is taken")
+            {
+                REQUIRE(refreshed);
+                REQUIRE(asked == std::vector<std::string>{std::string{remote_server}});
+                auto const held = db::snapshot_server_signing_keys(store);
+                REQUIRE(held.size() == 1U);
+                REQUIRE(held[0].server_name == remote_server);
+                REQUIRE(held[0].key_id == "ed25519:a");
+                REQUIRE(held[0].public_key == "public-a");
+                REQUIRE(held[0].secret_key.empty());
+            }
+        }
+    }
+
+    GIVEN("an in-memory worker store holding one key, whose key source fails")
+    {
+        auto store = db::PersistentStore{};
+        store.server_signing_keys.emplace_back(std::string{remote_server}, "ed25519:a", "public-a", 5000U);
+        auto calls = std::size_t{0U};
+        store.remote_signing_key_source =
+            [&calls](std::string_view) -> std::optional<std::vector<db::PersistentServerSigningKey>> {
+            ++calls;
+            return std::nullopt;
+        };
+
+        WHEN("the remote server's keys are refreshed")
+        {
+            auto const refreshed = db::refresh_remote_signing_keys(store, remote_server);
+
+            THEN("the refresh fails and the mirror is unchanged")
+            {
+                REQUIRE_FALSE(refreshed);
+                REQUIRE(calls == 1U);
+                auto const held = db::snapshot_server_signing_keys(store);
+                REQUIRE(held.size() == 1U);
+                REQUIRE(held[0].key_id == "ed25519:a");
+            }
+        }
+    }
+
+    GIVEN("an in-memory store with no key source")
+    {
+        auto store = db::PersistentStore{};
+
+        WHEN("a server's keys are refreshed")
+        {
+            auto const refreshed = db::refresh_remote_signing_keys(store, remote_server);
+
+            THEN("it is the no-op it always was")
+            {
+                REQUIRE(refreshed);
+                REQUIRE(db::snapshot_server_signing_keys(store).empty());
+            }
+        }
+    }
+}

@@ -957,8 +957,9 @@ value. Test fixtures that do not exercise persistence select it through
   that room's events) from the backing database and replaces this store's
   in-memory copy of that room. Implemented for both SQLite and PostgreSQL with
   parameterised, room_id-scoped queries (never a full-table re-read). A no-op
-  (returns `true`) for the `memory` backend. Used by the federation worker to
-  refresh its otherwise-stale `PersistentStore` snapshot — see
+  (returns `true`) for the `memory` backend. Its read half, `load_room_snapshot`, is what
+  main runs for a federation worker's `room_sync` reload; the worker applies the answer with
+  `apply_room_snapshot` (`StoreReadGuard::reload_room_from`) — see
   [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-consistency-model).
 - `database::fill_store_from_room_snapshots(store, snapshots)` builds a store from room
   snapshots in one pass: each table is inserted once and each index rebuilt once, where a
@@ -967,7 +968,10 @@ value. Test fixtures that do not exercise persistence select it through
   sorted, from one statement, and `database::public_signing_keys_of_server(store, name, cap)`
   copies a server's public key columns from memory under `server_signing_keys_mutex`, never a
   row that holds a secret. They are what main serves a federation worker, which opens no
-  database (1.0.1, C44, ADR-0733).
+  database (1.0.1, C44, ADR-0733): the worker's store is in memory, filled at start through
+  `RuntimeStartOptions::fill_store`, and `refresh_remote_signing_keys` asks main through
+  `PersistentStore::remote_signing_key_source` when that is set, taking only the named server's
+  rows without a secret from the answer.
 - `database::reconstruct_event_relations(store)` re-derives every
   `PersistentEvent::prev_event_ids`/`auth_event_ids`/`signatures` from the flat
   `event_edges`/`event_auth`/`event_signatures` tables. Those fields are only
@@ -1120,6 +1124,12 @@ persisted and hydrated.
   account data (ADR-0204, see above).
 
 ## Federation worker least-privilege role (ADR-0062 part 2)
+
+> **Superseded on 1.0.1 (C44, [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)).**
+> The worker opens no database on either backend: its configuration copy is switched to the
+> `memory` backend and main sends it the rows it reads over the IPC channel. A login handed
+> over `--db-uri-fd` is closed unread. The rest of this section describes the arrangement
+> it replaced.
 
 The out-of-process federation worker (`merovingian-fed-worker`,
 `src/federation_worker/`) is the process most exposed to hostile input (see

@@ -334,6 +334,7 @@ shell = find_program('sh')
       'unit/test_state_group_tables.cpp',
       'unit/test_reload_room_state_groups.cpp',
       'unit/test_worker_room_snapshot_fill.cpp',
+      'unit/test_worker_database_config.cpp',
       'unit/test_worker_snapshot_service.cpp',
       'unit/test_store_read_guard.cpp',
       'unit/test_room_reload_coalescer.cpp',

@@ -665,13 +665,13 @@ namespace
             }
             auto const now = clock();
             auto cached_key = find_cached_remote_key(store, server_name, key_id);
-            // A worker's mirror is a snapshot from its start: a key main verified
-            // and cached since is in the database but not here. Read that one
-            // server's public rows before paying a fetch (discovery, a fresh
-            // connection and a TLS handshake) for a key main already holds. The
-            // row carries main's seven-day cap, so it is trusted no longer than
-            // main trusts it. An absent or lapsed row still falls through to a
-            // verified fetch.
+            // A worker's mirror holds only what main sent it (ADR-0733): a key
+            // main verified and cached is in main's store but may not be here.
+            // Ask main for that one server's public rows before paying a fetch
+            // (discovery, a fresh connection and a TLS handshake) for a key main
+            // already holds. The row carries main's seven-day cap, so it is
+            // trusted no longer than main trusts it. An absent or lapsed row
+            // still falls through to a verified fetch.
             if (mirror_refresh == KeyMirrorRefresh::on_miss &&
                 (!cached_key.has_value() || !cached_remote_key_usable(*cached_key, now)))
             {
@@ -720,9 +720,9 @@ namespace
                                  {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
                 });
                 // ADR-0238: the key just fetched and self-verified is the answer;
-                // caching it is best-effort. A federation worker cannot write the
-                // cache (read-only SQLite, a SELECT-only PostgreSQL role), so a
-                // read-back after its failed write would find nothing.
+                // caching it is best-effort, and a read-back after a failed write
+                // would find nothing. A federation worker's write lands only in its
+                // own in-memory mirror (ADR-0733), never in main's database.
                 if (!cache_remote_server_keys(store, fetched.response, now))
                 {
                     log_resolver("key_cache_write_failed", {

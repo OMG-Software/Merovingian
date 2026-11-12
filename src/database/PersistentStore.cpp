@@ -2371,11 +2371,20 @@ namespace
 
 [[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool
 {
-    if (store.backend == PersistentStoreBackend::memory)
+    auto rows = std::optional<std::vector<PersistentServerSigningKey>>{};
+    if (store.remote_signing_key_source)
+    {
+        // The federation worker's store (ADR-0733): main answers from its own key table, public columns only.
+        rows = store.remote_signing_key_source(server_name);
+    }
+    else if (store.backend == PersistentStoreBackend::memory)
     {
         return true;
     }
-    auto rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    else
+    {
+        rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    }
     if (!rows.has_value())
     {
         log_diagnostic("server_signing_keys.refresh_failed",
@@ -2388,6 +2397,11 @@ namespace
     auto const lock = store.server_signing_keys_mutex.acquire();
     for (auto& row : *rows)
     {
+        // Only the asked server's public rows are taken, whatever the source answered.
+        if (row.server_name != server_name || !row.secret_key.empty())
+        {
+            continue;
+        }
         // Only the public columns were read. A row this process holds with a
         // secret is this server's own key: leave it exactly as it is.
         auto const position = find_server_signing_key_position(store, row.server_name, row.key_id);

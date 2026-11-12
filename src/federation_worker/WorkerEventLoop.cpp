@@ -4,11 +4,13 @@
 #include "WorkerEventLoop.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentServerSigningKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationEndpoint.hpp"
@@ -20,26 +22,29 @@
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/Transactions.hpp"
-#include "merovingian/federation_worker/RoomReloadCoalescer.hpp"
-#include "merovingian/federation_worker/StoreReadGuard.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation_worker/DbUriFd.hpp"
 #include "merovingian/federation_worker/IpcKeyFd.hpp"
+#include "merovingian/federation_worker/RoomReloadCoalescer.hpp"
+#include "merovingian/federation_worker/StoreReadGuard.hpp"
+#include "merovingian/federation_worker/WorkerDatabaseConfig.hpp"
 #include "merovingian/federation_worker/WorkerRelayFrame.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/WorkerIpcLimits.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundResult.hpp"
+#include "merovingian/ipc/FederationIpcFrames.hpp"
 #include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/MembershipTemplateIngest.hpp"
-#include "merovingian/ipc/FederationIpcFrames.hpp"
+#include "merovingian/ipc/RoomSnapshotAssembler.hpp"
+#include "merovingian/ipc/RoomSnapshotPageRequest.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -49,6 +54,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -570,6 +576,199 @@ namespace
         return result;
     }
 
+    // ---- The worker's store, from main (ADR-0733) ----------------------------
+    // This process opens no database. Its store is filled at start from the rooms main lists and the snapshots main
+    // sends, a room_sync reload asks main for the room again, and a key-cache miss asks main for one server's public
+    // keys. Each page is one request: main answers it from a snapshot it read with its read transaction already closed.
+
+    constexpr auto store_page_timeout = std::chrono::seconds{60};
+    constexpr auto server_keys_timeout = std::chrono::seconds{30};
+
+    auto log_store_refusal(std::string_view what, std::string_view reply) -> void
+    {
+        auto reason = ipc::ipc_json_get_str(reply, "refused");
+        LOG_ERROR("Federation worker: main did not send " + std::string{what} + ": " +
+                  (reason.empty() ? std::string{"malformed answer"} : reason));
+    }
+
+    // Every room main lists, page by page in order. nullopt when main refuses, does not answer, or a page does not
+    // follow from the one before.
+    [[nodiscard]] auto room_ids_from_main(ipc::IpcChannel& channel) -> std::optional<std::vector<std::string>>
+    {
+        auto room_ids = std::vector<std::string>{};
+        auto pages = std::uint64_t{1U};
+        for (auto page = std::uint64_t{0U}; page < pages; ++page)
+        {
+            auto const reply = channel.send_request(ipc::serialize_room_list_request(page), store_page_timeout);
+            if (!reply.has_value())
+            {
+                LOG_ERROR("Federation worker: main did not answer the room list request");
+                return std::nullopt;
+            }
+            auto listed = ipc::deserialize_room_list_page(*reply);
+            if (!listed.has_value())
+            {
+                log_store_refusal("the room list", *reply);
+                return std::nullopt;
+            }
+            if (listed->page != page || listed->pages == 0U || (page != 0U && listed->pages != pages))
+            {
+                LOG_ERROR("Federation worker: main's room list pages are out of order");
+                return std::nullopt;
+            }
+            pages = listed->pages;
+            room_ids.insert(room_ids.end(), std::make_move_iterator(listed->room_ids.begin()),
+                            std::make_move_iterator(listed->room_ids.end()));
+        }
+        return room_ids;
+    }
+
+    // One room's snapshot, page by page, for room_sync `generation` (0 for the start-up fill). nullopt when main
+    // refuses or does not answer, or a page breaks the assembler's rules: a room is applied whole or not at all.
+    [[nodiscard]] auto snapshot_from_main(ipc::IpcChannel& channel, std::string_view room_id, std::uint64_t generation)
+        -> std::optional<database::RoomReloadSnapshot>
+    {
+        auto assembler = ipc::RoomSnapshotAssembler{std::string{room_id}, generation};
+        while (!assembler.complete())
+        {
+            auto const request = ipc::RoomSnapshotPageRequest{std::string{room_id}, generation, assembler.next_page()};
+            auto const reply = channel.send_request(ipc::serialize_room_snapshot_request(request), store_page_timeout);
+            if (!reply.has_value())
+            {
+                LOG_ERROR("Federation worker: main did not answer a snapshot request for room_id=" +
+                          std::string{room_id});
+                return std::nullopt;
+            }
+            auto page = ipc::deserialize_room_snapshot_page(*reply);
+            if (!page.has_value())
+            {
+                log_store_refusal("a snapshot of room_id=" + std::string{room_id}, *reply);
+                return std::nullopt;
+            }
+            if (!assembler.add_page(std::move(*page)))
+            {
+                LOG_ERROR("Federation worker: main's snapshot pages do not fit together for room_id=" +
+                          std::string{room_id});
+                return std::nullopt;
+            }
+        }
+        return assembler.take();
+    }
+
+    // The start-up fill. False only when main will not list its rooms: the worker then does not start, and the
+    // supervisor restarts it. A room main cannot send is logged and left out; its next room_sync fills it.
+    [[nodiscard]] auto fill_store_from_main(ipc::IpcChannel& channel, database::PersistentStore& store) -> bool
+    {
+        auto const room_ids = room_ids_from_main(channel);
+        if (!room_ids.has_value())
+        {
+            return false;
+        }
+        // One room at a time: main holds the pages of one snapshot per channel.
+        auto snapshots = std::vector<database::RoomReloadSnapshot>{};
+        snapshots.reserve(room_ids->size());
+        for (auto const& room_id : *room_ids)
+        {
+            auto snapshot = snapshot_from_main(channel, room_id, 0U);
+            if (!snapshot.has_value())
+            {
+                LOG_ERROR("Federation worker: room_id=" + room_id + " left out of the start-up copy");
+                continue;
+            }
+            snapshots.push_back(std::move(*snapshot));
+        }
+        auto const filled = database::fill_store_from_room_snapshots(store, std::move(snapshots));
+        LOG_INFO("Federation worker: store filled from main: rooms=" + std::to_string(filled) + " of " +
+                 std::to_string(room_ids->size()));
+        // A key-cache miss asks main, which answers from its own key table, public columns only.
+        store.remote_signing_key_source =
+            [&channel](
+                std::string_view server_name) -> std::optional<std::vector<database::PersistentServerSigningKey>> {
+            auto const reply =
+                channel.send_request(ipc::serialize_server_keys_request(server_name), server_keys_timeout);
+            if (!reply.has_value())
+            {
+                return std::nullopt;
+            }
+            return ipc::deserialize_server_keys_result(*reply);
+        };
+        return true;
+    }
+
+    // The channel's dispatch thread starts before the runtime exists, because the start-up fill needs the channel's
+    // replies. Frames main sends meanwhile wait here, in order, until run() opens the gate with the real handler, or
+    // are dropped once it is closed without one. The handler is set once and never changed after, so it is called
+    // without the lock. Close the gate before the channel stops, or the dispatch thread never returns.
+    class DispatchGate final
+    {
+    public:
+        using Handler = std::function<void(std::uint64_t, std::string)>;
+
+        auto dispatch(std::uint64_t id, std::string json) -> void
+        {
+            auto lock = std::unique_lock{mu_};
+            cv_.wait(lock, [this]() {
+                return handler_ != nullptr || closed_;
+            });
+            if (handler_ == nullptr)
+            {
+                return;
+            }
+            // The handler is set once and never changed, and it runs for as long as a request takes; holding mu_
+            // across it would block open() and close() behind that request.
+            lock.unlock(); // LOCK_RELEASE: reviewed — handler_ is immutable once set; never call it under mu_
+            handler_(id, std::move(json));
+        }
+
+        auto open(Handler handler) -> void
+        {
+            {
+                auto const lock = std::lock_guard{mu_};
+                handler_ = std::move(handler);
+            }
+            cv_.notify_all();
+        }
+
+        auto close() -> void
+        {
+            {
+                auto const lock = std::lock_guard{mu_};
+                closed_ = true;
+            }
+            cv_.notify_all();
+        }
+
+    private:
+        std::mutex mu_{};
+        std::condition_variable cv_{};
+        Handler handler_{};
+        bool closed_{false};
+    };
+
+    // Closes the gate when run() leaves, on every path. Declared after the channel, so it runs before the channel's
+    // destructor joins the dispatch thread.
+    class DispatchGateCloser final
+    {
+    public:
+        explicit DispatchGateCloser(DispatchGate& gate) noexcept
+            : gate_{gate}
+        {
+        }
+
+        ~DispatchGateCloser() noexcept
+        {
+            gate_.close();
+        }
+
+        DispatchGateCloser(DispatchGateCloser const&) = delete;
+        auto operator=(DispatchGateCloser const&) -> DispatchGateCloser& = delete;
+        DispatchGateCloser(DispatchGateCloser&&) = delete;
+        auto operator=(DispatchGateCloser&&) -> DispatchGateCloser& = delete;
+
+    private:
+        DispatchGate& gate_;
+    };
+
 } // namespace
 
 WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd,
@@ -619,60 +818,45 @@ auto WorkerEventLoop::run() -> void
     // relay and no password file, and nothing started in this process can send or open one.
     config_.server().email = config::EmailConfig{};
 
-    // ADR-0062 part 2 (finding N1): apply a separate, least-privilege
-    // database connection URI when main delivered one. An invalid db_uri_fd_
-    // is the expected outcome for a SQLite backend or an explicit
-    // federation.worker.allow_shared_database_credentials=true opt-out — in
-    // that case this worker opens the database exactly as main does
-    // (config_'s own uri_file/runtime_role/migration_role, untouched). When
-    // main DID deliver one, the read is fail-closed the same way the auth
-    // key above is: a missing, empty, or oversized URI stops this worker
-    // before it starts a runtime at all, rather than silently falling back
-    // to shared credentials it was never told to use.
-    if (db_uri_fd_.valid())
-    {
-        auto const db_uri = federation_worker::read_worker_database_uri(std::move(db_uri_fd_));
-        if (!db_uri.has_value())
-        {
-            LOG_CRITICAL("Federation worker: failed to read a usable database URI from the inherited db-uri-fd");
-            return;
-        }
-        auto const uri_text =
-            std::string_view{reinterpret_cast<char const*>(db_uri->bytes().data()), db_uri->bytes().size()};
-        federation_worker::apply_worker_database_uri(config_, uri_text);
-    }
+    // ADR-0733: this process opens no database. Its copy names none (main.cpp cleared it before Landlock; cleared again
+    // here whoever built the loop), so the runtime opens an in-memory store, which main fills over the channel below.
+    federation_worker::clear_database_location(config_);
+    // A server on PostgreSQL still hands a worker login over --db-uri-fd until that plumbing is retired: it is closed
+    // here unread.
+    db_uri_fd_ = core::FileDescriptor{};
 
     // Create the IPC channel first; the blocking key exchange completes here
     // before the runtime starts. Both peers derive the same frame cap from the
     // same configured response and request budgets rather than negotiating it.
     auto const max_frame_bytes = homeserver::worker_ipc_frame_bytes(config_);
+    auto dispatch_gate = DispatchGate{};
     auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key,
                                                      max_frame_bytes);
     auto* channel_ptr = channel.get();
+    // The dispatch thread starts now, before the runtime: the start-up fill needs the channel's replies. Frames main
+    // sends meanwhile wait at the gate (declared before the channel, closed before it stops).
+    auto gate_closer = DispatchGateCloser{dispatch_gate};
+    channel->set_request_handler([&dispatch_gate](std::uint64_t id, std::string json) {
+        dispatch_gate.dispatch(id, std::move(json));
+    });
+    channel->start();
 
     // F-27 (ADR-0360): the one lock between the request threads that read this process's store and the
     // room_sync reloads that rewrite it. Declared before the runtime so it outlives every provider that
     // refers to it.
     auto store_guard = federation_worker::StoreReadGuard{};
 
-    // Start a full HomeserverRuntime using the same config as main. The worker
-    // has its own DB connection for remote key resolution and room-version
-    // lookups. It does NOT write events — accepted PDUs are sent to main via
-    // pdu_ingest IPC and main commits them with the authoritative counter.
+    // Start a full HomeserverRuntime using the same config as main, on an in-memory store main fills (ADR-0733). It
+    // does NOT write events: accepted PDUs are sent to main via pdu_ingest IPC and main commits them with the
+    // authoritative counter.
     auto started = homeserver::start_runtime(homeserver::RuntimeStartOptions{
         .config = config_,
         // ADR-0078: the worker never signs and never asks main to sign for it.
         // start_runtime installs a provider that refuses every request, so a
         // compromised worker has no signing capability to abuse.
         .signing_disabled = true,
-        // Applied unconditionally, independent of which database credential
-        // this worker connects with: the worker never needs
-        // server_signing_keys and the other tables table_load_profile_includes
-        // excludes, whether it holds a separate least-privilege role or (in
-        // the allow_shared_database_credentials opt-out) main's own shared
-        // credentials. See database::table_load_profile_includes and
-        // docs/database-persistence.md, "Federation worker least-privilege
-        // role".
+        // The worker's profile: a key-cache miss reads through to main (remote_signing_keys_read_through), and the
+        // main-only start-up work (redaction reconciliation, the stream token epoch) is skipped.
         .database_load_profile = database::TableLoadProfile::federation_worker,
         // main.cpp has already applied the worker hardening (core-dump limit,
         // no_new_privs, capability drop, worker seccomp filter) when this is
@@ -686,6 +870,11 @@ auto WorkerEventLoop::run() -> void
         // this process's Landlock grants, and everything that uses the registry
         // runs in main. Loading them here only logged a rejection per start.
         .load_appservices = false,
+        // ADR-0733: the store is filled from main before the runtime hydrates from it.
+        .fill_store =
+            [channel_ptr](database::PersistentStore& store) {
+                return fill_store_from_main(*channel_ptr, store);
+            },
     });
     if (!started.started)
     {
@@ -982,7 +1171,11 @@ auto WorkerEventLoop::run() -> void
     run_reload_round = [&runtime, &store_guard, channel_ptr, &reload_pool, &reload_coalescer,
                         &run_reload_round](std::string const& room_id) {
         auto const again = reload_coalescer.run_round(room_id, [&](std::uint64_t generation) {
-            auto const ok = store_guard.reload_room(runtime.database.persistent_store, room_id);
+            // ADR-0733: main reads the room under the permit it issued with this generation's room_sync.
+            auto const ok = store_guard.reload_room_from(runtime.database.persistent_store, room_id,
+                                                         [channel_ptr, generation](std::string_view room) {
+                                                             return snapshot_from_main(*channel_ptr, room, generation);
+                                                         });
             if (!ok)
             {
                 LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
@@ -1016,8 +1209,8 @@ auto WorkerEventLoop::run() -> void
         shutdown_cv.notify_all();
     };
 
-    channel->set_request_handler([&runtime, channel_ptr, &local_pool, &relay_pool, &reload_pool, &reload_coalescer,
-                                  &run_reload_round, signal_shutdown](std::uint64_t id, std::string json) {
+    dispatch_gate.open([&runtime, channel_ptr, &local_pool, &relay_pool, &reload_pool, &reload_coalescer,
+                        &run_reload_round, signal_shutdown](std::uint64_t id, std::string json) {
         auto const type = ipc::ipc_json_get_str(json, "type");
         if (type == "fed_request")
         {
@@ -1073,17 +1266,17 @@ auto WorkerEventLoop::run() -> void
         }
         else if (type == "room_sync")
         {
-            // Fire-and-forget: no reply is sent. Re-reads this one room from
-            // the database into our own PersistentStore snapshot, which is
-            // otherwise frozen as of this worker's own startup (see
-            // database::reload_room and docs/architecture.md, "Federation
-            // worker room staleness"). Runs on the reload pool, NOT inline on
-            // this handler: the reload reads the database and then waits for
+            // Fire-and-forget: no reply is sent. Asks main for this one room
+            // again and swaps it into our own PersistentStore copy, which is
+            // otherwise as main sent it at this worker's own startup (ADR-0733,
+            // docs/architecture.md, "Federation worker room staleness"). Runs
+            // on the reload pool, NOT inline on this handler: the reload waits
+            // on main's answer and then waits for
             // the readers of the store (StoreReadGuard) to drain, and main
             // sends this very notification (from its pdu_ingest handler's
             // notify_room_changed) moments before the pdu_ingest response.
             // Blocking the channel's dispatch thread on either would park
-            // every later queued request behind it. The database read takes
+            // every later queued request behind it. The read from main takes
             // no lock; only the in-memory swap excludes readers (F-27,
             // ADR-0360). One accepted PDU is one notification and a reload
             // reads the whole room, so notifications go through the coalescer
@@ -1115,8 +1308,6 @@ auto WorkerEventLoop::run() -> void
             LOG_WARNING("Federation worker: unexpected IPC request type: " + type);
         }
     });
-
-    channel->start();
 
     LOG_INFO("[fed-worker/" + std::to_string(shard_index_) + "] Federation worker ready: threads=" +
              std::to_string(threads_) + " relay_threads=" + std::to_string(config_.federation_worker().relay_threads));

@@ -10,8 +10,8 @@
 
 #include "../FederationSigningTestSupport.hpp"
 #include "../support/EduRelayContext.hpp"
-#include "../support/JoiningThreads.hpp"
 #include "../support/IngestedStateFixture.hpp"
+#include "../support/JoiningThreads.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/MembershipFixtureSupport.hpp"
 #include "../support/RemoteRoomFixture.hpp"
@@ -19,9 +19,9 @@
 #include "BoundedConnect.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
@@ -34,9 +34,9 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
-#include "merovingian/crypto/Ed25519.hpp"
 #include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentDevice.hpp"
@@ -51,34 +51,34 @@
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
-#include "merovingian/federation/OutboundCall.hpp"
-#include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
+#include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
 #include "merovingian/homeserver/WorkerSupervisor.hpp"
-#include "merovingian/homeserver/FederationRequestRouting.hpp"
-#include "merovingian/homeserver/HttpServer.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
-#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
-#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/ipc/FederationIpcFrames.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/net/ThreadPool.hpp"
@@ -88,6 +88,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <netinet/in.h>
 #include <sodium.h>
+#include <sqlite3.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -104,9 +105,11 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <signal.h>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -4733,6 +4736,198 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
                 CHECK(accepted.status == 200U);
                 auto guard = std::lock_guard{runtime.mutex};
                 CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// C44 (ADR-0733): the federation worker children of this test process, found by parent PID and the kernel's
+// 15-byte command name, so a scenario never trusts its own count of what it spawned.
+[[nodiscard]] auto c44_worker_children() -> std::vector<pid_t>
+{
+    auto children = std::vector<pid_t>{};
+    auto error = std::error_code{};
+    for (auto const& entry : std::filesystem::directory_iterator{"/proc", error})
+    {
+        auto const name = entry.path().filename().string();
+        auto pid = pid_t{0};
+        if (std::from_chars(name.data(), name.data() + name.size(), pid).ec != std::errc{} || pid <= 0)
+            continue;
+        auto stat = std::ifstream{entry.path() / "stat"};
+        auto line = std::string{};
+        if (!std::getline(stat, line))
+            continue;
+        // "pid (comm) state ppid ...": the command name may hold spaces, so read after its closing parenthesis.
+        auto const close = line.rfind(')');
+        auto const open = line.find('(');
+        if (close == std::string::npos || open == std::string::npos || close + 4U >= line.size())
+            continue;
+        auto const comm = line.substr(open + 1U, close - open - 1U);
+        auto const after = std::string_view{line}.substr(close + 4U);
+        auto parent = pid_t{0};
+        std::ignore = std::from_chars(after.data(), after.data() + after.size(), parent);
+        if (parent == ::getpid() && comm.starts_with("merovingian-fed"))
+            children.push_back(pid);
+    }
+    return children;
+}
+
+// The descriptors `pid` holds whose target is one of `paths`.
+[[nodiscard]] auto c44_descriptors_naming(pid_t pid, std::vector<std::filesystem::path> const& paths) -> std::size_t
+{
+    auto count = std::size_t{0U};
+    auto error = std::error_code{};
+    for (auto const& entry :
+         std::filesystem::directory_iterator{std::filesystem::path{"/proc"} / std::to_string(pid) / "fd", error})
+    {
+        auto link_error = std::error_code{};
+        auto const target = std::filesystem::read_symlink(entry.path(), link_error);
+        if (link_error)
+            continue;
+        count += static_cast<std::size_t>(std::ranges::count(paths, target));
+    }
+    return count;
+}
+
+// The process state letter /proc/<pid>/stat reports ('T' once SIGSTOP has taken effect).
+[[nodiscard]] auto c44_process_state(pid_t pid) -> char
+{
+    auto stat = std::ifstream{std::filesystem::path{"/proc"} / std::to_string(pid) / "stat"};
+    auto line = std::string{};
+    std::ignore = std::getline(stat, line);
+    auto const close = line.rfind(')');
+    return close == std::string::npos || close + 2U >= line.size() ? '?' : line[close + 2U];
+}
+
+// A write from a connection of its own that does not wait at all (busy_timeout 0): SQLITE_BUSY if anyone holds a
+// lock on the file that a writer must wait for.
+[[nodiscard]] auto c44_write_without_waiting(std::filesystem::path const& database) -> int
+{
+    auto* raw = static_cast<sqlite3*>(nullptr);
+    if (sqlite3_open(database.string().c_str(), &raw) != SQLITE_OK)
+    {
+        sqlite3_close(raw);
+        return SQLITE_CANTOPEN;
+    }
+    sqlite3_busy_timeout(raw, 0);
+    auto const result =
+        sqlite3_exec(raw, "CREATE TABLE IF NOT EXISTS c44_probe (x INTEGER); INSERT INTO c44_probe (x) VALUES (1)",
+                     nullptr, nullptr, nullptr);
+    sqlite3_close(raw);
+    return result;
+}
+
+// Sends SIGCONT on scope exit, so a failed assertion never leaves a stopped worker behind for shutdown to kill.
+class C44ContinueOnExit final
+{
+public:
+    explicit C44ContinueOnExit(pid_t pid) noexcept
+        : pid_{pid}
+    {
+    }
+    C44ContinueOnExit(C44ContinueOnExit const&) = delete;
+    auto operator=(C44ContinueOnExit const&) -> C44ContinueOnExit& = delete;
+    ~C44ContinueOnExit() noexcept
+    {
+        std::ignore = ::kill(pid_, SIGCONT);
+    }
+
+private:
+    pid_t pid_;
+};
+
+} // namespace
+
+// C44 (ADR-0733): the federation worker opened main's SQLite file read-only, and a SHARED lock it held (a stalled or
+// compromised reader) made every write in main wait its busy timeout and fail. The worker now opens no database: main
+// reads each room for it and sends the rows over the channel. This drives a real worker on a SQLite server.
+SCENARIO("A federation worker on a SQLite server opens no database and cannot block main's writes",
+         "[integration][federation-worker][c44][worker-no-database][sqlite]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a resident room on a SQLite server, served by one real worker that has loaded it from main")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+        auto const tmp = unique_temp_dir("merovingian-c44-");
+        auto cleanup = Fed10TempDirectory{tmp};
+        auto config = make_federation_worker_config(tmp);
+        config.server().server_name = local_server;
+        config.federation_worker().shards = 1U;
+        // The worker's own configuration names a database that does not exist, in a directory that does not exist:
+        // a worker that opened what its configuration names could not start or reload (and its Landlock grant of that
+        // directory would fail). One that gets its rows from main serves main's room regardless.
+        auto worker_view = config;
+        worker_view.database().sqlite_path = (tmp / "absent" / "never-opened.sqlite3").string();
+        auto const config_path = tmp / "worker.conf";
+        write_worker_config(config_path, worker_view);
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        auto const room_id = std::string{"!c44:"} + local_server;
+        fed10_persist_remote_room(runtime, room_id);
+        runtime.federation_proxy = std::make_unique<FederationProxy>(
+            config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+        [[maybe_unused]] auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+        REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+        auto& proxy = *runtime.federation_proxy;
+        // One reload proves the worker started and serves the room main sent it, whatever its configuration names.
+        proxy.notify_room_changed(room_id);
+        auto const loaded = fed10_wait_for_room_sync(proxy, room_id, "ok", 0U);
+        REQUIRE(loaded > 0U);
+        auto const database_path = std::filesystem::path{config.database().sqlite_path};
+        auto const database_files =
+            std::vector<std::filesystem::path>{database_path, database_path.string() + "-journal",
+                                               database_path.string() + "-wal", database_path.string() + "-shm"};
+        auto const workers = c44_worker_children();
+        REQUIRE(workers.size() == 1U);
+        auto const worker = workers.front();
+
+        WHEN("the worker's open descriptors are listed")
+        {
+            auto const naming_database = c44_descriptors_naming(worker, database_files);
+
+            THEN("none of them is main's database file or one of its journals, and none is the one its configuration "
+                 "names")
+            {
+                CHECK(naming_database == 0U);
+                CHECK(c44_descriptors_naming(worker, {std::filesystem::path{worker_view.database().sqlite_path}}) ==
+                      0U);
+                CHECK(loaded > 0U);
+            }
+        }
+
+        WHEN("the worker is stopped with SIGSTOP while a reload of the room is outstanding, and main writes")
+        {
+            auto const continue_on_exit = C44ContinueOnExit{worker};
+            REQUIRE(::kill(worker, SIGSTOP) == 0);
+            auto const stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+            while (c44_process_state(worker) != 'T' && std::chrono::steady_clock::now() < stop_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            REQUIRE(c44_process_state(worker) == 'T');
+            proxy.notify_room_changed(room_id);
+            auto const probe = c44_write_without_waiting(database_path);
+            auto const late_member = std::string{"@late:"} + local_server;
+            auto const stored =
+                database::store_membership(runtime.database.persistent_store, {room_id, late_member, "join"});
+            auto const naming_database = c44_descriptors_naming(worker, database_files);
+            REQUIRE(::kill(worker, SIGCONT) == 0);
+            auto const reloaded = fed10_wait_for_room_sync(proxy, room_id, "ok", loaded);
+
+            THEN("main's writes do not wait on the stopped worker, and the worker reloads the room once it runs again")
+            {
+                CHECK(probe == SQLITE_OK);
+                CHECK(stored == database::MembershipStoreResult::stored);
+                CHECK(naming_database == 0U);
+                CHECK(reloaded > loaded);
             }
         }
     }

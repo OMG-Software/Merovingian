@@ -301,6 +301,11 @@ struct PersistentStore final
     // `server_signing_keys_mutex`; rows are only appended, so it is kept by the two writers below and trusted only
     // while `in_step` the row count, otherwise a reader scans.
     RowGroupIndex server_signing_key_index{};
+    // Where refresh_remote_signing_keys reads one server's public key rows when set (ADR-0733): the federation worker
+    // opens no database and sets this to ask main over its IPC channel. nullopt is a failed read. Unset everywhere
+    // else, where the backing database is read.
+    std::function<std::optional<std::vector<PersistentServerSigningKey>>(std::string_view server_name)>
+        remote_signing_key_source{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
     // Position in `federation_transactions` of each transaction ID (ADR-0441). Kept by
@@ -762,8 +767,11 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // so a federation worker (whose mirror is otherwise a snapshot taken when it
 // started) can see a key main verified and cached since, without ever reading
 // this server's signing secret. A row already held with a secret is left as it
-// is. A successful no-op for an in-memory store. Returns false only on a
-// connection or query failure, which leaves the mirror unchanged.
+// is. When the store has a `remote_signing_key_source` (the federation worker,
+// ADR-0733), that is asked instead of a database, and only the named server's
+// rows without a secret are taken from its answer. Otherwise a successful no-op
+// for an in-memory store. Returns false only on a connection, query or source
+// failure, which leaves the mirror unchanged.
 [[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;

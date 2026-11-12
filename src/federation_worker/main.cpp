@@ -6,6 +6,7 @@
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
+#include "merovingian/federation_worker/WorkerDatabaseConfig.hpp"
 #include "merovingian/homeserver/LibraryVersions.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/LandlockHardening.hpp"
@@ -181,6 +182,10 @@ auto main(int argc, char const* const* argv) -> int
     auto db_uri_fd = args.db_uri_fd.has_value() ? merovingian::core::FileDescriptor{raw_db_uri_fd}
                                                 : merovingian::core::FileDescriptor{};
     auto const threads = parse_result.config.federation_worker().threads;
+    // ADR-0733: the worker opens no database; main sends it the rows it reads. Its copy of the configuration names no
+    // database from here on, so the Landlock rules below grant no database directory and the runtime opens none.
+    auto worker_config = parse_result.config;
+    merovingian::federation_worker::clear_database_location(worker_config);
 
     // ADR-0062 part 3: restrict the worker's own filesystem access with
     // Landlock before doing anything else that follows. Applied
@@ -195,12 +200,13 @@ auto main(int argc, char const* const* argv) -> int
     // seccomp allowlist never has to carry three syscalls it needs for one
     // startup step and never again.
     {
-        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(parse_result.config);
+        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(worker_config);
         // Fail closed if any rule would grant access to a configured secret
         // (e.g. a master key placed beside the SQLite database, whose
         // directory is granted read-write). Refused even with
         // allow_without_landlock: this is a secret-placement error.
         if (auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                // The secrets the operator configured, database URI files included, whatever the worker's copy says.
                 landlock_rules, merovingian::platform::worker_landlock_secret_paths(parse_result.config));
             exposure.has_value())
         {
@@ -263,7 +269,8 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     auto loop = merovingian::federation_worker::WorkerEventLoop{
-        std::move(ipc_fd), std::move(ipc_key_fd), std::move(db_uri_fd), parse_result.config, threads, args.shard_index};
+        std::move(ipc_fd), std::move(ipc_key_fd), std::move(db_uri_fd), std::move(worker_config),
+        threads,           args.shard_index};
     loop.run();
 
     return 0;

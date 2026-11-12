@@ -410,8 +410,17 @@ separate process on the same host:
   "Operator master key reachable from the federation worker" — part 3 (Linux
   Landlock, below) closes the filesystem-level residual gap this entry used
   to record.
+* **No database at all (1.0.1, C44, [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)).**
+  The worker's configuration copy is switched to `database.backend=memory` with
+  every database location cleared (`federation_worker::clear_database_location`)
+  before the Landlock rules are built, and its store is filled by main over the
+  IPC channel. A SHARED lock it held on main's SQLite file used to make every
+  write in main wait its busy timeout and fail; it now holds no descriptor,
+  lock, login or Landlock grant on main's database. The PostgreSQL login below
+  is still handed over `--db-uri-fd` until it is retired, and the worker closes
+  it unread.
 * **A separate, least-privilege database login, delivered the same way**
-  (ADR-0062 part 2): when `database.backend=postgresql`,
+  (ADR-0062 part 2, superseded by ADR-0733): when `database.backend=postgresql`,
   `WorkerPool::WorkerPool` reads `federation.worker.database_uri_file` once
   (same owner-only-file validation as `database.uri_file`) and hands each
   `WorkerSupervisor` its own `core::SecretBuffer` copy of the bytes.
@@ -435,19 +444,20 @@ separate process on the same host:
   immediately before the worker seccomp filter below (Landlock's three
   syscalls are not on that filter's allowlist — applying Landlock first
   avoids adding a startup-only capability to it permanently) and before the
-  event loop opens the database or handles any inbound request. It queries
+  event loop starts or handles any inbound request. It queries
   the kernel's Landlock ABI version, builds a rights mask downgraded to
   whatever that ABI supports, and grants exactly the paths
   `platform::build_worker_landlock_rules()` derives from the worker's own
-  config copy: the SQLite database directory (read-write, required, when
-  `database.backend=sqlite`) plus a fixed set of best-effort, read-only or
+  config copy, which names no database (ADR-0733), so no database directory is
+  granted: a fixed set of best-effort, read-only or
   read-execute OS-integration paths (CA trust store candidates, resolver
   configuration, NSS/dynamic-linker library directories, timezone data).
   The master key file, both database URI files, TLS private keys and every
   `appservice.registration_files` entry (which hold the appservice tokens) are
   never in the rule set, and the worker refuses to start if any rule covers
-  one of them — a rule on a directory grants everything beneath it, so a
-  secret kept beside the SQLite database would otherwise be exposed. The CA
+  one of them — a rule on a directory grants everything beneath it. The
+  secrets are taken from the operator's configuration, not the worker's
+  cleared copy. The CA
   grants cover only the certificate stores, never all of `/etc/ssl` or
   `/etc/pki`, which hold the conventional private-key directories. Because a
   seccomp filter survives `execve`, the worker inherits the main server's

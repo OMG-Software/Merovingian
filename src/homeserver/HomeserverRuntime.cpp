@@ -849,7 +849,8 @@ auto hydrate_local_database(LocalDatabase& database, database::TableLoadProfile 
 }
 
 auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
-                              database::TableLoadProfile profile) -> LocalDatabase
+                              database::TableLoadProfile profile,
+                              std::function<bool(database::PersistentStore&)> const& fill_store) -> LocalDatabase
 {
     auto database = LocalDatabase{};
     database.remote_signing_keys_read_through = profile == database::TableLoadProfile::federation_worker;
@@ -883,6 +884,11 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         break;
     }
     if (!opened.ok)
+    {
+        return database;
+    }
+    // ADR-0733: the federation worker's store is in memory and filled from main before anything reads it.
+    if (fill_store && !fill_store(opened.store))
     {
         return database;
     }
@@ -1030,7 +1036,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     },
                    observability::LogEventSeverity::info);
 
-    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile);
+    runtime.database =
+        bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile, opts.fill_store);
     // The default ctor installed `audit_sink_scope` against the
     // empty `LocalDatabase{}` placeholder. Now that `database` holds
     // the real connection state, re-seat the scope so audit rows

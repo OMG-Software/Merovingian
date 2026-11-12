@@ -3492,10 +3492,14 @@ namespace
             // PDU verification needs a signing key, not discovery metadata.
             // Read it directly so cached verification cannot accidentally run
             // the full resolver's discovery cascade (FED-10).
+            // A federation worker's key mirror starts empty and holds only what main sent it (ADR-0733), so a
+            // miss asks main for that one server's public rows before the lookup gives up: a key main already
+            // verified needs no discovery and no fetch here, as when the worker loaded main's table at start.
             runtime.federation.cached_pdu_key_lookup =
-                [&store = runtime.database.persistent_store, own_name = runtime.config.server().server_name,
-                 key_clock](std::string_view server_name,
-                            std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
+                [&store = runtime.database.persistent_store, own_name = runtime.config.server().server_name, key_clock,
+                 read_through = runtime.database.remote_signing_keys_read_through](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
                 if (server_name == own_name)
                 {
                     return federation::find_own_server_signing_key(store, server_name, key_id);
@@ -3504,6 +3508,14 @@ namespace
                 if (key.has_value() && federation::cached_remote_key_usable(*key, key_clock()))
                 {
                     return key;
+                }
+                if (read_through && database::refresh_remote_signing_keys(store, server_name))
+                {
+                    key = federation::find_cached_remote_key(store, server_name, key_id);
+                    if (key.has_value() && federation::cached_remote_key_usable(*key, key_clock()))
+                    {
+                        return key;
+                    }
                 }
                 return std::nullopt;
             };

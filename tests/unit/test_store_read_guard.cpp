@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -253,6 +254,66 @@ SCENARIO("a reader never sees a room half way through a reload, so a denied serv
                 REQUIRE(allowed_wrongly.load() == 0U);
                 REQUIRE(torn.load() == 0U);
                 REQUIRE_FALSE(fed::room_server_acl_allows(store, room_id, denied_server));
+            }
+        }
+    }
+}
+
+// C44 (ADR-0733): the worker opens no database and reloads a room by asking main for it. The read is the caller's;
+// the guard holds no store lock across it, so a reader waits only for the swap and never for main.
+SCENARIO("a reload through a supplied read swaps main's snapshot in, and holds no store lock while it reads",
+         "[federation_worker][store_read_guard][c44][reload-from]")
+{
+    GIVEN("main's database with an ACL denying a server, and a worker's in-memory store that has not seen it")
+    {
+        auto fixture = MainAndWorker{};
+        fixture.main_denies_the_server();
+        auto store = db::PersistentStore{};
+        REQUIRE(fed::room_server_acl_allows(store, room_id, denied_server));
+        auto state = fed::FederationRuntimeState{};
+        state.room_server_acl_provider = [&store](std::string_view room, std::string_view server) {
+            return fed::room_server_acl_allows(store, room, server);
+        };
+        auto guard = worker::StoreReadGuard{};
+        guard.wrap_store_readers(state);
+
+        WHEN("the room is reloaded with a read that answers from main's database and, meanwhile, a reader asks")
+        {
+            auto reads = std::size_t{0U};
+            auto answered_during_read = std::optional<bool>{};
+            auto const reloaded = guard.reload_room_from(store, room_id, [&](std::string_view room) {
+                ++reads;
+                // A wrapped reader on another thread, joined before the read returns: it can only finish if the
+                // guard holds no lock on the store while the read runs.
+                {
+                    auto readers = merovingian::tests::JoiningThreads{};
+                    readers.emplace_back([&] {
+                        answered_during_read = state.room_server_acl_provider(room_id, denied_server);
+                    });
+                }
+                return db::load_room_snapshot(fixture.main_open.store, room);
+            });
+
+            THEN("the read ran once, the reader was answered from the old copy, and the store now enforces the ACL")
+            {
+                REQUIRE(reloaded);
+                REQUIRE(reads == 1U);
+                REQUIRE(answered_during_read == std::optional<bool>{true});
+                REQUIRE_FALSE(fed::room_server_acl_allows(store, room_id, denied_server));
+            }
+        }
+
+        WHEN("the room is reloaded with a read that fails")
+        {
+            auto const reloaded = guard.reload_room_from(store, room_id, [](std::string_view) {
+                return std::optional<db::RoomReloadSnapshot>{};
+            });
+
+            THEN("the reload fails and the store is untouched")
+            {
+                REQUIRE_FALSE(reloaded);
+                REQUIRE(fed::room_server_acl_allows(store, room_id, denied_server));
+                REQUIRE(store.rooms.empty());
             }
         }
     }

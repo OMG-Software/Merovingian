@@ -39,17 +39,33 @@ rows in one read transaction (`load_room_snapshot`, ADR-0161); and on a key-cach
 ## Decision Outcome
 
 Chosen option: (a), on both backends (owner, 2026-11-12). The worker's configuration copy is switched to
-`database.backend=memory` before Landlock and the runtime start; it is given no database path, URI, descriptor or
-Landlock grant, and refuses to start if its configuration would still open one.
+`database.backend=memory` before Landlock and the runtime start (`federation_worker::clear_database_location`, in
+`main.cpp` before the Landlock rules are built and again in `WorkerEventLoop::run()` before the runtime starts, as the
+master-key path is cleared); it is given no database path, URI, descriptor or Landlock grant.
 
 * **Start-up.** Before it starts its runtime the worker asks main for the room list (`room_list`, paged) and then each
-  room in turn (`room_snapshot`, paged), and builds its store from them, so its runtime hydrates exactly as before
-  (rosters included) from memory. The scope is every room, as before; only the shard's own rooms get `room_sync`.
+  room in turn (`room_snapshot`, paged), and builds its store from them (`RuntimeStartOptions::fill_store`, before
+  hydration), so its runtime hydrates exactly as before (rosters included) from memory. The scope is every room, as
+  before; only the shard's own rooms get `room_sync`. Rooms are fetched one at a time, not pipelined: main holds the
+  pages of one snapshot per channel. A room list main refuses or does not answer stops the worker, and the supervisor
+  restarts it; a room main cannot send is logged and left out, and its next `room_sync` fills it, because one bad
+  room must not keep every other room's federation down. A server on the `memory` backend lists no rooms, so its
+  workers start empty, as they did when each opened a memory store of its own. The channel is started before the
+  runtime, so the fill can have its replies; frames main sends meanwhile wait behind a gate in front of the request
+  handler, which opens once the runtime exists and closes before the channel stops.
 * **Reloads.** `room_sync` stays a notification. The reload, still coalesced per room on the reload thread (ADR-0623),
   asks main for the room and applies it with `apply_room_snapshot` under the `StoreReadGuard` (ADR-0360). Whole-room
   snapshots per coalesced round; no deltas.
-* **Keys.** On a key-cache miss the worker asks main for one server's public key rows (`server_keys`); main answers from
-  its in-memory table, public columns only, never its own keys' secrets and never the network.
+* **Keys.** On a key-cache miss the worker asks main for one server's public key rows (`server_keys`, through
+  `PersistentStore::remote_signing_key_source`); main answers from its in-memory table, public columns only, never a
+  row that holds a secret (so never this server's own keys) and never the network. The worker starts with no keys and
+  learns each server's on its first miss. The miss is taken in both of the worker's lookups: `cached_pdu_key_lookup`
+  (PDU and X-Matrix verification, which never runs discovery) and the resolver (`KeyMirrorRefresh::on_miss`). Only the
+  resolver would have been enough for a key main fetched after the worker started, as before; but every key now starts
+  missing, and a key main already verified must not need discovery of its server before the worker can use it, which
+  the resolver's cache hit requires. It cannot resolve this server's own keys: the resolver takes those only
+  from rows that hold the secret (FED-1, ADR-0083), which a PostgreSQL worker never had and a SQLite worker no longer
+  has.
 * **Main's side.** Main reads a room with `database::load_room_snapshot` from its own database on a snapshot thread,
   never under `runtime.mutex`, in one read transaction that is closed before the first page is sent: a worker that reads
   slowly cannot hold a lock in main's database through main.

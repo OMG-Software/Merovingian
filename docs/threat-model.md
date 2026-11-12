@@ -598,6 +598,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   would still write), and its Landlock grant on the database directory is
   read-only, so even a raw writable `open()` fails.
 
+  **Superseded in 1.0.1 (C44, ADR-0733):** the worker opens no database on
+  either backend and gets no Landlock grant on the database directory; main
+  sends it the rows it reads over the IPC channel. The two paragraphs above
+  describe the arrangement this replaced.
+
   **Part 3, Linux Landlock: closed.** The worker now restricts its own
   filesystem access with `platform::apply_worker_landlock()`
   (`landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`),
@@ -652,6 +657,19 @@ threat it closes; the controls above are the standing defences these reinforce.
   profiles kill `TIOCSTI` and `TIOCLINUX`. Residual: stdout and stderr may still be that terminal,
   and the commands that change its settings stay allowed; they cannot run anything. See
   [ADR-0731](adr/0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md).
+- **A compromised worker could stop every write in main by holding a read lock (run-3 audit C44,
+  closed in 1.0.1):** on SQLite the worker opened main's database file read-only, and read-only stops
+  writes, not locks: an open read transaction, or a bare `fcntl(F_RDLCK)` on the lock bytes, made every
+  COMMIT in main wait its 5 s busy timeout and fail while the worker's channel stayed healthy. On
+  PostgreSQL its SELECT-only login could exhaust connections, hold main's migration advisory lock, and
+  pin the xmin horizon with a transaction left open. The worker now opens no database on either
+  backend: its configuration copy names none and gets no Landlock grant, and main sends it each room
+  it reads over the IPC channel, read in a transaction main closes before the first page is sent, and
+  only under a permit main issued. Residual: the worker still reads every room main lists, and a
+  crash-looping worker makes main read every room once per restart, bounded by the supervisor's
+  back-off. See
+  [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md) and
+  [ADR-0735](adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md).
 - **A compromised worker could open any socket family (ISO-8,
   2026-09-29 security audit, closed):** `socket()` and `socketpair()` were
   unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker
@@ -2679,7 +2697,7 @@ Four ways a remote server that an admin or a room had denied could keep federati
 nothing, all from trusting the worker's view or the hook's transport.
 
 - **Admin federation policy rules not enforced on worker-routed requests (F-21, ADR-0358).** The rule was read in the
-  process that handled the request. A worker's store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so
+  process that handled the request. A worker's store held no rules on PostgreSQL and a start-up snapshot on SQLite (since 1.0.1 none on either), so
   a denied or quarantined origin was served and its PDUs accepted. Mitigated: `FederationProxy::handle` judges the
   verified origin in main before any branch (403 `M_FORBIDDEN`), the policy server is asked there once, and the main-side
   relay handlers judge the local rule again for requests in flight when a rule is added. The origin in a

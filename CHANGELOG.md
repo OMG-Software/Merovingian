@@ -241,7 +241,7 @@ prepared state row now moves the revision after the row is written, as well as a
 * On SQLite a compromised federation worker could hold a read lock on main's database file and make every write in main
   fail after its 5 s busy timeout, while its IPC channel stayed healthy (run-3 finding C44,
   `resource-exhaustion.sqlite-worker.read-lock-held-by-compromised-worker-fails-every-main-write`). On PostgreSQL its
-  SELECT-only login could still exhaust connections, hold advisory locks or pin the vacuum horizon. The worker is to get
+  SELECT-only login could still exhaust connections, hold advisory locks or pin the vacuum horizon. The worker now gets
   every row it reads from main over its IPC channel, on both backends (ADR-0733).
 * A frame that cannot be written whole now ends the IPC channel: it is marked unhealthy and shut down, so the supervisor
   replaces the worker. Before, `send_response` ignored the failure and the channel kept reporting healthy with its
@@ -265,6 +265,21 @@ prepared state row now moves the revision after the row is written, as well as a
   `[c44][worker-snapshot-service]` (permits, a race for one permit, no lock across the read, paging and expiry) and
   `[integration][c44][worker-snapshot-lock]` (a real SQLite file: a write without waiting is refused during the read
   and succeeds when page 0 is ready).
+* The worker opens no database. Its configuration copy is switched to the memory backend with every database location
+  cleared before its Landlock rules are built (so the database directory is no longer granted) and again before its
+  runtime starts. It starts its IPC channel first, with the request handler held behind a gate until the runtime
+  exists, and fills its store from main before hydration: the room list, then each room's snapshot, one at a time. A
+  room list main refuses stops the worker; a room main cannot send is left out until its next `room_sync`. A
+  `room_sync` reload asks main for the room at that generation and swaps it in under the store guard with no lock held
+  across the request (`StoreReadGuard::reload_room_from`). A key-cache miss asks main for the server's public keys
+  (`PersistentStore::remote_signing_key_source`), in the PDU and X-Matrix key lookup as well as the resolver, so a key
+  main already verified is used without discovering its server first. On SQLite the worker no longer holds users, token hashes, the sealed
+  signing secret, account data, keys, to-device rows or policy rules. A PostgreSQL server's worker login, still handed
+  over `--db-uri-fd`, is closed unread. Tests: `[integration][c44][worker-no-database]` (a real worker on a SQLite
+  server holds no descriptor of the database or its journals, and while it is stopped with SIGSTOP a write that does
+  not wait succeeds in main; it reloads once continued), `[c44][worker-database-config]`, `[c44][key-source]` and
+  `[c44][reload-from]`; the existing real-worker `[integration][worker]` scenarios (`[fed10-worker-http]`,
+  `[txn-dedupe]`, `[f21]`) cover the key lookup.
 
 ## 1.0.0
 

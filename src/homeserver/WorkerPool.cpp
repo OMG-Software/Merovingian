@@ -1459,7 +1459,13 @@ namespace
         source.postgresql_conninfo = main_store.postgresql_conninfo;
         source.postgresql_runtime_role = main_store.postgresql_runtime_role;
         auto sources = WorkerSnapshotSources{};
-        sources.list_rooms = [source]() {
+        sources.list_rooms = [source]() -> std::optional<std::vector<std::string>> {
+            // An in-memory server has no database to list: its workers start empty, as they did when each opened
+            // a memory store of its own.
+            if (source.backend == database::PersistentStoreBackend::memory)
+            {
+                return std::vector<std::string>{};
+            }
             return database::load_room_ids(source);
         };
         sources.read_room = [source](std::string_view room_id) {

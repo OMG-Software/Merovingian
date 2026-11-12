@@ -536,8 +536,11 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 auto wake_typing_expiry(HomeserverRuntime& rt) -> void;
 
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
+// `fill_store`, when set, fills the opened store before hydration (RuntimeStartOptions::fill_store, ADR-0733); a
+// false result returns the database unopened.
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
-                                            database::TableLoadProfile profile = database::TableLoadProfile::full)
+                                            database::TableLoadProfile profile = database::TableLoadProfile::full,
+                                            std::function<bool(database::PersistentStore&)> const& fill_store = {})
     -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
 // Allocates the next timeline stream_ordering and persists the new
