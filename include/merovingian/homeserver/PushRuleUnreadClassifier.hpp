@@ -6,6 +6,7 @@
 #include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/PushRoomFacts.hpp"
+#include "merovingian/push/PushEvaluationBudget.hpp"
 #include "merovingian/push/PushRuleset.hpp"
 #include "merovingian/sync/HistoryVisibility.hpp"
 #include "merovingian/sync/UnreadEventClassifier.hpp"
@@ -72,6 +73,11 @@ public:
     [[nodiscard]] auto counted_after(std::string_view room_id) -> std::optional<std::uint64_t> override;
     [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event)
         -> sync::UnreadEventOutcome override;
+    // Makes every classify() draw its glob steps from `budget`, which must outlive the classifier, instead of a fresh
+    // budget per event (C15). With the budget spent, an event is not counted (a glob that cannot be afforded does not
+    // match), and the caller should stop (evaluation_budget_exhausted).
+    auto use_evaluation_budget(push::PushEvaluationBudget& budget) noexcept -> void;
+    [[nodiscard]] auto evaluation_budget_exhausted() const noexcept -> bool;
 
     // Whole store tables walked so far: memberships, current state and profiles, each
     // counted once per walk (the visibility filter's own indexes are not). It does not grow with
@@ -112,6 +118,7 @@ private:
     std::string profile_display_name_{};
     std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
     std::uint64_t table_walks_{0U};
+    std::optional<std::reference_wrapper<push::PushEvaluationBudget>> evaluation_budget_{};
 };
 
 // The stream position of the event that began `user`'s current join of `room_id`: the earliest

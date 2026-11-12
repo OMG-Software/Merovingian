@@ -8,17 +8,18 @@
 #include "merovingian/database/PersistentPusher.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentThreePidBinding.hpp"
+#include "merovingian/email/MailboxAddress.hpp"
+#include "merovingian/email/NotificationEmail.hpp"
+#include "merovingian/email/SmtpClient.hpp"
 #include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/SmtpSendResult.hpp"
 #include "merovingian/email/SmtpSettings.hpp"
 #include "merovingian/email/UnreadNotificationEmail.hpp"
-#include "merovingian/email/MailboxAddress.hpp"
-#include "merovingian/email/NotificationEmail.hpp"
-#include "merovingian/email/SmtpClient.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/PushBadgeBudget.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
@@ -114,7 +115,16 @@ namespace
         }
         auto const ruleset = load_push_ruleset(
             store, key.user_id, static_cast<std::size_t>(runtime.config.server().client_api.max_push_rules_per_user));
-        auto const unread = push_badge_unread_count(runtime, key.user_id, ruleset);
+        // One hold of the lock, one badge budget (C15, ADR-0722): the rows the walk visits and the glob steps of every
+        // rule evaluation it runs are bounded together, not per row.
+        auto badge_budget = PushBadgeBudget{};
+        auto const counted = push_badge_unread_count(runtime, key.user_id, ruleset, badge_budget);
+        if (!counted.has_value())
+        {
+            // Not reachable with a fresh budget; if it ever is, the digest is tried again later.
+            return PreparedEmail{push::EmailDigestOutcome::failed, std::nullopt, 0U};
+        }
+        auto const unread = *counted;
         if (unread == 0U)
         {
             return PreparedEmail{push::EmailDigestOutcome::nothing_unread, std::nullopt, 0U};

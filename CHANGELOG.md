@@ -52,6 +52,13 @@ findings that needed validation.
   cannot use the quarter of `server.push.max_in_flight_deliveries` kept for prompt gateways. While that reserve is in
   use, one gateway host may carry only a quarter of its usual share.
 
+### One event's push badges share one rule-evaluation budget (ADR-0722)
+
+* The unread badge computed for a notification ran a full push-rule evaluation, each with a fresh glob budget, for every
+  event row it visited, so one wildcard rule and a room of large events could hold the server lock for seconds per
+  event. All the badges of one event now share a single glob step budget; when it is spent the badge is a lower bound
+  and the walk stops. The unread count in the email digest (one walk per due email) takes the same budget.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

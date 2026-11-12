@@ -72,7 +72,7 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
 11a. **Every `content.body` match draws from one budget per evaluation and searches a bounded prefix** (ADR-0343).
     `evaluate_push_rules` gives all of a recipient's body globs `max_push_glob_steps_per_evaluation` steps together
     and searches the first `max_push_glob_body_bytes`; a glob that runs out does not match and the result carries
-    `glob_budget_exhausted`. A new matcher over a sender-chosen value takes steps from the same `GlobBudget`.
+    `glob_budget_exhausted`. A new matcher over a sender-chosen value takes steps from the same `GlobBudget`. Evaluations that run many times for one request (the push badge of an event) lend one `PushEvaluationBudget` to all of them through the `evaluate_push_rules` overload that takes it (ADR-0722).
     `PushRuleUnreadClassifier` is bounded by calling the same function.
     Every other `event_match` key draws from the same budget (ADR-0607): a pattern with a wildcard does
     not match a value over `max_push_glob_key_value_bytes` (4096), a deliberate departure from the spec's

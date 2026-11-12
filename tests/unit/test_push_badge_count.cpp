@@ -13,6 +13,12 @@
 #include "merovingian/homeserver/PushBadgeCount.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
+#include "merovingian/push/PushCondition.hpp"
+#include "merovingian/push/PushConditionKind.hpp"
+#include "merovingian/push/PushEvaluationBudget.hpp"
+#include "merovingian/push/PushRule.hpp"
+#include "merovingian/push/PushRuleKind.hpp"
+#include "merovingian/push/PushRuleset.hpp"
 #include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -660,6 +666,92 @@ SCENARIO("Which recipients are left without a badge changes from one event to th
             THEN("the start is zero")
             {
                 REQUIRE(merovingian::homeserver::push_badge_draw_start(7U, 0U) == 0U);
+            }
+        }
+    }
+}
+
+// C15 (ADR-0722): each row the badge walk visits runs a rule evaluation, and each used to get a fresh glob budget, so
+// an event's badge cost the row budget times 2^21 steps under the runtime lock.
+SCENARIO("The badge walk of one event stops when its rule evaluations have spent their shared glob budget",
+         "[push][push-badge][c15]")
+{
+    GIVEN("a recipient with one wildcard rule, and 60 messages whose body field is 4096 bytes the rule must scan")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        join_room(store, "!r:example.org");
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        auto const heavy = std::string(4096U, 'a');
+        for (auto stream = std::uint64_t{10U}; stream < 70U; ++stream)
+        {
+            add_event(store, "$r" + std::to_string(stream), "!r:example.org", bob,
+                      std::string{R"({"type":"m.room.message","sender":")"} + std::string{bob} +
+                          R"(","room_id":"!r:example.org","content":{"msgtype":"m.text","body":"hi","x":")" + heavy +
+                          R"("}})",
+                      stream);
+        }
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+
+        auto rule = merovingian::push::PushRule{};
+        rule.rule_id = "heavy";
+        rule.kind = merovingian::push::PushRuleKind::override_kind;
+        rule.notify = true;
+        auto condition = merovingian::push::PushCondition{};
+        condition.kind = merovingian::push::PushConditionKind::event_match;
+        condition.key = "content.x";
+        condition.pattern = "*" + std::string(508U, 'a') + "b";
+        rule.conditions.push_back(std::move(condition));
+        auto ruleset = merovingian::push::PushRuleset{};
+        ruleset.override_rules.push_back(std::move(rule));
+
+        WHEN("the event's badge is counted")
+        {
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset, budget);
+
+            THEN("the walk ended capped after the glob budget was spent, within a few rows, not after every row")
+            {
+                REQUIRE(count.has_value());
+                REQUIRE(count->capped);
+                REQUIRE(count->rows_visited <= 3U);
+                REQUIRE(budget.glob.exhausted);
+                REQUIRE(budget.glob.spent <= merovingian::push::max_push_glob_steps_per_evaluation);
+                REQUIRE(count->unread == 0U);
+            }
+        }
+
+        WHEN("the badge is counted without an event budget, as a due email digest does")
+        {
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, ruleset);
+            auto digest_budget = merovingian::homeserver::PushBadgeBudget{};
+            auto const budgeted =
+                merovingian::homeserver::push_badge_unread_count(runtime, alice, ruleset, digest_budget);
+
+            THEN(
+                "it is still bounded by one glob budget: capped within a few rows, and the same through a fresh budget")
+            {
+                REQUIRE(count.capped);
+                REQUIRE(count.rows_visited <= 3U);
+                REQUIRE(count.unread == 0U);
+                REQUIRE(budgeted.has_value());
+                REQUIRE(*budgeted == 0U);
+                REQUIRE(digest_budget.glob.exhausted);
+            }
+        }
+
+        WHEN("a recipient without that rule is counted")
+        {
+            auto const plain = merovingian::homeserver::load_push_ruleset(store, alice, 200U);
+            auto budget = merovingian::homeserver::PushBadgeBudget{};
+            auto const count = merovingian::homeserver::count_push_badge(runtime, alice, plain, budget);
+
+            THEN("the badge is exact and the glob budget is not exhausted")
+            {
+                REQUIRE(count.has_value());
+                REQUIRE_FALSE(count->capped);
+                REQUIRE(count->unread == 60U);
+                REQUIRE_FALSE(budget.glob.exhausted);
             }
         }
     }

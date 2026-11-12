@@ -53,7 +53,7 @@ This is the largest and most complex module — read this file carefully before 
 | `PushRetry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `PasswordReset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `AuthService.cpp` |
 | `TurnCredentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
-| `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
+| `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex` (one hold, one `PushBadgeBudget`: rows and glob steps bounded together, ADR-0722), then sends with the mutex released |
 | `RuntimeSigningKeyStore.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
@@ -799,6 +799,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `badge_budget` built per event to every `push_badge_unread_count`; a recipient past it gets `nullopt` and
   its notification omits `unread` (never a made-up count, which would overwrite the client's real badge).
   Recipients draw from `push_badge_draw_start(stream_ordering, n)`, so the skipped ones rotate. Never give each recipient a budget of its own.
+  Every rule evaluation of those badges draws from the budget's one `push::PushEvaluationBudget` (`PushBadgeBudget::glob`, 2^21 glob steps for the whole event, ADR-0722); when it is spent the walk ends `capped` and the row that spent it is not counted. A new evaluation in the badge path takes the same budget, never a fresh one.
 
 ### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
 

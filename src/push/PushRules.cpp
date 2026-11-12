@@ -166,28 +166,7 @@ namespace
                (character >= '0' && character <= '9') || character == '_';
     }
 
-    // The work one recipient's evaluation of one event may spend on matching content.body against
-    // glob patterns, across every rule (ADR-0343). One step is one turn of the matcher's inner
-    // loops. Past the budget a glob does not match and `exhausted` is set, so the caller can log it.
-    struct GlobBudget final
-    {
-        std::uint64_t remaining{max_push_glob_steps_per_evaluation};
-        std::uint64_t spent{0U};
-        bool exhausted{false};
-
-        // Takes `steps` from the budget; false (and exhausted) when it holds fewer.
-        [[nodiscard]] auto charge(std::uint64_t steps) noexcept -> bool
-        {
-            if (steps > remaining)
-            {
-                exhausted = true;
-                return false;
-            }
-            remaining -= steps;
-            spent += steps;
-            return true;
-        }
-    };
+    using GlobBudget = PushEvaluationBudget;
 
     [[nodiscard]] auto fold_ascii(char character) noexcept -> char
     {
@@ -916,9 +895,16 @@ namespace
 auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
                          PushEvaluationContext const& context) -> PushEvaluationResult
 {
-    auto budget = GlobBudget{};
+    auto budget = PushEvaluationBudget{};
+    return evaluate_push_rules(ruleset, event, context, budget);
+}
+
+auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                         PushEvaluationContext const& context, PushEvaluationBudget& budget) -> PushEvaluationResult
+{
+    auto const spent_before = budget.spent;
     auto result = evaluate_within_budget(ruleset, event, context, budget);
-    result.glob_steps_used = budget.spent;
+    result.glob_steps_used = budget.spent - spent_before;
     result.glob_budget_exhausted = budget.exhausted;
     return result;
 }

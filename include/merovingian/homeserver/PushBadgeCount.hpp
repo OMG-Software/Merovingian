@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/homeserver/PushBadgeBudget.hpp"
+#include "merovingian/push/PushEvaluationBudget.hpp"
 #include "merovingian/push/PushRuleset.hpp"
 
 #include <cstdint>
@@ -57,6 +58,13 @@ struct PushBadgeCount final
 [[nodiscard]] auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id,
                                     push::PushRuleset const& ruleset, std::uint64_t row_budget = push_badge_row_budget)
     -> PushBadgeCount;
+
+// count_push_badge(runtime, user_id, ruleset, row_budget), with every rule evaluation drawing its glob steps from
+// `glob` (C15, ADR-0722). When `glob` is spent the walk stops there, `capped`, and the row that spent it is not
+// counted, so the badge stays a lower bound. Call with runtime.mutex held.
+[[nodiscard]] auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id,
+                                    push::PushRuleset const& ruleset, std::uint64_t row_budget,
+                                    push::PushEvaluationBudget& glob) -> PushBadgeCount;
 
 // The badge for one recipient of an event whose recipients share `budget` (ADR-0608). With a call
 // and rows left it is count_push_badge over at most min(budget.rows_left, push_badge_row_budget)

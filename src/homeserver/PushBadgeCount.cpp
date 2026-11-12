@@ -82,6 +82,13 @@ namespace
 auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
                       std::uint64_t row_budget) -> PushBadgeCount
 {
+    auto glob = push::PushEvaluationBudget{};
+    return count_push_badge(runtime, user_id, ruleset, row_budget, glob);
+}
+
+auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
+                      std::uint64_t row_budget, push::PushEvaluationBudget& glob) -> PushBadgeCount
+{
     auto const& store = runtime.database.persistent_store;
     auto result = PushBadgeCount{};
 
@@ -116,6 +123,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     ++result.table_walks;
 
     auto classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
+    classifier.use_evaluation_budget(glob);
     auto unsettled = rooms.size();
     auto const settle = [&unsettled](BadgeRoom& room) {
         if (!room.settled)
@@ -202,8 +210,19 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         }
         auto const parsed = canonicaljson::parse_lossless(row.json);
         auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (parsed.error != canonicaljson::ParseError::none || object == nullptr ||
-            !classifier.classify(row.room_id, parsed.value).notify)
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        {
+            continue;
+        }
+        auto const outcome = classifier.classify(row.room_id, parsed.value);
+        if (classifier.evaluation_budget_exhausted())
+        {
+            // C15: the rule work for this event is spent. This row's outcome is not trusted (a glob that could not be
+            // afforded did not match), so it is not counted, and the walk ends here with a lower bound.
+            result.capped = true;
+            break;
+        }
+        if (!outcome.notify)
         {
             continue;
         }
@@ -263,8 +282,8 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         return std::nullopt;
     }
     --budget.calls_left;
-    auto const result =
-        count_push_badge(runtime, user_id, ruleset, std::min<std::uint64_t>(budget.rows_left, push_badge_row_budget));
+    auto const result = count_push_badge(runtime, user_id, ruleset,
+                                         std::min<std::uint64_t>(budget.rows_left, push_badge_row_budget), budget.glob);
     budget.rows_left -= std::min(budget.rows_left, result.rows_visited);
     return result;
 }

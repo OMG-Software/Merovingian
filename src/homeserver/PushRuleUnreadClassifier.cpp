@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -220,9 +221,21 @@ auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson:
         return {};
     }
     auto const& facts = room(room_id);
-    auto const result = push::evaluate_push_rules(
-        ruleset_, event, push_evaluation_context(facts.push, user_, facts.display_name, *sender));
+    auto const context = push_evaluation_context(facts.push, user_, facts.display_name, *sender);
+    auto const result = evaluation_budget_.has_value()
+                            ? push::evaluate_push_rules(ruleset_, event, context, evaluation_budget_->get())
+                            : push::evaluate_push_rules(ruleset_, event, context);
     return {result.notify, result.notify && result.tweak_highlight};
+}
+
+auto PushRuleUnreadClassifier::use_evaluation_budget(push::PushEvaluationBudget& budget) noexcept -> void
+{
+    evaluation_budget_ = std::ref(budget);
+}
+
+auto PushRuleUnreadClassifier::evaluation_budget_exhausted() const noexcept -> bool
+{
+    return evaluation_budget_.has_value() && evaluation_budget_->get().exhausted;
 }
 
 auto PushRuleUnreadClassifier::room(std::string_view room_id) -> RoomFacts const&
