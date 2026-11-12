@@ -37,6 +37,16 @@ receives whoever asks. Times are kept per mailed address in `ClientServerRuntime
 address with an account is mailed, so the table is bounded by those accounts times the cap. Past the cap a request is
 answered like a throttled one and the last code mailed stays valid until its session ages out (15 minutes).
 
+The shared code widens one bound, and it is accepted on purpose. Before, only the session a code was mailed into could
+guess it, five times. Now every session of the address may guess the latest code, five times each, so the guesses
+against one code grow with the sessions open for the address: 80 from one client address
+(`max_registration_validation_sessions_per_remote`, 16) and at most about 5,120 under the global cap of 1,024 sessions.
+Counting wrong guesses per code across sessions was rejected: an attacker could then spend the owner's code with a few
+wrong submissions and lock the owner out again, the very denial this finding is about. The bound stays far below
+guessing range: a code is 40 bits, at most 10 are mailed per address per day, so a day allows at most about 51,200
+guesses (a chance near 5 in 10^8). The old design allowed one fresh code per minute and five guesses at each, 7,200
+guesses a day from a single client address; one client address now gets at most 800.
+
 Residual: an attacker with many client addresses can still request ten mails a day to the owner's address and make them
 wait for the next day to ask again after those; they cannot stop the owner using any one of those codes.
 
