@@ -89,6 +89,13 @@ entries (the per-account device limit, repeats counted) is now `400 M_INVALID_PA
 repeated IDs are handled once. Deleting a device (here, `DELETE /devices/{deviceId}`, and the refresh-token device check)
 now reads only the account's own device rows and the device's own sessions.
 
+### A client key claim is capped and merges a remote answer in linear time (ADR-0670)
+
+Audit finding C13. `POST /keys/claim` named any number of users and devices and merged a remote server's answer with a
+search of the response for each accepted user, which is quadratic and ran with the global lock held. A claim naming more than
+25,000 users plus devices (the cap federation already applies) is now `413 M_TOO_LARGE` before any one-time key is claimed,
+and the merge looks users up in a hash set.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

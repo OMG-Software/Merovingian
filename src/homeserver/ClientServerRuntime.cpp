@@ -9165,6 +9165,11 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "key claim body must contain one_time_keys");
         }
+        // Run-3 C13 (ADR-0670): refused whole before any key is claimed, so no key is burnt for a refused request.
+        if (federation::key_request_exceeds_entry_cap(body, "one_time_keys"))
+        {
+            return err(413U, "M_TOO_LARGE", "key claim names too many users and devices");
+        }
 
         // Validate the whole body before any key is claimed: a claim burns a one-time key, so a malformed
         // entry found after earlier devices were served would answer 400 for keys already consumed.
@@ -9312,13 +9317,19 @@ namespace
                     }
                     else
                     {
+                        // The users the response holds, so each accepted entry costs one lookup, not a pass over
+                        // `users` (run-3 C13, ADR-0670). Built from the response so far, inserted into as it grows.
+                        auto held_users = std::unordered_set<std::string>{};
+                        held_users.reserve(users.size() + accepted->one_time_keys.size());
+                        for (auto const& held : users)
+                        {
+                            held_users.insert(held.key);
+                        }
                         for (auto& entry : accepted->one_time_keys)
                         {
                             // A user this response already holds (a local answer) is never overwritten or
                             // repeated: the serialiser refuses a duplicate member.
-                            if (std::ranges::none_of(users, [&entry](canonicaljson::ObjectMember const& held) {
-                                    return held.key == entry.key;
-                                }))
+                            if (held_users.insert(entry.key).second)
                             {
                                 users.push_back(std::move(entry));
                             }

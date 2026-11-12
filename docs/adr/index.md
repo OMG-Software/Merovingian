@@ -571,3 +571,4 @@
 * [0724 - A filtered directory request parses a bounded number of bytes](0724-a-filtered-directory-request-parses-a-bounded-number-of-bytes.md)
 * [0725 - A decided make_join race starts no further calls, is run by a fixed number of workers, and holds its request's slot to the end](0725-a-decided-make-join-race-starts-no-further-calls-and-its-calls-end-at-the-race-deadline.md)
 * [0669 - POST /delete_devices is capped at the device limit and looks devices up through indexes](0669-delete-devices-is-capped-at-the-device-limit-and-looks-devices-up-by-index.md)
+* [0670 - A client key claim is capped like its federation twin and merges a remote answer by hash set](0670-a-client-key-claim-is-capped-like-its-federation-twin-and-merges-by-hash-set.md)

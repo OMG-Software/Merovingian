@@ -694,6 +694,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   the function `store_fallback_key` replaces by: never compute it another way, or the cap and the replacement disagree.
   A held algorithm is a replacement and is never refused, even on a device above a lowered cap: only a request that adds
   an algorithm is judged against it. Any new per-device key material gets a cap the same way.
+- `POST /keys/claim` is refused whole with `413 M_TOO_LARGE` when it names more than `federation::max_key_request_entries` users plus devices, before any key is claimed, and merges a remote answer through a hash set of the users the response holds (run-3 C13, ADR-0670).
 - `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it
   (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
   500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
