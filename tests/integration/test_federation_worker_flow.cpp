@@ -4784,7 +4784,14 @@ namespace
         auto pid = pid_t{0};
         auto parent = pid_t{0};
         auto comm = std::string{};
-        if ((fields >> pid >> parent >> comm) && parent == ::getpid() && comm.starts_with("merovingian-fed"))
+        if (!(fields >> pid >> parent >> comm))
+            continue;
+        // NetBSD's `comm` is argv[0], which the supervisor sets to the worker's full path; FreeBSD and OpenBSD print
+        // the kernel's command name. Compare the last path component, which is the command name in both cases.
+        auto const slash = comm.rfind('/');
+        auto const name =
+            slash == std::string::npos ? std::string_view{comm} : std::string_view{comm}.substr(slash + 1U);
+        if (parent == ::getpid() && name.starts_with("merovingian-fed"))
             children.push_back(pid);
     }
     return children;

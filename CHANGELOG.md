@@ -84,6 +84,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The snapshot reader pool test now builds on FreeBSD and OpenBSD: it used `std::jthread`, which their libc++ lacks.
 * The stale-ACL worker test fails main's room snapshot read by hiding a table, not the database file, which the
   readers opened at start keep open (ADR-0739).
+* The C44 worker test finds the worker on NetBSD, whose `ps -o comm` prints the full path the worker was started from.
 
 ## Release notes
 
