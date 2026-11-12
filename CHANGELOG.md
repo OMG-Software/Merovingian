@@ -1,3 +1,9 @@
+## 1.0.1
+
+Fixes for the findings of the security audit of the 1.0.0 release candidate (run 3, at commit d9b93005): 49
+confirmed findings (9 high, 30 medium, 9 low, 1 informational), plus in-repository hardening for two of the four
+findings that needed validation.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

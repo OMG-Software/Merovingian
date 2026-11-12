@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 1.0.0.
+# Build for merovingian 1.0.1.
 #
 # Standalone pkg_create(1), no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
@@ -8,7 +8,7 @@
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
