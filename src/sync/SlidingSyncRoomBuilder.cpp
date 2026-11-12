@@ -6,14 +6,15 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/RedactionView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
+#include "merovingian/sync/TimelineWindow.hpp"
 #include "merovingian/sync/ViewerEventUnsigned.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 
@@ -27,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -717,72 +719,69 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // older than that are never built (ADR-0494). The kept window is the newest `limit` events that pass, as when
     // every event of the room was built and the oldest dropped.
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
-    for (auto const& ev : store.events.room_in_stream_order(room_id) | std::views::reverse)
-    {
-        if (timeline_events.size() > limit)
-        {
-            break;
-        }
-        // ADR-0064 phase B2: a rejected or soft-failed event is never
-        // relayed to clients (spec "Rejection", "Soft failure"). Room state
-        // (required_state, built separately from current_state) is
-        // untouched — a soft-failed *state* event that resolution later
-        // admits into current state is still delivered there.
-        if (ev.status == "rejected" || ev.status == "soft_failed")
-        {
-            continue;
-        }
-        if (timeline_upper_bound.has_value() && ev.stream_ordering > *timeline_upper_bound)
-        {
-            continue;
-        }
-        if (timeline_has_floor && ev.stream_ordering <= room_since_event_ordering)
-        {
-            // The walk is newest first and `room_in_stream_order` is ascending in stream_ordering, so every row that
-            // follows is at or below the floor too: an incremental build of a room with nothing new ends here.
-            break;
-        }
-        // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
-        // their timeline, however recently the room was synced.
-        if (!visibility.can_see(ev))
-        {
-            continue;
-        }
-        // Ignoring Users: non-state events from an ignored sender are
-        // withheld from the timeline; state events are still delivered so
-        // the room's visible state stays accurate — except the recipient's
-        // own room invite, which the spec says must never be sent from an
-        // ignored inviter even though it is itself a state event.
-        // The event is parsed only when its sender is ignored (ADR-0436).
-        if (ignored_senders.contains(ev.sender_user_id))
-        {
-            auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
-            if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
-                                                     ignore_classification.is_state_event,
-                                                     ignore_classification.is_new_room_invite_for_user))
+    // Read through sync::newest_timeline_window, which also stops after max_timeline_rows_skipped rows not taken
+    // (ADR-0616, ADR-0664): a room whose newest history the caller cannot see, or an ignored sender filled, is not
+    // walked to its first event under runtime.mutex. Rejected and soft-failed rows are never offered to `wanted`
+    // (ADR-0064 phase B2: they are never relayed; room state is built separately from current_state).
+    // An incremental window stops at the delta floor, and an initial or expanded one has none.
+    auto client_json_of = std::unordered_map<database::PersistentEvent const*, std::string>{};
+    auto const window = newest_timeline_window(
+        store, room_id, timeline_has_floor ? std::optional<std::uint64_t>{room_since_event_ordering} : std::nullopt,
+        timeline_upper_bound.value_or(std::numeric_limits<std::uint64_t>::max()), limit,
+        [&](database::PersistentEvent const& ev) {
+            // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
+            // their timeline, however recently the room was synced.
+            if (!visibility.can_see(ev))
             {
-                continue;
+                return false;
             }
-        }
-        if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
-        {
-            timeline_events.emplace_back(ev.stream_ordering, std::move(client_json));
-            timeline_rows.push_back(std::cref(ev));
-        }
+            // Ignoring Users: non-state events from an ignored sender are
+            // withheld from the timeline; state events are still delivered so
+            // the room's visible state stays accurate — except the recipient's
+            // own room invite, which the spec says must never be sent from an
+            // ignored inviter even though it is itself a state event.
+            // The event is parsed only when its sender is ignored (ADR-0436).
+            if (ignored_senders.contains(ev.sender_user_id))
+            {
+                auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
+                if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
+                                                         ignore_classification.is_state_event,
+                                                         ignore_classification.is_new_room_invite_for_user))
+                {
+                    return false;
+                }
+            }
+            auto client_json = client_event_json(store, ev, viewer_unsigned);
+            if (client_json.empty())
+            {
+                return false;
+            }
+            client_json_of.emplace(&ev, std::move(client_json));
+            return true;
+        });
+    for (auto const* ev : window.matched)
+    {
+        timeline_events.emplace_back(ev->stream_ordering, std::move(client_json_of.at(ev)));
+        timeline_rows.push_back(std::cref(*ev));
     }
 
-    std::ranges::reverse(timeline_events);
-    std::ranges::reverse(timeline_rows);
-    bool const timeline_limited = timeline_events.size() > limit;
+    bool const timeline_over_limit = timeline_events.size() > limit;
+    // A walk that ran out of budget may have left older events out, so the timeline is limited (ADR-0616).
+    bool const timeline_limited = timeline_over_limit || window.budget_ran_out;
     // MSC4186 §rooms[roomId] `prev_batch`: a /messages `from` that pages back to the
     // events before this timeline. /messages?dir=b returns events strictly older than
     // `from`, so it is the oldest returned event's ordering (as /v3/sync's prev_batch),
     // or, when nothing is returned, one past the newest event withheld.
     if (!timeline_events.empty())
     {
-        auto const oldest_kept = timeline_limited ? timeline_events.size() - limit : std::size_t{0U};
+        auto const oldest_kept = timeline_over_limit ? timeline_events.size() - limit : std::size_t{0U};
         resp.prev_batch = limit == 0U ? std::to_string(timeline_events.back().first + 1U)
                                       : std::to_string(timeline_events[oldest_kept].first);
+    }
+    else if (window.budget_ran_out && window.oldest_examined.has_value())
+    {
+        // Nothing taken before the budget ran out: page back from where the walk stopped.
+        resp.prev_batch = std::to_string(*window.oldest_examined);
     }
     if (timeline_limited)
     {
@@ -791,6 +790,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         // or that the client should paginate to fetch more events." Without it a
         // client takes the truncated timeline for the room's whole history.
         resp.limited = true;
+    }
+    if (timeline_over_limit)
+    {
         auto const drop_count = timeline_events.size() - limit;
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));

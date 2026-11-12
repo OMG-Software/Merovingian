@@ -297,6 +297,11 @@ prepared state row now moves the revision after the row is written, as well as a
 
 A sliding sync connection keeps a copy of its request's lists and its `conn_id` for an hour, and nothing bounded their size, so one account could hold tens of GiB of the main process. A list may now name at most 16 `room_types` and 16 `not_room_types` and 16 ranges, a `conn_id` and a list name are at most 255 bytes, a request may keep at most 64 KiB of lists, and one device's connections together at most 256 KiB; over any of these the request is 400 `M_INVALID_PARAM` and no connection state is created. The idle-connection sweep no longer walks every user's connections: they are kept in an index ordered by last use, so a request pays for the connections it removes.
 
+### A sliding sync room timeline stops after a fixed number of rows it does not take (ADR-0664)
+
+A sliding sync room's timeline was built by a loop that did not count rows it passed over, so a room whose newest history the caller could not see, or an ignored user had filled, was walked to its first event under the runtime lock on every initial build. It now uses the walk classic `/sync` uses, which stops after 1000 rows not taken; past that the timeline is `limited` and `prev_batch` points where the walk stopped.
+
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

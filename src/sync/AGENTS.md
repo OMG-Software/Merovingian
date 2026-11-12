@@ -124,6 +124,8 @@ joined. `parse_sliding_sync_request` clamps `timeline_limit` to
 `required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
 (the handler answers a violation 400 `M_INVALID_PARAM`). It also caps `room_types`/`not_room_types` (16 each), ranges (16) per list, a `conn_id` and list name (255 bytes) and the bytes of lists a request would make a connection keep (64 KiB; `sliding_sync_retained_bytes`); `sliding_sync_json` refuses a request that would take the device's connections past 256 KiB together, before creating its entry (ADR-0663). A new field a connection stores copies into `sliding_sync_retained_bytes`.
 
+A room's sliding sync timeline is read through `newest_timeline_window`, like `/sync`'s, so it stops after `max_timeline_rows_skipped` rows not taken and then is `limited` with a `prev_batch` where the walk stopped (ADR-0664). Never add a loop over `room_in_stream_order` that `continue`s on a visibility test.
+
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
 (ADR-0172). Every new

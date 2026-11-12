@@ -857,6 +857,7 @@ shell = find_program('sh')
       'integration/test_lazy_load_left_room_flow.cpp',
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sliding_sync_connection_size_flow.cpp',
+      'integration/test_sliding_sync_hidden_rows_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_sync_restore_flow.cpp',
       'integration/test_sync_stream_ceiling_flow.cpp',
