@@ -82,6 +82,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The federation worker test no longer passes its open-descriptor check without looking when `/proc/<pid>/fd` cannot be
   read; it skips visibly there.
 * The snapshot reader pool test now builds on FreeBSD and OpenBSD: it used `std::jthread`, which their libc++ lacks.
+* The stale-ACL worker test fails main's room snapshot read by hiding a table, not the database file, which the
+  readers opened at start keep open (ADR-0739).
 
 ## Release notes
 
