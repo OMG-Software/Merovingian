@@ -135,16 +135,9 @@ struct ChannelPair final
     return result;
 }
 
-// client_socket, when given, receives a second descriptor of the client's socket, for a test that shuts it down.
-[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U,
-                                     merovingian::core::FileDescriptor* client_socket = nullptr) -> ChannelPair
+[[nodiscard]] auto make_channel_pair(std::uint32_t max_frame_bytes = 0U) -> ChannelPair
 {
     auto [server_fd, client_fd] = make_socketpair();
-    if (client_socket != nullptr)
-    {
-        *client_socket = merovingian::core::FileDescriptor{::fcntl(client_fd.get(), F_DUPFD_CLOEXEC, 0)};
-        REQUIRE(client_socket->valid());
-    }
 
     auto pair = ChannelPair{};
     auto server_ex = std::exception_ptr{};
@@ -1981,11 +1974,12 @@ SCENARIO("a pending request admits each relay permit of its verified request onc
 // send_response ignored the failure and the channel still reported healthy, so the supervisor kept a broken worker.
 SCENARIO("A frame that cannot be written ends the channel", "[ipc][channel][c44][write-failure]")
 {
-    GIVEN("a channel pair whose client socket no longer reads")
+    GIVEN("a channel pair whose client end has been closed")
     {
-        auto client_socket = merovingian::core::FileDescriptor{};
-        auto pair = make_channel_pair(0U, &client_socket);
-        REQUIRE(::shutdown(client_socket.get(), SHUT_RD) == 0);
+        // Closing the client's socket is the one way to make a write fail on every platform: shutting down its read
+        // side fails the peer's write on Linux and FreeBSD, but NetBSD and OpenBSD keep accepting the bytes.
+        auto pair = make_channel_pair();
+        pair.client.reset();
         REQUIRE(pair.server->healthy());
 
         WHEN("the server sends a response to it")

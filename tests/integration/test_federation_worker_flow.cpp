@@ -100,13 +100,16 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <signal.h>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -4750,11 +4753,42 @@ SCENARIO("main refuses a signed request from an origin an admin denied after the
 namespace
 {
 
+#ifndef __linux__
+// The lines `command` writes, for the ps(1) queries below; the BSDs have no /proc (OpenBSD) or none mounted by
+// default (FreeBSD), but their ps(1) takes the same -o keywords.
+[[nodiscard]] auto c44_command_lines(std::string const& command) -> std::vector<std::string>
+{
+    auto lines = std::vector<std::string>{};
+    auto const closer = [](std::FILE* pipe) {
+        ::pclose(pipe);
+    };
+    auto const pipe = std::unique_ptr<std::FILE, decltype(closer)>{::popen(command.c_str(), "r"), closer};
+    if (!pipe)
+        return lines;
+    auto buffer = std::array<char, 512>{};
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+        lines.emplace_back(buffer.data());
+    return lines;
+}
+#endif
+
 // C44 (ADR-0733): the federation worker children of this test process, found by parent PID and the kernel's
-// 15-byte command name, so a scenario never trusts its own count of what it spawned.
+// command name (15 bytes on Linux, more on the BSDs), so a scenario never trusts its own count of what it spawned.
 [[nodiscard]] auto c44_worker_children() -> std::vector<pid_t>
 {
     auto children = std::vector<pid_t>{};
+#ifndef __linux__
+    for (auto const& line : c44_command_lines("ps -A -o pid= -o ppid= -o comm="))
+    {
+        auto fields = std::istringstream{line};
+        auto pid = pid_t{0};
+        auto parent = pid_t{0};
+        auto comm = std::string{};
+        if ((fields >> pid >> parent >> comm) && parent == ::getpid() && comm.starts_with("merovingian-fed"))
+            children.push_back(pid);
+    }
+    return children;
+#else
     auto error = std::error_code{};
     for (auto const& entry : std::filesystem::directory_iterator{"/proc", error})
     {
@@ -4779,15 +4813,23 @@ namespace
             children.push_back(pid);
     }
     return children;
+#endif
 }
 
-// The descriptors `pid` holds whose target is one of `paths`.
-[[nodiscard]] auto c44_descriptors_naming(pid_t pid, std::vector<std::filesystem::path> const& paths) -> std::size_t
+// The descriptors `pid` holds whose target is one of `paths`, or nothing where they cannot be listed by name. Only
+// Linux's /proc/<pid>/fd names them (OpenBSD's fstat(1), for one, reports inodes, not paths), and the worker clears its
+// dumpable flag whatever federation.worker.apply_hardening says, which leaves that directory readable by root alone.
+// An unreadable directory must never count as "no descriptors": that read as a pass for every non-root run.
+[[nodiscard]] auto c44_descriptors_naming(pid_t pid, std::vector<std::filesystem::path> const& paths)
+    -> std::optional<std::size_t>
 {
     auto count = std::size_t{0U};
     auto error = std::error_code{};
-    for (auto const& entry :
-         std::filesystem::directory_iterator{std::filesystem::path{"/proc"} / std::to_string(pid) / "fd", error})
+    auto entries =
+        std::filesystem::directory_iterator{std::filesystem::path{"/proc"} / std::to_string(pid) / "fd", error};
+    if (error)
+        return std::nullopt;
+    for (auto const& entry : entries)
     {
         auto link_error = std::error_code{};
         auto const target = std::filesystem::read_symlink(entry.path(), link_error);
@@ -4798,14 +4840,21 @@ namespace
     return count;
 }
 
-// The process state letter /proc/<pid>/stat reports ('T' once SIGSTOP has taken effect).
+// The process state letter /proc/<pid>/stat, or ps(1) where there is no /proc, reports ('T' once SIGSTOP has taken
+// effect).
 [[nodiscard]] auto c44_process_state(pid_t pid) -> char
 {
+#ifndef __linux__
+    auto const lines = c44_command_lines("ps -o state= -p " + std::to_string(pid));
+    auto const at = lines.empty() ? std::string::npos : lines.front().find_first_not_of(" 	");
+    return at == std::string::npos ? '?' : lines.front()[at];
+#else
     auto stat = std::ifstream{std::filesystem::path{"/proc"} / std::to_string(pid) / "stat"};
     auto line = std::string{};
     std::ignore = std::getline(stat, line);
     auto const close = line.rfind(')');
     return close == std::string::npos || close + 2U >= line.size() ? '?' : line[close + 2U];
+#endif
 }
 
 // A write from a connection of its own that does not wait at all (busy_timeout 0): SQLITE_BUSY if anyone holds a
@@ -4900,13 +4949,19 @@ SCENARIO("A federation worker on a SQLite server opens no database and cannot bl
         WHEN("the worker's open descriptors are listed")
         {
             auto const naming_database = c44_descriptors_naming(worker, database_files);
+            auto const naming_configured =
+                c44_descriptors_naming(worker, {std::filesystem::path{worker_view.database().sqlite_path}});
+            if (!naming_database.has_value() || !naming_configured.has_value())
+            {
+                SKIP("the worker's descriptors cannot be listed by name here (no /proc, or not root: the worker is not "
+                     "dumpable)");
+            }
 
             THEN("none of them is main's database file or one of its journals, and none is the one its configuration "
                  "names")
             {
-                CHECK(naming_database == 0U);
-                CHECK(c44_descriptors_naming(worker, {std::filesystem::path{worker_view.database().sqlite_path}}) ==
-                      0U);
+                CHECK(*naming_database == 0U);
+                CHECK(*naming_configured == 0U);
                 CHECK(loaded > 0U);
             }
         }
@@ -4932,7 +4987,8 @@ SCENARIO("A federation worker on a SQLite server opens no database and cannot bl
             {
                 CHECK(probe == SQLITE_OK);
                 CHECK(stored == database::MembershipStoreResult::stored);
-                CHECK(naming_database == 0U);
+                // Listed only where they can be (root, on Linux); the WHEN above skips visibly elsewhere.
+                CHECK((!naming_database.has_value() || *naming_database == 0U));
                 CHECK(reloaded > loaded);
             }
         }

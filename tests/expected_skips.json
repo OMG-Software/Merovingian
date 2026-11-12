@@ -42,6 +42,11 @@
         "test": "Signing box cache fails closed when its key copy cannot be locked",
         "message": "AddressSanitizer",
         "reason": "AddressSanitizer replaces mlock with a version that locks nothing, so kernel lock state cannot be observed (the test skips itself under ASan)."
+      },
+      {
+        "test": "a thumbnail is produced by a process confined by main's seccomp profile",
+        "message": "AddressSanitizer",
+        "reason": "The exec'd ASan-built thumbnail worker starts the ASan runtime under main's inherited seccomp filter, which does not admit the calls that runtime makes; a production worker carries no sanitizer runtime (the test skips itself under ASan)."
       }
     ],
     "tsan": [
@@ -99,6 +104,26 @@
         "test": "The logger starts no thread until its writers are explicitly started",
         "message": "/proc/self/task",
         "reason": "The BSDs have no /proc/self/task, or it does not enumerate threads, so the thread-count check skips (not confirmed on the CI VMs).",
+        "unverified": true
+      },
+      {
+        "test": "A few client addresses cannot fill the pending-connection budget and lock every other client out",
+        "message": "127.0.0.2",
+        "reason": "The scenario needs several client addresses (C01, ADR-0719), and the BSDs configure only 127.0.0.1 on loopback. Seen on NetBSD; FreeBSD and OpenBSD not confirmed.",
+        "unverified": true
+      },
+      {
+        "test": "A federation worker on a SQLite server opens no database and cannot block main's writes",
+        "message": "cannot be listed by name",
+        "reason": "Only Linux's /proc/<pid>/fd names a process's descriptors, so the descriptor-listing branch skips; the branch that stops the worker and writes still runs (not confirmed on the CI VMs).",
+        "unverified": true
+      }
+    ],
+    "non-root-linux": [
+      {
+        "test": "A federation worker on a SQLite server opens no database and cannot block main's writes",
+        "message": "cannot be listed by name",
+        "reason": "The worker clears its dumpable flag, so /proc/<pid>/fd is readable by root alone; a job that runs as an ordinary user skips the descriptor-listing branch (seen in WSL as an ordinary user). The root container jobs run it.",
         "unverified": true
       }
     ],
@@ -161,24 +186,30 @@
   },
   "jobs": {
     "ubuntu": [
-      "landlock"
+      "landlock",
+      "non-root-linux"
     ],
     "release-linux": [
-      "landlock"
+      "landlock",
+      "non-root-linux"
     ],
     "coverage": [
-      "landlock"
+      "landlock",
+      "non-root-linux"
     ],
     "sonarcloud": [
-      "landlock"
+      "landlock",
+      "non-root-linux"
     ],
     "asan-ubsan": [
       "landlock",
-      "asan"
+      "asan",
+      "non-root-linux"
     ],
     "tsan": [
       "landlock",
-      "tsan"
+      "tsan",
+      "non-root-linux"
     ],
     "fedora": [
       "landlock",

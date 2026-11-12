@@ -29,10 +29,23 @@ choose the federation worker settings on FreeBSD and OpenBSD.
 
 * Tests written before other fixes on this branch landed now expect what those fixes do: the SQLite snapshot order
   includes `forward_extremities` (C44), `RoomService.cpp` has one direct `store_event` call (C03 writes a join's auth
-  chain as an outlier batch), the keep-alive cap scenario connects from three client addresses because one address
-  now gets its share of the cap (C01, ADR-0719), and the expected-skips list drops the Landlock scenario that C44
-  removed. The Complement configuration lifts the two report routes' per-user limits (C26), as it does for the other
-  routes Complement calls in bursts.
+  chain as an outlier batch), and the expected-skips list drops the Landlock scenario that C44 removed. The Complement
+  configuration lifts the two report routes' per-user limits (C26), as it does for the other routes Complement calls in
+  bursts.
+* The keep-alive cap scenario connects three times from 127.0.0.1 named as a trusted proxy, whose connections have no
+  client key and so count only against the server-wide cap, not a key's share of it (C01, ADR-0719). It first connected
+  from three loopback addresses; the BSDs configure only 127.0.0.1, so it skipped there with the server thread still
+  joinable, and destroying that thread aborted the integration binary on FreeBSD, NetBSD and OpenBSD. It now stops the
+  server through `ServerStop` on every exit, as the per-address scenarios already did.
+* The IPC write-failure scenario (C44, ADR-0734) closes the client's end instead of shutting down its read side:
+  NetBSD and OpenBSD keep accepting writes to a stream socket whose peer has only stopped reading.
+* The C44 SQLite worker scenario found the worker and read its state through `/proc`, which the BSDs lack; it uses
+  `ps(1)` there. It counted the descriptors that named the database as none whenever `/proc/<pid>/fd` could not be
+  read, and the worker, which clears its dumpable flag, leaves that directory readable by root alone, so the check
+  passed without looking for every non-root run. It now skips that branch visibly (listed for the BSDs and the
+  non-root Linux jobs) and runs it in the root container jobs.
+* The `[worker_session]` thumbnail scenario skips under AddressSanitizer: the exec'd ASan-built worker starts the ASan
+  runtime under main's inherited seccomp filter, which does not admit the calls that runtime makes.
 
 ### A worker cannot type into the terminal that started the server (ADR-0731)
 

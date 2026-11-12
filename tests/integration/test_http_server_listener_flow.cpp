@@ -137,6 +137,39 @@ enum class SourceConnect : std::uint8_t
     return {SourceConnect::connected, fd};
 }
 
+// Stops the listener on every exit from a scenario, including a SKIP or a
+// failed REQUIRE: destroying a joinable std::thread would abort the binary.
+// ShutdownSignal::fire and ThreadPool::request_stop are both idempotent.
+class ServerStop final
+{
+public:
+    ServerStop(merovingian::net::ShutdownSignal& shutdown, std::thread& thread,
+               merovingian::net::ThreadPool& pool) noexcept
+        : m_shutdown{shutdown}
+        , m_thread{thread}
+        , m_pool{pool}
+    {
+    }
+    ServerStop(ServerStop const&) = delete;
+    auto operator=(ServerStop const&) -> ServerStop& = delete;
+    ServerStop(ServerStop&&) = delete;
+    auto operator=(ServerStop&&) -> ServerStop& = delete;
+    ~ServerStop()
+    {
+        m_shutdown.fire();
+        if (m_thread.joinable())
+        {
+            m_thread.join();
+        }
+        m_pool.request_stop();
+    }
+
+private:
+    merovingian::net::ShutdownSignal& m_shutdown;
+    std::thread& m_thread;
+    merovingian::net::ThreadPool& m_pool;
+};
+
 auto send_all(int fd, std::string_view data) -> bool
 {
     auto remaining = data;
@@ -1556,6 +1589,10 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
     {
         auto config = registration_enabled_config();
         config.server().http.keep_alive_max_connections = 2U;
+        // A trusted proxy's connections have no client key, so they are exempt from the per-key share of the cap
+        // (C01, ADR-0719) and count only against the server-wide cap this scenario is about. That keeps every
+        // connection on 127.0.0.1, which every platform has: the BSDs configure no other loopback address.
+        config.server().trusted_proxies = {"127.0.0.1"};
         auto runtime_result = merovingian::homeserver::start_client_server(config);
         REQUIRE(runtime_result.started);
 
@@ -1582,13 +1619,13 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
                 merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
                                                     merovingian::homeserver::HttpDispatchMode::local_router, pool);
             }};
+            // A failed REQUIRE must not leave server_thread joinable.
+            auto const stop = ServerStop{shutdown, server_thread, pool};
 
             auto request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
 
-            // Each connection from its own client address: one address holds at most a share of the cap
-            // (C01, ADR-0719), and this scenario is about the server-wide cap.
-            auto const [first_status, first_fd] = connect_from("127.0.0.1", port);
-            REQUIRE(first_status == SourceConnect::connected);
+            auto const first_fd = connect_loopback(port);
+            REQUIRE(first_fd >= 0);
             auto first_reader = PlainResponseReader{};
             REQUIRE(send_all(first_fd, request));
             auto const first_response = receive_response(first_fd, first_reader);
@@ -1596,19 +1633,15 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
             // before the next one is served, so the cap is observed exactly.
             std::this_thread::sleep_for(std::chrono::milliseconds{150});
 
-            auto const [second_status, second_fd] = connect_from("127.0.0.2", port);
-            if (second_status == SourceConnect::source_unavailable)
-            {
-                SKIP("127.0.0.2 is not a local address on this host");
-            }
-            REQUIRE(second_status == SourceConnect::connected);
+            auto const second_fd = connect_loopback(port);
+            REQUIRE(second_fd >= 0);
             auto second_reader = PlainResponseReader{};
             REQUIRE(send_all(second_fd, request));
             auto const second_response = receive_response(second_fd, second_reader);
             std::this_thread::sleep_for(std::chrono::milliseconds{150});
 
-            auto const [third_status, third_fd] = connect_from("127.0.0.3", port);
-            REQUIRE(third_status == SourceConnect::connected);
+            auto const third_fd = connect_loopback(port);
+            REQUIRE(third_fd >= 0);
             auto third_reader = PlainResponseReader{};
             REQUIRE(send_all(third_fd, request));
             auto const third_response = receive_response(third_fd, third_reader);
@@ -2475,39 +2508,6 @@ namespace
     auto const received = ::recv(fd, byte.data(), byte.size(), 0);
     return received == 0 || (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
 }
-
-// Stops the listener on every exit from a scenario, including a SKIP or a
-// failed REQUIRE: destroying a joinable std::thread would abort the binary.
-// ShutdownSignal::fire and ThreadPool::request_stop are both idempotent.
-class ServerStop final
-{
-public:
-    ServerStop(merovingian::net::ShutdownSignal& shutdown, std::thread& thread,
-               merovingian::net::ThreadPool& pool) noexcept
-        : m_shutdown{shutdown}
-        , m_thread{thread}
-        , m_pool{pool}
-    {
-    }
-    ServerStop(ServerStop const&) = delete;
-    auto operator=(ServerStop const&) -> ServerStop& = delete;
-    ServerStop(ServerStop&&) = delete;
-    auto operator=(ServerStop&&) -> ServerStop& = delete;
-    ~ServerStop()
-    {
-        m_shutdown.fire();
-        if (m_thread.joinable())
-        {
-            m_thread.join();
-        }
-        m_pool.request_stop();
-    }
-
-private:
-    merovingian::net::ShutdownSignal& m_shutdown;
-    std::thread& m_thread;
-    merovingian::net::ThreadPool& m_pool;
-};
 
 // Polls until `predicate` holds or `limit` passes; releasing a slot happens on
 // the server's worker thread once it sees the client's close.

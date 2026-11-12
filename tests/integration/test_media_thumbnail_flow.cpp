@@ -404,9 +404,31 @@ SCENARIO("the sandboxed worker reports the image libraries it runs",
 // before exec must be on main's allowlist. A setsid() there (to drop the controlling terminal) is not, and killed every
 // decode with SIGSYS while the tests above, which run without main's filter, still passed. This scenario forks a
 // process that installs main's real profile, as the server does at start-up, and asks it for a thumbnail.
+namespace
+{
+// The worker built for an AddressSanitizer run starts the ASan runtime after exec, under main's inherited filter, and
+// that runtime needs calls a production worker never makes (DecoderHardening.cpp leaves the decoder's own filter off
+// in sanitizer builds for the same reason).
+#if defined(__SANITIZE_ADDRESS__)
+constexpr auto address_sanitizer_active = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr auto address_sanitizer_active = true;
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+} // namespace
+
 SCENARIO("a thumbnail is produced by a process confined by main's seccomp profile",
          "[media][thumbnail][integration][seccomp][worker_session]")
 {
+    if (address_sanitizer_active)
+    {
+        SKIP("AddressSanitizer's runtime in the exec'd worker needs calls main's seccomp profile does not admit");
+    }
     if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
     {
         return;
