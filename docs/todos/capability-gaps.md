@@ -187,7 +187,7 @@ Wired for message events and membership transitions, gated behind
 Every item in [`audit-0.12.13-handover.md`](audit-0.12.13-handover.md) —
 the backfill fallback and its ADR-0070 tightening, main re-verifying relayed
 PDU signatures (ADR-0071), the per-IP connection cap, and the eleven low items
-with the listener-test flake — is finished; see the `CHANGELOG.md` 0.12.13
+with the listener-test flake — is finished; see the `CHANGELOG-pre-release.md` 0.12.13
 section. Only D3 (below) was deferred.
 
 ## RESOLVED (0.12.36, R04): restricted-room joins through this server as the resident
@@ -230,7 +230,7 @@ refused (rule 4.3.5.2). The resident-side gap above was resolved separately, in 
 The other findings recorded here on the 0.12.13 branch (v1/v2 event-ID
 signatures, key validity against `origin_server_ts`, `/event/{eventId}` ID
 checks, the raw-`event_id` backfill shortcut, dead `select_auth_events` /
-`AuthChain` helpers) were fixed on that branch; see `CHANGELOG.md` 0.12.13
+`AuthChain` helpers) were fixed on that branch; see `CHANGELOG-pre-release.md` 0.12.13
 and ADR-0075 and ADR-0076.
 
 ## DEFERRED: drop the unused `state_group_edges` table

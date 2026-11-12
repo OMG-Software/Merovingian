@@ -8,7 +8,7 @@ new documents.
 
 | Document | What to add/update |
 |---|---|
-| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `## X.Y.Z` section when the version changes; documentation-only changes can use the current version's documentation section without a bump. |
+| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `## X.Y.Z` section when the version changes; documentation-only changes can use the current version's documentation section without a bump. Never add to `../CHANGELOG-pre-release.md`, the frozen record of the 0.x series ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)). |
 
 ## Update when the matching domain changes
 

@@ -77,7 +77,7 @@ than the others.
 | `scripts/build-netbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
 | `scripts/build-openbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
 | `scripts/build-static-linux.sh` | `VERSION="${MEROVINGIAN_VERSION:-X.Y.Z}"` |
-| `CHANGELOG.md` | New `## X.Y.Z` section at the top |
+| `CHANGELOG.md` | New `## X.Y.Z` section at the top (never in `CHANGELOG-pre-release.md`, ADR-0740) |
 
 ### Notes
 
@@ -89,8 +89,10 @@ than the others.
 - The RPM-family `%changelog` (the `rpm`, `rhel`, and `opensuse` specs) requires
   a new dated entry for every version — the `Version:` field alone is not
   sufficient for `rpmbuild` to accept the spec.
-- Historical version strings in `CHANGELOG.md` and every spec `%changelog` are
-  records, not live values; do not edit them when bumping.
+- Historical version strings in `CHANGELOG.md`, `CHANGELOG-pre-release.md` and every spec
+  `%changelog` are records, not live values; do not edit them when bumping.
+- `CHANGELOG.md` starts at 1.0.0. The 0.x entries are in `CHANGELOG-pre-release.md`, a frozen record that
+  nothing is added to ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 - `tests/tooling/test_packages_workflow.py` enforces that every file in the table
   above carries the current `meson.build` version. Run it (or `python build.py
   wsl`) after a bump to catch any location that was missed.

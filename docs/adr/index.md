@@ -622,3 +622,4 @@
 * [0651 - The v1.0.0 tag moves to the release-workflow fix without a version bump](0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)
 * [0738 - One BSD example config whose configuration directory each package fills in](0738-one-bsd-example-config-whose-configuration-directory-each-package-fills-in.md)
 * [0739 - Main reads a worker's store through readers opened before the sandbox](0739-main-reads-a-workers-store-through-readers-opened-before-the-sandbox.md)
+* [0740 - The changelog starts at 1.0.0, and the pre-release entries are a frozen record](0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)
