@@ -9,6 +9,7 @@
 #include "merovingian/sync/ReadMarkers.hpp"
 #include "merovingian/sync/SlidingSyncConnectionState.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
+#include "merovingian/sync/SlidingSyncRequestLookups.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
 #include "merovingian/sync/SlidingSyncRoomSubscription.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
@@ -97,18 +98,18 @@ namespace merovingian::sync
 // request and passes it to every room: its indexes over the store are built once, not per room.
 // The timeline only ever contains events `visibility` lets the user see. `unread` is the
 // request's one classifier of unread events (R15), shared across rooms in the same way. The
-// overload above builds a filter and a classifier of its own for a single room.
-[[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
-                                       std::string_view user, SlidingSyncRoomSubscription const& sub,
-                                       std::uint64_t room_since_event_ordering, bool is_initial,
-                                       database::PersistentStore const& store,
-                                       std::unordered_set<std::string> const& lazy_members_already_sent,
-                                       std::unordered_set<std::string> const& ignored_senders,
-                                       HistoryVisibility& visibility, UnreadEventClassifier& unread,
-                                       TimelineExpansion expansion = TimelineExpansion::none,
-                                       std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
-                                       std::optional<std::uint64_t> timeline_upper_bound = std::nullopt,
-                                       std::string_view device_id = {}) -> SlidingSyncRoomResponse;
+// overload above builds a filter and a classifier of its own for a single room. `lookups`, when given, is the request's
+// one SlidingSyncRequestLookups (ADR-0665), which answers the room's read markers and `is_dm` from what the request
+// already learned; without it the room builds its own.
+[[nodiscard]] auto build_room_response(
+    homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
+    SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering, bool is_initial,
+    database::PersistentStore const& store, std::unordered_set<std::string> const& lazy_members_already_sent,
+    std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
+    UnreadEventClassifier& unread, TimelineExpansion expansion = TimelineExpansion::none,
+    std::optional<std::uint64_t> room_last_sent_ordering = std::nullopt,
+    std::optional<std::uint64_t> timeline_upper_bound = std::nullopt, std::string_view device_id = {},
+    SlidingSyncRequestLookups* lookups = nullptr) -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a

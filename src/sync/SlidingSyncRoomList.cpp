@@ -3,22 +3,17 @@
 
 #include "merovingian/sync/SlidingSyncRoomList.hpp"
 
-#include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/RoomListResult.hpp"
+#include "merovingian/sync/SlidingSyncRequestLookups.hpp"
 #include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <variant>
 #include <vector>
 
 namespace merovingian::sync
@@ -26,205 +21,43 @@ namespace merovingian::sync
 namespace
 {
 
-    // ── JSON helpers (local, minimal set) ──────────────────────────────────
-
-    [[nodiscard]] auto find_member(canonicaljson::Object const& obj, std::string_view key) noexcept
-        -> canonicaljson::Value const*
-    {
-        for (auto const& m : obj)
-        {
-            if (m.key == key)
-            {
-                return m.value.get();
-            }
-        }
-        return nullptr;
-    }
-
-    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept -> canonicaljson::Object const*
-    {
-        return std::get_if<canonicaljson::Object>(&v.storage());
-    }
-
-    [[nodiscard]] auto as_string(canonicaljson::Value const& v) noexcept -> std::string const*
-    {
-        return std::get_if<std::string>(&v.storage());
-    }
-
-    [[nodiscard]] auto as_array(canonicaljson::Value const& v) noexcept -> canonicaljson::Array const*
-    {
-        return std::get_if<canonicaljson::Array>(&v.storage());
-    }
-
     // ── Filter helpers ─────────────────────────────────────────────────────
 
-    // True when the room has an m.room.encryption state event.
-    [[nodiscard]] auto room_is_encrypted(database::PersistentStore const& store, std::string_view room_id) noexcept
-        -> bool
+    // Whether a room passes the list's filters. Every answer comes from the request's lookups, built once per request,
+    // never from a scan of a server-wide table per room (ADR-0665).
+    [[nodiscard]] auto passes_filters(SlidingSyncRequestLookups& lookups, std::string_view room_id,
+                                      SlidingSyncFilters const& f) -> bool
     {
-        return std::ranges::any_of(store.state, [&](database::PersistentStateEvent const& s) {
-            return s.room_id == room_id && s.event_type == "m.room.encryption";
-        });
-    }
-
-    // True when user has an invite membership in the room.
-    [[nodiscard]] auto user_is_invited(database::PersistentStore const& store, std::string_view room_id,
-                                       std::string_view user) noexcept -> bool
-    {
-        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
-            return m.room_id == room_id && m.user_id == user && m.membership == "invite";
-        });
-    }
-
-    // True when room_id appears in the user's m.direct global account-data.
-    [[nodiscard]] auto room_is_dm(database::PersistentStore const& store, std::string_view room_id,
-                                  std::string_view user) -> bool
-    {
-        auto const content = database::find_account_data_content(store, user, std::string_view{}, "m.direct");
-        if (!content.has_value())
+        if (f.is_encrypted.has_value() && lookups.is_encrypted(room_id) != *f.is_encrypted)
         {
             return false;
         }
-        // m.direct content: { "@user:server": ["!room:server", ...], ... }
-        // Account data is never signed and may hold fractional numbers: general parser.
-        auto const parsed = canonicaljson::parse_json(*content);
-        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
-        if (root == nullptr)
+        if (f.is_invite.has_value() && lookups.is_invited(room_id) != *f.is_invite)
         {
             return false;
         }
-        for (auto const& member : *root)
-        {
-            auto const* arr = as_array(*member.value);
-            if (arr == nullptr)
-            {
-                continue;
-            }
-            for (auto const& item : *arr)
-            {
-                if (auto const* s = as_string(item); s != nullptr && *s == room_id)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    // True when room_id is tagged m.favourite in the user's room account-data.
-    [[nodiscard]] auto room_is_favourite(database::PersistentStore const& store, std::string_view room_id,
-                                         std::string_view user) -> bool
-    {
-        auto const content = database::find_account_data_content(store, user, room_id, "m.tag");
-        if (!content.has_value())
+        if (f.is_dm.has_value() && lookups.is_dm(room_id) != *f.is_dm)
         {
             return false;
         }
-        // m.tag content may contain non-canonical doubles such as order:0.5.
-        auto const parsed = canonicaljson::parse_json(*content);
-        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
-        auto const* tags_val = root == nullptr ? nullptr : find_member(*root, "tags");
-        auto const* tags = tags_val == nullptr ? nullptr : as_object(*tags_val);
-        return tags != nullptr && find_member(*tags, "m.favourite") != nullptr;
-    }
-
-    // Returns the value of m.room.create content.type, or "" if absent.
-    [[nodiscard]] auto room_type(database::PersistentStore const& store, std::string_view room_id) -> std::string
-    {
-        for (auto const& se : store.state)
+        if (f.is_favourite.has_value() && lookups.is_favourite(room_id) != *f.is_favourite)
         {
-            if (se.room_id != room_id || se.event_type != "m.room.create")
-            {
-                continue;
-            }
-            // Find the event JSON for this state entry.
-            for (auto const& ev : store.events.with_id(se.event_id))
-            {
-                auto const parsed = canonicaljson::parse_lossless(ev.json);
-                if (parsed.error != canonicaljson::ParseError::none)
-                {
-                    return {};
-                }
-                auto const* root = as_object(parsed.value);
-                if (root == nullptr)
-                {
-                    return {};
-                }
-                auto const* content_val = find_member(*root, "content");
-                if (content_val == nullptr)
-                {
-                    return {};
-                }
-                auto const* content = as_object(*content_val);
-                if (content == nullptr)
-                {
-                    return {};
-                }
-                auto const* type_val = find_member(*content, "type");
-                if (type_val == nullptr)
-                {
-                    return {};
-                }
-                auto const* s = as_string(*type_val);
-                return s != nullptr ? *s : std::string{};
-            }
-        }
-        return {};
-    }
-
-    [[nodiscard]] auto passes_filters(database::PersistentStore const& store, std::string_view room_id,
-                                      std::string_view user, SlidingSyncFilters const& f) -> bool
-    {
-        if (f.is_encrypted.has_value())
-        {
-            if (room_is_encrypted(store, room_id) != *f.is_encrypted)
-            {
-                return false;
-            }
-        }
-        if (f.is_invite.has_value())
-        {
-            if (user_is_invited(store, room_id, user) != *f.is_invite)
-            {
-                return false;
-            }
-        }
-        if (f.is_dm.has_value())
-        {
-            if (room_is_dm(store, room_id, user) != *f.is_dm)
-            {
-                return false;
-            }
-        }
-        if (f.is_favourite.has_value())
-        {
-            if (room_is_favourite(store, room_id, user) != *f.is_favourite)
-            {
-                return false;
-            }
+            return false;
         }
         if (!f.room_types.empty() || !f.not_room_types.empty())
         {
-            auto const type = room_type(store, room_id);
-            if (!f.room_types.empty())
-            {
-                auto const match = std::ranges::any_of(f.room_types, [&](std::string const& t) {
+            auto const& type = lookups.room_type(room_id);
+            if (!f.room_types.empty() && !std::ranges::any_of(f.room_types, [&](std::string const& t) {
                     return t == type;
-                });
-                if (!match)
-                {
-                    return false;
-                }
+                }))
+            {
+                return false;
             }
-            if (!f.not_room_types.empty())
-            {
-                auto const match = std::ranges::any_of(f.not_room_types, [&](std::string const& t) {
+            if (!f.not_room_types.empty() && std::ranges::any_of(f.not_room_types, [&](std::string const& t) {
                     return t == type;
-                });
-                if (match)
-                {
-                    return false;
-                }
+                }))
+            {
+                return false;
             }
         }
         return true;
@@ -234,137 +67,19 @@ namespace
 
     // Every sort key is computed once per room before the sort, never inside
     // the comparator: the comparator runs O(N log N) times while the caller
-    // holds the runtime lock, and each key is a scan of the store (ADR-0172).
-
-    [[nodiscard]] auto event_type_is_one_of(std::string_view event_json, std::vector<std::string> const& types) -> bool
-    {
-        auto const parsed = canonicaljson::parse_lossless(event_json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return false;
-        }
-        auto const* root = as_object(parsed.value);
-        auto const* type_val = root == nullptr ? nullptr : find_member(*root, "type");
-        auto const* type_s = type_val == nullptr ? nullptr : as_string(*type_val);
-        if (type_s == nullptr)
-        {
-            return false;
-        }
-        return std::ranges::any_of(types, [&](std::string const& t) {
-            return t == *type_s;
-        });
-    }
-
-    // For each room in `room_ids`: the maximum stream_ordering among its events
-    // whose type is in bump_types (all events when bump_types is empty), 0 when
-    // there is none. One pass over store.events, newest first, so an event that
-    // cannot beat its room's current maximum is skipped without being parsed;
-    // the result does not depend on the order of store.events.
-    [[nodiscard]] auto recency_keys(database::PersistentStore const& store, std::vector<std::string> const& room_ids,
-                                    std::vector<std::string> const& bump_types)
-        -> std::unordered_map<std::string, std::uint64_t>
-    {
-        auto keys = std::unordered_map<std::string, std::uint64_t>{};
-        keys.reserve(room_ids.size());
-        for (auto const& room_id : room_ids)
-        {
-            keys.emplace(room_id, std::uint64_t{0U});
-        }
-        for (auto const& ev : std::views::reverse(store.events))
-        {
-            auto const found = keys.find(ev.room_id);
-            if (found == keys.end() || ev.stream_ordering <= found->second)
-            {
-                continue;
-            }
-            if (!bump_types.empty() && !event_type_is_one_of(ev.json, bump_types))
-            {
-                continue;
-            }
-            found->second = ev.stream_ordering;
-        }
-        return keys;
-    }
+    // holds the runtime lock (ADR-0172). Recency and name keys come from the request's lookups, per room
+    // through the indexes, never from a pass over a whole table (ADR-0666).
 
     // The room's unread notifications, relative to the user's read receipts
     // (#417) and counted by the user's push rules (R15). Without the receipt
     // baseline this sort key degenerates to "total message count" and every
     // room sorts identically regardless of read state. The same count as the
     // room's notification_count.
-    [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+    [[nodiscard]] auto notification_key(SlidingSyncRequestLookups& lookups, database::PersistentStore const& store,
                                         std::string_view room_id, std::string_view user, UnreadEventClassifier& unread)
         -> std::uint64_t
     {
-        return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user), unread);
-    }
-
-    // content.name of an m.room.name event, or empty when it has none.
-    [[nodiscard]] auto room_name_from_event(std::string_view event_json) -> std::string
-    {
-        auto const parsed = canonicaljson::parse_lossless(event_json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return {};
-        }
-        auto const* root = as_object(parsed.value);
-        auto const* content_val = root == nullptr ? nullptr : find_member(*root, "content");
-        auto const* content = content_val == nullptr ? nullptr : as_object(*content_val);
-        auto const* name_val = content == nullptr ? nullptr : find_member(*content, "name");
-        auto const* s = name_val == nullptr ? nullptr : as_string(*name_val);
-        return s != nullptr ? *s : std::string{};
-    }
-
-    // For each room in `room_ids`: the name from the first m.room.name state
-    // entry (in store.state order) whose event the store holds, or empty. One
-    // pass over store.state and one over store.events.
-    [[nodiscard]] auto display_name_keys(database::PersistentStore const& store,
-                                         std::vector<std::string> const& room_ids)
-        -> std::unordered_map<std::string, std::string>
-    {
-        auto candidates = std::unordered_map<std::string, std::vector<std::string>>{};
-        candidates.reserve(room_ids.size());
-        for (auto const& room_id : room_ids)
-        {
-            candidates.emplace(room_id, std::vector<std::string>{});
-        }
-        auto event_index = std::unordered_map<std::string, std::size_t>{};
-        for (auto const& se : store.state)
-        {
-            if (se.event_type != "m.room.name")
-            {
-                continue;
-            }
-            if (auto const found = candidates.find(se.room_id); found != candidates.end())
-            {
-                found->second.push_back(se.event_id);
-                event_index.emplace(se.event_id, std::numeric_limits<std::size_t>::max());
-            }
-        }
-        for (auto i = std::size_t{0U}; i < store.events.size(); ++i)
-        {
-            auto const found = event_index.find(store.events[i].event_id);
-            if (found != event_index.end() && found->second == std::numeric_limits<std::size_t>::max())
-            {
-                found->second = i;
-            }
-        }
-        auto names = std::unordered_map<std::string, std::string>{};
-        names.reserve(room_ids.size());
-        for (auto const& [room_id, event_ids] : candidates)
-        {
-            auto name = std::string{};
-            for (auto const& event_id : event_ids)
-            {
-                auto const index = event_index.at(event_id);
-                if (index != std::numeric_limits<std::size_t>::max())
-                {
-                    name = room_name_from_event(store.events[index].json);
-                    break;
-                }
-            }
-            names.emplace(room_id, std::move(name));
-        }
-        return names;
+        return count_notifications(store, room_id, user, lookups.read_markers(room_id), unread);
     }
 
     // ── Ops generation ─────────────────────────────────────────────────────
@@ -422,31 +137,26 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store,
                        UnreadEventClassifier& unread) -> RoomListResult
 {
+    auto lookups = SlidingSyncRequestLookups{store, user, &rt.database.persistent_store.receipts};
+    return compute_room_list(user, list, prev_window, store, unread, lookups);
+}
 
-    // Step 1 — enumerate rooms where the user is joined.
-    // Use the persistent store as the source of truth rather than the runtime
-    // cache so sliding sync reports the same rooms as the database of record
-    // even when the in-memory cache is stale or was never hydrated.
-    auto joined_room_ids = std::vector<std::string>{};
-    for (auto const& room : store.rooms)
-    {
-        // The room's own membership rows (ADR-0437): the whole list costs the memberships once, not once per room.
-        auto joined = false;
-        database::for_each_room_membership_row(store, room.room_id, [&](database::PersistentMembership const& m) {
-            joined = joined || (m.user_id == user && m.membership == "join");
-        });
-        if (joined)
-        {
-            joined_room_ids.push_back(room.room_id);
-        }
-    }
+auto compute_room_list(std::string_view user, SlidingSyncList const& list, std::vector<std::string> const& prev_window,
+                       database::PersistentStore const& store, UnreadEventClassifier& unread,
+                       SlidingSyncRequestLookups& lookups) -> RoomListResult
+{
 
-    // Step 2 — apply filters.
+    // Step 1 — the rooms where the user is joined, from the user's own membership rows (ADR-0609), read once per
+    // request. The persistent store is the source of truth rather than the runtime cache, so sliding sync reports the
+    // same rooms as the database of record even when the in-memory cache is stale or was never hydrated.
+    auto joined_room_ids = lookups.joined_rooms();
+
+    // Step 2 — apply filters, each answered from the request's lookups (ADR-0665).
     if (list.filters.has_value())
     {
         auto const& f = *list.filters;
         std::erase_if(joined_room_ids, [&](std::string const& room_id) {
-            return !passes_filters(store, room_id, user, f);
+            return !passes_filters(lookups, room_id, f);
         });
     }
 
@@ -464,13 +174,27 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
         notification_keys.reserve(joined_room_ids.size());
         for (auto const& room_id : joined_room_ids)
         {
-            notification_keys.emplace(room_id, notification_key(rt, store, room_id, user, unread));
+            notification_keys.emplace(room_id, notification_key(lookups, store, room_id, user, unread));
         }
     }
-    auto const recency = sorts_by("by_recency") ? recency_keys(store, joined_room_ids, list.bump_event_types)
-                                                : std::unordered_map<std::string, std::uint64_t>{};
-    auto const names = sorts_by("by_name") ? display_name_keys(store, joined_room_ids)
-                                           : std::unordered_map<std::string, std::string>{};
+    auto recency = std::unordered_map<std::string, std::uint64_t>{};
+    if (sorts_by("by_recency"))
+    {
+        recency.reserve(joined_room_ids.size());
+        for (auto const& room_id : joined_room_ids)
+        {
+            recency.emplace(room_id, lookups.recency(room_id, list.bump_event_types));
+        }
+    }
+    auto names = std::unordered_map<std::string, std::string>{};
+    if (sorts_by("by_name"))
+    {
+        names.reserve(joined_room_ids.size());
+        for (auto const& room_id : joined_room_ids)
+        {
+            names.emplace(room_id, lookups.room_name(room_id));
+        }
+    }
 
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.

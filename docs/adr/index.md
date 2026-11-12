@@ -596,3 +596,5 @@
 * [0736 - The retired worker database keys are refused at parse](0736-the-retired-worker-database-keys-are-refused-at-parse.md)
 * [0663 - A sliding sync connection keeps a bounded number of bytes of its lists](0663-a-sliding-sync-connection-keeps-a-bounded-number-of-bytes-of-its-lists.md)
 * [0664 - A sliding sync timeline is read through the shared window walk, with its skip budget](0664-a-sliding-sync-timeline-is-read-through-the-shared-window-walk-with-its-skip-budget.md)
+* [0665 - A sliding sync request learns the caller's rooms once, and every list reads that](0665-a-sliding-sync-request-learns-the-callers-rooms-once-and-every-list-reads-that.md)
+* [0666 - The recency and name sort keys are read per room through the indexes](0666-the-recency-and-name-sort-keys-are-read-per-room-through-the-indexes.md)

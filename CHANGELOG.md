@@ -301,6 +301,10 @@ A sliding sync connection keeps a copy of its request's lists and its `conn_id` 
 
 A sliding sync room's timeline was built by a loop that did not count rows it passed over, so a room whose newest history the caller could not see, or an ignored user had filled, was walked to its first event under the runtime lock on every initial build. It now uses the walk classic `/sync` uses, which stops after 1000 rows not taken; past that the timeline is `limited` and `prev_batch` points where the walk stopped.
 
+### Sliding sync list filters and the notification sort no longer scan whole tables per room (ADR-0665, ADR-0666)
+
+For each list, each joined room was tested against the filters by scanning the whole membership, current-state or receipt table, so a list cost the user's rooms times the tables, under the runtime lock. A request now learns the user's joined rooms and invites from their own membership rows, reads the room's encryption and type by the state index, parses `m.direct` once and collects the user's read receipts in one pass; every list and every room built shares that. The lists a room belongs to are looked up in a hash set rather than scanned in the window. The `by_recency` (with bump event types) and `by_name` sort keys are likewise read per room through the room indexes with a budget of 1000 rows per room, instead of one pass over every event and state row per list (ADR-0666).
+
 
 ## 1.0.0
 

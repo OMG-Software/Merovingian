@@ -19,6 +19,7 @@ Spec authority:
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
+| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (one receipt pass), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
@@ -125,6 +126,8 @@ joined. `parse_sliding_sync_request` clamps `timeline_limit` to
 (the handler answers a violation 400 `M_INVALID_PARAM`). It also caps `room_types`/`not_room_types` (16 each), ranges (16) per list, a `conn_id` and list name (255 bytes) and the bytes of lists a request would make a connection keep (64 KiB; `sliding_sync_retained_bytes`); `sliding_sync_json` refuses a request that would take the device's connections past 256 KiB together, before creating its entry (ADR-0663). A new field a connection stores copies into `sliding_sync_retained_bytes`.
 
 A room's sliding sync timeline is read through `newest_timeline_window`, like `/sync`'s, so it stops after `max_timeline_rows_skipped` rows not taken and then is `limited` with a `prev_batch` where the walk stopped (ADR-0664). Never add a loop over `room_in_stream_order` that `continue`s on a visibility test.
+
+A list filter or sort key reads the request's `SlidingSyncRequestLookups`, never a scan of `store.memberships`, `store.state` or `store.receipts` per room (ADR-0665); a new filter adds a lookup there.
 
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times

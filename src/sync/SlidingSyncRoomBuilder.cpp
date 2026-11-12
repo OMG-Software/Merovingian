@@ -640,9 +640,16 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
                          UnreadEventClassifier& unread, TimelineExpansion expansion,
                          std::optional<std::uint64_t> room_last_sent_ordering,
-                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id)
-    -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id,
+                         SlidingSyncRequestLookups* lookups) -> SlidingSyncRoomResponse
 {
+    // The request's lookups; a caller that serves one room builds nothing to share, so the room gets its own.
+    auto own_lookups = std::optional<SlidingSyncRequestLookups>{};
+    if (lookups == nullptr)
+    {
+        lookups = &own_lookups.emplace(store, user, &rt.database.persistent_store.receipts);
+    }
+
     auto resp = SlidingSyncRoomResponse{};
 
     resp.initial = is_initial;
@@ -656,32 +663,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     resp.avatar = state_content_string(store, room_id, "m.room.avatar", "url");
 
     // ── is_dm ───────────────────────────────────────────────────────────────
-    // Check m.direct global account-data.
-    if (auto const direct = database::find_account_data_content(store, user, std::string_view{}, "m.direct");
-        direct.has_value())
-    {
-        // Account data is never signed and may hold fractional numbers: general parser.
-        auto const parsed = canonicaljson::parse_json(*direct);
-        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
-        if (root != nullptr)
-        {
-            for (auto const& member : *root)
-            {
-                auto const* arr = std::get_if<canonicaljson::Array>(&member.value->storage());
-                if (arr == nullptr)
-                {
-                    continue;
-                }
-                for (auto const& item : *arr)
-                {
-                    if (auto const* s = as_string(item); s != nullptr && *s == room_id)
-                    {
-                        resp.is_dm = true;
-                    }
-                }
-            }
-        }
-    }
+    // The room is in the user's m.direct global account data, parsed once per request.
+    resp.is_dm = lookups->is_dm(room_id);
 
     // ── Counts ──────────────────────────────────────────────────────────────
     resp.joined_count = count_memberships(store, room_id, "join");
@@ -690,7 +673,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // position — "events the user hasn't read", not "events the client hasn't
     // synced".
     auto const unread_counts =
-        count_unread_by_thread(store, room_id, user, read_receipt_markers(rt, store, room_id, user), unread).total();
+        count_unread_by_thread(store, room_id, user, lookups->read_markers(room_id), unread).total();
     resp.notification_count = unread_counts.notification_count;
     resp.highlight_count = unread_counts.highlight_count;
 

@@ -8,6 +8,7 @@
 #include "merovingian/sync/RoomListResult.hpp"
 #include "merovingian/sync/SlidingSyncList.hpp"
 #include "merovingian/sync/SlidingSyncOp.hpp"
+#include "merovingian/sync/SlidingSyncRequestLookups.hpp"
 #include "merovingian/sync/UnreadEventClassifier.hpp"
 
 #include <cstdint>
@@ -33,5 +34,12 @@ namespace merovingian::sync
                                      SlidingSyncList const& list, std::vector<std::string> const& prev_window,
                                      database::PersistentStore const& store, UnreadEventClassifier& unread)
     -> RoomListResult;
+
+// As above, with the request's one `lookups` (ADR-0665), which every list of the request shares: the filters and the
+// `by_notification_count` sort are answered from it, so a list costs the user's rooms, not the rooms times a table.
+[[nodiscard]] auto compute_room_list(std::string_view user, SlidingSyncList const& list,
+                                     std::vector<std::string> const& prev_window,
+                                     database::PersistentStore const& store, UnreadEventClassifier& unread,
+                                     SlidingSyncRequestLookups& lookups) -> RoomListResult;
 
 } // namespace merovingian::sync

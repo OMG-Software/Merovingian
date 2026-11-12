@@ -172,6 +172,7 @@
 #include "merovingian/sync/SlidingSyncParser.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
+#include "merovingian/sync/SlidingSyncRequestLookups.hpp"
 #include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 #include "merovingian/sync/SlidingSyncRoomList.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
@@ -7294,16 +7295,19 @@ namespace
         // changes that end the long-poll anyway (see SlidingSyncConnectionState::list_configs), so
         // an idle long-poll still loads neither the user's rules nor the room list.
         auto unread_classifier = std::optional<PushRuleUnreadClassifier>{};
+        // One set of per-request lookups for every list and every room built (ADR-0665).
+        auto request_lookups = std::optional<sync::SlidingSyncRequestLookups>{};
         auto list_results = std::map<std::string, sync::RoomListResult>{};
         auto const build_list_windows = [&]() {
             unread_classifier.emplace(store, user, rt.limits.max_push_rules_per_user, history_visibility);
+            request_lookups.emplace(store, user, &rt.homeserver.database.persistent_store.receipts);
             for (auto const& [list_name, list] : ssreq.lists)
             {
                 auto const empty_prev = std::vector<std::string>{};
                 auto const it = conn.list_prev_windows.find(list_name);
                 auto const& prev_win = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
                 list_results[list_name] =
-                    sync::compute_room_list(rt.homeserver, user, list, prev_win, store, *unread_classifier);
+                    sync::compute_room_list(user, list, prev_win, store, *unread_classifier, *request_lookups);
             }
         };
         bool const list_config_changed = std::ranges::any_of(ssreq.lists, [&conn](auto const& entry) {
@@ -7514,6 +7518,14 @@ namespace
         auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
         // timeline holds an event above it, or the next request would send it again.
+        // Each list's window as a set, so asking which lists hold a room is a lookup, not a scan of the window (a
+        // range's end is the client's, so a window can hold every room the user has).
+        auto windowed_sets = std::map<std::string, std::unordered_set<std::string>>{};
+        for (auto const& [lname, result] : list_results)
+        {
+            windowed_sets[lname].insert(result.windowed_room_ids.begin(), result.windowed_room_ids.end());
+        }
+
         auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
         for (auto const& room_id : response_room_ids)
         {
@@ -7546,7 +7558,7 @@ namespace
             // one list over the neutral start.
             for (auto const& [lname, result] : list_results)
             {
-                if (std::ranges::find(result.windowed_room_ids, room_id) == result.windowed_room_ids.end())
+                if (!windowed_sets.at(lname).contains(room_id))
                 {
                     continue;
                 }
@@ -7581,10 +7593,10 @@ namespace
             }
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
-            auto room =
-                sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                          lazy_already_sent, ignored_senders, history_visibility, *unread_classifier,
-                                          expansion, room_last_ordering, visible_event_ordering, device_id);
+            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                                  lazy_already_sent, ignored_senders, history_visibility,
+                                                  *unread_classifier, expansion, room_last_ordering,
+                                                  visible_event_ordering, device_id, &request_lookups.value());
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;

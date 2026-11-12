@@ -15,6 +15,7 @@ sync_sources = files(
   'SlidingSyncExtensions.cpp',
   'SlidingSyncParser.cpp',
   'SlidingSyncRoomBuilder.cpp',
+  'SlidingSyncRequestLookups.cpp',
   'SlidingSyncRoomList.cpp',
   'StreamToken.cpp',
   'SyncFilter.cpp',
