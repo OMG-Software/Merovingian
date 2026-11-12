@@ -42,15 +42,16 @@ def check_tag_script(workflow: str, step_name: str = "Compare the tag with meson
 def installed_packages(job: str) -> set[str]:
     """The package arguments of a job's apt-get install and pkg install commands.
 
-    Only those commands count, so a package named in a comment or a `curl` call in another
-    step does not. Backslash continuations are joined first, and a trailing shell comment
-    ends the command."""
+    Only those commands count, so a package named in a comment, a commented-out install
+    command, or a `curl` call in another step does not. Backslash continuations are joined,
+    then each line loses its comment (a `#` at the start or after whitespace, which keeps
+    `${VAR#prefix}`) before the install command is looked for."""
     packages: set[str] = set()
-    for command in re.sub(r"\\\n", " ", job).splitlines():
+    for line in re.sub(r"\\\n", " ", job).splitlines():
+        command = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
         match = re.search(r"(?:\bapt-get|\bpkg) install\b(.*)", command)
         if match is not None:
-            arguments = re.split(r"(?:^|\s)#", match.group(1), maxsplit=1)[0]
-            packages.update(word for word in arguments.split() if not word.startswith("-"))
+            packages.update(word for word in match.group(1).split() if not word.startswith("-"))
     return packages
 
 
@@ -336,6 +337,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("release-evidence-freebsd-", workflow)
         self.assertIn("## Package checksums", workflow)
         self.assertIn("## Release evidence", workflow)
+
+    def test_only_active_install_command_arguments_count_as_installed(self) -> None:
+        # GIVEN a job that names packages in comments, in a commented-out install command and
+        # in a curl call, beside one real apt-get install and one real pkg install.
+        job = (
+            "      # libcurl4-openssl-dev is named here only\n"
+            "      - run: curl -fsSL https://example.invalid\n"
+            "          # apt-get install -y libcurl4-openssl-dev\n"
+            "          #pkg install curl\n"
+            "          sudo apt-get install -y \\\n"
+            "            bison \\\n"
+            "            flex  # libpq-dev\n"
+            "          pkg install -y meson ${PKG#prefix}  # libsodium\n"
+        )
+
+        # WHEN its installed packages are read.
+        installed = installed_packages(job)
+
+        # THEN only the active commands' package arguments count.
+        self.assertEqual({"bison", "flex", "meson", "${PKG#prefix}"}, installed)
 
     def test_each_release_build_installs_every_module_its_build_script_checks(self) -> None:
         # GIVEN the release workflow and the pkg-config modules each build script refuses to
