@@ -4772,26 +4772,40 @@ namespace
 }
 #endif
 
+#ifndef __linux__
+// What ps(1) lists as children of this test process, shown when a scenario finds the wrong number of workers.
+[[nodiscard]] auto c44_child_listing() -> std::string
+{
+    auto listing = std::string{};
+    auto lines = std::size_t{0U};
+    for (auto const& line : c44_command_lines("ps -A -o pid= -o ppid= -o ucomm="))
+    {
+        ++lines;
+        auto fields = std::istringstream{line};
+        auto pid = pid_t{0};
+        auto parent = pid_t{0};
+        if ((fields >> pid >> parent) && parent == ::getpid())
+            listing += line;
+    }
+    return std::to_string(lines) + " ps lines; children of " + std::to_string(::getpid()) + ":\n" + listing;
+}
+#endif
+
 // C44 (ADR-0733): the federation worker children of this test process, found by parent PID and the kernel's
 // command name (15 bytes on Linux, more on the BSDs), so a scenario never trusts its own count of what it spawned.
 [[nodiscard]] auto c44_worker_children() -> std::vector<pid_t>
 {
     auto children = std::vector<pid_t>{};
 #ifndef __linux__
-    for (auto const& line : c44_command_lines("ps -A -o pid= -o ppid= -o comm="))
+    // `ucomm` is the kernel's command name on all three BSDs. Not `comm`: on NetBSD that is argv[0], the worker's full
+    // path, and ps(1) cuts it at the terminal width (79 columns with no terminal), so a long build path loses the name.
+    for (auto const& line : c44_command_lines("ps -A -o pid= -o ppid= -o ucomm="))
     {
         auto fields = std::istringstream{line};
         auto pid = pid_t{0};
         auto parent = pid_t{0};
         auto comm = std::string{};
-        if (!(fields >> pid >> parent >> comm))
-            continue;
-        // NetBSD's `comm` is argv[0], which the supervisor sets to the worker's full path; FreeBSD and OpenBSD print
-        // the kernel's command name. Compare the last path component, which is the command name in both cases.
-        auto const slash = comm.rfind('/');
-        auto const name =
-            slash == std::string::npos ? std::string_view{comm} : std::string_view{comm}.substr(slash + 1U);
-        if (parent == ::getpid() && name.starts_with("merovingian-fed"))
+        if ((fields >> pid >> parent >> comm) && parent == ::getpid() && comm.starts_with("merovingian-fed"))
             children.push_back(pid);
     }
     return children;
@@ -4950,6 +4964,9 @@ SCENARIO("A federation worker on a SQLite server opens no database and cannot bl
             std::vector<std::filesystem::path>{database_path, database_path.string() + "-journal",
                                                database_path.string() + "-wal", database_path.string() + "-shm"};
         auto const workers = c44_worker_children();
+#ifndef __linux__
+        INFO(c44_child_listing());
+#endif
         REQUIRE(workers.size() == 1U);
         auto const worker = workers.front();
 
