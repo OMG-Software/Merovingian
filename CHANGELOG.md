@@ -252,6 +252,10 @@ prepared state row now moves the revision after the row is written, as well as a
   `public_signing_keys_of_server` copies a server's public key columns from memory, never a row with a secret: the
   database halves of what main will serve the worker. Tests: `[c44][snapshot-tips]`, `[c44][snapshot-fill]`,
   `[c44][room-ids]`, `[c44][server-keys]`.
+* The IPC frames that carry the worker's store: the room list, a room snapshot and a server's public keys. Rows travel
+  exactly (bytes that are not UTF-8 and integers past 2^53 included), are packed into pages that fit the frame cap, and
+  a row too big for any page refuses the room instead of being cut. The worker's `RoomSnapshotAssembler` refuses pages
+  out of order, of another room or generation, or holding another room's rows. Tests: `[c44][worker-store-frames]`.
 
 ## 1.0.0
 

@@ -6,13 +6,15 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/crypto/Encoding.hpp"
-#include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/PublicRooms.hpp"
+#include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/ipc/MembershipTemplateIngest.hpp"
 
+#include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -832,6 +834,818 @@ auto deserialize_public_rooms_ingest_result(std::string_view json) -> std::optio
         return std::nullopt;
     }
     return body;
+}
+
+// ---- The federation worker's store, from main (C44, ADR-0733) ----
+
+namespace
+{
+
+    // Room for what IpcChannel puts in front of a body (`{"id":N,"reply_to":M,`, two 20-digit numbers) with margin.
+    constexpr auto frame_header_room = std::size_t{1024U};
+    // Room, alias and server identifiers are at most 255 bytes (Matrix appendices, identifier grammar).
+    constexpr auto max_identifier_bytes = std::size_t{255U};
+    constexpr auto max_u64_digits = std::size_t{20U};
+    constexpr auto widest_u64 = std::numeric_limits<std::uint64_t>::max();
+
+    // `,"key":"123"`: every integer travels as decimal text, so none meets the parser's 2^53 limit.
+    auto add_u64(std::string& out, std::string_view key, std::uint64_t value) -> void
+    {
+        out += ",\"";
+        out += key;
+        out += "\":\"";
+        out += std::to_string(value);
+        out += '"';
+    }
+
+    auto add_str(std::string& out, std::string_view key, std::string_view value) -> void
+    {
+        out += ',';
+        append_lossless_member(out, key, value);
+    }
+
+    // One array entry: a JSON string for UTF-8 text, {"b64":...} for anything else, so each entry is exact.
+    auto append_lossless_entry(std::string& out, std::string_view value) -> void
+    {
+        if (canonicaljson::utf8_is_valid(value))
+        {
+            out += ipc_json_str(value);
+            return;
+        }
+        out += R"({"b64":)";
+        out += ipc_json_str(base64_encode_body(value));
+        out += '}';
+    }
+
+    auto add_str_array(std::string& out, std::string_view key, std::vector<std::string> const& values) -> void
+    {
+        out += ",\"";
+        out += key;
+        out += "\":[";
+        auto first = true;
+        for (auto const& value : values)
+        {
+            if (!first)
+            {
+                out += ',';
+            }
+            first = false;
+            append_lossless_entry(out, value);
+        }
+        out += ']';
+    }
+
+    [[nodiscard]] auto get_u64_text(canonicaljson::Object const& obj, std::string_view key)
+        -> std::optional<std::uint64_t>
+    {
+        auto const* value = find_member(obj, key);
+        auto const* text = value != nullptr ? std::get_if<std::string>(&value->storage()) : nullptr;
+        if (text == nullptr || text->empty() || text->size() > max_u64_digits)
+        {
+            return std::nullopt;
+        }
+        auto parsed = std::uint64_t{0U};
+        auto const* const end = text->data() + text->size();
+        auto const [stop, error] = std::from_chars(text->data(), end, parsed);
+        if (error != std::errc{} || stop != end)
+        {
+            return std::nullopt;
+        }
+        return parsed;
+    }
+
+    // A member append_lossless_member wrote; nullopt when it is missing, not a string, or bad base64.
+    [[nodiscard]] auto get_required_str(canonicaljson::Object const& obj, std::string_view key)
+        -> std::optional<std::string>
+    {
+        if (auto const* value = find_member(obj, key); value != nullptr)
+        {
+            auto const* text = std::get_if<std::string>(&value->storage());
+            return text != nullptr ? std::optional<std::string>{*text} : std::nullopt;
+        }
+        auto const* encoded = find_member(obj, std::string{key} + "_b64");
+        auto const* text = encoded != nullptr ? std::get_if<std::string>(&encoded->storage()) : nullptr;
+        if (text == nullptr)
+        {
+            return std::nullopt;
+        }
+        return crypto::base64_original_decode(*text);
+    }
+
+    [[nodiscard]] auto get_entry(canonicaljson::Value const& entry) -> std::optional<std::string>
+    {
+        if (auto const* text = std::get_if<std::string>(&entry.storage()); text != nullptr)
+        {
+            return *text;
+        }
+        auto const* obj = object_of(entry);
+        auto const* encoded = obj != nullptr ? find_member(*obj, "b64") : nullptr;
+        auto const* text = encoded != nullptr ? std::get_if<std::string>(&encoded->storage()) : nullptr;
+        if (text == nullptr)
+        {
+            return std::nullopt;
+        }
+        return crypto::base64_original_decode(*text);
+    }
+
+    [[nodiscard]] auto get_str_array(canonicaljson::Object const& obj, std::string_view key)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto const* array = get_array(obj, key);
+        if (array == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto values = std::vector<std::string>{};
+        values.reserve(array->size());
+        for (auto const& entry : *array)
+        {
+            auto value = get_entry(entry);
+            if (!value.has_value())
+            {
+                return std::nullopt;
+            }
+            values.push_back(std::move(*value));
+        }
+        return values;
+    }
+
+    [[nodiscard]] auto parsed_object(std::string_view json, std::string_view type, canonicaljson::Value& holder)
+        -> canonicaljson::Object const*
+    {
+        auto parsed = canonicaljson::parse_json(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return nullptr;
+        }
+        holder = std::move(parsed.value);
+        auto const* obj = object_of(holder);
+        // A refusal carries the type it stands in for and a reason: no rows to read.
+        if (obj == nullptr || get_str(*obj, "type") != type || find_member(*obj, "refused") != nullptr)
+        {
+            return nullptr;
+        }
+        return obj;
+    }
+
+    [[nodiscard]] auto identifier_ok(std::string const& value) noexcept -> bool
+    {
+        return !value.empty() && value.size() <= max_identifier_bytes;
+    }
+
+    [[nodiscard]] auto room_object(database::PersistentRoom const& room) -> std::string
+    {
+        auto out = std::string{"{"};
+        append_lossless_member(out, "r", room.room_id);
+        add_str(out, "c", room.creator_user_id);
+        out += room.directory_public ? R"(,"p":true})" : R"(,"p":false})";
+        return out;
+    }
+
+    [[nodiscard]] auto membership_row(database::PersistentMembership const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"m")"};
+        add_str(out, "r", row.room_id);
+        add_str(out, "u", row.user_id);
+        add_str(out, "m", row.membership);
+        add_u64(out, "o", row.stream_ordering);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto invite_row(database::PersistentInvite const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"i")"};
+        add_str(out, "r", row.room_id);
+        add_str(out, "u", row.user_id);
+        add_str(out, "s", row.sender_user_id);
+        add_str(out, "e", row.event_id);
+        add_str(out, "j", row.signed_event_json);
+        add_str_array(out, "st", row.invite_state_events_json);
+        add_u64(out, "o", row.stream_ordering);
+        add_str(out, "rs", row.resident_server);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto event_row(database::PersistentEvent const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"e")"};
+        add_str(out, "i", row.event_id);
+        add_str(out, "r", row.room_id);
+        add_str(out, "s", row.sender_user_id);
+        add_str(out, "j", row.json);
+        add_u64(out, "d", row.depth);
+        add_u64(out, "o", row.stream_ordering);
+        add_str_array(out, "p", row.prev_event_ids);
+        add_str_array(out, "a", row.auth_event_ids);
+        out += R"(,"g":[)";
+        auto first = true;
+        for (auto const& signature : row.signatures)
+        {
+            if (!first)
+            {
+                out += ',';
+            }
+            first = false;
+            out += '{';
+            append_lossless_member(out, "s", signature.server_name);
+            add_str(out, "k", signature.key_id);
+            add_str(out, "v", signature.signature);
+            out += '}';
+        }
+        out += ']';
+        add_str(out, "t", row.status);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto state_row(database::PersistentStateEvent const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"s")"};
+        add_str(out, "r", row.room_id);
+        add_str(out, "t", row.event_type);
+        add_str(out, "sk", row.state_key);
+        add_str(out, "e", row.event_id);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto group_row(database::PersistentStateGroup const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"g")"};
+        add_str(out, "i", row.state_group_id);
+        add_str(out, "r", row.room_id);
+        if (row.parent_state_group_id.has_value())
+        {
+            add_str(out, "pa", *row.parent_state_group_id);
+        }
+        add_u64(out, "dd", row.delta_depth);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto group_entry_row(database::PersistentStateGroupStateEntry const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"gs")"};
+        add_str(out, "i", row.state_group_id);
+        add_str(out, "t", row.event_type);
+        add_str(out, "sk", row.state_key);
+        add_str(out, "e", row.event_id);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto mapping_row(database::PersistentEventStateGroup const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"eg")"};
+        add_str(out, "e", row.event_id);
+        add_str(out, "g", row.state_group_id);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto tip_row(database::PersistentForwardExtremity const& row) -> std::string
+    {
+        auto out = std::string{R"({"k":"x")"};
+        add_str(out, "r", row.room_id);
+        add_str(out, "e", row.event_id);
+        out += '}';
+        return out;
+    }
+
+    [[nodiscard]] auto parse_event_row(canonicaljson::Object const& obj) -> std::optional<database::PersistentEvent>
+    {
+        auto event_id = get_required_str(obj, "i");
+        auto room = get_required_str(obj, "r");
+        auto sender = get_required_str(obj, "s");
+        auto json = get_required_str(obj, "j");
+        auto status = get_required_str(obj, "t");
+        auto const depth = get_u64_text(obj, "d");
+        auto const ordering = get_u64_text(obj, "o");
+        auto prev = get_str_array(obj, "p");
+        auto auth = get_str_array(obj, "a");
+        auto const* signatures = get_array(obj, "g");
+        if (!event_id || !room || !sender || !json || !status || !depth || !ordering || !prev || !auth ||
+            signatures == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto event = database::PersistentEvent{};
+        for (auto const& entry : *signatures)
+        {
+            auto const* sig = object_of(entry);
+            if (sig == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto server = get_required_str(*sig, "s");
+            auto key_id = get_required_str(*sig, "k");
+            auto value = get_required_str(*sig, "v");
+            if (!server || !key_id || !value)
+            {
+                return std::nullopt;
+            }
+            event.signatures.push_back({std::move(*server), std::move(*key_id), std::move(*value)});
+        }
+        event.event_id = std::move(*event_id);
+        event.room_id = std::move(*room);
+        event.sender_user_id = std::move(*sender);
+        event.json = std::move(*json);
+        event.depth = *depth;
+        event.stream_ordering = *ordering;
+        event.prev_event_ids = std::move(*prev);
+        event.auth_event_ids = std::move(*auth);
+        event.status = std::move(*status);
+        return event;
+    }
+
+    [[nodiscard]] auto parse_invite_row(canonicaljson::Object const& obj) -> std::optional<database::PersistentInvite>
+    {
+        auto room = get_required_str(obj, "r");
+        auto user = get_required_str(obj, "u");
+        auto sender = get_required_str(obj, "s");
+        auto event_id = get_required_str(obj, "e");
+        auto json = get_required_str(obj, "j");
+        auto stripped = get_str_array(obj, "st");
+        auto const ordering = get_u64_text(obj, "o");
+        auto resident = get_required_str(obj, "rs");
+        if (!room || !user || !sender || !event_id || !json || !stripped || !ordering || !resident)
+        {
+            return std::nullopt;
+        }
+        return database::PersistentInvite{
+            std::move(*room), std::move(*user),     std::move(*sender), std::move(*event_id),
+            std::move(*json), std::move(*stripped), *ordering,          std::move(*resident)};
+    }
+
+    [[nodiscard]] auto parse_group_row(canonicaljson::Object const& obj)
+        -> std::optional<database::PersistentStateGroup>
+    {
+        auto group_id = get_required_str(obj, "i");
+        auto room = get_required_str(obj, "r");
+        auto const depth = get_u64_text(obj, "dd");
+        auto parent = std::optional<std::string>{};
+        if (find_member(obj, "pa") != nullptr || find_member(obj, "pa_b64") != nullptr)
+        {
+            parent = get_required_str(obj, "pa");
+            if (!parent.has_value())
+            {
+                return std::nullopt;
+            }
+        }
+        if (!group_id || !room || !depth || *depth > std::numeric_limits<std::uint32_t>::max())
+        {
+            return std::nullopt;
+        }
+        return database::PersistentStateGroup{std::move(*group_id), std::move(*room), std::move(parent),
+                                              static_cast<std::uint32_t>(*depth)};
+    }
+
+    // Reads one row into its table of `rows`. False for an unknown kind or a row missing any field.
+    [[nodiscard]] auto parse_snapshot_row(canonicaljson::Object const& obj, database::RoomReloadSnapshot& rows) -> bool
+    {
+        auto const kind = get_str(obj, "k");
+        if (kind == "e")
+        {
+            auto event = parse_event_row(obj);
+            if (event.has_value())
+            {
+                rows.events.push_back(std::move(*event));
+            }
+            return event.has_value();
+        }
+        if (kind == "i")
+        {
+            auto invite = parse_invite_row(obj);
+            if (invite.has_value())
+            {
+                rows.invites.push_back(std::move(*invite));
+            }
+            return invite.has_value();
+        }
+        if (kind == "g")
+        {
+            auto group = parse_group_row(obj);
+            if (group.has_value())
+            {
+                rows.state_groups.push_back(std::move(*group));
+            }
+            return group.has_value();
+        }
+        if (kind == "m")
+        {
+            auto room = get_required_str(obj, "r");
+            auto user = get_required_str(obj, "u");
+            auto membership = get_required_str(obj, "m");
+            auto const ordering = get_u64_text(obj, "o");
+            if (!room || !user || !membership || !ordering)
+            {
+                return false;
+            }
+            rows.memberships.push_back({std::move(*room), std::move(*user), std::move(*membership), *ordering});
+            return true;
+        }
+        if (kind == "s" || kind == "gs")
+        {
+            auto owner = get_required_str(obj, kind == "s" ? "r" : "i");
+            auto type = get_required_str(obj, "t");
+            auto state_key = get_required_str(obj, "sk");
+            auto event_id = get_required_str(obj, "e");
+            if (!owner || !type || !state_key || !event_id)
+            {
+                return false;
+            }
+            if (kind == "s")
+            {
+                rows.state.push_back(
+                    {std::move(*owner), std::move(*type), std::move(*state_key), std::move(*event_id)});
+            }
+            else
+            {
+                rows.state_group_state.push_back(
+                    {std::move(*owner), std::move(*type), std::move(*state_key), std::move(*event_id)});
+            }
+            return true;
+        }
+        if (kind == "eg")
+        {
+            auto event_id = get_required_str(obj, "e");
+            auto group_id = get_required_str(obj, "g");
+            if (!event_id || !group_id)
+            {
+                return false;
+            }
+            rows.event_state_groups.push_back({std::move(*event_id), std::move(*group_id)});
+            return true;
+        }
+        if (kind == "x")
+        {
+            auto room = get_required_str(obj, "r");
+            auto event_id = get_required_str(obj, "e");
+            if (!room || !event_id)
+            {
+                return false;
+            }
+            rows.forward_extremities.push_back({std::move(*room), std::move(*event_id)});
+            return true;
+        }
+        return false;
+    }
+
+    // Cuts `entries` into pages: each page holds `overhead(page)` bytes of skeleton and its entries joined by commas,
+    // at most `page_budget` in all. Returns the [first, last) range of each page; nullopt when an entry does not fit
+    // a page of its own. No entries is one empty page.
+    template <typename Overhead>
+    [[nodiscard]] auto pack_pages(std::vector<std::string> const& entries, std::size_t page_budget,
+                                  Overhead const& overhead)
+        -> std::optional<std::vector<std::pair<std::size_t, std::size_t>>>
+    {
+        auto ranges = std::vector<std::pair<std::size_t, std::size_t>>{};
+        if (overhead(0U) > page_budget || overhead(1U) > page_budget)
+        {
+            return std::nullopt;
+        }
+        auto first = std::size_t{0U};
+        auto used = overhead(0U);
+        for (auto index = std::size_t{0U}; index < entries.size(); ++index)
+        {
+            auto const separator = index > first ? std::size_t{1U} : std::size_t{0U};
+            if (used + separator + entries[index].size() <= page_budget)
+            {
+                used += separator + entries[index].size();
+                continue;
+            }
+            if (overhead(1U) + entries[index].size() > page_budget)
+            {
+                return std::nullopt;
+            }
+            ranges.emplace_back(first, index);
+            first = index;
+            used = overhead(ranges.size()) + entries[index].size();
+        }
+        ranges.emplace_back(first, entries.size());
+        return ranges;
+    }
+
+    auto append_joined(std::string& out, std::vector<std::string> const& entries,
+                       std::pair<std::size_t, std::size_t> range) -> void
+    {
+        for (auto index = range.first; index < range.second; ++index)
+        {
+            if (index > range.first)
+            {
+                out += ',';
+            }
+            out += entries[index];
+        }
+    }
+
+    [[nodiscard]] auto snapshot_page_prefix(std::string_view room_id, std::uint64_t generation, std::uint64_t page,
+                                            std::uint64_t pages) -> std::string
+    {
+        auto out = std::string{R"({"type":"room_snapshot_page",)"};
+        append_lossless_member(out, "room_id", room_id);
+        add_u64(out, "generation", generation);
+        add_u64(out, "page", page);
+        add_u64(out, "pages", pages);
+        return out;
+    }
+
+    [[nodiscard]] auto room_list_prefix(std::uint64_t page, std::uint64_t pages) -> std::string
+    {
+        auto out = std::string{R"({"type":"room_list_page")"};
+        add_u64(out, "page", page);
+        add_u64(out, "pages", pages);
+        return out;
+    }
+
+    constexpr auto rows_open = std::string_view{R"(,"rows":[)"};
+    constexpr auto room_ids_open = std::string_view{R"(,"room_ids":[)"};
+    constexpr auto list_close = std::string_view{"]}"};
+
+} // namespace
+
+auto worker_store_page_budget(std::size_t max_frame_bytes) noexcept -> std::size_t
+{
+    return max_frame_bytes > frame_header_room ? max_frame_bytes - frame_header_room : 0U;
+}
+
+auto serialize_room_list_request(std::uint64_t page) -> std::string
+{
+    auto out = std::string{R"({"type":"room_list_request")"};
+    add_u64(out, "page", page);
+    out += '}';
+    return out;
+}
+
+auto deserialize_room_list_request(std::string_view json) -> std::optional<std::uint64_t>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "room_list_request", holder);
+    return obj != nullptr ? get_u64_text(*obj, "page") : std::nullopt;
+}
+
+auto paginate_room_list(std::vector<std::string> const& room_ids, std::size_t page_budget) -> std::vector<std::string>
+{
+    auto entries = std::vector<std::string>{};
+    entries.reserve(room_ids.size());
+    for (auto const& room_id : room_ids)
+    {
+        auto entry = std::string{};
+        append_lossless_entry(entry, room_id);
+        entries.push_back(std::move(entry));
+    }
+    auto const skeleton = room_list_prefix(widest_u64, widest_u64).size() + room_ids_open.size() + list_close.size();
+    auto const ranges = pack_pages(entries, page_budget, [skeleton](std::size_t) {
+        return skeleton;
+    });
+    auto pages = std::vector<std::string>{};
+    if (!ranges.has_value())
+    {
+        return pages;
+    }
+    for (auto index = std::size_t{0U}; index < ranges->size(); ++index)
+    {
+        auto page = room_list_prefix(index, ranges->size());
+        page += room_ids_open;
+        append_joined(page, entries, (*ranges)[index]);
+        page += list_close;
+        pages.push_back(std::move(page));
+    }
+    return pages;
+}
+
+auto deserialize_room_list_page(std::string_view json) -> std::optional<RoomListPage>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "room_list_page", holder);
+    if (obj == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const page = get_u64_text(*obj, "page");
+    auto const pages = get_u64_text(*obj, "pages");
+    auto room_ids = get_str_array(*obj, "room_ids");
+    if (!page || !pages || !room_ids || *page >= *pages)
+    {
+        return std::nullopt;
+    }
+    return RoomListPage{*page, *pages, std::move(*room_ids)};
+}
+
+auto serialize_room_snapshot_request(RoomSnapshotPageRequest const& request) -> std::string
+{
+    auto out = std::string{R"({"type":"room_snapshot_request")"};
+    add_str(out, "room_id", request.room_id);
+    add_u64(out, "generation", request.generation);
+    add_u64(out, "page", request.page);
+    out += '}';
+    return out;
+}
+
+auto deserialize_room_snapshot_request(std::string_view json) -> std::optional<RoomSnapshotPageRequest>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "room_snapshot_request", holder);
+    if (obj == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto room_id = get_required_str(*obj, "room_id");
+    auto const generation = get_u64_text(*obj, "generation");
+    auto const page = get_u64_text(*obj, "page");
+    if (!room_id || !identifier_ok(*room_id) || !generation || !page)
+    {
+        return std::nullopt;
+    }
+    return RoomSnapshotPageRequest{std::move(*room_id), *generation, *page};
+}
+
+auto paginate_room_snapshot(database::RoomReloadSnapshot const& snapshot, std::uint64_t generation,
+                            std::size_t page_budget) -> RoomSnapshotPagination
+{
+    auto result = RoomSnapshotPagination{};
+    if (snapshot.nothing_to_apply)
+    {
+        result.refusal = "no_database";
+        return result;
+    }
+    auto rows = std::vector<std::string>{};
+    rows.reserve(snapshot.memberships.size() + snapshot.invites.size() + snapshot.events.size() +
+                 snapshot.state.size() + snapshot.state_groups.size() + snapshot.state_group_state.size() +
+                 snapshot.event_state_groups.size() + snapshot.forward_extremities.size());
+    std::ranges::transform(snapshot.memberships, std::back_inserter(rows), membership_row);
+    std::ranges::transform(snapshot.invites, std::back_inserter(rows), invite_row);
+    std::ranges::transform(snapshot.events, std::back_inserter(rows), event_row);
+    std::ranges::transform(snapshot.state, std::back_inserter(rows), state_row);
+    std::ranges::transform(snapshot.state_groups, std::back_inserter(rows), group_row);
+    std::ranges::transform(snapshot.state_group_state, std::back_inserter(rows), group_entry_row);
+    std::ranges::transform(snapshot.event_state_groups, std::back_inserter(rows), mapping_row);
+    std::ranges::transform(snapshot.forward_extremities, std::back_inserter(rows), tip_row);
+
+    auto room = std::string{};
+    if (snapshot.room.has_value())
+    {
+        room = R"(,"room":)" + room_object(*snapshot.room);
+    }
+    // The skeleton with the widest numbers it can hold, so a page built with its real numbers is never larger.
+    auto const skeleton = snapshot_page_prefix(snapshot.room_id, widest_u64, widest_u64, widest_u64).size() +
+                          rows_open.size() + list_close.size();
+    auto const ranges = pack_pages(rows, page_budget, [skeleton, &room](std::size_t page) {
+        return page == 0U ? skeleton + room.size() : skeleton;
+    });
+    if (!ranges.has_value())
+    {
+        result.refusal = "row_over_page_budget";
+        return result;
+    }
+    for (auto index = std::size_t{0U}; index < ranges->size(); ++index)
+    {
+        auto page = snapshot_page_prefix(snapshot.room_id, generation, index, ranges->size());
+        if (index == 0U)
+        {
+            page += room;
+        }
+        page += rows_open;
+        append_joined(page, rows, (*ranges)[index]);
+        page += list_close;
+        result.pages.push_back(std::move(page));
+    }
+    return result;
+}
+
+auto serialize_worker_store_refusal(std::string_view type, std::string_view reason) -> std::string
+{
+    auto out = std::string{R"({"type":)"};
+    out += ipc_json_str(type);
+    out += R"(,"refused":)";
+    out += ipc_json_str(reason);
+    out += '}';
+    return out;
+}
+
+auto deserialize_room_snapshot_page(std::string_view json) -> std::optional<RoomSnapshotPage>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "room_snapshot_page", holder);
+    if (obj == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto room_id = get_required_str(*obj, "room_id");
+    auto const generation = get_u64_text(*obj, "generation");
+    auto const page = get_u64_text(*obj, "page");
+    auto const pages = get_u64_text(*obj, "pages");
+    auto const* rows = get_array(*obj, "rows");
+    if (!room_id || !generation || !page || !pages || *page >= *pages || rows == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto result = RoomSnapshotPage{*room_id, *generation, *page, *pages, {}};
+    result.rows.room_id = std::move(*room_id);
+    if (auto const* room_value = find_member(*obj, "room"); room_value != nullptr)
+    {
+        auto const* room = object_of(*room_value);
+        auto room_row_id = room != nullptr ? get_required_str(*room, "r") : std::nullopt;
+        auto creator = room != nullptr ? get_required_str(*room, "c") : std::nullopt;
+        auto const* directory_public = room != nullptr && find_member(*room, "p") != nullptr
+                                           ? std::get_if<bool>(&find_member(*room, "p")->storage())
+                                           : nullptr;
+        if (!room_row_id || !creator || directory_public == nullptr)
+        {
+            return std::nullopt;
+        }
+        result.rows.room = database::PersistentRoom{std::move(*room_row_id), std::move(*creator), *directory_public};
+    }
+    for (auto const& entry : *rows)
+    {
+        auto const* row = object_of(entry);
+        if (row == nullptr || !parse_snapshot_row(*row, result.rows))
+        {
+            return std::nullopt;
+        }
+    }
+    return result;
+}
+
+auto serialize_server_keys_request(std::string_view server_name) -> std::string
+{
+    auto out = std::string{R"({"type":"server_keys_request")"};
+    add_str(out, "server_name", server_name);
+    out += '}';
+    return out;
+}
+
+auto deserialize_server_keys_request(std::string_view json) -> std::optional<std::string>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "server_keys_request", holder);
+    auto server_name = obj != nullptr ? get_required_str(*obj, "server_name") : std::nullopt;
+    if (!server_name || !identifier_ok(*server_name))
+    {
+        return std::nullopt;
+    }
+    return server_name;
+}
+
+auto serialize_server_keys_result(std::vector<database::PersistentServerSigningKey> const& keys) -> std::string
+{
+    auto out = std::string{R"({"type":"server_keys_result","keys":[)"};
+    auto first = true;
+    for (auto const& key : keys)
+    {
+        if (!first)
+        {
+            out += ',';
+        }
+        first = false;
+        // Public columns only: secret_key is never named here.
+        out += '{';
+        append_lossless_member(out, "n", key.server_name);
+        add_str(out, "k", key.key_id);
+        add_str(out, "p", key.public_key);
+        add_u64(out, "v", key.valid_until_ts);
+        add_u64(out, "x", key.expired_ts);
+        out += '}';
+    }
+    out += "]}";
+    return out;
+}
+
+auto deserialize_server_keys_result(std::string_view json)
+    -> std::optional<std::vector<database::PersistentServerSigningKey>>
+{
+    auto holder = canonicaljson::Value{};
+    auto const* obj = parsed_object(json, "server_keys_result", holder);
+    auto const* array = obj != nullptr ? get_array(*obj, "keys") : nullptr;
+    if (array == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto keys = std::vector<database::PersistentServerSigningKey>{};
+    for (auto const& entry : *array)
+    {
+        auto const* key = object_of(entry);
+        if (key == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto server = get_required_str(*key, "n");
+        auto key_id = get_required_str(*key, "k");
+        auto public_key = get_required_str(*key, "p");
+        auto const valid_until = get_u64_text(*key, "v");
+        auto const expired = get_u64_text(*key, "x");
+        if (!server || !key_id || !public_key || !valid_until || !expired)
+        {
+            return std::nullopt;
+        }
+        auto row = database::PersistentServerSigningKey{
+            std::move(*server), std::move(*key_id), std::move(*public_key), *valid_until, {}};
+        row.expired_ts = *expired;
+        keys.push_back(std::move(row));
+    }
+    return keys;
 }
 
 } // namespace merovingian::ipc

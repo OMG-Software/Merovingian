@@ -9,7 +9,8 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
 | File | Responsibility |
 |---|---|
 | `IpcChannel.cpp` | `IpcChannel`: handshake, AEAD framing, reader and dispatch threads, `send_request` / `send_response` / `send_notification` |
-| `FederationIpcFrames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync`, and `membership_template_ingest` (a worker's `make_join`, ADR-0184) frame bodies |
+| `FederationIpcFrames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync`, and `membership_template_ingest` (a worker's `make_join`, ADR-0184) frame bodies; and the worker store frames (ADR-0733): `room_list_request` / `room_list_page`, `room_snapshot_request` / `room_snapshot_page`, `server_keys_request` / `server_keys_result`, with `paginate_room_list` and `paginate_room_snapshot` |
+| `RoomSnapshotAssembler.cpp` | `RoomSnapshotAssembler`: joins a room snapshot's pages on the worker, in order, one room and generation, every row of that room |
 
 ## Security model — non-negotiable
 
@@ -64,6 +65,15 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    for a verified request only, and `consume_pending_relay` is the only way such a relay is admitted (live verified
    parent on this channel, an unused equal permit, marked used under `pending_mu_`).
 
+8. **The worker's store crosses the channel exactly, in pages that fit a frame, or not at all (ADR-0733).** Every
+   string of a store row goes through the lossless form and every integer as decimal text, so bytes that are not UTF-8
+   and integers past 2^53 arrive as stored. `paginate_room_snapshot` and `paginate_room_list` pack rows under
+   `worker_store_page_budget(max_frame_bytes)`, reserving the widest page numbers; a row that does not fit a page of its
+   own refuses the room (`row_over_page_budget`) and is never cut. `RoomSnapshotAssembler` refuses a page out of order,
+   of another room or generation, or with a row of another room, and a snapshot whose group entries or mappings name no
+   group or event of it; the worker then fails the reload and never applies part of a room. A server key row is written
+   with its public columns only.
+
 ## Thread safety — the reader/dispatch split
 
 Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch split"):
@@ -83,6 +93,7 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 - `tests/unit/test_ipc_framing.cpp` — framing, request/response pairing, notifications, timeouts, pending-request admission of EDU relays (`[f74-edu-binding]`) and of claim and query relays (`[ghsa-3p5v]`)
 - `tests/unit/test_ipc_stream_cipher.cpp` — handshake and AEAD framing
 - `tests/unit/test_ipc_federation_frames.cpp` — federation frame (de)serialisation
+- `tests/unit/test_ipc_worker_store_frames.cpp` — the worker store frames, page budget and assembler (`[worker-store-frames]`)
 
 ## Key docs
 

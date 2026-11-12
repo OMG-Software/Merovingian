@@ -522,6 +522,7 @@ shell = find_program('sh')
       'unit/test_federation_proxy.cpp',
       'unit/test_federation_request_routing.cpp',
       'unit/test_ipc_federation_frames.cpp',
+      'unit/test_ipc_worker_store_frames.cpp',
       'unit/test_federation_worker_args.cpp',
       'unit/test_federation_worker_ipc_key_fd.cpp',
       'unit/test_worker_db_uri.cpp',
