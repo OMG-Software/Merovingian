@@ -5,6 +5,7 @@
 // sandbox that forbids opening files (FreeBSD Capsicum). Moving the database file away from its path stands in for
 // that sandbox here: every open by the path fails afterwards, exactly as ECAPMODE makes it fail, while a descriptor
 // opened before keeps reading the same file.
+#include "../support/JoiningThreads.hpp"
 #include "../support/TempDirectory.hpp"
 #include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
@@ -152,8 +153,8 @@ SCENARIO("The readers serve reads from several threads at once without opening m
             auto good_reads = std::vector<std::size_t>(thread_count, 0U);
             auto release = std::atomic<bool>{false};
             {
-                auto threads = std::vector<std::jthread>{};
-                threads.reserve(thread_count);
+                // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+                auto threads = merovingian::tests::JoiningThreads{};
                 for (auto index = std::size_t{0U}; index < thread_count; ++index)
                 {
                     threads.emplace_back([&, index]() {

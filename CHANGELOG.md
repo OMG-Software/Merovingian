@@ -81,6 +81,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   NetBSD and OpenBSD.
 * The federation worker test no longer passes its open-descriptor check without looking when `/proc/<pid>/fd` cannot be
   read; it skips visibly there.
+* The snapshot reader pool test now builds on FreeBSD and OpenBSD: it used `std::jthread`, which their libc++ lacks.
 
 ## Release notes
 
