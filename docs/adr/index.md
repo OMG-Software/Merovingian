@@ -576,3 +576,4 @@
 * [0672 - Key signatures are indexed by signer and by target key, and an upload is one transaction](0672-key-signatures-are-indexed-by-signer-and-by-target-key-and-uploaded-in-one-transaction.md)
 * [0673 - A key backup's etag comes from an incremental content digest, and a backup session has a size limit](0673-a-key-backup-etag-comes-from-an-incremental-content-digest-and-a-session-has-a-size-limit.md)
 * [0674 - A to-device queue is shared out per sender, so no sender can evict or crowd out another](0674-a-to-device-queue-is-shared-out-per-sender-so-no-sender-can-crowd-out-or-evict-another.md)
+* [0705 - A fetched event is recognised as stored by one indexed lookup, and an /event_auth answer is capped by max_auth_chain_ids](0705-a-fetched-event-is-recognised-as-stored-by-one-indexed-lookup-and-an-event-auth-answer-is-capped.md)

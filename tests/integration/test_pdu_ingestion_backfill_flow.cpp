@@ -4230,10 +4230,17 @@ SCENARIO("Backfill places a /get_missing_events window that does not reach known
 // B1, a copy of a stored event under the stored event's "event_id" with its join
 // turned into a ban: a field the signature covers, so it no longer verifies.
 // Only an event identical to the stored one may skip verification.
-auto exercise_event_auth_last_resort(bool forged) -> void
+auto exercise_event_auth_last_resort(bool forged, std::optional<std::size_t> chain_entries = std::nullopt) -> void
 {
     auto fixture = RecoveryFixture{forged ? "!a8-event-auth-forged:local.example.org"
                                           : "!a8-event-auth-genuine:local.example.org"};
+    // C30: with chain_entries set, the /event_auth answer holds that many entries (b1 repeated) and the cap is the
+    // three auth events /state_ids lists, so the answer is at the cap or one over it.
+    constexpr auto auth_chain_cap = std::size_t{3U};
+    if (chain_entries.has_value())
+    {
+        fixture.runtime().federation.config.backfill.max_auth_chain_ids = static_cast<std::uint32_t>(auth_chain_cap);
+    }
     auto const& room = fixture.room_id;
     auto const b1 = make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member,
                                           member_content("A"), {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
@@ -4261,6 +4268,10 @@ auto exercise_event_auth_last_resort(bool forged) -> void
         chain.push_back(forged_member_bob);
     }
     chain.push_back(b1.json);
+    while (chain_entries.has_value() && chain.size() < *chain_entries)
+    {
+        chain.push_back(b1.json);
+    }
 
     auto script = PeerScript{};
     script.events = {
@@ -4280,6 +4291,14 @@ auto exercise_event_auth_last_resort(bool forged) -> void
     auto const& runtime = fixture.runtime();
 
     CHECK(count_requests_starting_with(requests, "GET /_matrix/federation/v1/event_auth/") == 1U);
+    if (chain_entries.has_value() && chain.size() > auth_chain_cap)
+    {
+        // C30: an /event_auth answer with more entries than the cap is refused whole, nothing of it is verified.
+        CHECK(result.status != PduIngestionStatus::accepted);
+        CHECK_FALSE(stored_status(runtime, z.event_id).has_value());
+        CHECK_FALSE(stored_status(runtime, b1.event_id).has_value());
+        return;
+    }
     if (forged)
     {
         CHECK(result.status != PduIngestionStatus::accepted);
@@ -4311,6 +4330,19 @@ SCENARIO("An /event_auth entry reusing a stored event's ID with different conten
     GIVEN("an /event_auth chain carrying a forged copy of a stored event")
     {
         exercise_event_auth_last_resort(true);
+    }
+}
+
+SCENARIO("An /event_auth answer is limited to the configured auth chain size",
+         "[pdu_ingestion][backfill][event_auth_cap][a8_event_auth_last_resort]")
+{
+    GIVEN("an /event_auth answer with exactly as many entries as the cap")
+    {
+        exercise_event_auth_last_resort(false, 3U);
+    }
+    GIVEN("an /event_auth answer with one entry more than the cap")
+    {
+        exercise_event_auth_last_resort(false, 4U);
     }
 }
 

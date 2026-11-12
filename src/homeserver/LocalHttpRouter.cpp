@@ -4094,6 +4094,23 @@ namespace
         return std::make_pair(std::move(*pdu_ids), std::move(*auth_chain_ids));
     }
 
+    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
+    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
+    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
+    // Appendices' Canonical JSON.
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
+        -> bool
+    {
+        if (json.size() > events::max_event_size_bytes)
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(json);
+        return parsed.error == canonicaljson::ParseError::none &&
+               events::parse_event_envelope(parsed.value).error.empty() &&
+               federation::pdu_format_violation(parsed.value, policy).empty();
+    }
+
     // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId} returns the
     // full auth chain for an event as an array of PDUs. This is used by the
     // /state_ids fallback to verify historical state events whose prev_events
@@ -4200,22 +4217,23 @@ namespace
             auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = RuntimeLock{runtime.mutex};
-            auto const same_stored_event = [&](database::PersistentEvent const& evt) {
-                if (raw_event_id == nullptr || evt.event_id != *raw_event_id)
-                {
-                    return false;
-                }
-                auto const stored = canonicaljson::parse_lossless(evt.json);
-                if (stored.error != canonicaljson::ParseError::none)
-                {
-                    return false;
-                }
-                auto const stored_hash = events::make_reference_hash(stored.value, policy);
-                return stored_hash.error.empty() && stored_hash.sha256 == supplied_hash.sha256;
-            };
-            if (std::ranges::any_of(runtime.database.persistent_store.events, same_stored_event))
+            // C30: one indexed lookup by the event_id member, not a walk of every row of the event table under
+            // the global lock. Only a v1/v2 PDU carries the member; a v3+ PDU that does is refused where it enters.
+            if (raw_event_id != nullptr)
             {
-                return true;
+                auto const stored_row = runtime.database.persistent_store.events.find(*raw_event_id);
+                if (stored_row != runtime.database.persistent_store.events.end())
+                {
+                    auto const stored = canonicaljson::parse_lossless(stored_row->json);
+                    if (stored.error == canonicaljson::ParseError::none)
+                    {
+                        auto const stored_hash = events::make_reference_hash(stored.value, policy);
+                        if (stored_hash.error.empty() && stored_hash.sha256 == supplied_hash.sha256)
+                        {
+                            return true;
+                        }
+                    }
+                }
             }
         }
 
@@ -4799,10 +4817,24 @@ namespace
                             std::string{room_id} + " event_id=" + id);
                 return false;
             }
+            // C30: the answer is limited in entry count as /state_ids is, and each entry must be a well-formed PDU
+            // (no event_id member in a reference-hash room) before anything is looked up or verified.
+            if (auth_pdus->size() > limits.max_auth_chain_ids)
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: /event_auth answer exceeds the auth chain limit; room_id=" +
+                            std::string{room_id} + " event_id=" + id);
+                return false;
+            }
             for (auto const& auth_json : *auth_pdus)
             {
                 if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
+                    return false;
+                }
+                if (!returned_pdu_is_well_formed(auth_json, policy))
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: malformed /event_auth entry; room_id=" +
+                                std::string{room_id} + " snapshot_event_id=" + id);
                     return false;
                 }
                 if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, budget,
@@ -5048,23 +5080,6 @@ namespace
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
     // Preserve transient local key denial separately from an unresolved gap.
-    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
-    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
-    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
-    // Appendices' Canonical JSON.
-    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
-        -> bool
-    {
-        if (json.size() > events::max_event_size_bytes)
-        {
-            return false;
-        }
-        auto const parsed = canonicaljson::parse_lossless(json);
-        return parsed.error == canonicaljson::ParseError::none &&
-               events::parse_event_envelope(parsed.value).error.empty() &&
-               federation::pdu_format_violation(parsed.value, policy).empty();
-    }
-
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
                                                        federation::InboundPduEnvelope const& envelope,
                                                        rooms::RoomVersionPolicy const& policy) -> BackfillResult

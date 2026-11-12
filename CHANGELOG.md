@@ -126,6 +126,11 @@ queue once another sender is queued there; a message from a sender at its share 
 message that finds the queue full evicts the oldest row of the sender holding the most. No sender can fill a queue first to make
 others' messages fail, no message from a sender under its share is dropped, and a sender alone in a queue is limited as before.
 At the per-user bound the sender's oldest row across the user's devices goes first, as before.
+### A backfilled event is recognised as stored by index, and an /event_auth answer is capped (ADR-0705)
+
+C30. Checking whether a fetched event was already stored walked every row of the event table under the runtime lock, once
+per entry of a remote server's `/event_auth` answer. It is now one lookup by event ID. The answer is also refused when it
+holds more entries than `security.federation.backfill.max_auth_chain_ids`, or an entry that is not a well-formed PDU.
 
 ## 1.0.0
 
