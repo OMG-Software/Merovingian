@@ -291,6 +291,7 @@ shell = find_program('sh')
       'unit/test_config_operational_limits.cpp',
       'unit/test_configurable_client_limits.cpp',
       'unit/test_sliding_sync_retained_size.cpp',
+      'unit/test_snapshot_reader_pool.cpp',
       'unit/test_sliding_sync_connection_table.cpp',
       'unit/test_sliding_sync_request_lookups.cpp',
       'unit/test_sliding_sync_sort_keys.cpp',

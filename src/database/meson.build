@@ -20,6 +20,7 @@ database_sources = files(
   'RuntimeDatabaseConfig.cpp',
   'Schema.cpp',
   'SqliteStore.cpp',
+  'SnapshotReaderPool.cpp',
   'SqliteConnectionDeleter.cpp',
   'StateGroupEntryTable.cpp',
   'StateGroupTable.cpp',

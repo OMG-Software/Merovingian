@@ -54,6 +54,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
    one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
    A PostgreSQL connection is reused only while idle with nothing to read on its socket.
+   Main's reads for a federation worker (room list, room snapshots) lease a reader from `SnapshotReaderPool`, opened
+   one per shard before main enters a sandbox that forbids opening files or sockets (FreeBSD Capsicum, ADR-0739). Never
+   read for a worker through the path- or conninfo-taking functions, which open a connection per read.
 
 8. **Nothing in this process opens a SQLite database file except SQLite** (ADR-0157). Closing any descriptor of a
    file releases every POSIX lock the process holds on it, so a check that opens and closes the database (for its

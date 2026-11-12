@@ -684,26 +684,30 @@ auto fed10_persist_remote_room(merovingian::homeserver::HomeserverRuntime& runti
     }));
 }
 
-// Test-only fault injection: move the SQLite file aside so the worker's next
-// room reload finds no database and fails, as a reload that hits any SQLite
-// error does. Renaming opens no descriptor of the file (ADR-0157). Restored
-// on scope exit even if an assertion unwinds.
+// Test-only fault injection: rename the `rooms` table so main's next read of a
+// room for the worker fails, as a read that hits any SQLite error does, and the
+// room's reload fails. Main reads through connections it opened at start
+// (ADR-0739), so moving the file aside no longer fails a read; a schema change
+// reaches every connection, held ones included. The rename is made through
+// SQLite (ADR-0157) and undone on scope exit even if an assertion unwinds.
 class Fed10HiddenDatabase final
 {
 public:
-    explicit Fed10HiddenDatabase(std::filesystem::path path)
-        : path_{std::move(path)}
-        , aside_{path_.string() + ".hidden"}
+    explicit Fed10HiddenDatabase(std::filesystem::path const& path)
     {
-        auto error = std::error_code{};
-        std::filesystem::rename(path_, aside_, error);
-        hidden_ = !error;
+        if (sqlite3_open(path.string().c_str(), &connection_) != SQLITE_OK)
+        {
+            return;
+        }
+        sqlite3_busy_timeout(connection_, 5000);
+        hidden_ = execute("ALTER TABLE rooms RENAME TO rooms_hidden_by_test");
     }
     Fed10HiddenDatabase(Fed10HiddenDatabase const&) = delete;
     auto operator=(Fed10HiddenDatabase const&) -> Fed10HiddenDatabase& = delete;
     ~Fed10HiddenDatabase() noexcept
     {
         std::ignore = restore();
+        sqlite3_close(connection_);
     }
     [[nodiscard]] auto hidden() const noexcept -> bool
     {
@@ -713,15 +717,17 @@ public:
     {
         if (!hidden_)
             return true;
-        auto error = std::error_code{};
-        std::filesystem::rename(aside_, path_, error);
-        hidden_ = static_cast<bool>(error);
-        return !error;
+        hidden_ = !execute("ALTER TABLE rooms_hidden_by_test RENAME TO rooms");
+        return !hidden_;
     }
 
 private:
-    std::filesystem::path path_;
-    std::filesystem::path aside_;
+    [[nodiscard]] auto execute(char const* sql) noexcept -> bool
+    {
+        return sqlite3_exec(connection_, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+
+    sqlite3* connection_{nullptr};
     bool hidden_{false};
 };
 

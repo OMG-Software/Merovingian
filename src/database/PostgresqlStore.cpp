@@ -8,16 +8,17 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
 #include "merovingian/database/PostgresqlConnectionHandle.hpp"
 #include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
-#include "merovingian/database/PostgresqlExecution.hpp"
 #include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
+#include "merovingian/database/PostgresqlExecution.hpp"
 #include "merovingian/database/PostgresqlWritePool.hpp"
-#include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/Schema.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/SnapshotReaderConnections.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -2505,9 +2506,8 @@ namespace detail
         return committed;
     }
 
-    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
-                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
-        -> std::optional<RoomReloadSnapshot>
+    auto open_postgresql_snapshot_reader(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<PostgresqlConnection>
     {
         if (conninfo.empty())
         {
@@ -2522,19 +2522,37 @@ namespace detail
         {
             return std::nullopt;
         }
+        return std::move(opened.connection);
+    }
+
+    auto load_room_snapshot_from_postgresql_connection(PostgresqlConnection& connection, std::string_view room_id,
+                                                       RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
         // One room's rows from one snapshot (ADR-0161): under READ COMMITTED
         // each statement would see every commit made before it started.
-        if (!opened.connection
-                 .execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
+        if (!connection.execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
                  .ok)
         {
             return std::nullopt;
         }
-        auto snapshot = load_room_snapshot_impl(opened.connection, room_id, after_table);
+        auto snapshot = load_room_snapshot_impl(connection, room_id, after_table);
         // A read-only transaction has nothing to commit; ending it either way
-        // releases its snapshot before the connection closes.
-        std::ignore = opened.connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
+        // releases its snapshot, so a reused connection holds none between reads.
+        std::ignore = connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
         return snapshot;
+    }
+
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        auto connection = open_postgresql_snapshot_reader(conninfo, runtime_role);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        return load_room_snapshot_from_postgresql_connection(*connection, room_id, after_table);
     }
 
     auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
@@ -2603,21 +2621,19 @@ namespace detail
     auto load_room_ids_from_postgresql(std::string_view conninfo, std::string_view runtime_role)
         -> std::optional<std::vector<std::string>>
     {
-        if (conninfo.empty())
+        auto connection = open_postgresql_snapshot_reader(conninfo, runtime_role);
+        if (!connection.has_value())
         {
             return std::nullopt;
         }
-        auto opened = open_postgresql_connection(conninfo);
-        if (!opened.ok)
-        {
-            return std::nullopt;
-        }
-        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
-        {
-            return std::nullopt;
-        }
+        return load_room_ids_from_postgresql_connection(*connection);
+    }
+
+    auto load_room_ids_from_postgresql_connection(PostgresqlConnection& connection)
+        -> std::optional<std::vector<std::string>>
+    {
         auto result =
-            opened.connection.execute({"postgresql_load_room_ids", "SELECT room_id FROM rooms ORDER BY room_id", {}});
+            connection.execute({"postgresql_load_room_ids", "SELECT room_id FROM rooms ORDER BY room_id", {}});
         if (!result.ok)
         {
             return std::nullopt;

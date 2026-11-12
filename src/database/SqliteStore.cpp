@@ -8,6 +8,7 @@
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAppserviceDirectoryEntry.hpp"
@@ -28,11 +29,11 @@
 #include "merovingian/database/PersistentThreePidBinding.hpp"
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/RoomReloadSnapshot.hpp"
+#include "merovingian/database/Schema.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/SnapshotReaderConnections.hpp"
 #include "merovingian/database/SqliteConnectionDeleter.hpp"
 #include "merovingian/database/SqliteWritePool.hpp"
-#include "merovingian/database/Migration.hpp"
-#include "merovingian/database/Schema.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -1848,15 +1849,18 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id,
-                                        RoomSnapshotReadHook const& after_table) -> std::optional<RoomReloadSnapshot>
+    auto open_sqlite_snapshot_reader(std::string const& path) -> std::optional<SqliteConnection>
     {
         if (path.empty())
         {
             return std::nullopt;
         }
         auto connection = open_sqlite_connection(path, true);
-        if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
+        // A first read now (ADR-0739): it proves the reader works while a failure can still be fixed, before main
+        // enters a sandbox that forbids opening files, and opens whatever SQLite opens lazily on a first read.
+        if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON") ||
+            !load_rows_bound(**connection, "SELECT 1 FROM rooms LIMIT 1", {}, [](sqlite3_stmt& /*row*/) {
+            }))
         {
             log_diagnostic("room_snapshot.read_failed",
                            {
@@ -1865,9 +1869,18 @@ namespace detail
                            observability::LogEventSeverity::warning);
             return std::nullopt;
         }
+        return connection;
+    }
+
+    auto load_room_snapshot_from_sqlite_connection(SqliteConnection& connection, std::string_view room_id,
+                                                   RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
         // One room's rows, read as one committed state: separate autocommit
         // reads could mix rows from before and after one of main's commits.
-        auto const read = SqliteReadTransaction{**connection};
+        // The transaction ends before this returns, so a reused connection
+        // holds no snapshot between reads.
+        auto const read = SqliteReadTransaction{*connection};
         if (!read.active())
         {
             log_diagnostic("room_snapshot.read_failed",
@@ -1877,19 +1890,30 @@ namespace detail
                            observability::LogEventSeverity::warning);
             return std::nullopt;
         }
-        auto snapshot = load_room_snapshot_impl(**connection, room_id, after_table);
+        auto snapshot = load_room_snapshot_impl(*connection, room_id, after_table);
         if (!snapshot.has_value())
         {
             // The extended code names the cause (busy, I/O, a journal that
             // looked hot for longer than the retry budget) in the worker log.
             log_diagnostic("room_snapshot.read_failed",
                            {
-                               {"stage",       "read",                                                      false},
-                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(connection->get())), false}
+                               {"stage",       "read",                                                     false},
+                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(connection.get())), false}
             },
                            observability::LogEventSeverity::warning);
         }
         return snapshot;
+    }
+
+    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id,
+                                        RoomSnapshotReadHook const& after_table) -> std::optional<RoomReloadSnapshot>
+    {
+        auto connection = open_sqlite_snapshot_reader(path);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        return load_room_snapshot_from_sqlite_connection(*connection, room_id, after_table);
     }
 
     auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id) -> std::optional<std::string>
@@ -2069,17 +2093,18 @@ namespace detail
 
     auto load_room_ids_from_sqlite(std::string const& path) -> std::optional<std::vector<std::string>>
     {
-        if (path.empty())
-        {
-            return std::nullopt;
-        }
-        auto connection = open_sqlite_connection(path, true);
+        auto connection = open_sqlite_snapshot_reader(path);
         if (!connection.has_value())
         {
             return std::nullopt;
         }
+        return load_room_ids_from_sqlite_connection(*connection);
+    }
+
+    auto load_room_ids_from_sqlite_connection(SqliteConnection& connection) -> std::optional<std::vector<std::string>>
+    {
         auto room_ids = std::vector<std::string>{};
-        if (!load_rows_bound(**connection, "SELECT room_id FROM rooms ORDER BY room_id", {},
+        if (!load_rows_bound(*connection, "SELECT room_id FROM rooms ORDER BY room_id", {},
                              [&room_ids](sqlite3_stmt& row) {
                                  room_ids.push_back(column_text(row, 0));
                              }))

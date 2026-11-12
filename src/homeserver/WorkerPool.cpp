@@ -11,6 +11,7 @@
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/SnapshotReaderPool.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
@@ -1437,29 +1438,23 @@ auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t req
 namespace
 {
 
-    // Where the workers' store comes from (ADR-0733): a store of its own holding only where main's database is, so a
-    // read opens its own connection, closes its transaction before it returns, and touches no row of main's live store
-    // and never runtime.mutex. Keys come from main's memory under the store's own key mutex.
-    [[nodiscard]] auto make_snapshot_service(HomeserverRuntime& runtime) -> std::unique_ptr<WorkerSnapshotService>
+    // Where the workers' store comes from (ADR-0733): main's database, read through connections of their own that
+    // touch no row of main's live store and never runtime.mutex, each read's transaction closed before it returns.
+    // The readers are opened here, one per shard, while WorkerPool is built and so before main enters a sandbox that
+    // forbids opening a file or a socket (FreeBSD Capsicum): a read only leases one (ADR-0739). Keys come from main's
+    // memory under the store's own key mutex.
+    [[nodiscard]] auto make_snapshot_service(HomeserverRuntime& runtime, std::uint32_t shards)
+        -> std::unique_ptr<WorkerSnapshotService>
     {
         auto const& main_store = runtime.database.persistent_store;
-        auto source = database::PersistentStore{};
-        source.backend = main_store.backend;
-        source.sqlite_path = main_store.sqlite_path;
-        source.postgresql_conninfo = main_store.postgresql_conninfo;
-        source.postgresql_runtime_role = main_store.postgresql_runtime_role;
+        // Shared by the two sources, which the service keeps for its life.
+        auto readers = std::make_shared<database::SnapshotReaderPool>(main_store, shards);
         auto sources = WorkerSnapshotSources{};
-        sources.list_rooms = [source]() -> std::optional<std::vector<std::string>> {
-            // An in-memory server has no database to list: its workers start empty, as they did when each opened
-            // a memory store of its own.
-            if (source.backend == database::PersistentStoreBackend::memory)
-            {
-                return std::vector<std::string>{};
-            }
-            return database::load_room_ids(source);
+        sources.list_rooms = [readers]() {
+            return readers->room_ids();
         };
-        sources.read_room = [source](std::string_view room_id) {
-            return database::load_room_snapshot(source, room_id);
+        sources.read_room = [readers](std::string_view room_id) {
+            return readers->room_snapshot(room_id);
         };
         sources.server_keys = [&main_store](std::string_view server_name, std::size_t max_rows) {
             return database::public_signing_keys_of_server(main_store, server_name, max_rows);
@@ -1478,7 +1473,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     : cfg_{cfg}
     , runtime_{runtime}
     , handler_pool_{cfg_.relay_threads}
-    , snapshot_service_{make_snapshot_service(runtime)}
+    , snapshot_service_{make_snapshot_service(runtime, cfg.shards > 0U ? cfg.shards : 1U)}
     , snapshot_pool_{cfg_.shards > 0U ? cfg_.shards : 1U}
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}

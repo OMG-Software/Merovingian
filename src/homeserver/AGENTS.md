@@ -59,7 +59,7 @@ This is the largest and most complex module — read this file carefully before 
 | `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
-| `WorkerSnapshotService.cpp` | Main's answers to a federation worker's store requests (room list, room snapshot pages, public server keys; ADR-0733). A room is read only under a permit main issued on that channel, consumed once (ADR-0735); no lock and never `runtime.mutex` across a read |
+| `WorkerSnapshotService.cpp` | Main's answers to a federation worker's store requests (room list, room snapshot pages, public server keys; ADR-0733). A room is read only under a permit main issued on that channel, consumed once (ADR-0735); no lock and never `runtime.mutex` across a read. It reads through `database::SnapshotReaderPool`, whose readers `WorkerPool` opens before `cap_enter` (ADR-0739) |
 | `WorkerSupervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `MinimalWorkerEnv.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |

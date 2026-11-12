@@ -1258,7 +1258,8 @@ struct ListenerBinding final
     // Enter FreeBSD Capsicum capability mode now that all resources are open:
     // TCP listeners are bound, TLS certs are loaded, the federation worker is
     // spawned (posix_spawn uses a file path — it must run before cap_enter),
-    // and the SQLite WAL files are open. After cap_enter the global filesystem
+    // and the database connections are open, the readers main serves the
+    // workers' stores through included (ADR-0739). After cap_enter the global filesystem
     // namespace is forbidden; opening files by path will return ECAPMODE.
     //
     // Pre-open the thumbnail worker binary so the child can call fexecve(3)
