@@ -620,3 +620,4 @@
 * [0689 - The per-user byte quota is charged for a deduplicated upload](0689-the-per-user-byte-quota-is-charged-for-a-deduplicated-upload.md)
 * [0690 - Thumbnail cache eviction uses a recency index and an entry cap](0690-thumbnail-cache-eviction-uses-a-recency-index-and-an-entry-cap.md)
 * [0651 - The v1.0.0 tag moves to the release-workflow fix without a version bump](0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)
+* [0738 - One BSD example config whose configuration directory each package fills in](0738-one-bsd-example-config-whose-configuration-directory-each-package-fills-in.md)

@@ -27,5 +27,10 @@ Contains the package metadata and init scripts for each supported OS.
   merovingian as an unprivileged user (`merovingian` or `_merovingian`), never as root.
 - **Do not hardcode paths.** Use the install prefix from the build system (`/usr/local` on BSD,
   `/usr` on Linux distros). Paths are substituted at build time by `meson install`.
+- **BSD packages install the BSD example config, never the Linux one.** The sample is
+  `config/merovingian.conf.bsd.example` with `@SYSCONFDIR@` filled in from the package's own
+  configuration directory, the one its rc.d script reads. A key added to
+  `config/merovingian.conf.example` goes into the BSD example too; `tests/tooling/test_example_config.py`
+  fails until it does (ADR-0738).
 - The systemd unit must set `PrivateTmp=true`, `NoNewPrivileges=true`, and
   `ProtectSystem=strict` at minimum. See `docs/hardening.md` for the full list.

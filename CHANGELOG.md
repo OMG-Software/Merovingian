@@ -4,6 +4,27 @@ Fixes for the findings of the security audit of the 1.0.0 release candidate (run
 confirmed findings (9 high, 30 medium, 9 low, 1 informational), plus in-repository hardening for two of the four
 findings that needed validation.
 
+### The BSD packages ship a BSD example config (ADR-0738)
+
+The FreeBSD, OpenBSD and NetBSD packages installed the Linux example as their `merovingian.conf.sample`. Its secret
+files pointed at `/etc/merovingian`, and its SQLite path at `/var/lib/merovingian`, which no BSD package creates.
+`config/merovingian.conf.bsd.example` is the BSD edition. It holds the same keys, with secret files in an
+`@SYSCONFDIR@/merovingian` directory and the SQLite path in `/var/db/merovingian`, the service user's home. Its
+commented clamd socket names no path, because FreeBSD and OpenBSD refuse clamd. A comment header explains how to
+choose the federation worker settings on FreeBSD and OpenBSD.
+
+- `build-freebsd-pkg.sh`, `build-openbsd-pkg.sh` and `build-netbsd-pkg.sh` stage the BSD example as the sample, with
+  the placeholder filled in from the `--sysconfdir` each passes to Meson (`/usr/local/etc`, `/etc`, `/usr/pkg/etc`).
+  That is the directory each rc.d script reads the config from. Each build fails if a placeholder is left. The pkgsrc
+  `Makefile` fills it with `PKG_SYSCONFDIR` and installs the sample through `CONF_FILES`. The OpenBSD ports `PLIST`
+  lists the sample and its `@sample` config. Linux packages are unchanged.
+- `scripts/validate-phase1-config.sh` dry-runs the BSD example, filled in as the FreeBSD package fills it.
+- The user manual drops the FreeBSD `sed` step and lists each BSD's config directory.
+- Tests: `tests/tooling/test_example_config.py` requires the BSD example to equal the Linux example below its header,
+  apart from those paths, so a key added to one example and not the other fails. It also checks that each BSD build
+  script stages the BSD example for its own `--sysconfdir` and rc.d path, that the pkgsrc and OpenBSD port metadata
+  install it, and that the FreeBSD fill leaves no placeholder.
+
 ### Tests brought in line with the combined fixes
 
 * Tests written before other fixes on this branch landed now expect what those fixes do: the SQLite snapshot order
