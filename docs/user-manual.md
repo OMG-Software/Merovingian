@@ -584,7 +584,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `sliding_sync_connections_per_device` | `16` | 1..64 |
 | `max_registration_validation_sessions` | `1024` | 1..65,536 |
 | `max_registration_validation_sessions_per_remote` | `16` | 1..256 |
-| `max_uia_sessions` | `2048` | 1..65,536 |
+| `max_uia_sessions` | `2048` | 1..65,536; one owner holds at most 16, and a full pool answers a new challenge 429 (ADR-0683) |
 | `max_safety_report_rows` | `1000` | 1..10,000 |
 | `max_notifications_page_size` | `1000` | 1..10,000 |
 | `max_relations_page_size` | `500` | 1..1,000 |

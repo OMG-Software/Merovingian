@@ -2211,47 +2211,73 @@ namespace
     // one stage, so there is no ordering to enforce yet. Adding a second stage
     // means adding persisted completed-stage tracking; see ADR-0057.
     auto constexpr uia_session_ttl_ms = std::uint64_t{10U * 60U * 1000U};
-    // Bounds what an unauthenticated caller can grow: every 401 mints an entry.
+    // The most UIA sessions one owner (the authenticated user, or for registration the client address) holds. A
+    // further challenge from the same owner replaces that owner's oldest session (C45, ADR-0683).
+    auto constexpr max_uia_sessions_per_owner = std::size_t{16U};
 
-    [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose) -> std::string
+    // Issues a session owned by `owner`, or nullopt when the pool is full: the pool is shared, so a full pool refuses
+    // the new challenge and never evicts another owner's live session (C45, ADR-0683). An empty id is returned when no
+    // random id could be drawn; it never matches in uia_session_is_valid.
+    [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose, std::string_view owner)
+        -> std::optional<std::string>
     {
         auto const now_ms = wall_clock_milliseconds();
         std::erase_if(rt.uia_sessions, [now_ms](UiaSession const& session) {
             return now_ms > session.created_at_ms && now_ms - session.created_at_ms > uia_session_ttl_ms;
         });
-        // Oldest-first eviction keeps the newest challenges usable under a
-        // flood; an evicted client simply receives a fresh challenge on retry.
-        while (rt.uia_sessions.size() >= rt.limits.max_uia_sessions && !rt.uia_sessions.empty())
+        // Sessions are appended, so an owner's oldest is its first. One pass counts the owner's sessions and finds it.
+        auto held = std::size_t{0U};
+        auto oldest = rt.uia_sessions.end();
+        for (auto session = rt.uia_sessions.begin(); session != rt.uia_sessions.end(); ++session)
         {
-            rt.uia_sessions.erase(rt.uia_sessions.begin());
+            if (session->owner == owner)
+            {
+                if (held == 0U)
+                {
+                    oldest = session;
+                }
+                ++held;
+            }
+        }
+        if (held >= max_uia_sessions_per_owner)
+        {
+            rt.uia_sessions.erase(oldest);
+        }
+        else if (rt.uia_sessions.size() >= rt.limits.max_uia_sessions)
+        {
+            return std::nullopt;
         }
         auto const id = crypto::secure_random_hex(16U);
         if (!id.has_value())
         {
-            // No random id means no session this server could later recognise.
-            // Return an empty one rather than a guessable placeholder: an empty
-            // id never matches in uia_session_is_valid.
-            return {};
+            return std::string{};
         }
-        rt.uia_sessions.push_back({*id, std::string{purpose}, now_ms});
+        rt.uia_sessions.push_back({*id, std::string{purpose}, now_ms, std::string{owner}});
         return *id;
     }
 
-    // A client-supplied session id is honoured only when this server issued it,
-    // issued it for this endpoint, and it has not expired. A request that omits
+    // 429 for a challenge the full pool cannot take. Existing sessions stay usable; a session lives ten minutes.
+    [[nodiscard]] auto uia_pool_full_response(ClientServerRuntime& rt, LocalHttpRequest const& req) -> DispatchResult
+    {
+        return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                            "Too many authentication challenges are pending. Please try again shortly.", 5000U);
+    }
+
+    // A client-supplied session id is honoured only when this server issued it to this owner, issued it for this
+    // endpoint, and it has not expired. A request that omits
     // `session` entirely is still served: the spec permits completing a
     // single-stage flow in one shot, and the credential that stage checks is in
     // the same auth block.
     [[nodiscard]] auto uia_session_is_valid(ClientServerRuntime const& rt, std::string_view purpose,
-                                            std::string_view session_id) -> bool
+                                            std::string_view session_id, std::string_view owner) -> bool
     {
         if (session_id.empty())
         {
             return false;
         }
         auto const now_ms = wall_clock_milliseconds();
-        return std::ranges::any_of(rt.uia_sessions, [now_ms, purpose, session_id](UiaSession const& session) {
-            return session.session_id == session_id && session.purpose == purpose &&
+        return std::ranges::any_of(rt.uia_sessions, [now_ms, purpose, session_id, owner](UiaSession const& session) {
+            return session.session_id == session_id && session.purpose == purpose && session.owner == owner &&
                    (now_ms <= session.created_at_ms || now_ms - session.created_at_ms <= uia_session_ttl_ms);
         });
     }
@@ -4436,30 +4462,36 @@ namespace
         {
             return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
         }
-        auto const challenge = [&] {
-            return device_delete_uia_challenge(issue_uia_session(rt, "login_get_token"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "login_get_token", user_id);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
         };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* supplied_session = string_member(*auth, "session");
-        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session))
+        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session, user_id))
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         auto const* current_password = string_member(*auth, "password");
         if (auth_type == nullptr || *auth_type != "m.login.password" || current_password == nullptr ||
             current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -4471,7 +4503,7 @@ namespace
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(challenge()));
+            return challenge(true);
         }
         // The password was just proved: the session that carried it is spent.
         if (supplied_session != nullptr)
@@ -15397,15 +15429,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // per attempt (L-01, security audit 2026-09); it used to be the
             // constant "merovingian-ui-auth", shared by every client and every
             // attempt.
-            auto const uia_challenge = json_serialize(json_obj({
-                json_member("flows", json_arr({json_obj({json_member("stages", json_arr({json_str(stage)}))})})),
-                json_member("params", json_obj({})),
-                json_member("session", json_str(issue_uia_session(rt, "register"))),
-            }));
+            // The pool is shared, so a session belongs to the requesting address (C45, ADR-0683).
+            auto const uia_owner = rate_limit_client_key(req, rt.homeserver.config.server());
+            auto const challenge = [&]() -> DispatchResult {
+                auto const session = issue_uia_session(rt, "register", uia_owner);
+                if (!session.has_value())
+                {
+                    return uia_pool_full_response(rt, req);
+                }
+                return dispatch_resp(
+                    req, rt, 401U,
+                    json_serialize(json_obj({
+                        json_member("flows",
+                                    json_arr({json_obj({json_member("stages", json_arr({json_str(stage)}))})})),
+                        json_member("params", json_obj({})),
+                        json_member("session", json_str(*session)),
+                    })));
+            };
             auto const* auth = object_member_object(*registration_object, "auth");
             if (auth == nullptr)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             // A supplied session must be one this server issued for this
             // endpoint; echoing a stale, guessed, or cross-endpoint id is not
@@ -15413,19 +15457,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // allows: the client "must pass back" a session only "if one is
             // provided" (ADR-0276). Complement's own blueprints register this way.
             if (auto const* supplied_session = string_member(*auth, "session");
-                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
+                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session, uia_owner))
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             auto const* auth_type = string_member(*auth, "type");
             if (auth_type == nullptr || *auth_type != stage)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             // Spec: dummy authentication "requires no extra parameters".
             if (require_token && string_member(*auth, "token") == nullptr)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
         }
         auto body = parse_register_body(req.body);
@@ -18585,34 +18629,42 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         // Spec §10.7.1: DELETE /devices/{deviceId} requires UIA with
         // m.login.password to prove account ownership before deletion.
-        auto const uia_challenge = device_delete_uia_challenge(issue_uia_session(rt, "delete_device"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "delete_device", *user);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
+        };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         // A supplied session must be one this server issued for this endpoint.
         // Omitting it is still allowed (single-shot flow); echoing a stale,
         // guessed, or cross-endpoint id is not.
         if (auto const* supplied_session = string_member(*auth, "session");
-            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_device", *supplied_session))
+            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_device", *supplied_session, *user))
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         if (auth_type == nullptr || *auth_type != "m.login.password")
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -18624,7 +18676,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
+            return challenge(true);
         }
         auto const device_id = device_id_from_device_path(request_path);
         // The servers to tell, read before the device is removed.
@@ -18642,11 +18694,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/delete_devices")
     {
-        auto const uia_challenge = device_delete_uia_challenge(issue_uia_session(rt, "delete_devices"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "delete_devices", *user);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
+        };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto devices = string_array_member(*body_obj, "devices");
         if (devices.empty())
@@ -18669,25 +18729,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         // A supplied session must be one this server issued for this endpoint.
         // Omitting it is still allowed (single-shot flow); echoing a stale,
         // guessed, or cross-endpoint id is not.
         if (auto const* supplied_session = string_member(*auth, "session");
-            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_devices", *supplied_session))
+            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_devices", *supplied_session, *user))
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         if (auth_type == nullptr || *auth_type != "m.login.password")
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -18699,7 +18759,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
+            return challenge(true);
         }
         // The servers to tell, read before any device is removed.
         auto const destinations = remote_servers_for_user(rt.homeserver, *user);

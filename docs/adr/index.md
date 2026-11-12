@@ -611,3 +611,4 @@
 * [0714 - A federated join commits its answer in one transaction per part, and writes the auth chain with the runtime lock released](0714-a-federated-join-persists-its-auth-chain-and-members-in-one-transaction-each.md)
 * [0681 - OpenID tokens are found by an index of token hashes](0681-openid-tokens-are-found-by-an-index-of-token-hashes.md)
 * [0682 - A user holds a bounded number of live OpenID tokens, and a mint sweeps expired rows in one commit](0682-a-user-holds-a-bounded-number-of-live-openid-tokens-and-a-mint-sweeps-expired-rows-in-one-commit.md)
+* [0683 - UIA sessions belong to an owner, and a full pool refuses instead of evicting](0683-uia-sessions-belong-to-an-owner-and-a-full-pool-refuses-instead-of-evicting.md)

@@ -973,6 +973,10 @@ The boundary establishes these guarantees:
   answered with the 401 challenge. See
   [ADR-0057](adr/0057-uiaa-sessions-are-in-memory-and-single-stage.md) and
   [ADR-0276](adr/0276-dummy-registration-needs-a-server-issued-session.md).
+  The pool is shared (`max_uia_sessions`), so a session belongs to its owner (the authenticated user, or for
+  `POST /register` the client address key) and is valid only for that owner. An owner holds at most 16; a further
+  challenge replaces that owner's oldest. A full pool answers a new challenge `429 M_LIMIT_EXCEEDED` and never evicts
+  another owner's live session (C45, [ADR-0683](adr/0683-uia-sessions-belong-to-an-owner-and-a-full-pool-refuses-instead-of-evicting.md)).
 - A UIA stage that fails (a wrong account password on `POST /account/password`,
   `POST /account/deactivate`, `POST /account/3pid/add`, `DELETE /devices/{deviceId}`,
   `POST /delete_devices` and `POST /keys/device_signing/upload`) answers `401`

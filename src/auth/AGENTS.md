@@ -103,7 +103,7 @@ Token bytes come from `crypto/Random.hpp`. Tokens are never stored or logged in 
 
 UIAA session state is held **in memory** in the client-server runtime (`uia_sessions` in
 `src/homeserver/ClientServerRuntime.cpp`), not in a database table. Sessions expire after 10 minutes
-and are capped at 512 entries. Each flow has exactly one stage, so there is no stage list to
+and are capped at `max_uia_sessions` (2048); each owner holds at most 16 and a full pool refuses a new challenge with 429 rather than evicting another owner (ADR-0683). Each flow has exactly one stage, so there is no stage list to
 consult; adding a second stage would need persisted stage tracking. See ADR-0057.
 
 ## Login tokens (CS8, ADR-0548)
