@@ -572,3 +572,4 @@
 * [0725 - A decided make_join race starts no further calls, is run by a fixed number of workers, and holds its request's slot to the end](0725-a-decided-make-join-race-starts-no-further-calls-and-its-calls-end-at-the-race-deadline.md)
 * [0669 - POST /delete_devices is capped at the device limit and looks devices up through indexes](0669-delete-devices-is-capped-at-the-device-limit-and-looks-devices-up-by-index.md)
 * [0670 - A client key claim is capped like its federation twin and merges a remote answer by hash set](0670-a-client-key-claim-is-capped-like-its-federation-twin-and-merges-by-hash-set.md)
+* [0671 - A client key query reads device keys through the index and is held to the federation entry cap](0671-a-client-key-query-reads-device-keys-through-the-index-under-the-federation-entry-cap.md)

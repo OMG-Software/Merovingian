@@ -8815,6 +8815,11 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "key query body must contain device_keys");
         }
+        // Run-3 C19 (ADR-0671): the same entry cap as the federation twin, before any lookup.
+        if (federation::key_request_exceeds_entry_cap(body, "device_keys"))
+        {
+            return err(413U, "M_TOO_LARGE", "key query names too many users and devices");
+        }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
         auto const& store = rt.homeserver.database.persistent_store;
@@ -8867,20 +8872,18 @@ namespace
             auto devices = canonicaljson::Object{};
             if (requested_devices->empty())
             {
-                for (auto const& key : store.device_keys)
-                {
-                    if (key.user_id != user_request.key)
-                    {
-                        continue;
-                    }
-                    auto device_object = federation::published_device_keys(store, key, requesting_user, display_names);
-                    if (!device_object.has_value())
-                    {
-                        continue;
-                    }
-                    normalize_device_key_object_for_client(rt, *device_object, user_request.key, key.device_id);
-                    devices.push_back(json_member(key.device_id, json_obj(std::move(*device_object))));
-                }
+                // The user's own device-key rows through the index, not the server-wide table (run-3 C19).
+                database::for_each_user_device_key(
+                    store, user_request.key, [&](database::PersistentDeviceKey const& key) {
+                        auto device_object =
+                            federation::published_device_keys(store, key, requesting_user, display_names);
+                        if (device_object.has_value())
+                        {
+                            normalize_device_key_object_for_client(rt, *device_object, user_request.key, key.device_id);
+                            devices.push_back(json_member(key.device_id, json_obj(std::move(*device_object))));
+                        }
+                        return true;
+                    });
             }
             else
             {

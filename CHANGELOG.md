@@ -96,6 +96,12 @@ search of the response for each accepted user, which is quadratic and ran with t
 25,000 users plus devices (the cap federation already applies) is now `413 M_TOO_LARGE` before any one-time key is claimed,
 and the merge looks users up in a hash set.
 
+### A client key query reads the requested user's device keys through the index (ADR-0671)
+
+Audit finding C19. `POST /keys/query` looped over every device-key row on the server once for each requested local user
+that asked for all devices, and had no limit on how many users a request names. A query naming more than 25,000 users plus
+devices (the federation cap) is now `413 M_TOO_LARGE`, and each user's device keys are read through the per-user index.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
