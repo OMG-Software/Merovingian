@@ -44,7 +44,7 @@
 * [0044 - Wipe secrets with an optimisation barrier](0044-wipe-secrets-with-an-optimisation-barrier.md)
 * [0045 - Ship a static musl tarball as the portability fallback](0045-ship-a-static-musl-tarball-as-the-portability-fallback.md)
 * [0046 - Request FORTIFY_SOURCE only on optimised builds](0046-request-fortify-source-only-on-optimised-builds.md)
-* [0047 - Keep project phase out of the version string](0047-keep-project-phase-out-of-the-version-string.md)
+* [0047 - Keep project phase out of the version string](0047-keep-project-phase-out-of-the-version-string.md) — Superseded by ADR-0647: the scheme from 1.0.0 is MAJOR.MINOR.BUILD; the phase rule is restated there
 * [0048 - Treat soak and load runs as release evidence not CI](0048-treat-soak-and-load-runs-as-release-evidence-not-ci.md)
 * [0049 - Treat the specification as the conformance authority](0049-treat-the-specification-as-the-conformance-authority.md)
 * [0050 - Use real dependencies in integration tests](0050-use-real-dependencies-in-integration-tests.md)
@@ -559,3 +559,5 @@
 * [0634 - A share of the push delivery budget is kept for gateways that answer, and one host carries an eighth of it](0634-a-share-of-the-push-delivery-budget-is-kept-for-gateways-that-answer-and-a-host-carries-an-eighth.md)
 * [0635 - An inbound federation origin is asked about once at a time, and its decision is kept for a short time](0635-an-inbound-federation-origin-is-asked-about-once-at-a-time-and-its-decision-is-kept-for-a-short-time.md)
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
+* [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
+* [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)

@@ -2,29 +2,31 @@
 
 ## Scheme
 
-Merovingian uses **`0.MINOR.PATCH`** before `1.0`.
+From 1.0.0 Merovingian uses **`MAJOR.MINOR.BUILD`**
+([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md)).
 
-`PATCH` is the working counter: feature, fix, and packaging branches increment
-it by one. Documentation-only changes do not require a version bump
+`BUILD` is the working counter: feature, fix, and packaging branches increment
+it by one, exactly as `PATCH` did before 1.0.0. The bump policy below is
+unchanged. Documentation-only changes do not require a version bump
 ([ADR-0464](adr/0464-documentation-only-changes-do-not-require-a-version-bump.md)).
 
-`MINOR` is a **series marker, not a milestone.** It rolls over when a `PATCH`
-series has grown long enough to be unwieldy, or at a natural grouping of work.
-A new series does **not** restart at `.0`; it continues from wherever the
-rollover happened. Both rollovers to date worked that way — `0.9.25` → `0.10.1`
-and `0.10.63` → `0.11.4` — and no `0.10.0` or `0.11.0` was ever cut.
-
-`1.0.0` is the one version number that carries a meaning: it is cut when the
-project reaches **production**, as defined by
-[`todos/production-milestone.md`](todos/production-milestone.md).
+`MINOR` and `MAJOR` change only when the owner decides. The decision states the
+version that follows.
 
 **Project phase is declared in `README.md` and `CHANGELOG.md`, never encoded in
-the version number.** Beta was declared at `v0.10.59` — mid-series, which is
-what the rules above imply. Do not read a phase transition into a `MINOR`
-rollover, and do not hold a rollover back waiting for one.
+the version number** ([ADR-0647](adr/0647-versions-from-1-0-0-are-major-minor-build.md), which restates the rule
+of the superseded [ADR-0047](adr/0047-keep-project-phase-out-of-the-version-string.md)).
 
-The version is a plain string — there is no pre-release suffix, build metadata,
-or epoch. All three numbers are always present (e.g. `0.11.4`, never `0.11`).
+The version is a plain string. There is no pre-release suffix, build metadata,
+or epoch. All three numbers are always present (e.g. `1.0.1`, never `1.0`).
+
+### History: the 0.x scheme
+
+Before 1.0.0 the scheme was `0.MINOR.PATCH`. `PATCH` was the working counter.
+`MINOR` was a series marker, not a milestone: it rolled over when a series grew
+long, and a new series did not restart at `.0` (`0.9.25` to `0.10.1`, `0.10.63`
+to `0.11.4`). `1.0.0` was cut when the project reached production. Beta was
+declared at `v0.10.59`. These rules no longer apply.
 
 ## Bump policy
 
@@ -33,7 +35,7 @@ and every version location below together before the branch's first commit.
 Do not increment again on intermediate commits. Before raising the PR, verify
 that the version remains consistent with the base branch; if another branch
 has used that version in the meantime, update all locations together to the
-next available patch version. There is no separate merge-time bump.
+next available build number. There is no separate merge-time bump.
 
 For a documentation-only branch, keep the current version and add the change
 notes to its `Documentation` section in `CHANGELOG.md`. Changes to coding
@@ -91,7 +93,7 @@ than the others.
 ## Release process
 
 1. Update `main` from `origin`, then create a feature or fix branch from it.
-2. Unless the changes are documentation-only, increment the patch version in every location above and add its changelog section.
+2. Unless the changes are documentation-only, increment the build number in every location above and add its changelog section.
 3. Make the changes and keep that version for intermediate commits.
 4. Before raising the PR, check version consistency and conflicts with the base branch.
 5. Raise a PR. CI builds the configured platform artifacts and runs the test suite;
@@ -101,5 +103,5 @@ than the others.
 7. For a versioned release, push a `vX.Y.Z` tag naming the `meson.build`
    version. The `release` workflow (`release.yml`, tags matching `v*`) refuses
    any other tag, builds the packages and publishes the versioned GitHub
-   release, marked as a prerelease while the version is `0.x` (ADR-0597); see
-   [release-process.md](release-process.md).
+   release. A `0.x` tag is marked as a prerelease; from 1.0.0 a tag publishes a
+   full release (ADR-0597); see [release-process.md](release-process.md).

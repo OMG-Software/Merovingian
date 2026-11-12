@@ -106,15 +106,20 @@ Then add scenarios to `tests/integration/test_database_upgrade_flow.cpp` that op
 fixture and serve it, and remove the previous fixture directory. Never regenerate a fixture from current code: it is
 evidence only because the old release wrote it.
 
-A pre-1.0 series start (such as 0.13.0) adds no fixture and no upgrade test. The
-migrations were collapsed into one initial schema in 0.12.47
-([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)), so a
-pre-1.0 database can no longer be opened: that change removed the 0.11.13 fixture and
-its scenarios, and there is no fixture until the 1.1 series starts.
+A pre-1.0 series start added no fixture and no upgrade test, and no pre-1.0 database is
+supported. The migrations were collapsed into one initial schema in 0.12.47
+([ADR-0224](adr/0224-pre-1-0-migrations-collapse-into-one-frozen-v1-schema.md)). A database
+written by a build up to 0.12.46 is refused at startup: its schema ledger records migrations
+this build no longer has (`schema_ledger_is_known` in `src/database/Migration.cpp`). A
+database from 0.12.47 onwards records the same v1 step and passes that check, but v1 changed
+seven times before it was frozen (0.12.59 to 0.12.86), and nothing compares a database's
+tables with this build's, so such a database may lack columns and indexes this build uses.
+The 0.12.47 collapse also removed the 0.11.13 upgrade fixture and its scenarios; there is no
+fixture until the 1.1 series starts.
 
 ### The v1 schema is frozen from 1.0.0
 
-From 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
+Since 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
 and `migrations/001_initial_schema.sql` never change. A schema change is a new numbered
 migration (v2 onwards) that keeps deployed databases compatible. A unit test requires the
 SQL file to match the build's v1 step statement for statement.
@@ -168,7 +173,11 @@ sh scripts/check-release-readiness.sh
 ```
 
 Then run Complement against the candidate (see "Complement" below). It must be green
-before the tag is created.
+before the tag is created. The one exception is 1.0.0: the owner waived this
+requirement for that release only, because it was tagged without a green run
+and the release-gate security audit was its gate instead
+([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)). The
+waiver does not apply to any later release.
 
 After that, create and push the release tag. It must be exactly `v` followed
 by the version in `meson.build`, or the workflow refuses it:
@@ -183,6 +192,10 @@ The scheduled dependency-triage workflow keeps a separate vulnerability report
 artifact.
 
 ## Complement
+
+The 1.0.0 release was tagged without a Complement run and carries no Complement
+evidence ([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
+Every later release follows the steps below.
 
 The external Complement suite runs against the candidate's Debian trixie package before
 the tag, and its signed result is attached to the release afterwards (ADR-0233, ADR-0234,

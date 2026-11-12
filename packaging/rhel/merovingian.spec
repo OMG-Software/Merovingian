@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.93
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -32,7 +32,7 @@ Requires:       libpng
 Requires:       libjpeg-turbo
 
 %description
-Merovingian is a beta Matrix Protocol homeserver focused on secure
+Merovingian is a Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
 
 %prep
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 1.0.0-1
+- Merovingian 1.0.0
+
 * Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 0.12.93-1
 - Release-gate audit, low and informational findings
 

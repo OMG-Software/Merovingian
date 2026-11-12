@@ -16,8 +16,8 @@ Merovingian is a Matrix homeserver written in modern C++26. Its design treats co
 
 </div>
 
-!!! warning "Beta software"
-    Merovingian is suitable for evaluation and testing. It is **not yet production-ready** and should not be deployed as a production Matrix homeserver until the blocking items in the [production milestone](todos/production-milestone.md) are closed.
+!!! note "Production release"
+    Merovingian 1.0.0 is the first production release. Its known limitations are listed in the 1.0.0 section of the [changelog](changelog.md). The [production milestone](todos/production-milestone.md) records the Complement blocker, which stays open for later releases.
 
 ## Why Merovingian
 
@@ -59,8 +59,8 @@ For design and security review, see the [architecture](architecture.md), [threat
 
 ## Production status
 
-The project has been in beta since v0.10.59. Federation, persistence, packaging, and runtime security controls are implemented and covered by CI, but the project still has explicit blockers before a 1.0.0 production release.
+The project has been in production since 1.0.0. Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. 1.0.0 was tagged without a green Complement run.
 
-See [Road to 1.0](todos/production-milestone.md) for the current release gates, [capability gaps](todos/capability-gaps.md) for per-area status, and the [changelog](changelog.md) for what changed in each version.
+See [Road to 1.0](todos/production-milestone.md) for the production milestone and the open Complement blocker, [capability gaps](todos/capability-gaps.md) for per-area status, and the [changelog](changelog.md) for what changed in each version.
 
 This site is rebuilt from `main` on every merge, so it always describes the latest merged code. The version it was built from is shown in the footer.

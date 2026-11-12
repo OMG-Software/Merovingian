@@ -15,6 +15,15 @@ and what has been deliberately dropped.
 
 ## What blocks 1.0.0
 
+**1.0.0 is released with the Complement blocker waived, not closed.**
+The owner waived it for 1.0.0 only ([ADR-0648](../adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
+No green Complement run was ever recorded: the last, run 18 at 0.12.64, had one
+unexpected failure, a restricted-join power-level latency race. The gate for
+1.0.0 was a security audit instead: release-gate audit run 2 at commit 279d4a0b,
+39 confirmed findings (8 high, 14 medium, 15 low, 2 informational) and 3
+needing validation, all fixed in 0.12.91 to 0.12.93. The blocker below stays
+open for later releases, which follow `docs/release-process.md` as written.
+
 | Blocker | Why it blocks | Done when |
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
@@ -33,7 +42,8 @@ pinned commit against a package whose digest is in the maintainer-signed `SHA256
 (ADR-0234). `scripts/record_complement_evidence.py` and `publish_complement_evidence.py` turn a
 green run into a maintainer-signed record, tied to the shipped server binary's SHA-256 and
 attached to the release (ADR-0235, `docs/release-process.md`, "Complement"). Still open: the
-first full run against a candidate, and the skip list it produces. Not yet verified: whether
+first green full run against a candidate, and the skip list it produces. The blocker
+is waived for 1.0.0 only (see above); it still applies to later releases. Not yet verified: whether
 Docker's default seccomp profile admits Landlock, and whether the container's memory-lock limit
 fits the master key.
 

@@ -14,7 +14,7 @@ The Merovingian prioritises:
 
 ## Supported versions
 
-During pre-release development, only the latest development branch is supported.
+The latest 1.x release is supported. 0.x releases are not supported.
 
 ## Reporting vulnerabilities
 
