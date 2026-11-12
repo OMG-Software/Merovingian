@@ -11,9 +11,11 @@
 #include "merovingian/federation/WellKnownHopResponse.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -37,6 +39,16 @@ using WellKnownHopFetcher = std::function<WellKnownHopResponse(
 // The message bytes are untrusted: the parser is fully bounds-checked and never
 // reads past `message_length`. Exposed for unit testing.
 [[nodiscard]] auto parse_srv_records(unsigned char const* message, int message_length) -> std::vector<SrvRecord>;
+
+// The length of a resolver answer that is safe to parse: `res_query` reports the full wire length of a response that
+// did not fit (glibc does, for a truncated TCP answer), so a reported length above `capacity` is cut to `capacity`.
+// A non-positive value (the resolver's failure) is returned unchanged.
+[[nodiscard]] auto clamp_srv_answer_length(int reported_length, std::size_t capacity) -> int;
+
+// Parses the SRV records in a resolver answer buffer after clamping `reported_length` to the buffer's size, so the
+// parser never reads past the memory that holds the message.
+[[nodiscard]] auto parse_srv_answer(std::span<unsigned char const> buffer, int reported_length)
+    -> std::vector<SrvRecord>;
 
 // Fetches `https://<server_name>/.well-known/matrix/server`, following redirects (ADR-0483): at most
 // `well_known_max_redirects` of them, each target an absolute https URL, resolved and refused unless every address is

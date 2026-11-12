@@ -28,6 +28,11 @@ public:
     auto record(std::string_view host, bool success, std::chrono::steady_clock::time_point now,
                 GatewayCircuitBreakerPolicy const& policy) -> void;
     [[nodiscard]] auto tracked_hosts() const -> std::size_t;
+    // ADR-0634: whether `host` answered promptly (`record(host, true, ...)`) within `policy.reachable_ttl` and has
+    // not failed or answered slowly since. A host this server has never reached is not reachable: its deliveries
+    // may use only the share of the delivery budget that is not reserved for hosts that are.
+    [[nodiscard]] auto reachable_recently(std::string_view host, std::chrono::steady_clock::time_point now,
+                                          GatewayCircuitBreakerPolicy const& policy) const -> bool;
 
 private:
     struct HostState final
@@ -40,6 +45,8 @@ private:
 
     mutable std::mutex mutex_{};
     std::unordered_map<std::string, HostState> hosts_{};
+    // Hosts that answered promptly, and when. Bounded by `max_hosts`, the oldest forgotten first.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> reachable_{};
 };
 
 } // namespace merovingian::push

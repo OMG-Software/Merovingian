@@ -951,7 +951,8 @@ namespace
                // ADR-0119: metadata only. The bytes are read per request
                // (read_media_blob), so memory does not grow with stored media.
                load_rows(connection,
-                         "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs",
+                         "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs WHERE "
+                         "ref_count <> '0'",
                          [&store](sqlite3_stmt& row) {
                              store.media_blobs.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                           parse_u64(column_text(row, 3)), std::string{},

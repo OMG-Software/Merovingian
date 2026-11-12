@@ -250,6 +250,25 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("name: openbsd-package", workflow)
         self.assertIn("name: netbsd-package", workflow)
 
+    def test_openbsd_package_refuses_a_build_without_a_worker(self) -> None:
+        # GIVEN build-openbsd-pkg.sh packs whatever the install staged, and meson skips the
+        # thumbnail worker without libpng16 and libturbojpeg: asked for as `jpeg-turbo`, a name
+        # OpenBSD has no package by, the JPEG library was never installed, and every OpenBSD
+        # package shipped without the worker its PLIST lists.
+        script = (REPO_ROOT / "scripts" / "build-openbsd-pkg.sh").read_text(encoding="utf-8")
+        # WHEN the script's steps between the install and the packing list are read
+        check = script.split("--skip-subprojects\n", 1)[1].split("# 2. Stage", 1)[0]
+        # THEN it fails unless every binary and both workers were staged, as FreeBSD and NetBSD do.
+        for binary in (
+            "bin/merovingian-server",
+            "bin/merovingian-db-migrate",
+            "libexec/merovingian/merovingian-fed-worker",
+            "libexec/merovingian/merovingian-thumbnail-worker",
+        ):
+            self.assertIn(binary, check)
+        self.assertIn('if [ ! -x "${STAGE}${PREFIX}/${binary}" ]; then', check)
+        self.assertIn("exit 1", check)
+
     def test_freebsd_packages_workflow_uses_the_supported_dependency_set(self) -> None:
         # GIVEN the FreeBSD packaging job in the packages workflow.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
@@ -541,6 +560,30 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertTrue(uses_adduser, "postinst no longer uses adduser; update this test")
         self.assertIn("adduser", packages)
 
+    def test_deb_library_dependencies_come_from_the_release_it_was_built_on(self) -> None:
+        # GIVEN one build-deb.sh builds the Ubuntu 24.04, 26.04 and rolling packages and the
+        # Debian trixie one, and their library package names differ: PR #584's 24.04 package
+        # failed to install on "libturbojpeg0", and the rolling one on "libssl3" (ADR-0650).
+        build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
+        depends = re.search(r"(?m)^Depends: (.*)$", build_script)
+        self.assertIsNotNone(depends, "build-deb.sh writes no Depends line")
+
+        # WHEN the control file's Depends line is read
+        # THEN it names no library package itself: dpkg-shlibdeps derives them from the shipped
+        # binaries on the release building the package.
+        self.assertEqual(depends.group(1), "adduser, ${SHLIBS_DEPENDS}")
+        self.assertRegex(build_script, r"dpkg-shlibdeps -O \$\{ELF_FILES\}")
+        # AND an empty result fails the build instead of shipping a package with no library dependencies.
+        self.assertIn('if [ -z "${SHLIBS_DEPENDS}" ]; then', build_script)
+
+        # AND every job that runs build-deb.sh installs dpkg-shlibdeps' package.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        for job in ("deb", "debian-pkg"):
+            with self.subTest(job=job):
+                body = workflow_job(workflow, job)
+                self.assertIn("sh scripts/build-deb.sh", body)
+                self.assertRegex(body.split("sh scripts/build-deb.sh")[0], r"\bdpkg-dev\b")
+
     def test_deb_does_not_ship_vendored_subproject_files(self) -> None:
         # GIVEN the Debian package build script.
         build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
@@ -576,6 +619,115 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("--security-opt=no-new-privileges", body)
         self.assertIn("check-startup-hardening-gate.sh", body)
         self.assertIn("/usr/bin/merovingian-server", body)
+
+    def test_each_supported_ubuntu_release_gets_its_own_named_package(self) -> None:
+        # GIVEN a .deb installs only on the release whose sonames it was built against
+        # (ADR-0650), and the main ruleset requires a check called "Debian package".
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow_job(workflow, "deb")
+
+        # WHEN the Ubuntu package matrix is read
+        # THEN it builds in each LTS image and the current interim release, one failure
+        # not cancelling the others.
+        for release, image in (("'24.04'", "ubuntu:24.04"), ("'26.04'", "ubuntu:26.04"), ("rolling", "ubuntu:rolling")):
+            with self.subTest(release=release):
+                self.assertIn(f"- release: {release}\n            image: {image}\n", job)
+        self.assertIn("container: ${{ matrix.image }}", job)
+        self.assertIn("fail-fast: false", job)
+        self.assertIn("name: Ubuntu ${{ matrix.release }} package", job)
+
+        # AND the package is named after the release read from the image, after the
+        # installed package has booted and before it is attested and uploaded.
+        rename = job.index('mv "$f" "${f%.deb}-ubuntu${VERSION_ID}.deb"')
+        self.assertLess(job.index("--bounding-set=-all"), rename)
+        self.assertLess(rename, job.index("- name: Attest Ubuntu package"))
+        self.assertIn(". /etc/os-release", job)
+        self.assertIn("name: ubuntu-deb-package-${{ matrix.release }}", job)
+        self.assertIn("key: ccache-deb-${{ matrix.release }}-${{ github.run_id }}", job)
+
+        # AND the required check reports under its old name and passes only when every
+        # release built.
+        aggregate = workflow_job(workflow, "deb-all-releases")
+        self.assertIn("name: Debian package\n", aggregate)
+        self.assertIn("needs: deb", aggregate)
+        self.assertIn("if: always()", aggregate)
+        self.assertIn("${{ needs.deb.result }}", aggregate)
+        self.assertIn('test "${RESULT}" = success', aggregate)
+
+        # AND every release's package is staged for latest.
+        stage = workflow_job(workflow, "stage-package-assets")
+        for release in ("24.04", "26.04", "rolling"):
+            with self.subTest(staged=release):
+                self.assertIn(f"name: ubuntu-deb-package-{release}\n", stage)
+
+    def test_opensuse_tumbleweed_and_leap_each_get_their_own_rpm(self) -> None:
+        # GIVEN Leap and Tumbleweed ship different library versions (ADR-0650).
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        job = workflow_job(workflow, "opensuse-rpm")
+
+        # WHEN the OpenSUSE package matrix is read
+        # THEN Tumbleweed keeps the required check name and its dist tag, Leap 16.0 gets
+        # its own, and each leg keeps its own cache and artifact.
+        self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM", job)
+        self.assertIn("- flavour: Tumbleweed\n            image: opensuse/tumbleweed\n", job)
+        self.assertIn("- flavour: Leap 16.0\n            image: opensuse/leap:16.0\n", job)
+        self.assertIn("dist: .opensuse\n", job)
+        self.assertIn("dist: .leap16\n", job)
+        self.assertIn("MEROVINGIAN_RPM_DIST: ${{ matrix.dist }}", job)
+        self.assertIn("key: ccache-opensuse-rpm-${{ matrix.artifact }}-${{ github.run_id }}", job)
+        self.assertIn("name: ${{ matrix.artifact }}", job)
+        # AND the dependency step fails once its attempts run out, rather than going on
+        # to a build that fails for want of a package.
+        self.assertIn('if [ "${attempt}" = 3 ]; then', job)
+
+        # AND both RPMs are staged for latest.
+        stage = workflow_job(workflow, "stage-package-assets")
+        for artifact in ("opensuse-rpm-package", "opensuse-leap-rpm-package"):
+            with self.subTest(artifact=artifact):
+                self.assertIn(f"name: {artifact}\n", stage)
+
+        # AND the build script takes the dist tag only in a form rpmbuild cannot misread.
+        script = (REPO_ROOT / "scripts" / "build-opensuse-rpm.sh").read_text(encoding="utf-8")
+        self.assertIn('DIST="${MEROVINGIAN_RPM_DIST:-.opensuse}"', script)
+        self.assertIn("*[!a-z0-9.]*)", script)
+        self.assertIn('--define "dist ${DIST}"', script)
+
+    def test_a_tagged_release_ships_each_distribution_package(self) -> None:
+        # GIVEN a release is published from a v* tag by release.yml (ADR-0597).
+        release = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the release workflow runs
+        # THEN it builds the packages with packages.yml's own jobs, after the tag check.
+        self.assertRegex(packages, r"(?m)^  workflow_call:")
+        calling = workflow_job(release, "distro-packages")
+        self.assertIn("uses: ./.github/workflows/packages.yml", calling)
+        self.assertIn("needs: check-tag", calling)
+
+        # AND it stages every Ubuntu, Fedora, RHEL and OpenSUSE package with a checksum,
+        # but not the Debian trixie package, which the Complement step attaches under the
+        # same name and never replaces (ADR-0650).
+        stage = workflow_job(release, "stage-release-assets")
+        self.assertIn("- distro-packages", stage)
+        for artifact in (
+            "ubuntu-deb-package-24.04",
+            "ubuntu-deb-package-26.04",
+            "ubuntu-deb-package-rolling",
+            "rpm-package-fc44",
+            "rpm-package-latest",
+            "rhel-rpm-package",
+            "opensuse-rpm-package",
+            "opensuse-leap-rpm-package",
+        ):
+            with self.subTest(artifact=artifact):
+                self.assertIn(f"name: {artifact}\n", stage)
+        self.assertNotIn("name: debian-package", stage)
+        self.assertIn('sha256sum "$f" > "$f.sha256"', stage)
+
+        # AND staging, signing and publishing latest stay on pushes to main, so a tag
+        # never replaces the rolling release.
+        self.assertIn("github.ref == 'refs/heads/main'", workflow_job(packages, "stage-package-assets"))
+        self.assertIn("github.ref == 'refs/heads/main'", workflow_job(packages, "publish-latest"))
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `RegistrationToken.hpp` | Generates registration tokens for test users without going through the full UIAA flow |
 | `FakeClamdServer.hpp` | `FakeClamdServer`: a clamd stand-in on a temporary AF_UNIX socket. Reads INSTREAM exchanges, records the streamed bytes and answers with a fixed reply (or stays silent for the timeout case). Another I/O exception, shared by the unit and integration suites (G15, ADR-0565); assert on its recorded data from the test thread only |
 | `TempDirectory.hpp` | Fallback-aware temporary-directory helper for test scratch files |
-| `TlsMockServer.hpp` | Self-signed certificate generation plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer. Also `MockIdentityServer`: a trusted loopback identity server serving any number of requests (responses chosen by request-line substring, requests captured, optional stall), with `cooperative_responses()` for tests that just need a 3PID validated and `install(runtime)` to trust it |
+| `TlsMockServer.hpp` | Test certificate generation (`write_test_tls_certificate()`: a server certificate issued by a throwaway test CA made per call; `certificate_pem` is the CA, which clients trust, never the server certificate, because libcurl's upki check on Ubuntu 26.10 and later refuses a self-signed server certificate as its own anchor, ADR-0650) plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer. Also `MockIdentityServer`: a trusted loopback identity server serving any number of requests (responses chosen by request-line substring, requests captured, optional stall), with `cooperative_responses()` for tests that just need a 3PID validated and `install(runtime)` to trust it |
 | `CapturedAppserviceRequest.hpp` | `CapturedAppserviceRequest`: one request recorded by `MockAppservice` (method, target, `Authorization`, body, answered status) |
 | `TestAppservice.hpp` | `TestAppservice`: the fields of one appservice registration written by `appservice_test_config()` |
 | `ConsoleLogCapture.hpp` | `ConsoleLogCapture`: sends the console log to a string for the scope's lifetime; safe only while the logger's asynchronous writer threads are not running (the unit test binary); `text()` returns everything captured |
@@ -39,10 +39,10 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `MockIdentityServer.hpp` | `MockIdentityServer`: a trusted loopback TLS identity server (see the `TlsMockServer.hpp` row). Opens a real socket, so it is an I/O exception |
 | `SqliteInsertFault.hpp` | `SqliteInsertFault` (R02): makes every INSERT or UPDATE into one table of the server's database file fail from a second connection, until `clear()` or destruction. Opens the database file, so it is an I/O exception |
 | `SqliteCloser.hpp` | `SqliteCloser`: deleter that closes a `sqlite3*` |
-| `TlsTestCertificate.hpp` | `TlsTestCertificate`: RAII holder for a self-signed certificate and key written to a temp directory, removed on destruction. Writes files, so it is an I/O exception |
+| `TlsTestCertificate.hpp` | `TlsTestCertificate`: RAII holder for a test server certificate, its key and the issuing test CA's PEM, written to a temp directory, removed on destruction. Writes files, so it is an I/O exception |
 | `StallingTlsServerState.hpp` | `StallingTlsServerState`: atomics (`request_received`, `released`) a test uses to observe and release a stalling TLS server |
 | `ScopedThreadJoin.hpp` | `ScopedThreadJoin`: joins a mock-server thread on scope exit so a failing `REQUIRE` does not call `std::terminate` |
-| `EvpPkeyDeleter.hpp` / `X509Deleter.hpp` / `X509NameDeleter.hpp` / `FileDeleter.hpp` | Deleters for OpenSSL `EVP_PKEY`, `X509` and `X509_NAME` handles and for `std::FILE*`, used by the TLS mock server |
+| `EvpPkeyDeleter.hpp` / `X509Deleter.hpp` / `X509NameDeleter.hpp` / `X509ExtensionDeleter.hpp` / `FileDeleter.hpp` | Deleters for OpenSSL `EVP_PKEY`, `X509`, `X509_NAME` and `X509_EXTENSION` handles and for `std::FILE*`, used by the TLS mock server |
 
 Note: `tests/FederationSigningTestSupport.hpp` — a deterministic Ed25519
 federation-signing helper (`merovingian::federation::test`, seed-derived

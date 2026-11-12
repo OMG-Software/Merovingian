@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/RoomService.hpp"
 
+#include "merovingian/appservice/MasqueradeToken.hpp"
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
@@ -123,6 +124,8 @@
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
+#include "merovingian/push/GatewayCircuitBreakerPolicy.hpp"
+#include "merovingian/push/PushBatchAdmission.hpp"
 #include "merovingian/push/PushEvaluationResult.hpp"
 #include "merovingian/push/PushGatewayClient.hpp"
 #include "merovingian/push/PushGatewayDevice.hpp"
@@ -4587,6 +4590,29 @@ namespace
     return kept;
 }
 
+namespace
+{
+    // ADR-0630: whether a resident's snapshot may replay this server's own event about one of its users. It may when
+    // this server holds no row for the user in the room (nothing to contradict), or when the event is the one held as
+    // current.
+    // Otherwise this server's own record stands; `held_event_id` is the event it holds as current for the user.
+    struct LocalMemberClaim final
+    {
+        bool taken{false};
+        std::optional<std::string> held_event_id{};
+    };
+
+    [[nodiscard]] auto judge_local_member_claim(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view user_id, std::string_view claimed_event_id)
+        -> LocalMemberClaim
+    {
+        auto held = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        auto const agrees = held.has_value() && *held == claimed_event_id;
+        auto const holds_a_row = held.has_value() || !current_membership_of(store, room_id, user_id).empty();
+        return {agrees || !holds_a_row, std::move(held)};
+    }
+} // namespace
+
 // Persists the `state` array from a send_join response. Each event is stored to
 // the persistent event graph. Events that carry a "state_key" field in their raw
 // JSON (even when that value is "") are also written to the state table. That is
@@ -4621,14 +4647,20 @@ namespace
     {
         database::PersistentEvent event{};
         std::optional<database::PersistentStateEvent> state{};
+        // A refused claim about a local user: the event this server holds as current for the key, which the
+        // snapshot's state group carries in its place (ADR-0630).
+        std::optional<database::PersistentStateGroupStateEntry> held_entry{};
         std::string joined_member{};
+        bool refused_claim{false};
         bool repeated{false};
     };
     struct SnapshotEntry final
     {
         std::optional<database::PreparedStateUpdate> prepared{};
         std::optional<database::PersistentStateEvent> state{};
+        std::optional<database::PersistentStateGroupStateEntry> held_entry{};
         std::string joined_member{};
+        bool refused_claim{false};
     };
     auto candidates = std::vector<SnapshotCandidate>{};
     auto batch_event_ids = std::set<std::string, std::less<>>{};
@@ -4730,6 +4762,35 @@ namespace
                 pe.status = "outlier";
                 auto candidate = SnapshotCandidate{};
                 candidate.state = std::move(state);
+                // ADR-0630: an event this server authored about one of its users is judged against this server's own
+                // record. A refused one is kept as an outlier like any event, writes no current_state row and no
+                // membership, and the state group takes this server's event for the key. A remote sender's event (a
+                // ban issued while this server was out of the room) can only be learned from the snapshot.
+                if (candidate.state.has_value() && parsed.event.event_type == "m.room.member" &&
+                    auth::user_id_server_name(candidate.state->state_key) == runtime.config.server().server_name &&
+                    auth::user_id_server_name(parsed.event.sender) == runtime.config.server().server_name)
+                {
+                    auto verdict = judge_local_member_claim(runtime.database.persistent_store, room_id,
+                                                            candidate.state->state_key, event_id);
+                    if (!verdict.taken)
+                    {
+                        log_diagnostic("room.join.local_member_claim_refused",
+                                       {
+                                           {"room_id",  std::string{room_id},                            false},
+                                           {"event_id", event_id,                                        false},
+                                           {"user_id",  candidate.state->state_key,                      false},
+                                           {"reason",   "this server holds its own record for the user", false}
+                        },
+                                       observability::LogEventSeverity::warning);
+                        if (verdict.held_event_id.has_value())
+                        {
+                            candidate.held_entry = database::PersistentStateGroupStateEntry{
+                                {}, "m.room.member", candidate.state->state_key, std::move(*verdict.held_event_id)};
+                        }
+                        candidate.state.reset();
+                        candidate.refused_claim = true;
+                    }
+                }
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
                 if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
@@ -4766,7 +4827,9 @@ namespace
         auto const event_id = candidate.event.event_id;
         auto entry = SnapshotEntry{};
         entry.state = candidate.state;
-        entry.joined_member = std::move(candidate.joined_member);
+        entry.held_entry = candidate.held_entry;
+        entry.refused_claim = candidate.refused_claim;
+        entry.joined_member = candidate.state.has_value() ? std::move(candidate.joined_member) : std::string{};
         if (candidate.repeated)
         {
             // Recorded again only when its first copy was kept.
@@ -4826,7 +4889,29 @@ namespace
         {
             database::apply_store_event_with_state(runtime.database.persistent_store, *entry.prepared);
         }
-        if (entry.state.has_value())
+        if (entry.held_entry.has_value())
+        {
+            // A refused claim counts as recorded: the snapshot was read in full, and the group carries this server's
+            // event for the key.
+            ++result.recorded_state_events;
+            if (auto const [position, inserted] = recorded_keys.try_emplace(
+                    std::pair{entry.held_entry->event_type, entry.held_entry->state_key}, result.state_entries.size());
+                inserted)
+            {
+                result.state_entries.push_back(*entry.held_entry);
+                recorded_members.emplace_back();
+            }
+            else
+            {
+                result.state_entries[position->second] = *entry.held_entry;
+                recorded_members[position->second].clear();
+            }
+        }
+        else if (entry.refused_claim)
+        {
+            ++result.recorded_state_events;
+        }
+        else if (entry.state.has_value())
         {
             ++result.recorded_state_events;
             // One entry per key: the state group rejects a key twice. A later
@@ -7757,6 +7842,12 @@ auto exchange_third_party_invite(HomeserverRuntime& runtime, federation::ThirdPa
     {
         return make_operation_result(false, {}, "the invited user is not a user of this server", 404U);
     }
+    // A local invitee who blocks invites (SS7, ADR-0552) is refused here as on every other invite path, before an
+    // event is composed or signed.
+    if (target_is_local && invite_permission_blocks(store, exchange.target_user_id))
+    {
+        return invite_blocked_result();
+    }
     auto const event_json =
         third_party_member_event_json(exchange.target_user_id, *display_name, exchange.signed_invite.json);
     if (!event_json.has_value())
@@ -9219,11 +9310,31 @@ namespace
             return;
         }
 
+        // ADR-0634: the gateway hosts a batch will contact, and whether each has answered promptly lately.
+        auto const& push_config = runtime.config.server().push;
+        auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
+            push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
         for (auto& [recipient, batch] : batches)
         {
             auto const delivery_count = batch.size();
             try
             {
+                auto hosts = std::vector<std::string>{};
+                auto all_hosts_reachable = true;
+                for (auto const& delivery : batch)
+                {
+                    auto host = push::push_gateway_host(delivery.pusher.data_url);
+                    if (!host.has_value() || runtime.push_gateway_breaker_ == nullptr ||
+                        !runtime.push_gateway_breaker_->reachable_recently(*host, std::chrono::steady_clock::now(),
+                                                                           breaker_policy))
+                    {
+                        all_hosts_reachable = false;
+                    }
+                    if (host.has_value())
+                    {
+                        hosts.push_back(std::move(*host));
+                    }
+                }
                 auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
                 reap_completed_futures(runtime.orphan_futures_);
                 std::erase_if(runtime.push_delivery_in_flight_by_user_, [](auto const& entry) {
@@ -9248,19 +9359,36 @@ namespace
                     continue;
                 }
 
+                // ADR-0634: a share of the budget is kept for batches whose hosts answer, and one host carries
+                // an eighth of it, so gateways the pushers' owners chose cannot hold every slot.
+                auto admission = runtime.push_batch_admission_->admit(runtime.push_delivery_in_flight_.load(),
+                                                                      max_in_flight, hosts, all_hosts_reachable);
+                if (!admission.slot.has_value())
+                {
+                    log_push_delivery_drop(admission.refusal == push::PushBatchRefusal::gateway_host
+                                               ? "gateway_host"
+                                               : (admission.refusal == push::PushBatchRefusal::unproven_share
+                                                      ? "unproven_share"
+                                                      : "global"),
+                                           runtime.push_delivery_in_flight_.load(), max_in_flight, delivery_count);
+                    continue;
+                }
+
                 // Reserve BEFORE launch and keep the parking mutex held. The
                 // following future insertion then needs no allocation, so an
                 // allocation failure cannot wait on a running future while
                 // this request still owns runtime.mutex.
                 runtime.orphan_futures_.reserve(runtime.orphan_futures_.size() + 1U);
                 auto permit = PushDeliveryPermit{runtime.push_delivery_in_flight_, user->second};
-                auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(batch),
-                                                                   permit = std::move(permit)]() mutable {
-                    // Return the counters on work completion (or throw),
-                    // not on destruction of the future's retained closure.
-                    auto const completion = std::move(permit);
-                    run_pending_push_deliveries(runtime, std::move(deliveries));
-                });
+                auto push_future =
+                    std::async(std::launch::async, [&runtime, deliveries = std::move(batch), permit = std::move(permit),
+                                                    host_slot = std::move(admission.slot)]() mutable {
+                        // Return the counters on work completion (or throw),
+                        // not on destruction of the future's retained closure.
+                        auto const completion = std::move(permit);
+                        auto const host_completion = std::move(host_slot);
+                        run_pending_push_deliveries(runtime, std::move(deliveries));
+                    });
                 runtime.orphan_futures_.push_back(std::move(push_future));
             }
             catch (std::exception const&)
@@ -9386,9 +9514,12 @@ namespace
     }
 
     // send_event once the sender is known. The profile propagation job (ADR-0353) calls it directly: it holds no token.
+    // `via_appservice` is set when an application service asserted the sender: the server-administrator override of
+    // a redaction is then not applied (ADR-0628).
     [[nodiscard]] auto send_event_as_user(HomeserverRuntime& runtime, std::string const& user_id,
                                           std::string_view room_id, std::string_view event_json,
-                                          std::optional<std::int64_t> origin_server_ts) -> OperationResult
+                                          std::optional<std::int64_t> origin_server_ts, bool via_appservice = false)
+        -> OperationResult
     {
         auto* room = find_room(runtime.database, room_id);
         if (room == nullptr)
@@ -9471,7 +9602,7 @@ namespace
         if (composed->event_type == "m.room.redaction")
         {
             auto const sender_is_server_admin = [&] {
-                return std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
+                return !via_appservice && std::ranges::any_of(runtime.database.users, [&](LocalUser const& user) {
                     return user.user_id == user_id && user.admin;
                 });
             };
@@ -9587,7 +9718,8 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
-    return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts);
+    return send_event_as_user(runtime, *user_id, room_id, event_json, origin_server_ts,
+                              appservice::decode_masquerade_token(access_token).has_value());
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

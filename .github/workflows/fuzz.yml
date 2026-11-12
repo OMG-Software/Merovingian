@@ -24,15 +24,15 @@ jobs:
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
             clang \
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload fuzz corpora and crash artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: merovingian-fuzz-corpora-${{ github.sha }}
           path: |

@@ -552,12 +552,17 @@ and blocking network calls".
 ## Deduplication
 
 Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`)
-digest and byte size. Each storage ID identifies one blob row. Re-uploading
-removed content restores that row with the new bytes and one reference;
-it does not deduplicate against cleared bytes or append a duplicate storage ID.
-Download and thumbnail lookups require a live reference. Persistence also writes
-zero-reference tombstones so final removal clears durable bytes.
-See [ADR-0094](adr/0094-revive-removed-media-storage-identities.md).
+digest and byte size. Each storage ID identifies one blob row, and a row exists
+only while it has a reference: the transaction that takes the count to zero
+deletes the row and its bytes, in the database and in the store's mirror.
+Re-uploading removed content inserts a new row with the new bytes and one
+reference. A record holds a reference while it is not removed; removing a record
+releases it, and evicting the removed record later releases nothing. Loaders skip
+rows at zero references left by earlier versions. The record, byte and holder
+counts, the blob count and the row positions are kept as rows change, so a
+request under `runtime.mutex` does not scan the records.
+See [ADR-0636](adr/0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
+and [ADR-0633](adr/0633-media-counts-and-positions-are-kept-as-each-record-and-blob-changes.md).
 
 ## Persistence
 

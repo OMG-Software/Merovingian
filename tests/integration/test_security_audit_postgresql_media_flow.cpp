@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentAuditEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
+#include "merovingian/media/LocalMediaRepository.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -45,6 +46,10 @@ namespace
                                    "SELECT COALESCE(octet_length(bytes), 0) FROM media_blobs WHERE storage_id = $1",
                                    {{storage_id, false}}});
     REQUIRE(result.ok);
+    if (result.rows.empty())
+    {
+        return "absent";
+    }
     REQUIRE(result.rows.size() == 1U);
     REQUIRE(result.rows.front().size() == 1U);
     return result.rows.front().front();
@@ -104,8 +109,10 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
         auto const first_media_id = "db5-first-" + suffix;
         auto const final_media_id = "db5-final-" + suffix;
         auto const digest = "db5digest" + suffix;
-        auto const storage_id = "db5blob_" + suffix;
         auto const bytes = std::string{"payload\0bytes", 13U};
+        // Moderation finds a record's blob by the storage ID the media repository derives from its digest and size
+        // (ADR-0633), so the shared blob is named that way here, as every upload names it.
+        auto const storage_id = merovingian::media::make_local_media_storage_id(digest, bytes.size());
 
         WHEN("handle B commits removal of the first reference, then the final reference")
         {
@@ -179,12 +186,12 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
                     REQUIRE(final_record != after_final_restart.store.local_media.end());
                     CHECK(final_record->removed);
                     auto const final_blob = find_blob(after_final_restart.store, storage_id);
-                    REQUIRE(final_blob != after_final_restart.store.media_blobs.end());
-                    CHECK(final_blob->ref_count == 0U);
+                    // ADR-0636: the last reference deleted the row.
+                    CHECK(final_blob == after_final_restart.store.media_blobs.end());
                     CHECK_FALSE(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
                                                                            after_final_restart.store, storage_id))
                                     .has_value());
-                    CHECK(stored_blob_byte_length(uri, storage_id) == "0");
+                    CHECK(stored_blob_byte_length(uri, storage_id) == "absent");
                     CHECK(admin_action_count(after_final_restart.store, first_media_id) == 1U);
                     CHECK(admin_action_count(after_final_restart.store, final_media_id) == 1U);
                     CHECK(audit_event_count(after_final_restart.store, first_media_id) == 1U);

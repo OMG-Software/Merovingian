@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -572,12 +573,15 @@ class DependencyWrapTests(unittest.TestCase):
         for token in ("openssl-devel", "libsodium-devel", "libpq-devel"):
             self.assertIn(token, rpm_spec)
 
-        # THEN all platforms declare security libraries as explicit runtime
-        # dependencies so OS package updates (apt upgrade libssl3 etc.) patch
-        # the binary without rebuilding the package. SQLite and yyjson remain
-        # statically linked via Meson wraps.
-        for token in ("libsodium23", "libpq5", "libssl3", "libcurl4"):
-            self.assertIn(token, deb_control)
+        # THEN all platforms declare security libraries as runtime dependencies
+        # so OS package updates (apt upgrade libssl3 etc.) patch the binary
+        # without rebuilding the package. SQLite and yyjson remain statically
+        # linked via Meson wraps. A .deb takes them from the libraries its
+        # binaries link, because each release names those packages differently
+        # (ADR-0650); a fixed name would be wrong on some release.
+        self.assertIn("${shlibs:Depends}", deb_control)
+        for token in ("libsodium23", "libpq5", "libssl3", "libcurl4", "libturbojpeg0"):
+            self.assertNotRegex(deb_control, rf"(?m)^\s+{re.escape(token)},?\s*$")
         for token in (
             "Requires:       openssl-libs",
             "Requires:       libsodium",

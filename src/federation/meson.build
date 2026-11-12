@@ -19,6 +19,7 @@ federation_sources = files(
   'RuntimeFederationConfig.cpp',
   'Security.cpp',
   'ServerAcl.cpp',
+  'ServerAclGlob.cpp',
   'ServerDiscovery.cpp',
   'ThirdPartyInvite.cpp',
   'Transactions.cpp',

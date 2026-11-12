@@ -4,17 +4,17 @@
 #include "merovingian/federation/ServerDiscovery.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/federation/FederationTlsOriginDecision.hpp"
 #include "merovingian/federation/LiteralDiscoveryOptIn.hpp"
 #include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/Security.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/federation/ServerDiscoveryResult.hpp"
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownHopResponse.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/Security.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundError.hpp"
 #include "merovingian/http/OutboundHeader.hpp"
@@ -40,8 +40,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -359,9 +361,13 @@ namespace
     {
 #if defined(__NetBSD__)
         auto state = ResolverState{};
-        return state.query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size()));
+        return clamp_srv_answer_length(
+            state.query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size())),
+            answer.size());
 #else
-        return ::res_query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size()));
+        return clamp_srv_answer_length(
+            ::res_query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size())),
+            answer.size());
 #endif
     }
 
@@ -480,7 +486,7 @@ namespace
             {
                 return {};
             }
-            return sort_srv_records(parse_srv_records(answer.data(), length));
+            return sort_srv_records(parse_srv_answer(answer, length));
         }
 
         [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port) -> ResolvedAddressSet override
@@ -535,6 +541,28 @@ namespace
     };
 
 } // namespace
+
+auto clamp_srv_answer_length(int reported_length, std::size_t capacity) -> int
+{
+    if (reported_length <= 0)
+    {
+        return reported_length;
+    }
+    auto const limit = capacity > static_cast<std::size_t>(std::numeric_limits<int>::max())
+                           ? std::numeric_limits<int>::max()
+                           : static_cast<int>(capacity);
+    return std::min(reported_length, limit);
+}
+
+auto parse_srv_answer(std::span<unsigned char const> buffer, int reported_length) -> std::vector<SrvRecord>
+{
+    auto const length = clamp_srv_answer_length(reported_length, buffer.size());
+    if (length <= 0)
+    {
+        return {};
+    }
+    return parse_srv_records(buffer.data(), length);
+}
 
 auto parse_srv_records(unsigned char const* message, int message_length) -> std::vector<SrvRecord>
 {

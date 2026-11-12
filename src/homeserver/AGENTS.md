@@ -228,7 +228,10 @@ runs the hook. `resolve_policy_server_hook` takes a place in
 decides), reads everything it needs from the runtime, then resolves the configured host with `discovery_network->lookup_addresses`
 (operator-trusted: no deny-list) and calls, all inside one `RuntimeLockRelease` scope and within what is left of
 `policy_server_timeout`. The caps derive from the request pool in `client_outbound_proxy_policy_for_pool`. A transport error is
-logged at warning level. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
+logged at warning level. For the federation surface the hook goes through `policy_decision_cache` (ADR-0635): a real
+decision is kept 30 s, one request at a time asks about an origin and the others wait for it with `runtime.mutex`
+released, and an origin decided about in the last ten minutes keeps that decision when the budget has no place left. No
+other failure uses a remembered decision. A pre-v12 `create_room` holds a `RoomIdReservation` from choosing its `!room<N>` ID until it returns
 (ADR-0362): an identifier derived from state and used after a lock release is reserved before the release.
 
 ## Client requests that call another server
@@ -837,6 +840,28 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
 - `docs/http-transport.md` — HTTP handling, TLS, rate limiting
 - `docs/media-repository.md` — media upload/download flow
 - `docs/auth-identity.md` — token validation and session flow
+
+## Gate-L authorization rules (ADR-0626 to ADR-0631)
+
+- `authenticated_user` and `authenticated_session` return `nullopt` for a deactivated account, so a token that revocation
+  missed is an unknown token to every gate, `require_admin` included. A new gate that reads the user record after a token
+  lookup does the same (ADR-0626).
+- `exchange_third_party_invite` asks `invite_permission_blocks` for a local invitee before composing, like every other
+  invite path. A new path that creates an invite for a local user does too.
+- An asserted identity (a masquerade token) never holds server-administrator authority: not on the operator routes
+  (ADR-0611), and not for the administrator's right to redact another local user's event, which `send_event` withholds by
+  passing `via_appservice` to `send_event_as_user` (ADR-0628). A new use of `LocalUser::admin` goes through
+  `authenticated_admin_user` or `require_admin`.
+- `upgrade_room_options` copies `m.federate: false` and no other custom create property (ADR-0627).
+- `set_local_user_moderation` and `deactivate_user_account` commit the state change with its audit row
+  (`commit_user_account_state_with_audit`, `commit_user_deactivation_with_audit`) and only then `remember_local_audit`
+  (ADR-0629). Do not return to `append_local_audit` after the write.
+- `ingest_send_join_state` judges a `m.room.member` entry this server authored about one of its users with
+  `judge_local_member_claim` (a remote sender's event, such as a ban, is always taken): it is taken only when this server holds no row for the user in the room or holds that very event as current. A refused entry is
+  stored as an outlier, writes no `current_state` row and names no joined member, and the state group takes this server's
+  current event for the key (ADR-0630). Never feed the raw snapshot to the state group.
+- The `GET /mutual_rooms` token is `MutualRoomsToken.cpp`'s `<offset>.<keyed hash>`; verification is one hash and a
+  constant-time comparison. Never search offsets (ADR-0631).
 
 ## Redactions (CSAZ-11)
 

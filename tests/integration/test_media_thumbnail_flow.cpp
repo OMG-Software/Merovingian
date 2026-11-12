@@ -941,3 +941,42 @@ SCENARIO("the real thumbnail worker rejects the original MED-8 crop magnitude",
 }
 
 #endif // MEROVINGIAN_TEST_THUMBNAIL_WORKER
+
+// Audit run-2, resource-exhaustion.thumbnailer.worker-output-unbounded-by-default (ADR-0641). The runtime leaves
+// `max_output_bytes` at 0, and 0 used to mean the parent read until the deadline. A decoder that floods its stdout is
+// now cut off at a ceiling set by the requested size, and the reply is refused with the read-limit answer (504), not
+// parsed as a malformed frame (502).
+SCENARIO("a decoder that floods its output is cut off with no output cap configured",
+         "[media][thumbnail][integration][security][thumbnail_output_cap]")
+{
+    GIVEN("a peer that writes a mebibyte of zeros before any frame and a config with the default output cap of 0")
+    {
+        auto const response = merovingian::media::ThumbnailWorkerResponse{merovingian::media::ThumbnailWorkerStatus::ok,
+                                                                          8U, 8U, sample_png()};
+
+        WHEN("a 4x4 thumbnail is requested")
+        {
+            // dd, not `head -c`: OpenBSD's head has no -c, and a peer that writes nothing proves nothing here.
+            auto const result =
+                request_from_worker(response, "dd if=/dev/zero bs=65536 count=16 2>/dev/null\nexit 0\n");
+
+            THEN("the parent stops reading and answers that the output was too large")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 504U);
+                REQUIRE(result.reason.find("output too large") != std::string::npos);
+            }
+        }
+
+        WHEN("the peer writes only a legal frame")
+        {
+            auto const result = request_from_worker(response);
+
+            THEN("the thumbnail is accepted as before")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.status == 200U);
+            }
+        }
+    }
+}

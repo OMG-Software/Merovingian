@@ -5,88 +5,27 @@
 
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/federation/Security.hpp"
 #include "merovingian/federation/ServerAclDecision.hpp"
 #include "merovingian/federation/ServerAclEvaluation.hpp"
 #include "merovingian/federation/ServerAclEvent.hpp"
-#include "merovingian/federation/Security.hpp"
+#include "merovingian/federation/ServerAclGlob.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::federation
 {
 namespace
 {
-
-    [[nodiscard]] auto to_lower_ascii(char character) noexcept -> char
-    {
-        return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-    }
-
-    [[nodiscard]] auto case_insensitive_equal(char left, char right) noexcept -> bool
-    {
-        return to_lower_ascii(left) == to_lower_ascii(right);
-    }
-
-    // Matrix v1.19 glob matching: '*' matches zero or more characters, '?'
-    // matches exactly one character. Matching is case-insensitive and applies
-    // to the full server name, not a substring.
-    [[nodiscard]] auto glob_match(std::string_view pattern, std::string_view text) noexcept -> bool
-    {
-        auto const pattern_length = pattern.size();
-        auto const text_length = text.size();
-        if (pattern_length == 0U)
-        {
-            return text_length == 0U;
-        }
-
-        // Use std::vector<char> instead of std::vector<bool> to avoid GCC 14's
-        // false-positive -Wnull-dereference warnings on the bit-vector proxy.
-        auto previous = std::vector<char>(text_length + 1U, 0);
-        auto current = std::vector<char>(text_length + 1U, 0);
-        previous[0U] = 1;
-
-        for (auto pattern_index = std::size_t{1U}; pattern_index <= pattern_length; ++pattern_index)
-        {
-            auto const pattern_char = pattern[pattern_index - 1U];
-            std::fill(current.begin(), current.end(), 0);
-
-            if (pattern_char == '*')
-            {
-                // '*' can match the empty prefix (carry previous[0]) or any
-                // additional text character (carry current[text_index-1]).
-                current[0U] = previous[0U];
-                for (auto text_index = std::size_t{1U}; text_index <= text_length; ++text_index)
-                {
-                    current[text_index] = static_cast<char>(previous[text_index] || current[text_index - 1U]);
-                }
-            }
-            else if (pattern_char == '?')
-            {
-                for (auto text_index = std::size_t{1U}; text_index <= text_length; ++text_index)
-                {
-                    current[text_index] = previous[text_index - 1U];
-                }
-            }
-            else
-            {
-                for (auto text_index = std::size_t{1U}; text_index <= text_length; ++text_index)
-                {
-                    if (case_insensitive_equal(pattern_char, text[text_index - 1U]))
-                    {
-                        current[text_index] = previous[text_index - 1U];
-                    }
-                }
-            }
-            previous.swap(current);
-        }
-
-        return previous[text_length] != 0;
-    }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -209,6 +148,18 @@ auto parse_server_acl(canonicaljson::Value const& content) -> ServerAclEvent
 
     result.allow = string_array_member(*object, "allow");
     result.deny = string_array_member(*object, "deny");
+
+    // Past the caps the ACL is not evaluated pattern by pattern: it refuses every server (ADR-0640).
+    auto const over_length = [](std::string const& pattern) noexcept {
+        return pattern.size() > server_acl_max_pattern_length;
+    };
+    if (result.allow.size() + result.deny.size() > server_acl_max_patterns ||
+        std::ranges::any_of(result.allow, over_length) || std::ranges::any_of(result.deny, over_length))
+    {
+        result.allow.clear();
+        result.deny.clear();
+        result.exceeds_limits = true;
+    }
     return result;
 }
 
@@ -220,15 +171,26 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
         return {ServerAclDecision::deny, "empty_server_name", "server name is empty after port stripping"};
     }
 
+    if (acl.exceeds_limits)
+    {
+        return {ServerAclDecision::deny, "acl_limits", "the ACL has more or longer patterns than the server evaluates"};
+    }
+
     if (!acl.allow_ip_literals && server_name_is_ip_literal(host))
     {
         return {ServerAclDecision::deny, "allow_ip_literals",
                 "server name is an IP literal and allow_ip_literals is false"};
     }
 
+    auto steps_left = server_acl_max_glob_steps;
     for (auto const& pattern : acl.deny)
     {
-        if (glob_match(pattern, host))
+        auto const matched = server_acl_glob_match(pattern, host, steps_left);
+        if (!matched.has_value())
+        {
+            return {ServerAclDecision::deny, "acl_budget", "the ACL check used up its step budget"};
+        }
+        if (*matched)
         {
             return {ServerAclDecision::deny, "deny", "server name matches deny list entry: " + pattern};
         }
@@ -236,7 +198,12 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
 
     for (auto const& pattern : acl.allow)
     {
-        if (glob_match(pattern, host))
+        auto const matched = server_acl_glob_match(pattern, host, steps_left);
+        if (!matched.has_value())
+        {
+            return {ServerAclDecision::deny, "acl_budget", "the ACL check used up its step budget"};
+        }
+        if (*matched)
         {
             return {ServerAclDecision::allow, "allow", "server name matches allow list entry: " + pattern};
         }
@@ -245,45 +212,124 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
     return {ServerAclDecision::deny, "allow", "server name did not match any allow list entry"};
 }
 
+namespace
+{
+
+    // The parsed ACL is immutable and shared: the owners are the cache and the callers mid-check, unique ownership
+    // would copy the pattern lists on every lookup, and it holds no reference back to the cache or the store, so there
+    // is no cycle.
+    using SharedServerAcl = std::shared_ptr<ServerAclEvent const>; // SHARED_PTR: reviewed — immutable, see above
+
+    // A parsed ACL kept for the event that holds it (ADR-0640). The ACL of an event is a pure function of the event's
+    // JSON, but a redaction rewrites that JSON under the same event ID, so an entry also records the JSON's size and
+    // hash and is used only while both still match.
+    struct CachedServerAcl final
+    {
+        std::size_t json_size{0U};
+        std::size_t json_hash{0U};
+        SharedServerAcl acl{};
+    };
+
+    // Synchronised and bounded (ADR-0525): one mutex guards the map, and it is emptied when it reaches its cap.
+    class ServerAclCache final
+    {
+    public:
+        [[nodiscard]] auto find(std::string const& event_id, std::size_t json_size, std::size_t json_hash)
+            -> SharedServerAcl
+        {
+            auto const lock = std::scoped_lock{m_mutex};
+            auto const entry = m_entries.find(event_id);
+            if (entry == m_entries.end() || entry->second.json_size != json_size ||
+                entry->second.json_hash != json_hash)
+            {
+                return nullptr;
+            }
+            return entry->second.acl;
+        }
+
+        auto remember(std::string const& event_id, std::size_t json_size, std::size_t json_hash, SharedServerAcl acl)
+            -> void
+        {
+            auto const lock = std::scoped_lock{m_mutex};
+            if (m_entries.size() >= max_entries && !m_entries.contains(event_id))
+            {
+                m_entries.clear();
+            }
+            m_entries.insert_or_assign(event_id, CachedServerAcl{json_size, json_hash, std::move(acl)});
+        }
+
+        static constexpr auto max_entries = std::size_t{256U};
+
+    private:
+        std::mutex m_mutex{};
+        std::unordered_map<std::string, CachedServerAcl> m_entries{};
+    };
+
+    ServerAclCache server_acl_cache{};
+
+    // The room's current ACL, parsed once per ACL event, or null when the room has none (or it cannot be read).
+    [[nodiscard]] auto current_server_acl(database::PersistentStore const& store, std::string_view room_id)
+        -> SharedServerAcl
+    {
+        // The state index (ADR-0344): the ACL is read for every PDU and every room-scoped request, and main
+        // reads it under runtime.mutex, so it must not cost a scan of the server's whole state.
+        auto const acl_event_id = database::find_current_state_event_id(store, room_id, "m.room.server_acl", "");
+        if (!acl_event_id.has_value() || acl_event_id->empty())
+        {
+            return nullptr;
+        }
+
+        auto const event = store.events.find(*acl_event_id);
+        if (event == store.events.end())
+        {
+            return nullptr;
+        }
+        auto const json_size = event->json.size();
+        auto const json_hash = std::hash<std::string_view>{}(event->json);
+        if (auto cached = server_acl_cache.find(*acl_event_id, json_size, json_hash); cached != nullptr)
+        {
+            return cached;
+        }
+
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return nullptr;
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return nullptr;
+        }
+        auto const* content = object_member(*object, "content");
+        if (content == nullptr)
+        {
+            return nullptr;
+        }
+        auto acl = SharedServerAcl{std::make_shared<ServerAclEvent const>(
+            parse_server_acl(*content))}; // SHARED_PTR: reviewed — see SharedServerAcl
+        server_acl_cache.remember(*acl_event_id, json_size, json_hash, acl);
+        return acl;
+    }
+
+} // namespace
+
 auto load_room_server_acl(database::PersistentStore const& store, std::string_view room_id)
     -> std::optional<ServerAclEvent>
 {
-    // The state index (ADR-0344): the ACL is read for every PDU and every room-scoped request, and main
-    // reads it under runtime.mutex, so it must not cost a scan of the server's whole state.
-    auto const acl_event_id = database::find_current_state_event_id(store, room_id, "m.room.server_acl", "");
-    if (!acl_event_id.has_value() || acl_event_id->empty())
+    auto const acl = current_server_acl(store, room_id);
+    if (acl == nullptr)
     {
         return std::nullopt;
     }
-
-    auto const event = store.events.find(*acl_event_id);
-    if (event == store.events.end())
-    {
-        return std::nullopt;
-    }
-    auto const parsed = canonicaljson::parse_lossless(event->json);
-    if (parsed.error != canonicaljson::ParseError::none)
-    {
-        return std::nullopt;
-    }
-    auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-    if (object == nullptr)
-    {
-        return std::nullopt;
-    }
-    auto const* content = object_member(*object, "content");
-    if (content == nullptr)
-    {
-        return std::nullopt;
-    }
-    return parse_server_acl(*content);
+    return *acl;
 }
 
 auto room_server_acl_allows(database::PersistentStore const& store, std::string_view room_id,
                             std::string_view server_name) -> bool
 {
-    auto const acl = load_room_server_acl(store, room_id);
-    if (!acl.has_value())
+    auto const acl = current_server_acl(store, room_id);
+    if (acl == nullptr)
     {
         return true;
     }

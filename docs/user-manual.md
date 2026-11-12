@@ -122,7 +122,7 @@ Thumbnail worker library libjpeg-turbo version not reported (dynamic, /lib/x86_6
 | Debian | 13 (trixie) |
 | Fedora | 44 or the current release (RPM); 40+ (source build) |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 |
-| OpenSUSE | Tumbleweed |
+| OpenSUSE | Tumbleweed, or Leap 16.0 |
 | FreeBSD | 14.1+ |
 | OpenBSD | 7.6+ with the `llvm` package |
 | NetBSD | 10+ with pkgsrc `clang` |
@@ -144,23 +144,32 @@ libraries. Use the portable static Linux tarball (musl) for those hosts.
 
 Tier 1 and Tier 2 CI produces `.deb`, `.rpm`, `.pkg`, and `.tgz` packages for
 Ubuntu, Debian, Fedora, RHEL/AlmaLinux, OpenSUSE, FreeBSD, OpenBSD, and NetBSD.
-The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
+The rolling `latest` GitHub prerelease is rebuilt on every push to `main`, and
+each tagged release carries the same `.deb` and `.rpm` packages.
 
 ```sh
-# Debian/Ubuntu example
-dpkg -i merovingian_X.Y.Z_amd64.deb
+# Ubuntu example: use the package whose -ubuntuNN.NN suffix matches
+# VERSION_ID in /etc/os-release (24.04, 26.04 or the current interim release)
+apt install ./merovingian_X.Y.Z_amd64-ubuntu26.04.deb
+
+# Debian trixie example
+apt install ./merovingian_X.Y.Z_amd64-debian.deb
 
 # Fedora example: use the RPM whose .fcNN tag matches `rpm -E %fedora`
 dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
+
+# openSUSE example: .opensuse is Tumbleweed, .leap16 is Leap 16.0
+zypper install merovingian-X.Y.Z-1.leap16.x86_64.rpm
 
 # FreeBSD example
 pkg add merovingian-X.Y.Z.pkg
 ```
 
-An RPM installs only on the Fedora release it was built on, because it links
-against that release's libraries. The rolling release has one RPM for Fedora 44
-and one for the current Fedora. On any other release, use the static tarball
-below or build from source.
+A package installs only on the distribution release it was built on, because it
+links against that release's libraries. There is one Ubuntu package each for
+24.04 LTS, 26.04 LTS and the current interim release, one RPM each for Fedora 44
+and the current Fedora, and one each for openSUSE Tumbleweed and Leap 16.0. On any
+other release, use the static tarball below or build from source.
 
 On FreeBSD and OpenBSD, the federation worker's in-process sandbox is not
 available, so with the default settings the worker refuses to start and the
@@ -646,6 +655,13 @@ otherwise hold a delivery slot as long as one that never answers. At most an eig
 one resolved address; a request over either is retried (below), not counted against the
 host. A gateway's `rejected` list removes only
 the pushers whose pushkeys it names. OUT-3, ADR-0151, ADR-0409.
+
+A quarter of `max_in_flight_deliveries` (none under 4) is kept for recipients whose
+gateway hosts have all answered promptly within the last hour, and one gateway host may
+carry at most an eighth of the batches in flight; a batch over either is dropped like one
+over the whole limit, with the reason in the `scope` of `push.delivery.dropped`, so
+gateways that never answer cannot hold every slot. A gateway never reached since the
+server started shares the other three quarters until it answers once. ADR-0634.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
@@ -1602,6 +1618,15 @@ body is expected to be JSON with at least:
 If the policy server is unreachable, returns a non-2xx status, omits a
 usable decision, or sends malformed JSON, the guarded workflow is rejected
 unless `security.trust_safety.policy_server_allow_without_result=true`.
+
+For inbound federation the decision about an origin is kept for 30 seconds, and
+simultaneous requests from one origin wait for a single request to the policy service,
+so a peer cannot use up the calls the policy service is allowed at once to decide for
+others. When no call is allowed because others hold them all, an origin decided about
+within the last ten minutes keeps that decision; any other origin is judged by
+`policy_server_allow_without_result`. A change you make at the policy service can take
+up to 30 seconds to reach requests already decided. Registration, room and media checks
+are not remembered. ADR-0635.
 
 The host in `policy_server_url` is resolved by this server, as it is for an
 application service: it is your own configuration, so a policy service on a
@@ -2907,6 +2932,8 @@ shows a password, a password hash or a token.
 | `lock` / `unlock` | A locked user's next request is refused with `M_USER_LOCKED`; their sessions are kept. |
 | `suspend` / `unsuspend` | A suspended user can read but not act (`M_USER_SUSPENDED`). |
 | `deactivate` | Closes the account for good: every token and pusher is removed, login is refused, and the name is never reissued. It needs `"confirm": true` in the body; without it the request is refused and nothing happens. It does not unbind identity-server addresses. |
+
+Each action and its audit row are written in one transaction (ADR-0629): if the audit row cannot be written the action is refused with `500` and nothing changes. A deactivated account's access token is refused as unknown (`401`) even if revoking it failed (ADR-0626); repeat the deactivation to finish revoking.
 
 The answer to a successful action is the same summary, after the change. Asking again for something already in effect
 is not an error (`200`). Once an account is deactivated, the four other actions are refused with `409`. You cannot act on

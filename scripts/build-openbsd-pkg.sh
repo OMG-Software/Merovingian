@@ -1,14 +1,14 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.92.
+# Build for merovingian 0.12.93.
 #
-# Standalone pkg_create(1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no ports tree. The checked-in packaging/openbsd/PLIST
+# Standalone pkg_create(1), no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
 # generates a framework-free packing list from the staged install so CI can
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="0.12.92"
+VERSION="0.12.93"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
@@ -31,6 +31,18 @@ meson setup build-openbsd-pkg \
 
 meson compile -C build-openbsd-pkg
 meson install -C build-openbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects
+
+# The packing list below is generated from the staged tree, so a worker meson
+# silently skipped (the thumbnail worker needs libpng16 and libturbojpeg) would
+# leave the package without it. Refuse that, as the FreeBSD and NetBSD builds do.
+for binary in bin/merovingian-server bin/merovingian-db-migrate \
+    libexec/merovingian/merovingian-fed-worker \
+    libexec/merovingian/merovingian-thumbnail-worker; do
+    if [ ! -x "${STAGE}${PREFIX}/${binary}" ]; then
+        echo "build-openbsd-pkg.sh: ${PREFIX}/${binary} was not built" >&2
+        exit 1
+    fi
+done
 
 # 2. Stage the rc.d control script and sample config (outside ${PREFIX}).
 install -d "${STAGE}/etc/rc.d"

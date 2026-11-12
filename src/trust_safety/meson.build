@@ -1,5 +1,6 @@
 trust_safety_sources = files(
   'IgnoreList.cpp',
+  'PolicyDecisionCache.cpp',
   'PolicyEngine.cpp',
 )
 

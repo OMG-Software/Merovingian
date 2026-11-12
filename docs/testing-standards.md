@@ -281,7 +281,7 @@ which unconditionally rejects loopback and private-range addresses
 (`src/federation/Security.cpp` `ip_address_is_private_or_loopback`) with no config
 or environment override, and production outbound calls never populate an
 in-memory CA bundle — so a local test TLS server can never be reached through the
-real discovery path, and a self-signed test certificate always fails TLS
+real discovery path, and a test certificate issued by a test CA always fails TLS
 verification. `HomeserverRuntime::test_forced_outbound_resolution` (see
 `include/merovingian/homeserver/HomeserverRuntime.hpp`) closes that gap: a map from
 destination `server_name` to a forced `{resolved_host, resolved_port,
@@ -291,12 +291,15 @@ path (`start_runtime`, `main.cpp`, the federation worker) ever populates this
 map, so real-server SSRF and TLS-trust behaviour is unchanged.
 
 `tests/integration/test_join_room_flow.cpp` is the canonical example:
-1. Generate a self-signed TLS certificate and stand up a real `TcpAcceptor` +
+1. Issue a test TLS certificate (`write_test_tls_certificate()`, which signs it with a
+   throwaway test CA) and stand up a real `TcpAcceptor` +
    `TlsServerContext` (the same pattern as `test_federation_outbound_flow.cpp`)
    answering `make_join` then `send_join`.
 2. Set `runtime.test_forced_outbound_resolution[destination]` to route that
-   destination at `127.0.0.1:<bound port>` with the certificate's PEM as the
-   trusted CA.
+   destination at `127.0.0.1:<bound port>` with the test CA's PEM
+   (`certificate_pem`) as the trusted CA. Never trust a self-signed server
+   certificate as its own anchor: libcurl on Ubuntu 26.10 and later verifies
+   through upki, which refuses that (ADR-0650).
 3. Call `wire_federation_callbacks(runtime)` **before** setting
    `runtime.federation.remote_key_resolver` — `join_room` calls it internally
    the first time `runtime.federation.pdu_sink` is unset, and that call

@@ -75,6 +75,25 @@ struct LocalMediaRepository final
     // (records changed behind the repository's back) rebuilds it.
     std::unordered_map<std::string, std::uint64_t> owner_record_counts{};
     std::size_t owner_record_counts_basis{0U};
+    // ADR-0633: the position of each thumbnail by media ID, and counts kept as records and blobs change, so no upload,
+    // removal or eviction scans the repository. The record-derived counts are in step while
+    // `owner_record_counts_basis == records.size()` and the blob counts while `blob_counts_basis == blobs.size()`;
+    // otherwise (rows changed behind the repository's back) they are rebuilt once. A blob row exists only while it has
+    // a reference (ADR-0636), so `live_blob_total` equals `blobs.size()` unless a test added a row at zero.
+    std::unordered_map<std::string, std::size_t> thumbnail_index{};
+    // Local (not cached remote) records, removed ones included: the server-wide record cap counts them.
+    std::uint64_t local_record_total{0U};
+    // Bytes of the live local records each owner holds, one count per record.
+    std::unordered_map<std::string, std::uint64_t> owner_live_bytes{};
+    // Live local records holding each stored file, and the bytes of the files held, each counted once.
+    std::unordered_map<std::string, std::uint64_t> local_holders{};
+    std::uint64_t local_held_bytes{0U};
+    std::uint64_t live_blob_total{0U};
+    std::uint64_t live_blob_bytes{0U};
+    std::size_t blob_counts_basis{0U};
+    // ADR-0633: records, blobs, thumbnails and cache entries a media operation visited, moved or re-indexed. A test
+    // reads the difference across one operation to prove the work does not grow with the records held, never timing.
+    database::ExaminedRows media_rows_examined{};
 };
 
 [[nodiscard]] auto local_media_state_name(LocalMediaState state) noexcept -> char const*;

@@ -1,3 +1,208 @@
+## 0.12.93
+
+The low and informational findings of the release-gate audit, and the three it could not settle without a test.
+
+### A DNS answer longer than its buffer is cut to the buffer
+
+`res_query` can report the full wire length of a truncated answer, which is more than the 4096 bytes it filled. The SRV
+parser now never reads past the buffer: `clamp_srv_answer_length` cuts the reported length, on the glibc and NetBSD
+paths alike, and `parse_srv_answer` parses only what the buffer holds.
+
+### A server ACL is cheap to check and has limits
+
+The ACL glob is a two-pointer match instead of a table, one check spends at most one million glob steps, an ACL of more
+than 4096 patterns or with a pattern over 255 bytes refuses every server, and the parsed ACL is kept per ACL event
+instead of being parsed again on each check (ADR-0640).
+
+### The thumbnail response is bounded by default
+
+The parent no longer reads a thumbnail worker's output without limit when `max_decode_output_bytes` is 0 (its default):
+it reads at most twice the requested thumbnail's raw RGBA size plus 64 KiB (ADR-0641). The test's flooding stand-in
+writes with `dd`, since OpenBSD's `head` has no `-c`.
+
+### The decoder and worker filters refuse the commands that signal other processes
+
+`fcntl` and `ioctl` are argument-filtered in the thumbnail decoder profile (an allowlist) and the federation worker
+profile (the signalling commands denied): no call can set a signal owner or turn on `O_ASYNC` (ADR-0642). The decoder
+profile also no longer allows `newfstatat` and `statx`, which take a path (ADR-0643, correcting ADR-0053). The test that runs
+both filters on the real kernel says why each command is expected to pass or be killed.
+
+### The worker refuses to start with a registration file under a path it may read
+
+`appservice.registration_files` joins the secret paths the federation worker's Landlock check compares with the paths it
+grants, so startup is refused when a registration file (which holds the appservice tokens) lies under one.
+
+### A third-party invite no longer invites a user who blocks invites
+
+`PUT /_matrix/federation/v1/3pid/onbind` and the exchange path now refuse a local invitee whose `m.invite_permission_config`
+blocks invites (403 `M_INVITE_BLOCKED`) before an event is composed or signed, as every other invite path already did.
+
+### A deactivated account's access token is refused (ADR-0626)
+
+The access-token gate, and so every administrator route, now treats a token of a deactivated account as unknown (401
+`M_UNKNOWN_TOKEN`), even when revoking its credentials failed part way.
+
+### A room upgrade keeps `m.federate: false` (ADR-0627)
+
+The replacement of a local-only room is local-only. A federated room's replacement is made as before.
+
+### An application service cannot redact as a server administrator (ADR-0628)
+
+An application service asserting an administrator no longer gets the server administrator's right to redact another local
+user's event. Every other administrator check already refused an asserted identity (ADR-0611), so no operator action is
+recorded under an identity an application service asserted.
+
+### `GET /mutual_rooms` checks its page token in one step (ADR-0631)
+
+The token now carries its offset with a keyed check over the caller, the target and the offset, verified in constant time.
+A bad token costs one hash instead of a search of every offset. Tokens issued by an earlier version are refused.
+
+### A send_join snapshot cannot move a local user's membership (ADR-0630)
+
+An old event this server authored about one of its users is taken from a resident's snapshot only when this server holds no
+row for that user in the room or the event is the one it holds as current. The snapshot's state group carries this server's
+own event instead, so a later recomputation cannot bring a stale join back. What a remote user did to a local user, such as a
+ban, is still taken.
+
+### An administrator's account action and its audit row commit together (ADR-0629)
+
+Locking, suspending and deactivating an account write the state change and its audit row in one transaction. If the audit
+row cannot be written the action fails with 500 and changes nothing. Deactivation writes its row when the account is first
+closed, before the credentials are revoked, and a repeat adds none.
+
+### A removed cached remote file no longer releases its blob twice (ADR-0636)
+
+An administrator's removal of a cached remote file released its blob; evicting the file's cache entry later released it again. A local
+user's file with the same bytes then lost its content for good. A record now releases its blob only while it has not been removed, in
+memory and in the database.
+
+### A blob row is deleted with its last reference (ADR-0636)
+
+Rows at zero references were never deleted, so every remote file that passed through the cache left a row in memory and in the
+database. The row is now deleted in the transaction that takes its count to zero, the loaders skip old zero rows, and the same bytes
+can be uploaded again afterwards.
+
+### Evicting cached media costs the same however many records exist (ADR-0633)
+
+Eviction no longer moves every later record, rebuilds the record index or scans every blob and thumbnail. The record, byte and
+holder counts, the live blob count and the store's media row positions are kept as rows change, and a row is erased by swapping the
+last into its place. Moderating a record now finds its blob by the storage ID derived from its digest and size, so the PostgreSQL
+media moderation test names its shared blob that way, as every upload does. Releasing a record decrements its owner's and its
+file's hold counts in a statement of their own, not inside the condition that finds them.
+
+### A share of the push delivery budget is kept for gateways that answer (ADR-0634)
+
+A quarter of `server.push.max_in_flight_deliveries` is kept for recipients whose gateway hosts have all answered promptly within the
+last hour, and one gateway host may carry an eighth of it. Accounts pointing pushers at many hosts that never answer can no longer
+make every other user's notification drop.
+
+### An inbound federation origin is asked about once at a time (ADR-0635)
+
+With a policy server configured, a federation origin's decision is kept for 30 seconds and its simultaneous requests wait for one
+ask. When the budget has no place left, an origin the policy server already decided about (within ten minutes) keeps that decision,
+so a peer holding the budget no longer decides the outcome for the others. An origin never decided about is judged as before.
+
+### Each Ubuntu and openSUSE release is built, tested and packaged on its own (ADR-0650)
+
+GitHub moved `ubuntu-latest` to Ubuntu 26.04, so CI had stopped building for Ubuntu 24.04, the documented minimum.
+
+- CI builds and tests Ubuntu 26.04 (`ubuntu-build-and-test`) and 24.04 (`ubuntu-24.04-build-and-test`), each on the
+  runner image named by its release, never `ubuntu-latest`.
+- A new `ubuntu-rolling-build-and-test` does the same for the interim release in `ubuntu:rolling`.
+- openSUSE Leap 16.0 builds beside Tumbleweed (`opensuse-leap-build-and-test`). Leap takes maintenance updates, not a
+  distribution upgrade.
+- Each openSUSE dependency step now fails when its third attempt does.
+- `packages.yml` builds a `.deb` for Ubuntu 24.04, 26.04 and the interim release. Each package is named
+  `-ubuntu<release>.deb`, and each is installed and booted through the startup hardening gate.
+- `build-deb.sh` no longer names library packages in `Depends`. The fixed list could not install on Ubuntu 24.04,
+  which has no `libturbojpeg0`, or on the rolling release, which has no `libssl3`. `dpkg-shlibdeps` now derives them
+  from the shipped binaries on the release building the package, with minimum versions. `adduser` stays named for
+  the postinst. `packaging/deb/control` uses `${shlibs:Depends}`, and both `.deb` jobs install `dpkg-dev`.
+- `deb-all-releases` reports the required "Debian package" check.
+- `packages.yml` also builds an `.rpm` for Leap 16.0 (`.leap16`) beside Tumbleweed's (`.opensuse`).
+  `build-opensuse-rpm.sh` takes its dist tag from `MEROVINGIAN_RPM_DIST`.
+- `latest` carries every one of these packages. A tagged release now carries them too, with a `.sha256` each:
+  `release.yml` calls `packages.yml`. Debian trixie is the exception: the Complement step attaches the trixie package
+  it tested.
+- `tests/expected_skips.json` lists the `ubuntu-rolling` and `opensuse-leap` jobs.
+- The skip-job test reads a matrix's `skip_job:` values.
+
+### Every action runs on Node 24 (ADR-0650)
+
+GitHub deprecated Node 20 for actions. Every action now names a release that runs on Node 24:
+
+- `actions/checkout` v7
+- `upload-artifact` v7
+- `download-artifact` v8
+- `setup-python` v7
+- `cache` v6
+- `deploy-pages` v5
+- `upload-pages-artifact` v5
+- `attest-build-provenance` v4
+- `codecov-action` v7.1.1, `ghaction-import-gpg` v7.0.0, `action-gh-release` v3.0.4 and `ccache-action` v1.2.24, each
+  pinned by commit
+
+Every input passed was checked against each new release.
+
+`ccache-action` v1.2.24 no longer refreshes the package index before it installs a missing ccache, and GitHub's Ubuntu runner
+images do not ship ccache, so the action failed on every host-runner job. `ubuntu-build-and-test`,
+`ubuntu-hardened-listener-coverage` and the release's `linux-release-package` now run it after their own dependency step, which
+installs ccache. A tooling test requires every job using the action to install ccache first.
+
+### Test TLS certificates are issued by a test CA (ADR-0650)
+
+Every TLS test failed on Ubuntu 26.10 with `tls_verification_failed`. From that release, libcurl also verifies each
+chain through upki (rustls-webpki), which refuses a self-signed server certificate trusted as its own anchor.
+OpenSSL accepted that, and the tests depended on it. `write_test_tls_certificate()` in `tests/support/TlsMockServer.hpp`
+now makes a throwaway CA for each call and issues the server certificate from it. That certificate is v3, CA:FALSE,
+serverAuth, with a subjectAltName for the name (an `IP:` entry for an address literal). `certificate_pem`, which
+every test already hands the client as its trusted CA, is now that CA, so no test changed. A wrong host name is still
+refused. Production outbound calls trust the system store and are unaffected. New `X509ExtensionDeleter.hpp`.
+
+### Ubuntu jobs retry a failed package-index refresh through public DNS (ADR-0650)
+
+On 2026-11-11 the resolver GitHub's runners use answered nothing for `*.ubuntu.com` for hours, on host runners and in
+Ubuntu containers alike, while Cloudflare's still resolved it. Plain `apt-get update` exits 0 when it fetches nothing,
+so the failure showed only as packages missing at install. Every Ubuntu job now refreshes through the new
+`scripts/ci-apt-update.sh`:
+
+- It runs `apt-get update --error-on=any`, so a refresh that reached nothing fails at the refresh.
+- When that fails, it points `/etc/resolv.conf` at Cloudflare and Google for the rest of the job and tries three more
+  times. apt still verifies the archive's signed `Release` files, so the resolver is not trusted for integrity.
+- On a host runner it replaces systemd-resolved's symlink with a file; in a container it rewrites the bind-mounted
+  file in place.
+
+`ubuntu-rolling-build-and-test` installs `git` before its checkout, so it carries the same fallback inline. The
+Debian jobs are unchanged: `deb.debian.org` resolved throughout. Tooling tests run the script against a fake `apt-get`
+(success, one failure on either kind of `resolv.conf`, and failure through the public resolvers too). They also check
+that every Ubuntu job refreshes through it, or through the inline copy with the same resolvers.
+
+### OpenBSD jobs retry package installs and fall back to the origin mirror (ADR-0650)
+
+The same day `cdn.openbsd.org` dropped TLS handshakes in the `OpenBSD package` job. OpenBSD's `pkg_add` exits 0 having
+installed nothing, so the job failed only at `meson: not found`. Both OpenBSD jobs now install through the new
+`scripts/ci-openbsd-pkg-add.sh`, which judges success by whether the commands the build needs (`meson`, `ninja`, `git`,
+`bison`, `gmake`, `curl`) are on `PATH` afterwards, never by `pkg_add`'s status. It tries three times through the CDN,
+then three times through `ftp.openbsd.org`, and fails the step naming what is still missing. Tooling tests run it
+against a fake `pkg_add` that always exits 0 and check that no OpenBSD job runs `pkg_add` directly.
+
+### The OpenBSD package ships the thumbnail worker (ADR-0650)
+
+Every OpenBSD package so far shipped without `merovingian-thumbnail-worker`, so OpenBSD servers answered thumbnail
+requests `404`. The CI jobs asked for libjpeg-turbo as `jpeg-turbo`, but OpenBSD's package is `jpeg`; `pkg_add`
+printed "Can't find" and exited 0, and meson, which treats the image libraries as optional, built no worker. The
+package build generates its packing list from what was installed, so nothing noticed.
+
+- Both OpenBSD jobs install `jpeg`, and no longer ask for `jpeg-turbo`, `pkgconf`, `flex` or `openssl`, which base
+  supplies (`pkg-config`, `flex`, LibreSSL) or OpenBSD has no package by.
+- `ci-openbsd-pkg-add.sh` takes `--require-pkg-config` and the jobs require `libsodium`, `libpng16` and
+  `libturbojpeg`, so a missing library fails the install rather than dropping the worker.
+- `build-openbsd-pkg.sh` refuses to package a build missing the server, `merovingian-db-migrate` or either worker,
+  as the FreeBSD and NetBSD builds already did. It also loses a garbled character in its header comment.
+- The OpenBSD CI job now builds the worker, so the thumbnail tests run on OpenBSD for the first time.
+- Tooling tests cover the package names, the library check against a fake `pkg-config`, and the package build's
+  refusal.
+
 ## 0.12.92
 
 The medium findings of the release-gate audit: work a remote server or client could make the runtime do without limit, a

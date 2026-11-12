@@ -24,15 +24,16 @@
 #include "merovingian/federation/FederationDestination.hpp"
 #include "merovingian/federation/LiteralDiscoveryOptIn.hpp"
 #include "merovingian/federation/ResolvedAddressSet.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/ServerDiscovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -1342,4 +1343,70 @@ SCENARIO("The literal-network discovery overload is reachable only through its "
       }
     }
   }
+}
+
+// Audit run-2, input-parsing.server-discovery.srv-answer-length-not-clamped-to-buffer. glibc's res_query returns
+// the full wire length of a truncated TCP answer, which can exceed the 4096-byte buffer it filled. The length handed
+// to the parser must never exceed the memory that holds the message.
+SCENARIO("A resolver answer length above the buffer is clamped before the SRV parser sees it",
+         "[federation][discovery][security][srv_clamp]")
+{
+    GIVEN("a two-record answer whose second record lies beyond the buffer the resolver filled")
+    {
+        auto message = std::vector<unsigned char>{};
+        append_u16(message, 0U);
+        append_u16(message, 0x8180U);
+        append_u16(message, 1U);
+        append_u16(message, 2U);
+        append_u16(message, 0U);
+        append_u16(message, 0U);
+        append_dns_name(message, "_matrix-fed._tcp.example.com");
+        append_u16(message, 33U);
+        append_u16(message, 1U);
+        append_srv_answer(message, "_matrix-fed._tcp.example.com", 10U, 5U, 8448U, "alpha.example.com");
+        auto const first_record_end = message.size();
+        append_srv_answer(message, "_matrix-fed._tcp.example.com", 20U, 0U, 8449U, "beta.example.com");
+        auto const reported = static_cast<int>(message.size());
+
+        WHEN("the reported length is clamped to the buffer capacity")
+        {
+            THEN("a length within the capacity, zero and a failure are unchanged and a larger one is cut")
+            {
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(100, 4096U) == 100);
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(4096, 4096U) == 4096);
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(4097, 4096U) == 4096);
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(65535, 4096U) == 4096);
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(0, 4096U) == 0);
+                REQUIRE(merovingian::federation::clamp_srv_answer_length(-1, 4096U) == -1);
+            }
+        }
+
+        WHEN("the answer is parsed as the resolver reported it, over a buffer that holds only the first record")
+        {
+            auto const buffer = std::span<unsigned char const>{message.data(), first_record_end};
+            auto const records = merovingian::federation::parse_srv_answer(buffer, reported);
+
+            THEN("only the record inside the buffer is returned")
+            {
+                REQUIRE(records.size() == 1U);
+                REQUIRE(records.front().target == "alpha.example.com");
+                REQUIRE(records.front().port == 8448U);
+            }
+
+            THEN("the unclamped parse, which the clamp replaces, would have read the second record")
+            {
+                REQUIRE(merovingian::federation::parse_srv_records(message.data(), reported).size() == 2U);
+            }
+        }
+
+        WHEN("the reported length equals the buffer")
+        {
+            auto const records = merovingian::federation::parse_srv_answer(message, reported);
+
+            THEN("both records are returned")
+            {
+                REQUIRE(records.size() == 2U);
+            }
+        }
+    }
 }

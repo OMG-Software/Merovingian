@@ -276,9 +276,8 @@ auto install_failure_trigger(std::filesystem::path const& path, FailurePoint poi
             "WHEN NEW.removed = 'true' BEGIN SELECT RAISE(ABORT, 'injected media removal write failure'); END;"));
         return;
     case FailurePoint::remove_blob:
-        REQUIRE(trigger.execute(
-            "CREATE TRIGGER reject_media_blob_clear BEFORE UPDATE OF ref_count ON media_blobs "
-            "WHEN NEW.ref_count = '0' BEGIN SELECT RAISE(ABORT, 'injected media blob write failure'); END;"));
+        REQUIRE(trigger.execute("CREATE TRIGGER reject_media_blob_clear BEFORE DELETE ON media_blobs "
+                                "BEGIN SELECT RAISE(ABORT, 'injected media blob write failure'); END;"));
         return;
     case FailurePoint::quarantine_admin_action:
         REQUIRE(trigger.execute("CREATE TRIGGER reject_media_admin_action BEFORE INSERT ON admin_actions "

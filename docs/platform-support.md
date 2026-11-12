@@ -47,11 +47,11 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 
 | Platform | Minimum version | glibc (Linux) | Toolchain source | CI image |
 |---|---|---|---|---|
-| Ubuntu | Ubuntu 24.04 LTS | ≥ 2.39 | distro clang 18+ | `ubuntu-latest` (24.04) |
+| Ubuntu | Ubuntu 24.04 LTS | ≥ 2.39 | distro clang 18+ | `ubuntu-24.04` and `ubuntu-26.04` runners, `ubuntu:rolling` |
 | Debian | Debian 13 (trixie) | ≥ 2.39 | distro clang 18+ | `debian:trixie` |
 | Fedora | Fedora 40+ (source build); Fedora 44 or the current release for the RPM | ≥ 2.39 | dnf clang 18+ | `fedora:44`, `fedora:latest` |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 | ≥ 2.39 | dnf clang 18+ (AppStream) | `almalinux:10` |
-| OpenSUSE | Tumbleweed (rolling) | current | zypper clang 18+ | `opensuse/tumbleweed` |
+| OpenSUSE | Tumbleweed (rolling) or Leap 16.0 | current (Tumbleweed); the release's own (Leap) | zypper clang 18+ | `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD | 14.1+ (base clang ≥ 18) | n/a (no glibc) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
 | OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
 | NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
@@ -88,7 +88,8 @@ email integration scenarios that need an SMTP session are skipped, as on the
 `rhel-build-and-test` job.
 
 Runtime package dependencies are declared in the OS packaging metadata
-(`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
+(the `.deb` `Depends`, which `scripts/build-deb.sh` derives with `dpkg-shlibdeps` from the libraries the binaries
+link on the release being packaged, because Ubuntu and Debian releases name those packages differently; the rpm spec, `packaging/freebsd/+MANIFEST`
 `deps`, `packaging/openbsd/PLIST` `@depend`, `packaging/netbsd/Makefile`
 `DEPENDS`), so installing a Merovingian package pulls these libraries in
 automatically. `scripts/setup-dev-env.sh` installs the development files for
@@ -109,11 +110,12 @@ carry a job-level `continue-on-error`; a failure there fails the run
 
 | Platform | CI job | Toolchain | Notes |
 |---|---|---|---|
-| Linux (glibc, Ubuntu) | `ubuntu-build-and-test` | clang | Reference platform |
+| Linux (glibc, Ubuntu 26.04 LTS and 24.04 LTS) | `ubuntu-build-and-test` (26.04), `ubuntu-24.04-build-and-test` | clang | Reference platform; GitHub's runner image for each release, named by release, never `ubuntu-latest` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) |
+| Linux (Ubuntu interim release) | `ubuntu-rolling-build-and-test` | clang, container | apt-supplied libraries; `ubuntu:rolling`, since GitHub has runner images for LTS releases only |
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
 | Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:latest` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
-| Linux (OpenSUSE Tumbleweed) | `opensuse-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed` |
+| Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (Tumbleweed), `opensuse-leap-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
 | FreeBSD | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm` |
 | OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
 | NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |
@@ -136,15 +138,21 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 
 | Artifact | Workflow | Runtime coverage via |
 |---|---|---|
-| Ubuntu `.deb` (`ubuntu:latest`) | `packages.yml` (`deb`) | Tier 1 Ubuntu |
+| Ubuntu `.deb`, one each for 24.04 LTS, 26.04 LTS and `ubuntu:rolling`, named `-ubuntu<release>.deb` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) | `packages.yml` (`deb`; the required check "Debian package" is `deb-all-releases`, which passes only when every release built) | Tier 1 Ubuntu |
 | Debian trixie `.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
 | Fedora `.rpm`, one each for `fedora:44` and `fedora:latest` ([ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
 | RHEL-compatible `.rpm` (AlmaLinux 10) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
-| OpenSUSE Tumbleweed `.rpm` | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
+| OpenSUSE `.rpm`, one each for Tumbleweed (`.opensuse`) and Leap 16.0 (`.leap16`) | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
 | FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
 | OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
 | NetBSD `.tgz` (tar-assembled, no `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
 | Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnail requests are then answered `404`) |
+
+A package installs only on the distribution release it was built on, because it links against
+that release's libraries, so each supported release has its own. A tagged release ships every
+Ubuntu, Fedora, RHEL-compatible and OpenSUSE package as well as the tarballs: `release.yml` calls
+`packages.yml` for them. The Debian trixie package reaches a release through the Complement step
+(`release-process.md`, "Complement").
 
 The OpenBSD package job builds with standalone `pkg_create(1)` (no ports tree),
 generating a framework-free packing list from the staged install. The NetBSD
@@ -213,6 +221,10 @@ Capsicum on FreeBSD. It refuses to decode on a platform with none of these
 comes from outside the server process; thumbnail requests are answered `404`
 ([ADR-0419](adr/0419-the-thumbnail-decoder-refuses-to-run-without-a-platform-sandbox.md)). NetBSD is also refused at server startup
 ([ADR-0378](adr/0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)).
+OpenBSD packages before 0.12.93 were built without libjpeg-turbo and so shipped
+no thumbnail worker, and answered thumbnail requests `404`; from 0.12.93 the
+OpenBSD package build fails rather than ship without either worker
+([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)).
 
 ClamAV scanning (`security.media.clamd_socket_path`) is refused at startup on
 FreeBSD and OpenBSD, because Capsicum and unveil stop the main process from

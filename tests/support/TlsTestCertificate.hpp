@@ -10,7 +10,8 @@
 namespace merovingian::tests::tls_mock
 {
 
-// RAII holder for a self-signed TLS certificate written to a temp directory.
+// RAII holder for a test TLS server certificate (`certificate_file`), its key, and the PEM of the test CA that
+// issued it (`certificate_pem`, the anchor a client trusts), written to a temp directory.
 // Move-only; removes the directory on destruction.
 struct TlsTestCertificate final
 {

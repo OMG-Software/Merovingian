@@ -1023,3 +1023,54 @@ SCENARIO("Rule coverage is decided by path component, not string prefix", "[plat
         }
     }
 }
+
+// Audit run-2, sandbox.worker-landlock-appservice-registration-uncovered. A registration file holds an appservice's
+// as_token and hs_token. The SQLite directory is the one directory the worker may read.
+SCENARIO("A Landlock rule on a directory holding an appservice registration file is detected",
+         "[platform][security][worker_landlock][registration_secret]")
+{
+    GIVEN("an operator who put a registration file inside the SQLite database directory")
+    {
+        auto config = merovingian::config::Config{};
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
+        config.appservice().registration_files = {"/etc/merovingian/appservices/other.yaml",
+                                                  "/srv/merovingian/bridge.yaml"};
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
+            auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(rules, secrets);
+
+            THEN("both files are secrets and the exposure names the one under the granted directory")
+            {
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/other.yaml") == 1);
+                REQUIRE(std::ranges::count(secrets, "/srv/merovingian/bridge.yaml") == 1);
+                REQUIRE(exposure.has_value());
+                REQUIRE(exposure->rule_path == "/srv/merovingian");
+                REQUIRE(exposure->secret_path == "/srv/merovingian/bridge.yaml");
+            }
+        }
+    }
+
+    GIVEN("registration files in the shipped layout, outside every granted path")
+    {
+        auto config = merovingian::config::Config{};
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = "/var/lib/merovingian/merovingian.sqlite3";
+        config.appservice().registration_files = {"/etc/merovingian/appservices/bridge.yaml"};
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
+
+            THEN("the file is listed as a secret and no rule covers it")
+            {
+                REQUIRE(std::ranges::count(secrets, "/etc/merovingian/appservices/bridge.yaml") == 1);
+                REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
+            }
+        }
+    }
+}

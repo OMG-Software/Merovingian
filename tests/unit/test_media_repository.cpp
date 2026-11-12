@@ -128,9 +128,11 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 REQUIRE(repository.metrics.uploads_rejected == 1U);
                 REQUIRE(uploaded.ok);
                 REQUIRE(removed.ok);
-                REQUIRE(repository.blobs.front().ref_count == 0U);
-                REQUIRE(merovingian::media::find_local_media_blob(repository, repository.blobs.front().storage_id) ==
-                        nullptr);
+                // ADR-0636: the row goes with the last reference.
+                REQUIRE(repository.blobs.empty());
+                REQUIRE(merovingian::media::find_local_media_blob(
+                            repository, merovingian::media::make_local_media_storage_id(
+                                            uploaded.digest, uploaded.size_bytes)) == nullptr);
                 REQUIRE_FALSE(after_remove.ok);
                 REQUIRE(after_remove.status == 404U);
             }
@@ -175,11 +177,9 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 auto const removed_again =
                     merovingian::media::remove_local_media(repository, second.media_id, "removed again");
                 CHECK(removed_again.ok);
-                for (auto const& blob : repository.blobs)
-                {
-                    CHECK(blob.ref_count == 0U);
-                    CHECK(merovingian::media::find_local_media_blob(repository, blob.storage_id) == nullptr);
-                }
+                CHECK(repository.blobs.empty());
+                CHECK(merovingian::media::find_local_media_blob(repository, repository.records.back().storage_id) ==
+                      nullptr);
             }
         }
     }

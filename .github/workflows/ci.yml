@@ -28,30 +28,39 @@ jobs:
         run: "true"
 
   # ── Linux ──────────────────────────────────────────────────────────────────
+  # One leg per Ubuntu LTS on GitHub's own runner image, each pinned by release
+  # rather than `ubuntu-latest`, so a label migration cannot drop a release
+  # unnoticed (ADR-0650). The 26.04 leg keeps the check name the main ruleset
+  # requires; the interim release runs in a container below.
   ubuntu-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.check }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: ubuntu-build-and-test
+            runner: ubuntu-26.04
+            release: '26.04'
+          - check: ubuntu-24.04-build-and-test
+            runner: ubuntu-24.04
+            release: '24.04'
     env:
       CC: clang
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
-        with:
-          key: ccache-linux-ci-${{ github.run_id }}
-          restore-keys: ccache-linux-ci-
-
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             bison \
             ccache \
@@ -69,6 +78,15 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-linux-ci-${{ matrix.release }}-${{ github.run_id }}
+          restore-keys: ccache-linux-ci-${{ matrix.release }}-
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build --skip-job ubuntu
@@ -111,12 +129,89 @@ jobs:
           tar -C artifacts -czf merovingian-ci-artifacts.tar.gz .
 
       - name: Upload CI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: merovingian-linux-${{ github.sha }}
+          name: merovingian-linux-ubuntu${{ matrix.release }}-${{ github.sha }}
           path: merovingian-ci-artifacts.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  # ── Ubuntu interim release ─────────────────────────────────────────────────
+  # GitHub has runner images for LTS releases only, so the current interim
+  # release (ubuntu:rolling) builds in a container on the default runner, as
+  # Debian does below.
+  ubuntu-rolling-build-and-test:
+    needs: queue-after-analyses
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:rolling
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Install dependencies
+        run: |
+          # As scripts/ci-apt-update.sh does, which is not on disk yet: git must be
+          # installed before the checkout. Keep the two in step (ADR-0650).
+          if ! apt-get update --error-on=any; then
+            echo "::warning::apt-get update failed; retrying through public DNS resolvers (ADR-0650)"
+            printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' > /etc/resolv.conf
+            for attempt in 1 2 3; do
+              if apt-get update --error-on=any; then break; fi
+              if [ "${attempt}" = 3 ]; then exit 1; fi
+              sleep $((15 * attempt))
+            done
+          fi
+          apt-get install -y --no-install-recommends \
+            bison \
+            ca-certificates \
+            ccache \
+            clang \
+            flex \
+            gcc \
+            git \
+            libcurl4-openssl-dev \
+            libpng-dev \
+            libpq-dev \
+            libsodium-dev \
+            libssl-dev \
+            libturbojpeg0-dev \
+            m4 \
+            meson \
+            ninja-build \
+            perl \
+            pkg-config \
+            python3
+
+      - uses: actions/checkout@v7
+
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-ubuntu-rolling-ci-${{ github.run_id }}
+          restore-keys: ccache-ubuntu-rolling-ci-
+
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build-ubuntu-rolling --skip-job ubuntu-rolling
+
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          if [ -f build-ubuntu-rolling/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-ubuntu-rolling/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
+
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build-ubuntu-rolling
+
+      - name: Packaging sanity gate
+        run: meson test -C build-ubuntu-rolling packages-workflow-tooling --print-errorlogs
+
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-ubuntu-rolling
 
   # -- Real listener coverage + link-time hardening enforcement --------------
   # The main ubuntu-build-and-test job above builds in Meson's default (debug)
@@ -155,21 +250,15 @@ jobs:
       CXX: clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
-        with:
-          key: ccache-linux-hardened-${{ github.run_id }}
-          restore-keys: ccache-linux-hardened-
-
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sh scripts/ci-apt-update.sh  # falls back to public DNS (ADR-0650)
           sudo apt-get install -y \
             binutils \
             bison \
@@ -187,6 +276,15 @@ jobs:
             perl \
             pkg-config
           python -m pip install --require-hashes --only-binary :all: --requirement requirements-build.txt
+
+      # After the dependency step, which runs apt-get update and installs ccache: on a
+      # host runner ccache-action v1.2.24 would otherwise install it from a stale package
+      # index and fail (ADR-0650).
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ccache-linux-hardened-${{ github.run_id }}
+          restore-keys: ccache-linux-hardened-
 
       - name: Build with the hardened release profile
         run: sh scripts/build-linux.sh --builddir build-hardened --profile hardened --no-tests
@@ -264,10 +362,10 @@ jobs:
             pkgconf-pkg-config \
             python3
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-fedora-ci-${{ matrix.image }}-${{ github.run_id }}
           restore-keys: ccache-fedora-ci-${{ matrix.image }}-
@@ -349,10 +447,10 @@ jobs:
             pkg-config \
             python3
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-debian-ci-${{ github.run_id }}
           restore-keys: ccache-debian-ci-
@@ -436,10 +534,10 @@ jobs:
             sleep 15
           done
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ccache-rhel-ci-${{ github.run_id }}
           restore-keys: ccache-rhel-ci-
@@ -474,34 +572,54 @@ jobs:
   # OpenSUSE Leap 15.x ships glibc 2.31, which predates the C++26 requirement.
   # Tumbleweed (rolling release) carries a current glibc and clang 18+, making
   # it the supported OpenSUSE target per platform-support.md.
+  # One leg per openSUSE flavour (ADR-0650). The Tumbleweed leg keeps the check
+  # name the main ruleset requires.
   opensuse-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
+    name: ${{ matrix.check }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: opensuse-build-and-test
+            image: opensuse/tumbleweed
+            # A rolling release: dup moves the image to the live snapshot.
+            sync: dup
+            builddir: build-opensuse
+            skip_job: opensuse
+          - check: opensuse-leap-build-and-test
+            image: opensuse/leap:16.0
+            # A fixed release: update applies its maintenance updates only.
+            sync: update
+            builddir: build-opensuse-leap
+            skip_job: opensuse-leap
     container:
-      image: opensuse/tumbleweed
+      image: ${{ matrix.image }}
     env:
       CC: clang
       CXX: clang++
+      BUILDDIR: ${{ matrix.builddir }}
 
     steps:
       - name: Install build dependencies
         run: |
           set -e
-          # `zypper dup` first syncs every package already on the image
-          # (including runtime libs like libpsl5) to the current repo
-          # snapshot before installing anything new. Tumbleweed is a rolling
-          # release built independently of the opensuse/tumbleweed Docker
-          # image, so the image's baked-in package set can briefly outpace
-          # (or lag) the live repo; without this, `zypper install` can hit a
-          # solver conflict (e.g. libcurl-devel needing a pkgconfig(libpsl)
-          # version older than the image's preinstalled libpsl5) that retrying
-          # the same install does not resolve, since it isn't a transient
-          # failure. See the OpenSUSE Tumbleweed RPM job in packages.yml for
-          # the same fix with a retry loop around transient CDN timeouts.
+          # The sync step (`dup` on Tumbleweed, `update` on Leap) first brings
+          # every package already on the image (including runtime libs like
+          # libpsl5) to the current repo snapshot before installing anything
+          # new. The image is built independently of the live repo, so its
+          # baked-in package set can briefly outpace (or lag) it; without
+          # this, `zypper install` can hit a solver conflict (e.g.
+          # libcurl-devel needing a pkgconfig(libpsl) version older than the
+          # image's preinstalled libpsl5) that retrying the same install does
+          # not resolve, since it isn't a transient failure. See the OpenSUSE
+          # RPM job in packages.yml for the same fix with a retry loop around
+          # transient CDN timeouts.
           for attempt in 1 2 3; do
             if zypper --non-interactive --gpg-auto-import-keys refresh && \
-               zypper --non-interactive dup && \
+               zypper --non-interactive ${{ matrix.sync }} && \
                zypper --non-interactive install -y \
                  bison \
                  ccache \
@@ -525,37 +643,40 @@ jobs:
                  python3; then
               break
             fi
+            if [ "${attempt}" = 3 ]; then
+              exit 1
+            fi
             echo "zypper attempt ${attempt} failed; retrying in 15s"
             sleep 15
           done
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2.20
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
-          key: ccache-opensuse-ci-${{ github.run_id }}
-          restore-keys: ccache-opensuse-ci-
+          key: ccache-opensuse-ci-${{ matrix.skip_job }}-${{ github.run_id }}
+          restore-keys: ccache-opensuse-ci-${{ matrix.skip_job }}-
 
       - name: Build and test
-        run: sh scripts/build-linux.sh --builddir build-opensuse --skip-job opensuse
+        run: sh scripts/build-linux.sh --builddir "${BUILDDIR}" --skip-job ${{ matrix.skip_job }}
 
       - name: Catch2 failure report (runtime logs filtered out)
         if: failure()
         run: |
-          if [ -f build-opensuse/meson-logs/testlog.txt ]; then
-            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-opensuse/meson-logs/testlog.txt \
+          if [ -f "${BUILDDIR}/meson-logs/testlog.txt" ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' "${BUILDDIR}/meson-logs/testlog.txt" \
               | tail -n 300
           fi
 
       - name: Conformance gate
-        run: sh scripts/check-conformance-gate.sh build-opensuse
+        run: sh scripts/check-conformance-gate.sh "${BUILDDIR}"
 
       - name: Packaging sanity gate
-        run: meson test -C build-opensuse packages-workflow-tooling --print-errorlogs
+        run: meson test -C "${BUILDDIR}" packages-workflow-tooling --print-errorlogs
 
       - name: Validate Phase 1 configuration gates
-        run: bash scripts/validate-phase1-config.sh build-opensuse
+        run: bash scripts/validate-phase1-config.sh "${BUILDDIR}"
 
       - name: Reject unsafe allocation patterns
         run: bash scripts/reject-unsafe.sh
@@ -570,7 +691,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
@@ -608,7 +729,7 @@ jobs:
             rm -rf build
 
       - name: Upload FreeBSD CI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: merovingian-freebsd-${{ github.sha }}
           path: merovingian-freebsd-artifacts.tar.gz
@@ -625,14 +746,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and test on OpenBSD
         uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
+            # pkg_add exits 0 having installed nothing when the mirror fails, so the script
+            # retries, falls back to the origin mirror and checks the commands exist (ADR-0650).
+            # Base supplies pkg-config, flex and LibreSSL. OpenBSD's libjpeg-turbo package is `jpeg`;
+            # without it meson builds no thumbnail worker.
+            sh scripts/ci-openbsd-pkg-add.sh --require "meson ninja git bison gmake curl" \
+              --require-pkg-config "libsodium libpng16 libturbojpeg" \
+              meson ninja git bison gmake libsodium postgresql-client curl png jpeg
           run: |
             if ! sh scripts/build-bsd.sh --builddir build --skip-job openbsd; then
                 echo "::group::OpenBSD Catch2 failure report (runtime logs filtered out)"
@@ -664,7 +791,7 @@ jobs:
             rm -rf build
 
       - name: Upload OpenBSD CI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: merovingian-openbsd-${{ github.sha }}
           path: merovingian-openbsd-artifacts.tar.gz
@@ -679,7 +806,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and test on NetBSD
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
@@ -767,7 +894,7 @@ jobs:
             rm -rf build
 
       - name: Upload NetBSD CI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: merovingian-netbsd-${{ github.sha }}
           path: merovingian-netbsd-artifacts.tar.gz
