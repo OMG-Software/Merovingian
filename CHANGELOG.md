@@ -229,6 +229,13 @@ levels, join rules or membership row than the running server had. A PDU commit t
 membership row now keeps the runtime lock, as a local send's commit already does, so memory always ends equal to what
 the database holds; a message still commits without it (ADR-0696).
 
+### A room's state revision moves after its state row is written
+
+The room state revision that keeps cached send_join plans valid moved when a state event's write was prepared, not when
+the row was written to memory. A send_join answered in between read the old row under the new revision and cached a plan
+that later send_joins kept serving with the superseded state event, such as old power levels or join rules. Applying a
+prepared state row now moves the revision after the row is written, as well as at prepare (ADR-0697).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

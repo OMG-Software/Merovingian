@@ -1563,7 +1563,7 @@ media-fetch-pool task.
 
 - **A `send_join` never plans the room's whole answer per request.** The acceptor uses `plan_send_join_answer_cached`:
   a room-wide base cached per room until `database::room_state_revision` moves, and only what the request changes. A
-  writer of a current state row moves the revision.
+  writer of a current state row moves the revision after it writes the row to memory (ADR-0697).
   Why: a resend or a join refused for size cost a walk of the room under the runtime lock, at a rate a remote server
   chooses (CWE-407; release-gate audit, ADR-0624). Source: `src/homeserver/AGENTS.md`.
 

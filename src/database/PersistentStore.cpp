@@ -4358,6 +4358,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                                                         update.state->state_key,
                                                                         update.state->event_id),
                                              store.state_transitions.size() - 1U);
+        // Invariant (ADR-0697): the revision moves after every in-memory change to a room's current state, so no
+        // reader can stamp a revision newer than the row it read. Prepare moved it too, but a caller may let readers in
+        // between prepare and apply; they read the old row under that revision, and this move makes their stamp stale.
+        note_room_state_changed(store, update.state->room_id);
     }
     if (update.membership.has_value())
     {

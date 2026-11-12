@@ -492,7 +492,7 @@ default. The size limit does not count the `hashes` and `signatures` added after
 `SendJoinAnswer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
 `plan_send_join_answer_cached` (event IDs and JSON sizes: a room-wide base, cached until the room's state changes, and
 what this one request changes, ADR-0624; never plan a whole answer per request under the lock, and a new writer of a
-current state row moves `database::room_state_revision`) after
+current state row moves `database::room_state_revision` after it writes the row to memory, ADR-0697) after
 it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
 `send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
 its size as the frame), and only after the store copies the events out, once, with `collect_send_join_answer`. Never build

@@ -193,7 +193,9 @@ value. Test fixtures that do not exercise persistence select it through
   they look at in `state_rows_examined`, so a test proves a reader's cost by count.
 - `room_state_revision` counts the changes to a room's current state rows, in memory only and from zero at each start.
   A cache of something computed from those rows is valid for one revision (ADR-0624), so a writer that changes a
-  current state row calls `note_room_state_changed`.
+  current state row calls `note_room_state_changed` after the in-memory row is written: a revision moved only before
+  the write lets a reader stamp the new revision on the old row (`apply_store_event_with_state` moves it on apply as
+  well as on prepare, ADR-0697).
 - `delete_federation_transactions` removes a list of queued transactions in one database transaction; the dispatch worker
   uses it to drop what a failing destination holds past its share or its age (ADR-0621).
 - Physical migration-file loading for SQL files with explicit metadata and

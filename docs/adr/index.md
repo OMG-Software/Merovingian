@@ -589,3 +589,4 @@
 * [0694 - The state before an event is resolved and stored once per set of prev groups](0694-the-state-before-an-event-is-resolved-and-stored-once-per-set-of-prev-groups.md)
 * [0695 - A room's tips from senders without power share one cap, that power holders are exempt from](0695-a-rooms-tips-from-senders-without-power-share-one-cap-that-power-holders-are-exempt-from.md)
 * [0696 - An ingest that writes a current-state row commits under the runtime lock](0696-an-ingest-that-writes-a-current-state-row-commits-under-the-runtime-lock.md)
+* [0697 - A room's state revision moves after the in-memory state write](0697-a-rooms-state-revision-moves-after-the-in-memory-state-write.md)
