@@ -977,6 +977,52 @@ namespace
         return bytes;
     }
 
+    auto sync_server_signing_key_index(PersistentStore& store) -> void
+    {
+        if (!store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+        {
+            store.server_signing_key_index.rebuild(store.server_signing_keys,
+                                                   [](PersistentServerSigningKey const& row) {
+                                                       return row.server_name;
+                                                   });
+        }
+    }
+
+    // Appends a row and keeps the index in step. The caller holds `server_signing_keys_mutex`.
+    auto append_server_signing_key(PersistentStore& store, PersistentServerSigningKey row) -> void
+    {
+        sync_server_signing_key_index(store);
+        auto const server_name = row.server_name;
+        store.server_signing_keys.push_back(std::move(row));
+        store.server_signing_key_index.note_appended(store.server_signing_keys.size(), server_name);
+    }
+
+    // The position of the row for (server, key), through the index while it is in step. The caller holds the mutex.
+    [[nodiscard]] auto find_server_signing_key_position(PersistentStore const& store, std::string_view server_name,
+                                                        std::string_view key_id) -> std::optional<std::size_t>
+    {
+        auto const matches = [&](PersistentServerSigningKey const& row) {
+            return row.server_name == server_name && row.key_id == key_id;
+        };
+        if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+        {
+            auto found = std::optional<std::size_t>{};
+            store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+                if (matches(store.server_signing_keys[position]))
+                {
+                    found = position;
+                    return false;
+                }
+                return true;
+            });
+            return found;
+        }
+        auto const it = std::ranges::find_if(store.server_signing_keys, matches);
+        return it == store.server_signing_keys.end()
+                   ? std::nullopt
+                   : std::optional<std::size_t>{static_cast<std::size_t>(it - store.server_signing_keys.begin())};
+    }
+
     // Adds (or, with `subtract`, removes) one record's bytes to the per-origin and total ledger of remote invites.
     auto charge_invite_bytes(PersistentStore& store, std::string_view origin, std::uint64_t bytes, bool subtract)
         -> void
@@ -2213,11 +2259,9 @@ namespace
     if (key.secret_key.empty())
     {
         auto const lock = store.server_signing_keys_mutex.acquire();
-        auto const existing =
-            std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
-                return row.server_name == key.server_name && row.key_id == key.key_id;
-            });
-        if (existing != store.server_signing_keys.end() && !existing->secret_key.empty() &&
+        auto const position = find_server_signing_key_position(store, key.server_name, key.key_id);
+        auto const* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+        if (existing != nullptr && !existing->secret_key.empty() &&
             (existing->public_key != key.public_key || key.expired_ts != 0U))
         {
             log_diagnostic("server_signing_key.rejected",
@@ -2262,11 +2306,10 @@ namespace
         return false;
     }
     auto const lock = store.server_signing_keys_mutex.acquire();
-    auto const existing =
-        std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
-            return row.server_name == key.server_name && row.key_id == key.key_id;
-        });
-    if (existing != store.server_signing_keys.end())
+    // The row is changed in place; the index holds positions, which an in-place change does not move.
+    auto const position = find_server_signing_key_position(store, key.server_name, key.key_id);
+    auto* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+    if (existing != nullptr)
     {
         if (existing->expired_ts == 0U)
         {
@@ -2284,7 +2327,7 @@ namespace
         }
         return true;
     }
-    store.server_signing_keys.push_back(std::move(key));
+    append_server_signing_key(store, std::move(key));
     return true;
 }
 
@@ -2292,18 +2335,38 @@ namespace
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>
 {
     auto const lock = store.server_signing_keys_mutex.acquire();
-    auto const existing =
-        std::ranges::find_if(store.server_signing_keys, [server_name, key_id](PersistentServerSigningKey const& key) {
-            return key.server_name == server_name && key.key_id == key_id;
-        });
-    return existing == store.server_signing_keys.end() ? std::nullopt
-                                                       : std::optional<PersistentServerSigningKey>{*existing};
+    auto const position = find_server_signing_key_position(store, server_name, key_id);
+    return position.has_value() ? std::optional<PersistentServerSigningKey>{store.server_signing_keys[*position]}
+                                : std::nullopt;
 }
 
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store) -> std::vector<PersistentServerSigningKey>
 {
     auto const lock = store.server_signing_keys_mutex.acquire();
     return store.server_signing_keys;
+}
+
+[[nodiscard]] auto snapshot_server_signing_keys_of(PersistentStore const& store, std::string_view server_name)
+    -> std::vector<PersistentServerSigningKey>
+{
+    auto const lock = store.server_signing_keys_mutex.acquire();
+    auto rows = std::vector<PersistentServerSigningKey>{};
+    if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+    {
+        store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+            rows.push_back(store.server_signing_keys[position]);
+            return true;
+        });
+        return rows;
+    }
+    for (auto const& row : store.server_signing_keys)
+    {
+        if (row.server_name == server_name)
+        {
+            rows.push_back(row);
+        }
+    }
+    return rows;
 }
 
 [[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool
@@ -2327,13 +2390,11 @@ namespace
     {
         // Only the public columns were read. A row this process holds with a
         // secret is this server's own key: leave it exactly as it is.
-        auto const existing =
-            std::ranges::find_if(store.server_signing_keys, [&row](PersistentServerSigningKey const& held) {
-                return held.server_name == row.server_name && held.key_id == row.key_id;
-            });
-        if (existing == store.server_signing_keys.end())
+        auto const position = find_server_signing_key_position(store, row.server_name, row.key_id);
+        auto* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+        if (existing == nullptr)
         {
-            store.server_signing_keys.push_back(std::move(row));
+            append_server_signing_key(store, std::move(row));
         }
         else if (existing->secret_key.empty())
         {

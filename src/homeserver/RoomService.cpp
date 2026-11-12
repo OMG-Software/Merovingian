@@ -3161,7 +3161,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::optional<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -3363,7 +3363,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::vector<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -3442,7 +3442,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::optional<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     // Select the usable non-legacy key with the greatest valid_until_ts, mirroring
     // the choice made by ensure_runtime_server_signing_key but without touching the
@@ -3514,7 +3514,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
 
     auto old_verify_keys_obj = canonicaljson::Object{};
-    for (auto const& old_key : database::snapshot_server_signing_keys(runtime.database.persistent_store))
+    for (auto const& old_key :
+         database::snapshot_server_signing_keys_of(runtime.database.persistent_store, preferred->server_name))
     {
         if (old_key.server_name != preferred->server_name || active_ids.contains(old_key.key_id) ||
             old_key.public_key.empty())

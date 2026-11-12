@@ -93,6 +93,11 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`. The same three functions keep the byte ledger of remote invites
     (`charge_invite_bytes`) that the per-origin and server-wide byte caps read (C04, ADR-0707).
 
+14. **A server's signing-key rows are read through `server_signing_key_index`** (C27, ADR-0713). Ask for one server's
+    rows with `snapshot_server_signing_keys_of`, never `snapshot_server_signing_keys`, which copies every cached remote
+    key. Append only through `append_server_signing_key` (store_server_signing_key and refresh_remote_signing_keys do);
+    the index is trusted only while it is in step with the row count and readers scan otherwise.
+
 ## Reloading a room (F-27, ADR-0360)
 
 `reload_room` is `load_room_snapshot` (the database read; touches no row of the store, takes no lock) followed by

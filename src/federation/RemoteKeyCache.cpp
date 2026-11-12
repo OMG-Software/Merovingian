@@ -112,6 +112,13 @@ namespace
         return stripped;
     }
 
+    // The most keys one remote server's key document may add to the cache (C27, ADR-0713). Every key becomes a stored
+    // row that nothing deletes, so the document sets what a server may add per fetch. A server publishes a handful of
+    // current keys and keeps a few retired ones; a document with more current keys than this is refused, and retired
+    // keys past the limit are not stored (they only judge older events).
+    inline constexpr std::size_t max_remote_verify_keys{16U};
+    inline constexpr std::size_t max_remote_old_verify_keys{64U};
+
     // server-server-api.md, Publishing keys: `old_verify_keys` maps a key ID to
     // {expired_ts, key}. Each entry stands alone: one that is malformed, lacks a
     // usable expired_ts (an integer above zero), repeats a current key's ID or
@@ -131,6 +138,10 @@ namespace
         }
         for (auto const& entry : *object)
         {
+            if (old_keys.size() >= max_remote_old_verify_keys)
+            {
+                break;
+            }
             auto const is_current = std::ranges::any_of(verify_keys, [&entry](RemoteVerifyKey const& current) {
                 return current.key_id == entry.key;
             });
@@ -192,6 +203,10 @@ namespace
         record.server_name = std::move(*server_name);
         record.valid_until_ts = *valid_until_ts;
 
+        if (verify_keys_object->size() > max_remote_verify_keys)
+        {
+            return std::nullopt;
+        }
         for (auto const& key_member : *verify_keys_object)
         {
             auto const* key_object = std::get_if<canonicaljson::Object>(&key_member.value->storage());
@@ -502,7 +517,7 @@ auto find_own_server_signing_key(database::PersistentStore const& store, std::st
 auto find_any_cached_remote_key(database::PersistentStore const& store, std::string_view server_name)
     -> std::optional<FederationKeyRecord>
 {
-    for (auto const& persistent : database::snapshot_server_signing_keys(store))
+    for (auto const& persistent : database::snapshot_server_signing_keys_of(store, server_name))
     {
         // A retired key is only valid for events; this lookup serves callers that want a key to authenticate
         // with, so it never returns one.

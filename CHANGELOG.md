@@ -175,6 +175,13 @@ reallocation. Each now reads under the lock in main; a federation worker is unch
 C47. `GET /hierarchy` went to shard 0 whatever room it named, and shard 0's copy of a room another shard owns is its
 start-up snapshot, so the server ACL, the view check and the summaries could be stale. Main now answers it.
 
+### Choosing a signing key no longer copies every cached remote key (ADR-0713)
+
+C27. Every local send and every key-server request with a query string copied the whole signing-key table, which remote
+servers could grow without limit, while holding the runtime lock. The table is indexed by server name and read one server
+at a time, a remote key document may add at most 16 current and 64 retired keys, and the key-server cache matches the path
+without its query.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

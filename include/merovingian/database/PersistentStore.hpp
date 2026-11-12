@@ -295,6 +295,11 @@ struct PersistentStore final
     CredentialTable<PersistentAccessToken> access_tokens{};
     CredentialTable<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
+    // Positions in `server_signing_keys` of each server's rows (C27, ADR-0713), so choosing this server's own signing
+    // key does not copy or walk the rows of every remote server that was ever cached. Guarded by
+    // `server_signing_keys_mutex`; rows are only appended, so it is kept by the two writers below and trusted only
+    // while `in_step` the row count, otherwise a reader scans.
+    RowGroupIndex server_signing_key_index{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
     // Position in `federation_transactions` of each transaction ID (ADR-0441). Kept by
@@ -739,6 +744,11 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // A copy of every stored signing key, taken under server_signing_keys_mutex.
 // Callers that iterate the keys use this rather than the vector itself.
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
+    -> std::vector<PersistentServerSigningKey>;
+// A copy of the rows of one server only, taken under server_signing_keys_mutex: the work is that server's rows, not
+// every cached remote key (C27, ADR-0713). A caller that wants this server's own keys, or one remote server's, uses
+// this.
+[[nodiscard]] auto snapshot_server_signing_keys_of(PersistentStore const& store, std::string_view server_name)
     -> std::vector<PersistentServerSigningKey>;
 // Re-reads `server_name`'s signing-key rows from the backing database into this
 // store's in-memory mirror, public columns only: `secret_key` is never selected,

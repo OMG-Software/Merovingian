@@ -931,6 +931,9 @@ value. Test fixtures that do not exercise persistence select it through
 - `to_device_messages` is indexed by (user, device) and by user (`to_device_recipient_index`, `to_device_user_index`,
   ADR-0618). An erase moves the last row into the gap, so the vector has no meaningful order. Send and sync read only the
   recipient's rows, and the per-user limits evict a user's oldest row first, whichever device holds it.
+- `server_signing_keys` holds this server's keys and every cached remote key; `server_signing_key_index` groups the rows by
+  server name, and a reader asks for one server's rows (`snapshot_server_signing_keys_of`) instead of copying the table
+  (C27, ADR-0713).
 - `invites` is indexed by (room, user), by what a record is charged to and by origin (`invite_key_index`,
   `invite_quota_index`, `invite_origin_index`, ADR-0619). `invite_is_over_store_caps` is asked by every writer before it
   builds a statement. The runtime rebuilds the indexes once it has set `local_server_name`, which hydration runs before. The same writers keep a byte ledger of the remote invites, per sending server and in all (`invite_origin_bytes`, `remote_invite_bytes_total`; limits `max_remote_invite_bytes_per_origin` 64 MiB and `max_remote_invite_bytes_total` 256 MiB, ADR-0707), rebuilt by `rebuild_invite_indexes` and trusted only while `invite_bytes_rows` equals the row count.

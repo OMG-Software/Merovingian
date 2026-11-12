@@ -584,3 +584,4 @@
 * [0710 - The unsigned strip parses any text with a unicode escape, and a bare /event answer is stored as canonical JSON](0710-the-unsigned-strip-parses-any-text-with-an-escape-and-a-bare-event-answer-is-canonicalised.md)
 * [0711 - The federation read providers read main's store under the runtime lock](0711-the-federation-read-providers-read-main-s-store-under-the-runtime-lock.md)
 * [0712 - A space hierarchy request is answered by main, not by a worker snapshot](0712-a-space-hierarchy-request-is-answered-by-main-not-by-a-worker-snapshot.md)
+* [0713 - A server's signing keys are read by server name, and a remote key document is bounded](0713-a-servers-signing-keys-are-read-by-server-name-and-a-key-document-is-bounded.md)
