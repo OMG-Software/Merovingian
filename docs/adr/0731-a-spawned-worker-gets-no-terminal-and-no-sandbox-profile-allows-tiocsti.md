@@ -49,6 +49,8 @@ Chosen option: the two layers.
   `<spawn.h>` lacks `POSIX_SPAWN_SETSID`, so `getsid` need not be admitted. Moving the calls after `exec` was rejected:
   the child is still under main's filter there. `[worker_session]` in `test_seccomp_hardening.cpp` runs `setsid` under
   main's real profile, and a thumbnail scenario with the same tag decodes from a process confined by it.
+  `packaging/systemd/merovingian.service` lists `setsid` in its `SystemCallFilter` for the same reason (a unit filter also
+  covers every child), as ADR-0499 requires of every call main's profile admits.
 
 Neither layer is enough alone. A session leader without a controlling terminal acquires one when it opens a terminal
 without `O_NOCTTY`, so a worker that can open the operator's terminal (no Landlock, `allow_without_landlock=true`) could

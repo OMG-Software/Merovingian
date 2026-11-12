@@ -23,7 +23,8 @@ findings that needed validation.
 * The supervisor spawns the worker with `POSIX_SPAWN_SETSID` and `/dev/null` on stdin. `merovingian-fed-worker` calls
   `setsid()` itself where the C library lacks the flag and refuses to start if it cannot. The thumbnail decoder's child
   calls `setsid()` before `exec`. stdout and stderr still carry the logs. Main's seccomp profile admits `setsid`, since
-  a child runs those calls under main's filter; without it every worker start and thumbnail decode was killed.
+  a child runs those calls under main's filter; without it every worker start and thumbnail decode was killed. The
+  systemd unit's `SystemCallFilter`, which covers the same children, admits it too.
 * Tests: `[terminal_injection]` runs both filters against a pseudo-terminal that is the child's controlling terminal;
   `[worker_session]` checks that a spawned worker leads its own session with no terminal and `/dev/null` for stdin,
   that main's profile admits `setsid`, and that a process confined by main's profile still gets a thumbnail.
