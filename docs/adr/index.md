@@ -606,3 +606,4 @@
 * [0656 - /context and /initialSync examine a bounded number of rows and walk the room in place](0656-context-and-initialsync-examine-a-bounded-number-of-rows-and-walk-the-room-in-place.md)
 * [0657 - Every list of a sync filter holds at most one hundred entries](0657-every-list-of-a-sync-filter-holds-at-most-one-hundred-entries.md)
 * [0658 - A sync serves the joined rooms that can have news, and the most recently active when there are too many](0658-a-sync-serves-the-joined-rooms-that-can-have-news-and-the-most-recent-when-there-are-too-many.md)
+* [0659 - The per-request walks of a sync read device-list changes, filters, presence and room sources through indexes](0659-the-per-request-walks-of-a-sync-read-device-list-changes-filters-presence-and-room-sources-through-indexes.md)

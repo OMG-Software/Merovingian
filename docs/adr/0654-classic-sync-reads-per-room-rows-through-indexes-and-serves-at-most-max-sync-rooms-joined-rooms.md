@@ -37,6 +37,12 @@ Chosen option: the first.
   incremental sync does with a room that cannot have news, is ADR-0658: the first version of this change counted every
   joined room in iteration order and so starved the rooms past the cap of their news; that is corrected there.
 
+### The per-request variants
+
+The walks of server-wide tables that a sync makes once per request, not once per room (the observer's device-list
+changes, the user's stored filters, the push-rule classifier's room sources and the presence builder), are indexed by
+ADR-0659.
+
 ## Links
 
 * Builds on ADR-0344, ADR-0437, ADR-0603, ADR-0651, ADR-0616.

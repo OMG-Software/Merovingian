@@ -327,11 +327,12 @@ could run hundreds of full-budget checks under the runtime lock. All the checks 
 spend from a single budget of 1,000,000 glob steps, a single check is limited to 100,000, and the answer for an ACL and a
 server name is remembered, so asking again costs nothing.
 
-### Classic sync reads each room's own rows, and a room past the room cap still gets its news (ADR-0654, ADR-0658)
+### Classic sync reads each room's own rows, and a room past the room cap still gets its news (ADR-0654, ADR-0658, ADR-0659)
 
-Run-3 finding C34. `/sync` no longer scans the server-wide state, membership and receipt tables once per joined room: it
-reads the rows of the user's rooms through standing indexes. The joined rooms a sync does per-room work for are found from
-the user's membership rows, an incremental sync leaves out a room that cannot have news without charging it to
+Run-3 finding C34. `/sync` no longer scans the server-wide state, membership, receipt, device-list, stored-filter and
+presence tables for each joined room or each request: it reads the rows of the user and of the user's rooms through
+standing indexes, so a sync costs the user's own rooms and their rows. The joined rooms a sync does per-room work for are
+found from the user's membership rows, an incremental sync leaves out a room that cannot have news without charging it to
 `server.client_api.max_sync_rooms`, and when more rooms than the cap remain the most recently active are served. A room
 with news that is past the cap is not served by that sync, as before.
 

@@ -468,3 +468,7 @@ the server), and an incremental sync drops a room that cannot have news (no even
 receipt above `since`) before it is charged to `max_sync_rooms`. Past the cap the most recently active rooms are served and
 a room with news beyond it is skipped, as it always was. A new source of room news must be added to the check, or a room
 whose only news it is would be dropped.
+
+The once-per-request reads of a sync (the device-list delta, the stored-filter summary, the presence events and the push-rule
+classifier's room sources) use the observer, user and presence indexes and the user's and rooms' membership rows (ADR-0659);
+never walk `device_list_changes`, `filters`, `presence_states`, `memberships` or `state` there.

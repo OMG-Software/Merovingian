@@ -268,3 +268,14 @@ store gets fresh, unlocked mutexes, so copy a store only while no other thread i
 assignment are defaulted (ADR-0523): a copy carries every member and index. Never go back to a hand-written member list;
 one missed `state_transitions` and its index for months. A member that must not be copied gets its own copy semantics,
 as `core::CopyableMutex` has. No production code copies a store; only tests do.
+
+
+## Observer, user and presence indexes (ADR-0659)
+
+`device_list_observer_index` (device-list changes by observer), `filter_user_index` (stored filters by user) and
+`presence_user_index` (presence rows by user) follow the row-index rule above: trusted only while built for the vector's
+current row count, rebuilt by their writer when found out of step and by `rebuild_key_indexes` after hydration. Read through
+`for_each_observer_device_list_change`, `for_each_user_filter`, `find_filter` and `find_presence_state`, never by looping the
+vector in a request. `record_device_list_changes` replaces a pair's row by erasing it (the last row moves into the gap, so the
+vector has no order) and appending the new one. Tests prove cost with `device_list_rows_examined`, `filter_rows_examined`
+and `presence_rows_examined`.

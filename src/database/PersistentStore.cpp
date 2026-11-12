@@ -894,6 +894,41 @@ namespace
         }
     }
 
+    // The device-list, filter and presence indexes (ADR-0659).
+    [[nodiscard]] auto device_list_observer_group_of(PersistentDeviceListChange const& row) -> std::string
+    {
+        return row.observer_user_id;
+    }
+    [[nodiscard]] auto filter_user_group_of(PersistentFilter const& row) -> std::string
+    {
+        return row.user_id;
+    }
+    [[nodiscard]] auto presence_user_key_of(PersistentPresence const& row) -> std::string
+    {
+        return row.user_id;
+    }
+    auto sync_device_list_index(PersistentStore& store) -> void
+    {
+        if (!store.device_list_observer_index.in_step(store.device_list_changes.size()))
+        {
+            store.device_list_observer_index.rebuild(store.device_list_changes, device_list_observer_group_of);
+        }
+    }
+    auto sync_filter_index(PersistentStore& store) -> void
+    {
+        if (!store.filter_user_index.in_step(store.filters.size()))
+        {
+            store.filter_user_index.rebuild(store.filters, filter_user_group_of);
+        }
+    }
+    auto sync_presence_index(PersistentStore& store) -> void
+    {
+        if (!store.presence_user_index.in_step(store.presence_states.size()))
+        {
+            store.presence_user_index.rebuild(store.presence_states, presence_user_key_of);
+        }
+    }
+
     // The receipt indexes (ADR-0651): by room, and by (room, user). A receipt's room and user never change in place,
     // so an upsert that replaces a row leaves both indexes as they are.
     [[nodiscard]] auto receipt_room_group_of(PersistentReceipt const& row) -> std::string
@@ -1434,6 +1469,9 @@ auto rebuild_key_indexes(PersistentStore& store) -> void
     store.receipt_room_index.rebuild(store.receipts, receipt_room_group_of);
     store.receipt_user_room_index.rebuild(store.receipts, receipt_user_room_group_of);
     rebuild_receipt_remote_index(store);
+    store.device_list_observer_index.rebuild(store.device_list_changes, device_list_observer_group_of);
+    store.filter_user_index.rebuild(store.filters, filter_user_group_of);
+    store.presence_user_index.rebuild(store.presence_states, presence_user_key_of);
     rebuild_invite_indexes(store);
 }
 
@@ -8181,12 +8219,29 @@ namespace
     {
         batch_pairs.emplace(change.observer_user_id, change.subject_user_id);
     }
+    // Found through the observer index: the rows of the observers the batch names, not the table (ADR-0659).
+    sync_device_list_index(store);
     auto existing_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
-    for (auto const& existing : store.device_list_changes)
+    auto stale_positions = std::vector<std::size_t>{};
     {
-        if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+        auto observers = std::set<std::string_view>{};
+        for (auto const& change : changes)
         {
-            existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+            if (!observers.insert(change.observer_user_id).second)
+            {
+                continue;
+            }
+            for (auto const position : positions_in_group(store.device_list_observer_index, store.device_list_changes,
+                                                          change.observer_user_id, device_list_observer_group_of,
+                                                          store.device_list_rows_examined))
+            {
+                auto const& existing = store.device_list_changes[position];
+                if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+                {
+                    existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+                    stale_positions.push_back(position);
+                }
+            }
         }
     }
     // One stream position for the whole batch: the primary key is
@@ -8220,12 +8275,26 @@ namespace
     }
     // The views above point into `changes` and `store.device_list_changes`;
     // they are done with before either is modified.
-    std::erase_if(store.device_list_changes, [&](PersistentDeviceListChange const& existing) {
-        return batch_pairs.contains({existing.observer_user_id, existing.subject_user_id});
-    });
-    store.device_list_changes.insert(store.device_list_changes.end(), std::make_move_iterator(changes.begin()),
-                                     std::make_move_iterator(changes.end()));
+    erase_rows_swap(store.device_list_changes, store.device_list_observer_index, std::move(stale_positions),
+                    device_list_observer_group_of);
+    for (auto& change : changes)
+    {
+        store.device_list_changes.push_back(std::move(change));
+        store.device_list_observer_index.note_appended(store.device_list_changes.size(),
+                                                       device_list_observer_group_of(store.device_list_changes.back()));
+    }
     return true;
+}
+
+auto for_each_observer_device_list_change(PersistentStore const& store, std::string_view observer,
+                                          std::function<void(PersistentDeviceListChange const&)> const& visit) -> void
+{
+    for (auto const position :
+         positions_in_group(store.device_list_observer_index, store.device_list_changes, std::string{observer},
+                            device_list_observer_group_of, store.device_list_rows_examined))
+    {
+        visit(store.device_list_changes[position]);
+    }
 }
 
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
@@ -8255,16 +8324,42 @@ namespace
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.presence_states, [&state](PersistentPresence const& current) {
-        return current.user_id == state.user_id;
-    });
-    if (existing != store.presence_states.end())
+    sync_presence_index(store);
+    if (auto const* current = find_presence_state(store, state.user_id); current != nullptr)
     {
-        *existing = std::move(state);
+        store.presence_states[static_cast<std::size_t>(current - store.presence_states.data())] = std::move(state);
         return true;
     }
     store.presence_states.push_back(std::move(state));
+    store.presence_user_index.note_appended(store.presence_states.size(), store.presence_states.back().user_id);
     return true;
+}
+
+[[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
+    -> PersistentPresence const*
+{
+    if (store.presence_user_index.in_step(store.presence_states.size()))
+    {
+        store.presence_rows_examined.add(1U);
+        auto const position = store.presence_user_index.find(std::string{user_id});
+        if (!position.has_value())
+        {
+            return nullptr;
+        }
+        if (*position < store.presence_states.size() && store.presence_states[*position].user_id == user_id)
+        {
+            return &store.presence_states[*position];
+        }
+    }
+    store.presence_rows_examined.add(store.presence_states.size());
+    for (auto const& row : store.presence_states)
+    {
+        if (row.user_id == user_id)
+        {
+            return &row;
+        }
+    }
+    return nullptr;
 }
 
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool
@@ -8454,25 +8549,43 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         return false;
     }
     // Keep the in-memory mirror in sync; replace existing entry if present.
-    auto const existing = std::ranges::find_if(store.filters, [&filter](PersistentFilter const& f) {
-        return f.user_id == filter.user_id && f.filter_id == filter.filter_id;
-    });
-    if (existing != store.filters.end())
+    sync_filter_index(store);
+    auto const existing = find_in_group(
+        store.filter_user_index, store.filters, filter.user_id, filter_user_group_of,
+        [&filter](PersistentFilter const& f) {
+            return f.filter_id == filter.filter_id;
+        },
+        store.filter_rows_examined);
+    if (existing.has_value())
     {
-        *existing = std::move(filter);
+        store.filters[*existing] = std::move(filter);
         return true;
     }
     store.filters.push_back(std::move(filter));
+    store.filter_user_index.note_appended(store.filters.size(), store.filters.back().user_id);
     return true;
 }
 
 [[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
     -> std::optional<PersistentFilter>
 {
-    auto const it = std::ranges::find_if(store.filters, [user_id, filter_id](PersistentFilter const& f) {
-        return f.user_id == user_id && f.filter_id == filter_id;
-    });
-    return it == store.filters.end() ? std::nullopt : std::optional<PersistentFilter>{*it};
+    auto const position = find_in_group(
+        store.filter_user_index, store.filters, std::string{user_id}, filter_user_group_of,
+        [filter_id](PersistentFilter const& f) {
+            return f.filter_id == filter_id;
+        },
+        store.filter_rows_examined);
+    return position.has_value() ? std::optional<PersistentFilter>{store.filters[*position]} : std::nullopt;
+}
+
+auto for_each_user_filter(PersistentStore const& store, std::string_view user_id,
+                          std::function<void(PersistentFilter const&)> const& visit) -> void
+{
+    for (auto const position : positions_in_group(store.filter_user_index, store.filters, std::string{user_id},
+                                                  filter_user_group_of, store.filter_rows_examined))
+    {
+        visit(store.filters[position]);
+    }
 }
 
 [[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool

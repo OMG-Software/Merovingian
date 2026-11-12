@@ -507,8 +507,22 @@ struct PersistentStore final
     RowGroupIndex to_device_recipient_index{};
     RowGroupIndex to_device_user_index{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
+    // Positions in `device_list_changes` of each observer's rows (ADR-0659), trusted as the other row indexes are
+    // (ADR-0603). Read through for_each_observer_device_list_change, never by looping the vector; maintained by
+    // record_device_list_changes, rebuilt after hydration. A replaced pair's row is erased by moving the last row into
+    // its place, so the vector has no order.
+    RowGroupIndex device_list_observer_index{};
+    ExaminedRows device_list_rows_examined{};
     std::vector<PersistentPresence> presence_states{};
+    // Position in `presence_states` of each user's row (ADR-0659), same trust rule. Rows are only appended or edited in
+    // place, never erased. Read a row through find_presence_state.
+    RowKeyIndex presence_user_index{};
+    ExaminedRows presence_rows_examined{};
     std::vector<PersistentFilter> filters{};
+    // Positions in `filters` of each user's rows (ADR-0659), same trust rule. Read through for_each_user_filter and
+    // find_filter; filters are only appended or replaced in place.
+    RowGroupIndex filter_user_index{};
+    ExaminedRows filter_rows_examined{};
     std::vector<PersistentProfile> profiles{};
     std::vector<PersistentThreePidBinding> account_threepids{};
     // A table class (ADR-0581): look up with find/aliases_of_room/count_for_creator, never by looping the rows.
@@ -1442,6 +1456,18 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // batch succeeds without touching the sync stream.
 [[nodiscard]] auto record_device_list_changes(PersistentStore& store, std::vector<PersistentDeviceListChange> changes)
     -> bool;
+// Calls `visit` with every device-list change row `observer` holds, in no particular order, through the observer
+// index while it is in step (ADR-0659), otherwise by a scan. Adds the rows it looked at to
+// `store.device_list_rows_examined`. `visit` must not change the store.
+auto for_each_observer_device_list_change(PersistentStore const& store, std::string_view observer,
+                                          std::function<void(PersistentDeviceListChange const&)> const& visit) -> void;
+// Calls `visit` with every filter `user_id` stores, in storage order, through the user index (ADR-0659). Adds the rows
+// it looked at to `store.filter_rows_examined`. `visit` must not change the store.
+auto for_each_user_filter(PersistentStore const& store, std::string_view user_id,
+                          std::function<void(PersistentFilter const&)> const& visit) -> void;
+// The presence row of `user_id`, or nullptr, through the user index (ADR-0659).
+[[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
+    -> PersistentPresence const*;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;

@@ -351,3 +351,50 @@ SCENARIO("an incremental sync's per-room work does not grow with the user's idle
         }
     }
 }
+
+SCENARIO("stored filters and device-list changes are read for the caller only", "[sync][c34]")
+{
+    GIVEN("a user who stores a filter and syncs, among many other users' filters and device-list changes")
+    {
+        auto started = hs::start_client_server(merovingian::tests::caps_config(100U, 100U, 100U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = merovingian::tests::register_and_login_alice(runtime);
+        auto& store = runtime.homeserver.database.persistent_store;
+        for (auto index = std::size_t{0U}; index < 800U; ++index)
+        {
+            store.filters.push_back({"@filler" + std::to_string(index) + ":other.example", "f", R"({"room":{}})"});
+            store.device_list_changes.push_back(
+                {1U, "@filler" + std::to_string(index) + ":other.example", "@subject:other.example", "changed"});
+        }
+        store.filters.push_back({"@alice:example.org", "mine1", R"({"room":{"include_leave":true}})"});
+        store.filters.push_back({"@alice:example.org", "mine2", R"({"room":{"include_leave":false}})"});
+        for (auto subject = 0; subject < 3; ++subject)
+        {
+            store.device_list_changes.push_back(
+                {1U, "@alice:example.org", "@s" + std::to_string(subject) + ":other.example", "changed"});
+        }
+        db::rebuild_key_indexes(store);
+
+        WHEN("the user posts a filter and then syncs")
+        {
+            auto const filters_before = store.filter_rows_examined.value();
+            auto const posted = hs::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter", token,
+                          R"({"room":{"timeline":{"limit":5}}})"});
+            auto const filter_rows = store.filter_rows_examined.value() - filters_before;
+            auto const device_before = store.device_list_rows_examined.value();
+            std::ignore = sync_body(runtime, token, "");
+            auto const device_rows = store.device_list_rows_examined.value() - device_before;
+
+            THEN("the filter rows read are the user's own, and the device-list rows read are the user's own")
+            {
+                REQUIRE(posted.response.status == 200U);
+                REQUIRE(filter_rows >= 2U);
+                REQUIRE(filter_rows <= 6U);
+                REQUIRE(device_rows >= 3U);
+                REQUIRE(device_rows <= 12U);
+            }
+        }
+    }
+}

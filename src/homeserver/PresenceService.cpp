@@ -351,9 +351,10 @@ auto build_sync_presence_events(database::PersistentStore const& store, sync::Ev
     auto const starts_in_window = [&](database::PersistentMembership const& membership) {
         return has_since && membership.stream_ordering > since_ordering && membership.stream_ordering <= sync_position;
     };
-    for (auto const& membership : store.memberships)
-    {
-        if (membership.user_id == user && membership.membership == "join")
+    // The caller's own rows, then each of their rooms' own rows, through the membership indexes, and the presence
+    // rows of the users found, through the presence index: none of it reads a server-wide table (ADR-0659).
+    database::for_each_user_membership_row(store, user, [&](database::PersistentMembership const& membership) {
+        if (membership.membership == "join")
         {
             joined_rooms.insert(membership.room_id);
             if (starts_in_window(membership))
@@ -361,30 +362,43 @@ auto build_sync_presence_events(database::PersistentStore const& store, sync::Ev
                 newly_joined_rooms.insert(membership.room_id);
             }
         }
-    }
+    });
     auto visible_users = std::unordered_set<std::string_view>{};
     // Users who started sharing a room with the caller since the token: their presence is news
     // to the caller whenever it last changed.
     auto newly_visible_users = std::unordered_set<std::string_view>{};
-    for (auto const& membership : store.memberships)
+    for (auto const room_id : joined_rooms)
     {
-        if (membership.membership != "join" || !joined_rooms.contains(membership.room_id))
+        database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& membership) {
+            if (membership.membership != "join")
+            {
+                return;
+            }
+            visible_users.insert(membership.user_id);
+            if (newly_joined_rooms.contains(room_id) || starts_in_window(membership))
+            {
+                newly_visible_users.insert(membership.user_id);
+            }
+        });
+    }
+    // The rows are emitted in storage order, as when the table was walked: the positions found are sorted.
+    auto wanted = std::vector<database::PersistentPresence const*>{};
+    for (auto const visible : visible_users)
+    {
+        if (visible == user)
         {
             continue;
         }
-        visible_users.insert(membership.user_id);
-        if (newly_joined_rooms.contains(membership.room_id) || starts_in_window(membership))
+        if (auto const* row = database::find_presence_state(store, visible); row != nullptr)
         {
-            newly_visible_users.insert(membership.user_id);
+            wanted.push_back(row);
         }
     }
+    std::ranges::sort(wanted);
     auto emitted = std::size_t{0U};
-    for (auto const& row : store.presence_states)
+    for (auto const* row_pointer : wanted)
     {
-        if (row.user_id == user || !visible_users.contains(row.user_id))
-        {
-            continue;
-        }
+        auto const& row = *row_pointer;
         if (row.stream_id <= since_sync_stream_id && !newly_visible_users.contains(row.user_id))
         {
             continue;

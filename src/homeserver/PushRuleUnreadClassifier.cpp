@@ -292,55 +292,29 @@ auto PushRuleUnreadClassifier::ensure_room_sources() -> void
     room_sources_built_ = true;
     auto const& store = store_.get();
 
-    // The user's rooms, and every room's joined members.
-    auto joined = std::unordered_map<std::string_view, std::uint64_t>{};
-    for (auto const& membership : store.memberships)
-    {
-        if (membership.user_id == user_)
-        {
-            room_sources_.try_emplace(membership.room_id);
-        }
-        if (membership.membership == "join")
-        {
-            ++joined[membership.room_id];
-        }
-    }
+    // The user's rooms, from the user's own membership rows; then each of those rooms' joined members from the
+    // room's own rows, and its current power levels, create and the user's member event from the state index
+    // (ADR-0659). Nothing here reads a server-wide table.
+    database::for_each_user_membership_row(store, user_, [this](database::PersistentMembership const& membership) {
+        room_sources_.try_emplace(membership.room_id);
+    });
     ++table_walks_;
     for (auto& [room_id, sources] : room_sources_)
     {
-        if (auto const count = joined.find(room_id); count != joined.end())
-        {
-            sources.joined_members = count->second;
-        }
-    }
-
-    // Each of those rooms' current power levels, create and the user's member event. The first row
-    // of each wins, as current_state_event and stored_room_version take it.
-    for (auto const& state : store.state)
-    {
-        auto const room = room_sources_.find(state.room_id);
-        if (room == room_sources_.end())
-        {
-            continue;
-        }
-        auto const record = [&state](std::optional<std::string>& event_id) {
-            if (!event_id.has_value())
+        auto joined = std::uint64_t{0U};
+        database::for_each_room_membership_row(store, room_id, [&joined](database::PersistentMembership const& row) {
+            if (row.membership == "join")
             {
-                event_id = state.event_id;
+                ++joined;
             }
-        };
-        if (state.state_key.empty() && state.event_type == "m.room.power_levels")
-        {
-            record(room->second.power_levels_event_id);
-        }
-        else if (state.state_key.empty() && state.event_type == "m.room.create")
-        {
-            record(room->second.create_event_id);
-        }
-        else if (state.state_key == user_ && state.event_type == "m.room.member")
-        {
-            record(room->second.member_event_id);
-        }
+        });
+        sources.joined_members = joined;
+        // The current event of each key: the state index holds one row per (room, type, state key), the row the old
+        // scan found first.
+        sources.power_levels_event_id =
+            database::find_current_state_event_id(store, room_id, "m.room.power_levels", "");
+        sources.create_event_id = database::find_current_state_event_id(store, room_id, "m.room.create", "");
+        sources.member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_);
     }
     ++table_walks_;
 

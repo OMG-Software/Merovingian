@@ -20,31 +20,31 @@ auto collect_device_list_delta(database::PersistentStore const& store, std::stri
     // Without this a subject appears once per row, so a long-lived observer's
     // initial response repeats the same handful of user IDs thousands of times.
     auto latest_by_subject = std::map<std::string, std::pair<std::uint64_t, bool>>{};
-    for (auto const& change : store.device_list_changes)
-    {
-        if (change.observer_user_id != user || change.stream_id <= from_sync_stream_id ||
-            change.stream_id > to_sync_stream_id)
-        {
-            continue;
-        }
-        if (change.stream_id > delta.max_stream_id)
-        {
-            delta.max_stream_id = change.stream_id;
-        }
-        auto const is_left = change.change_type == "left";
-        auto const existing = latest_by_subject.find(change.subject_user_id);
-        if (existing == latest_by_subject.end())
-        {
-            latest_by_subject.emplace(change.subject_user_id, std::pair{change.stream_id, is_left});
-            continue;
-        }
-        // The store is not guaranteed to be ordered by stream id, so compare
-        // rather than assume the last row read is the most recent one.
-        if (change.stream_id >= existing->second.first)
-        {
-            existing->second = {change.stream_id, is_left};
-        }
-    }
+    // This observer's rows only, through the observer index (ADR-0659), never the whole change log.
+    database::for_each_observer_device_list_change(
+        store, user, [&](database::PersistentDeviceListChange const& change) {
+            if (change.stream_id <= from_sync_stream_id || change.stream_id > to_sync_stream_id)
+            {
+                return;
+            }
+            if (change.stream_id > delta.max_stream_id)
+            {
+                delta.max_stream_id = change.stream_id;
+            }
+            auto const is_left = change.change_type == "left";
+            auto const existing = latest_by_subject.find(change.subject_user_id);
+            if (existing == latest_by_subject.end())
+            {
+                latest_by_subject.emplace(change.subject_user_id, std::pair{change.stream_id, is_left});
+                return;
+            }
+            // The store is not guaranteed to be ordered by stream id, so compare
+            // rather than assume the last row read is the most recent one.
+            if (change.stream_id >= existing->second.first)
+            {
+                existing->second = {change.stream_id, is_left};
+            }
+        });
 
     // std::map iterates in key order, so both lists come out sorted by user ID.
     for (auto const& [subject, latest] : latest_by_subject)

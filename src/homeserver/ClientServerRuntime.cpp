@@ -1728,16 +1728,11 @@ namespace
                                                 std::string_view canonical_json) -> StoredFilterSummary
     {
         auto summary = StoredFilterSummary{};
-        for (auto const& filter : store.filters)
-        {
-            if (filter.user_id != user_id)
-            {
-                return;
-            }
+        database::for_each_user_filter(store, user_id, [&](database::PersistentFilter const& filter) {
             ++summary.count;
             if (summary.identical_filter_id.has_value())
             {
-                continue;
+                return;
             }
             if (filter.json == canonical_json)
             {
@@ -5958,6 +5953,11 @@ namespace
     {
         auto rows = AccountDataByRoom{};
         database::for_each_user_account_data(store, user, [&rows](database::PersistentAccountData const& data) {
+            rows[data.room_id].push_back(&data);
+        });
+        return rows;
+    }
+
     // The most recent event stream position in `room_id`, of any status; 0 when it holds none. One index lookup.
     [[nodiscard]] auto room_latest_event_ordering(database::PersistentStore const& store, std::string_view room_id)
         -> std::uint64_t
@@ -6047,11 +6047,6 @@ namespace
             served.push_back(candidate.room);
         }
         return served;
-    }
-
-            rows[data.room_id].push_back(&data);
-        });
-        return rows;
     }
 
     [[nodiscard]] auto build_account_data_events(AccountDataByRoom const& user_account_data,
@@ -7542,10 +7537,14 @@ namespace
                 //   - account-data rows owned by this user (account_data)
                 //   - receipts or typing updates in any room the user has joined
                 //     (receipts / typing)
-                bool const has_relevant_dlc =
-                    wants_e2ee && std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
-                        return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
-                    });
+                auto has_relevant_dlc = false;
+                if (wants_e2ee)
+                {
+                    database::for_each_observer_device_list_change(
+                        store, user, [&](database::PersistentDeviceListChange const& change) {
+                            has_relevant_dlc = has_relevant_dlc || change.stream_id > since_sync_stream_id;
+                        });
+                }
                 bool const has_relevant_tdm = wants_to_device && database::has_to_device_message_after(
                                                                      store, user, device_id, since_sync_stream_id);
                 auto has_relevant_ad = false;
