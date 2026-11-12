@@ -580,3 +580,4 @@
 * [0706 - A remote join sends the local device lists only to a server that had no member in the room, from the roster's per-server group](0706-a-remote-join-sends-the-local-device-lists-only-to-a-server-that-had-no-member-in-the-room.md)
 * [0707 - Remote invites are bounded in bytes per sending server and in all, not only per local user](0707-remote-invites-are-bounded-in-bytes-per-sending-server-and-in-all.md)
 * [0708 - A user's knock records are capped in bytes, and a knock keeps one entry per state](0708-a-users-knock-records-are-capped-in-bytes-and-a-knock-keeps-one-entry-per-state.md)
+* [0709 - A resident's membership template content is rebuilt from an allow-list before it is signed](0709-a-residents-membership-template-content-is-rebuilt-from-an-allow-list.md)

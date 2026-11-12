@@ -151,6 +151,13 @@ C31. A user could store about 128 MiB of knock state their own server chose, and
 all of it under the runtime lock. A user's knock records are now limited to 2 MiB in all, a resident's `knock_room_state`
 keeps the last entry for each state, and `/sync` reads the record without copying it.
 
+### A resident's membership template can no longer add content that this server signs (ADR-0709)
+
+C18. When a local user left, rejected an invite, knocked or joined through a remote server, that server's template content
+(a `reason` or any other key) was signed by this server as the user's. The content is now rebuilt from an allow-list:
+the membership, and for a join the authorising user of another server. A join template naming a user of this server as
+authoriser is refused.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

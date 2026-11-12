@@ -2229,7 +2229,8 @@ namespace
     auto extra = std::string{};
     if (fault == "oversized")
     {
-        content = R"({"membership":")" + membership + R"(","padding":")" + std::string(70000U, 'a') + R"("})";
+        // At the top level of the event: the content is rebuilt from an allow-list (C18), so padding in it is dropped.
+        extra = R"(,"padding":")" + std::string(70000U, 'a') + R"(")";
     }
     else if (fault == "prev_events_not_array")
     {

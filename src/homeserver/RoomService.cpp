@@ -5651,13 +5651,15 @@ namespace
         // and avatar URL are this server's to add, before the content hash and signature. Any the
         // template supplies are dropped first: add_member_profile leaves an unset local field out,
         // so a resident value would otherwise be signed as this user's profile.
+        // C18: and so is anything else it put in the content, so the content is rebuilt from an allow-list.
+        if (auto const refusal = restrict_membership_template_content(event_object, our_server, true); !refusal.empty())
+        {
+            return federated_join_failure("make_join template refused: " + refusal, 502U);
+        }
         if (auto const* template_content = object_member_as_object(event_object, "content");
             template_content != nullptr)
         {
             auto content = *template_content;
-            std::erase_if(content, [](canonicaljson::ObjectMember const& member) {
-                return member.key == "displayname" || member.key == "avatar_url";
-            });
             add_member_profile(content, profile);
             replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
         }
@@ -7156,6 +7158,8 @@ namespace
                 }
                 auto event_object = validated.event;
                 claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
+                // C18: only the membership is kept of the resident's content.
+                std::ignore = restrict_membership_template_content(event_object, our_server, false);
                 // Held to the room version's event format before it is hashed and signed as the user's own (F-13).
                 if (auto const violation = membership_template_format_refusal(event_object, *policy);
                     !violation.empty())
@@ -8545,6 +8549,8 @@ namespace
         }
         auto event_object = validated.event;
         claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
+        // C18: only the membership is kept of the resident's content; the reason is the user's own.
+        std::ignore = restrict_membership_template_content(event_object, our_server, false);
         if (!reason.empty())
         {
             auto content = *object_member_as_object(event_object, "content");
@@ -10768,6 +10774,37 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});
+}
+
+auto restrict_membership_template_content(canonicaljson::Object& event, std::string_view our_server_name,
+                                          bool allow_join_authoriser) -> std::string
+{
+    auto const* const template_content = object_member_as_object(event, "content");
+    if (template_content == nullptr)
+    {
+        return {};
+    }
+    auto content = canonicaljson::Object{};
+    if (auto const* const membership = string_member(*template_content, "membership"); membership != nullptr)
+    {
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{*membership}));
+    }
+    if (allow_join_authoriser)
+    {
+        if (auto const* const authoriser = string_member(*template_content, "join_authorised_via_users_server");
+            authoriser != nullptr)
+        {
+            // The spec defines it as a user of the resident; one of ours would have this server vouch for itself.
+            if (auth::user_id_server_name(*authoriser) == our_server_name)
+            {
+                return "the template names a user of this server as the authorising user";
+            }
+            content.push_back(
+                canonicaljson::make_member("join_authorised_via_users_server", canonicaljson::Value{*authoriser}));
+        }
+    }
+    replace_or_add_member(event, "content", canonicaljson::Value{std::move(content)});
+    return {};
 }
 
 auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,

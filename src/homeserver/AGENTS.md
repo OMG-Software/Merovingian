@@ -799,6 +799,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
   the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
   not visible (ADR-0414); it never judges the members one by one.
+- A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`) and then its
+  content is rebuilt from an allow-list (`restrict_membership_template_content`): `membership`, and for a join the
+  authorising user of another server. A `reason` or profile in the template is never signed as the user's; the user's own
+  reason (knock) and profile (join) are added after. A join template naming a user of this server is refused (C18, ADR-0709).
 - `broadcast_local_device_lists_to_remote_joiner` runs only when the joiner's server had no joined member in the room
   before the event (`joiner_server_already_in_room`, read before `apply_membership_to_roster`), and lists the local members
   with `RoomMembers::members_of_server`. Never scan `database.users` per roster member there (C32, ADR-0706).
