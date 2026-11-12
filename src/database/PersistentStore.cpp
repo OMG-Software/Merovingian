@@ -754,6 +754,26 @@ namespace
     {
         return key.user_id;
     }
+    // The key of a signature row (signer, target user, target key), its signer, and its target (user, key): the
+    // three indexes beside `key_signatures` (run-3 C14, ADR-0672).
+    [[nodiscard]] auto key_signature_key_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return composite_key({signature.signer_user_id, signature.target_user_id, signature.target_device_id});
+    }
+    [[nodiscard]] auto key_signature_signer_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return signature.signer_user_id;
+    }
+    [[nodiscard]] auto key_signature_target_key_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return composite_key({signature.target_user_id, signature.target_device_id});
+    }
+    [[nodiscard]] auto key_signature_indexes_in_step(PersistentStore const& store) -> bool
+    {
+        auto const rows = store.key_signatures.size();
+        return store.key_signature_indexed_rows == rows && store.key_signature_key_index.in_step(rows) &&
+               store.key_signature_signer_index.in_step(rows) && store.key_signature_target_key_index.in_step(rows);
+    }
     [[nodiscard]] auto one_time_key_group_of(PersistentOneTimeKey const& key) -> std::string
     {
         return composite_key({key.user_id, key.device_id});
@@ -4813,6 +4833,9 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
         store.key_signature_target_index[store.key_signatures[position].target_user_id].push_back(position);
     }
     store.key_signature_indexed_rows = store.key_signatures.size();
+    store.key_signature_key_index.rebuild(store.key_signatures, key_signature_key_of);
+    store.key_signature_signer_index.rebuild(store.key_signatures, key_signature_signer_of);
+    store.key_signature_target_key_index.rebuild(store.key_signatures, key_signature_target_key_of);
 }
 
 [[nodiscard]] auto key_signatures_for_target(PersistentStore const& store, std::string_view target_user_id)
@@ -4855,50 +4878,91 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
 
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool
 {
-    if (!key_payload_is_valid(signature.json) || signature.target_device_id.empty())
+    return store_key_signatures(store, std::vector<PersistentKeySignature>{std::move(signature)});
+}
+
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures) -> bool
+{
+    auto all_accepted = true;
+    std::erase_if(signatures, [&all_accepted](PersistentKeySignature const& signature) {
+        auto const refused = !key_payload_is_valid(signature.json) || signature.target_device_id.empty();
+        all_accepted = all_accepted && !refused;
+        return refused;
+    });
+    if (signatures.empty())
+    {
+        return all_accepted;
+    }
+    // One transaction for the whole upload (run-3 C14): a commit per signature was most of the cost.
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(signatures.size());
+    for (auto const& signature : signatures)
+    {
+        statements.push_back(record_statement(
+            "upsert_key_signature",
+            "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
+            "target_user_id, target_device_id) DO UPDATE SET json = $4",
+            {public_value(signature.signer_user_id), public_value(signature.target_user_id),
+             public_value(signature.target_device_id), sensitive_value(signature.json)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    if (!record_and_persist(
-            store, record_statement("upsert_key_signature",
-                                    "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
-                                    "target_user_id, target_device_id) DO UPDATE SET json = $4",
-                                    {public_value(signature.signer_user_id), public_value(signature.target_user_id),
-                                     public_value(signature.target_device_id), sensitive_value(signature.json)})))
-    {
-        return false;
-    }
-    // Rows pushed directly (tests) leave the index behind the vector; a stale
-    // index is rebuilt below rather than patched.
-    auto const index_was_current = store.key_signature_indexed_rows == store.key_signatures.size();
-    auto const existing =
-        std::ranges::find_if(store.key_signatures, [&signature](PersistentKeySignature const& current) {
-            return current.signer_user_id == signature.signer_user_id &&
-                   current.target_user_id == signature.target_user_id &&
-                   current.target_device_id == signature.target_device_id;
-        });
-    if (existing != store.key_signatures.end())
-    {
-        // Updated in place: the row keeps its position, so the index stays valid.
-        existing->json = std::move(signature.json);
-        if (!index_was_current)
-        {
-            rebuild_key_signature_index(store);
-        }
-        return true;
-    }
-    auto const target_user_id = signature.target_user_id;
-    store.key_signatures.push_back(std::move(signature));
-    if (index_was_current)
-    {
-        store.key_signature_target_index[target_user_id].push_back(store.key_signatures.size() - 1U);
-        store.key_signature_indexed_rows = store.key_signatures.size();
-    }
-    else
+    // A stale index (rows pushed directly) is rebuilt first, so every lookup below is exact.
+    if (!key_signature_indexes_in_step(store))
     {
         rebuild_key_signature_index(store);
     }
-    return true;
+    for (auto& signature : signatures)
+    {
+        auto const key = key_signature_key_of(signature);
+        if (auto const existing = store.key_signature_key_index.find(key);
+            existing.has_value() && *existing < store.key_signatures.size() &&
+            key_signature_key_of(store.key_signatures[*existing]) == key)
+        {
+            // Updated in place: the row keeps its position, so every index stays valid.
+            store.key_signatures[*existing].json = std::move(signature.json);
+            continue;
+        }
+        store.key_signatures.push_back(std::move(signature));
+        auto const& added = store.key_signatures.back();
+        store.key_signature_target_index[added.target_user_id].push_back(store.key_signatures.size() - 1U);
+        store.key_signature_indexed_rows = store.key_signatures.size();
+        store.key_signature_key_index.note_appended(store.key_signatures.size(), key_signature_key_of(added));
+        store.key_signature_signer_index.note_appended(store.key_signatures.size(), added.signer_user_id);
+        store.key_signature_target_key_index.note_appended(store.key_signatures.size(),
+                                                            key_signature_target_key_of(added));
+    }
+    return all_accepted;
+}
+
+auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,
+                                   std::function<bool(PersistentKeySignature const&)> const& visit) -> void
+{
+    for (auto const position : positions_in_group(store.key_signature_signer_index, store.key_signatures,
+                                                  std::string{signer_user_id}, key_signature_signer_of,
+                                                  store.key_rows_examined))
+    {
+        if (!visit(store.key_signatures[position]))
+        {
+            return;
+        }
+    }
+}
+
+[[nodiscard]] auto key_signatures_for_target_key(PersistentStore const& store, std::string_view target_user_id,
+                                                 std::string_view target_key_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>
+{
+    auto matches = std::vector<std::reference_wrapper<PersistentKeySignature const>>{};
+    for (auto const position : positions_in_group(store.key_signature_target_key_index, store.key_signatures,
+                                                  composite_key({target_user_id, target_key_id}),
+                                                  key_signature_target_key_of, store.key_rows_examined))
+    {
+        matches.emplace_back(store.key_signatures[position]);
+    }
+    return matches;
 }
 
 namespace

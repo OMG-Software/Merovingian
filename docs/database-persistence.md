@@ -180,6 +180,10 @@ value. Test fixtures that do not exercise persistence select it through
   hydration, copied with the store, and ignored (lookup scans) while its row count
   differs from `key_signatures`, so rows pushed directly never produce a missing
   result. Read signatures through this function, not by scanning the vector.
+- Run-3 C14 ([ADR-0672](adr/0672-key-signatures-are-indexed-by-signer-and-by-target-key-and-uploaded-in-one-transaction.md)):
+  three more indexes sit beside it, by (signer, target user, target key), by signer and by (target user, target key),
+  trusted under the same rule. `store_key_signatures` writes a whole upload in one transaction;
+  `for_each_signer_key_signature` and `key_signatures_for_target_key` read through them.
 - `find_current_state_event_id` and `for_each_room_state_row` read current state through in-memory indexes over
   `PersistentStore::state` (`state_position_index` by room, type and state key; `state_room_index` by room).
   Every writer in `PersistentStore.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them

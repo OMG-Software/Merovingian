@@ -12342,13 +12342,12 @@ namespace
         }
         using TargetKey = std::pair<std::string_view, std::string_view>;
         auto held = std::set<TargetKey>{};
-        for (auto const& row : rt.homeserver.database.persistent_store.key_signatures)
-        {
-            if (row.signer_user_id == signer)
-            {
-                held.emplace(row.target_user_id, row.target_device_id);
-            }
-        }
+        // The signer's own rows through the per-signer index (run-3 C14, ADR-0672), never the whole table.
+        database::for_each_signer_key_signature(rt.homeserver.database.persistent_store, signer,
+                                                [&held](database::PersistentKeySignature const& row) {
+                                                    held.emplace(row.target_user_id, row.target_device_id);
+                                                    return true;
+                                                });
         auto added = std::set<TargetKey>{};
         for (auto const& user_member : *parsed)
         {
@@ -12685,6 +12684,7 @@ namespace
             return false;
         }
         auto stored = true;
+        auto rows = std::vector<database::PersistentKeySignature>{};
         for (auto const& user_member : *parsed)
         {
             auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
@@ -12701,14 +12701,11 @@ namespace
                     stored = false;
                     continue;
                 }
-                if (!database::store_key_signature(
-                        store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
-                {
-                    stored = false;
-                }
+                rows.push_back({std::string{user}, user_member.key, key_member.key, serialized.output});
             }
         }
-        return stored;
+        // One transaction for the whole upload, not one commit per signature (run-3 C14, ADR-0672).
+        return database::store_key_signatures(store, std::move(rows)) && stored;
     }
 
     // PUT /_matrix/client/v3/room_keys/keys/{roomId}: stores the sessions of one room.

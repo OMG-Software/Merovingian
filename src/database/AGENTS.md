@@ -141,6 +141,15 @@ Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, 
 vector in a request. Tests prove cost with `user_rows_examined`, `membership_rows_examined`, `key_rows_examined`,
 `key_backup_rows_examined` and `device_table_rows_examined`.
 
+## Key signature indexes (ADR-0672)
+
+`key_signatures` has four position indexes: by target user (`key_signature_target_index`), by (signer, target user, target key)
+(`key_signature_key_index`), by signer (`key_signature_signer_index`) and by (target user, target key)
+(`key_signature_target_key_index`). Rows are never erased, so a write is an append or an in-place update. Write through
+`store_key_signature` / `store_key_signatures` (one transaction for the whole list; a stale index is rebuilt first) and read
+through `for_each_signer_key_signature` and `key_signatures_for_target_key`, counted in `key_rows_examined`. A new reader
+never loops the vector; hydration and a direct fill call `rebuild_key_signature_index`.
+
 ## The relation index (ADR-0430)
 
 `EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,

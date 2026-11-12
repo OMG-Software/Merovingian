@@ -392,6 +392,13 @@ struct PersistentStore final
     // fall back to a scan until the next rebuild (key_signatures_for_target).
     std::unordered_map<std::string, std::vector<std::size_t>> key_signature_target_index{};
     std::size_t key_signature_indexed_rows{0U};
+    // Run-3 C14 (ADR-0672): the signature rows by (signer, target user, target key), by signer, and by (target user,
+    // target key). The same trust rule as the target index: used only while built for exactly the vector's row count;
+    // store_key_signature(s) heals a stale one first and rebuild_key_signature_index rebuilds all four. Rows are
+    // never erased, so each is a plain append or an in-place update.
+    RowKeyIndex key_signature_key_index{};
+    RowGroupIndex key_signature_signer_index{};
+    RowGroupIndex key_signature_target_key_index{};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
@@ -1126,6 +1133,19 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
 [[nodiscard]] auto store_cross_signing_keys(PersistentStore& store, std::vector<PersistentCrossSigningKey> keys)
     -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
+// Stores every signature in one transaction (one commit, whatever the count): all are written or, when the write
+// fails, none is. A row with an empty target key or an empty payload is refused and the rest are still written; the
+// result is false when any row was refused. An empty list succeeds and writes nothing. Run-3 C14 (ADR-0672).
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures)
+    -> bool;
+// Calls `visit` with the (target user, target key) of each signature `signer_user_id` holds; stops when it returns
+// false. Reads the signer's rows only, counted in `key_rows_examined`.
+auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,
+                                   std::function<bool(PersistentKeySignature const&)> const& visit) -> void;
+// Every signature of one key of a user, in storage order, through the (target user, target key) index.
+[[nodiscard]] auto key_signatures_for_target_key(PersistentStore const& store, std::string_view target_user_id,
+                                                 std::string_view target_key_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>;
 // Every uploaded signature whose target is `target_user_id`, in storage order.
 // Backed by the target index (CSAZ-10); falls back to a scan only when the
 // index is out of step with the rows. References are valid until the next

@@ -102,6 +102,13 @@ Audit finding C19. `POST /keys/query` looped over every device-key row on the se
 that asked for all devices, and had no limit on how many users a request names. A query naming more than 25,000 users plus
 devices (the federation cap) is now `413 M_TOO_LARGE`, and each user's device keys are read through the per-user index.
 
+### Key signature uploads are one transaction and use indexes (ADR-0672)
+
+Audit finding C14. Storing each uploaded key signature searched every signature row on the server and committed on its own,
+and the cap check and the merge into a published key each read other signers' and other keys' rows, all with the global lock
+held. An upload is now one database transaction, the signer's rows and a key's signatures come from indexes, and a replacement
+updates its row in place.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

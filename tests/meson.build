@@ -872,6 +872,7 @@ shell = find_program('sh')
       'integration/test_identity_bind_domains_flow.cpp',
       'integration/test_invite_permission_flow.cpp',
       'integration/test_key_signature_cap_flow.cpp',
+      'integration/test_key_signature_cost_flow.cpp',
       'integration/test_login_throttle_http_flow.cpp',
       'integration/test_login_token_flow.cpp',
       'integration/test_media_reservation_sweep_flow.cpp',
