@@ -353,7 +353,8 @@ value. Test fixtures that do not exercise persistence select it through
   `access_tokens.expires_at` / `refresh_tokens.expires_at` via
   `expires_at_text`/`parse_expires_at`). Unlike an access token's expiry,
   `expires_at` is never optional here — every OpenID token has a finite
-  lifetime. This is a **separate table from `access_tokens`**,
+  lifetime, and a user holds at most `max_openid_tokens_per_user` (32) live rows; the in-memory rows are indexed by hash
+  and by user (ADR-0681, ADR-0682). This is a **separate table from `access_tokens`**,
   by design — see `docs/auth-identity.md` ("OpenID tokens") and
   `docs/threat-model.md` for why that separation is the entire security
   property this feature depends on. The `PersistentOpenidToken` struct and

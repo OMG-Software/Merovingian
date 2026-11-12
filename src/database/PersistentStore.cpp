@@ -9165,61 +9165,176 @@ auto rebuild_notification_index(PersistentStore& store) -> void
     return result;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto openid_hash_of(PersistentOpenidToken const& row) -> std::string
+    {
+        return row.token_hash;
+    }
+    [[nodiscard]] auto openid_user_of(PersistentOpenidToken const& row) -> std::string
+    {
+        return row.user_id;
+    }
+
+    // A writer calls this first, so an index a direct edit of the vector left stale is rebuilt before it is relied on.
+    auto sync_openid_indexes(PersistentStore& store) -> void
+    {
+        if (!store.openid_hash_index.in_step(store.openid_tokens.size()) ||
+            !store.openid_user_index.in_step(store.openid_tokens.size()))
+        {
+            rebuild_openid_token_indexes(store);
+        }
+    }
+
+    // Erases the rows at `positions` (any order, no repeats) by moving the last row into each gap, highest first,
+    // and keeps both indexes in step. The indexes must be in step before the call.
+    auto erase_openid_rows(PersistentStore& store, std::vector<std::size_t> positions) -> void
+    {
+        std::ranges::sort(positions, std::greater<>{});
+        auto& rows = store.openid_tokens;
+        for (auto const position : positions)
+        {
+            auto const old_count = rows.size();
+            auto const erased_hash = rows[position].token_hash;
+            auto const erased_user = rows[position].user_id;
+            auto const last_hash = rows.back().token_hash;
+            auto const last_user = rows.back().user_id;
+            if (position + 1U != old_count)
+            {
+                rows[position] = std::move(rows.back());
+            }
+            rows.pop_back();
+            store.openid_hash_index.erase_swap(position, erased_hash, last_hash, old_count);
+            store.openid_user_index.erase_swap(position, erased_user, last_user, old_count);
+        }
+    }
+
+    // The expiry as the epoch-millisecond text the column holds.
+    [[nodiscard]] auto openid_ms(std::chrono::system_clock::time_point point) -> std::string
+    {
+        return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(point.time_since_epoch()).count());
+    }
+
+} // namespace
+
+auto rebuild_openid_token_indexes(PersistentStore& store) -> void
+{
+    store.openid_hash_index.rebuild(store.openid_tokens, openid_hash_of);
+    store.openid_user_index.rebuild(store.openid_tokens, openid_user_of);
+}
+
+[[nodiscard]] auto find_openid_token(PersistentStore const& store, std::string const& token_hash)
+    -> PersistentOpenidToken const*
+{
+    auto const& rows = store.openid_tokens;
+    if (store.openid_hash_index.in_step(rows.size()))
+    {
+        store.openid_rows_examined.add(1U);
+        auto const position = store.openid_hash_index.find(token_hash);
+        if (!position.has_value())
+        {
+            return nullptr;
+        }
+        if (*position < rows.size() && rows[*position].token_hash == token_hash)
+        {
+            return &rows[*position];
+        }
+    }
+    store.openid_rows_examined.add(rows.size());
+    auto const found = std::ranges::find_if(rows, [&token_hash](PersistentOpenidToken const& row) {
+        return row.token_hash == token_hash;
+    });
+    return found == rows.end() ? nullptr : &*found;
+}
+
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool
 {
     if (token.user_id.empty() || !token_is_hash(token.token_hash))
     {
         return false;
     }
-    auto const expires_at_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(token.expires_at.time_since_epoch()).count();
-    if (!record_and_persist(
-            store, record_statement("insert_openid_token",
-                                    "INSERT INTO openid_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
-                                    {public_value(token.user_id), sensitive_value(token.token_hash),
-                                     public_value(std::to_string(expires_at_ms))})))
+    auto const now = std::chrono::system_clock::now();
+    if (token.expires_at <= now)
+    {
+        // Already expired: it would be swept at once, so it is never stored.
+        return true;
+    }
+    sync_openid_indexes(store);
+    auto& rows = store.openid_tokens;
+
+    // Every expired row goes, whoever holds it. One pass over the rows, one statement however many there are.
+    store.openid_rows_examined.add(rows.size());
+    auto doomed = std::vector<std::size_t>{};
+    for (auto position = std::size_t{0U}; position < rows.size(); ++position)
+    {
+        if (rows[position].expires_at <= now)
+        {
+            doomed.push_back(position);
+        }
+    }
+    auto const expired_count = doomed.size();
+
+    // The user's live rows beyond the cap, oldest first, are evicted so this one fits (ADR-0682).
+    auto live = std::vector<std::size_t>{};
+    for (auto const position :
+         positions_in_group(store.openid_user_index, rows, token.user_id, openid_user_of, store.openid_rows_examined))
+    {
+        if (rows[position].expires_at > now)
+        {
+            live.push_back(position);
+        }
+    }
+    std::ranges::sort(live, [&rows](std::size_t left, std::size_t right) {
+        return rows[left].expires_at < rows[right].expires_at;
+    });
+    auto const keep = max_openid_tokens_per_user - 1U;
+    auto evicted_hashes = std::vector<std::string>{};
+    if (live.size() > keep)
+    {
+        for (auto index = std::size_t{0U}; index < live.size() - keep; ++index)
+        {
+            doomed.push_back(live[index]);
+            evicted_hashes.push_back(rows[live[index]].token_hash);
+        }
+    }
+
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(record_statement(
+        "insert_openid_token", "INSERT INTO openid_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+        {public_value(token.user_id), sensitive_value(token.token_hash), public_value(openid_ms(token.expires_at))}));
+    if (expired_count != 0U)
+    {
+        auto const integer = std::string{store.backend == PersistentStoreBackend::postgresql ? "BIGINT" : "INTEGER"};
+        statements.push_back(record_statement("prune_openid_tokens",
+                                              "DELETE FROM openid_tokens WHERE CAST(expires_at AS " + integer +
+                                                  ") <= CAST($1 AS " + integer + ")",
+                                              {public_value(openid_ms(now))}));
+    }
+    for (auto const& hash : evicted_hashes)
+    {
+        statements.push_back(record_statement("evict_openid_token", "DELETE FROM openid_tokens WHERE token_hash = $1",
+                                              {sensitive_value(hash)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    store.openid_tokens.push_back(token);
-
-    // Retention: every insert also sweeps every already-expired row (not
-    // just this user's), since an OpenID token's natural lifecycle bound is
-    // its own short expiry rather than a per-user row count -- unlike
-    // store_notification, which caps by count because notification history
-    // has no expiry of its own.
-    auto const now = std::chrono::system_clock::now();
-    auto stale_hashes = std::vector<std::string>{};
-    for (auto const& row : store.openid_tokens)
-    {
-        if (row.expires_at <= now)
-        {
-            stale_hashes.push_back(row.token_hash);
-        }
-    }
-    for (auto const& stale_hash : stale_hashes)
-    {
-        std::ignore = record_and_persist(store, record_statement("prune_openid_token",
-                                                                 "DELETE FROM openid_tokens WHERE token_hash = $1",
-                                                                 {sensitive_value(stale_hash)}));
-        auto const stale = std::ranges::find_if(store.openid_tokens, [&](PersistentOpenidToken const& current) {
-            return current.token_hash == stale_hash;
-        });
-        if (stale != store.openid_tokens.end())
-        {
-            store.openid_tokens.erase(stale);
-        }
-    }
+    erase_openid_rows(store, std::move(doomed));
+    rows.push_back(token);
+    store.openid_hash_index.note_appended(rows.size(), token.token_hash);
+    store.openid_user_index.note_appended(rows.size(), token.user_id);
     return true;
 }
 
 [[nodiscard]] auto revoke_openid_tokens_for_user(PersistentStore& store, std::string_view user_id) -> bool
 {
-    auto const held = [user_id](PersistentOpenidToken const& row) {
-        return row.user_id == user_id;
-    };
+    sync_openid_indexes(store);
+    auto const group = std::string{user_id};
+    auto positions = positions_in_group(store.openid_user_index, store.openid_tokens, group, openid_user_of,
+                                        store.openid_rows_examined);
     // Rows are mirrored into memory only after they were persisted, so no held row means no stored row.
-    if (!std::ranges::any_of(store.openid_tokens, held))
+    if (positions.empty())
     {
         return true;
     }
@@ -9229,7 +9344,7 @@ auto rebuild_notification_index(PersistentStore& store) -> void
     {
         return false;
     }
-    std::erase_if(store.openid_tokens, held);
+    erase_openid_rows(store, std::move(positions));
     return true;
 }
 

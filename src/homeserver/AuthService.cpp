@@ -2701,8 +2701,16 @@ auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_vi
         return std::nullopt;
     }
     auto const now = std::chrono::system_clock::now();
-    for (auto const& row : runtime.database.persistent_store.openid_tokens)
+    // One index lookup per candidate hash, whatever the number of tokens held (ADR-0681); the row it names is
+    // confirmed with the constant-time comparison below.
+    for (auto const& candidate : candidate_hashes)
     {
+        auto const* const found = database::find_openid_token(runtime.database.persistent_store, candidate);
+        if (found == nullptr)
+        {
+            continue;
+        }
+        auto const& row = *found;
         // A match on an expired row still falls through to nullopt below --
         // "unknown token" and "expired token" are indistinguishable to the
         // caller, so a probing third party cannot tell a token merely lapsed

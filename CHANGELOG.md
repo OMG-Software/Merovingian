@@ -371,6 +371,13 @@ because they write `current_state` and membership rows; the ADR records what rel
 C03. A federated join committed every auth-chain event and every member row of the resident's answer separately, under the
 runtime lock, so the number of commits was chosen by the resident. The auth chain is now stored in one transaction and the
 member rows in one. Preparing the statements with the lock released is not done (recorded in the ADR).
+### OpenID tokens are looked up by hash and capped per user (ADR-0681, ADR-0682)
+
+`GET /openid/userinfo` no longer compares the presented token with every stored OpenID token under the global lock: the
+tokens are indexed by hash and by user, so the request costs one lookup. A user now holds at most 32 live OpenID tokens
+(minting another evicts their oldest), and a mint deletes every expired row with one statement in the same transaction as
+the insert instead of one committed statement and one vector erase per row, which held the lock for about 94 seconds after
+an hour of minting at the default rate.
 
 ## 1.0.0
 

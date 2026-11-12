@@ -555,6 +555,12 @@ struct PersistentStore final
     std::size_t notification_indexed_rows{0U};
     ExaminedRows notification_rows_examined{};
     std::vector<PersistentOpenidToken> openid_tokens{};
+    // Positions in `openid_tokens` by token hash and by user (ADR-0681). Same trust rule as `user_index`: used only
+    // while built for exactly the vector's row count; the writers below keep both in step, and a load rebuilds them
+    // through `rebuild_openid_token_indexes`. Rows leave by moving the last row into the gap.
+    RowKeyIndex openid_hash_index{};
+    RowGroupIndex openid_user_index{};
+    ExaminedRows openid_rows_examined{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
@@ -1579,13 +1585,20 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
     -> bool;
 // Drops the in-memory window's rows older than the cutoff and returns how many.
 auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t;
+// The most live OpenID tokens one user holds (ADR-0682). Minting one past it evicts the user's oldest.
+inline constexpr auto max_openid_tokens_per_user = std::size_t{32U};
+// Rebuilds the indexes over `openid_tokens` after rows were loaded or the vector was edited directly.
+auto rebuild_openid_token_indexes(PersistentStore& store) -> void;
+// The row whose stored hash equals `token_hash`, or nullptr. One index lookup while the indexes are in step,
+// whatever the row count (ADR-0681). The caller confirms the match with a constant-time comparison.
+[[nodiscard]] auto find_openid_token(PersistentStore const& store, std::string const& token_hash)
+    -> PersistentOpenidToken const*;
 // Insert an OpenID token row. Persists it, mirrors it into the in-memory
-// vector, and then prunes every already-expired row (across all users) so
-// `openid_tokens` cannot grow without bound -- the time-based analogue of
-// store_notification's per-user count cap, appropriate here because an
-// OpenID token's natural retention bound is its own short expiry rather
-// than a row count. Returns false on an empty user_id/token_hash or a
-// backend write failure.
+// vector, and in the same transaction drops every already-expired row (across
+// all users, with one statement however many there are) and the user's oldest
+// live rows beyond `max_openid_tokens_per_user`, so `openid_tokens` is bounded
+// by the cap per user rather than by what a user mints in an hour. Returns
+// false on an empty user_id/token_hash or a backend write failure.
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
 // Deletes every OpenID token row of `user_id`, from the backend and from the in-memory
 // vector. Returns true when no row of the user remains (including when there never was

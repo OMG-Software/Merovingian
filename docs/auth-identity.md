@@ -562,9 +562,11 @@ so it has its own, deliberately separate, lifecycle:
   entirely (`src/homeserver/LocalHttpRouter.cpp`,
   `federation_openid_userinfo_response`), alongside the same-shaped bypass
   for `GET /_matrix/key/v2/server`.
-- **Retention.** `store_openid_token` sweeps every already-expired row
-  (across all users) on each insert, so `openid_tokens` cannot grow without
-  bound — see `docs/database-persistence.md`.
+- **Retention and cap (C37, ADR-0681, ADR-0682).** `openid_tokens` is indexed by token hash and by user, so
+  `GET /openid/userinfo` costs one lookup however many tokens exist. `store_openid_token` writes the mint, one
+  statement deleting every expired row (all users) and the deletes of the user's oldest live rows beyond
+  `max_openid_tokens_per_user` (32) in one transaction.
+  See `docs/database-persistence.md`.
 - **Revocation (F-77, ADR-0408).** `database::revoke_openid_tokens_for_user`
   deletes a user's rows from the table and the in-memory list.
   `deactivate_local_user`, `logout_all_local_user` and
