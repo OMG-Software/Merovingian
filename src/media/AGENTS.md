@@ -10,7 +10,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `LocalMediaRepository.cpp` | Core media store: save, retrieve, deduplicate by content hash |
 | `Security.cpp` | MIME type allow-list, size limits, quarantine policy |
 | `Thumbnailer.cpp` | Generates thumbnails for image media |
-| `ThumbnailCache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
+| `ThumbnailCache.cpp` | `ThumbnailCache`: byte- and count-bounded (`max_thumbnail_cache_entries`) LRU of generated thumbnails, evicted from a recency index (C29, ADR-0690), keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `DecoderHardening.cpp` |
 | `DecoderHardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
 | `ClamdScanner.cpp` | `ClamdScanner` (ADR-0565): clamd `zINSTREAM` over an AF_UNIX socket, one deadline, a bounded number of concurrent scans, fail closed (`ClamdVerdict`: clean / infected / failed / oversize; only clean clears). No logging: `homeserver/ClamdMediaScan.cpp` logs and audits |

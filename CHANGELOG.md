@@ -407,6 +407,10 @@ An application service's exclusive alias namespace stopped other users and servi
 
 The per-user byte quota was checked only when an upload stored a new blob, so a user who had filled their quota got 200 for bytes the server already held and a quota refusal for bytes it did not, which confirmed that a known file was stored. The quota is now charged for every upload, a deduplicated one included, so a refusal no longer depends on what other users have stored. The server-wide byte limit still lets a file the server already holds pass (it adds no bytes), and the small timing difference of a deduplicated upload is not changed.
 
+### Evicting from the thumbnail cache no longer scans it (ADR-0690)
+
+Making room in the in-memory thumbnail cache searched every entry for the least recently used one, once per entry evicted, with the global lock held; a client could fill the cache with many tiny thumbnails of one image (every requested size is a separate entry) and then request one large thumbnail. The cache now keeps a recency index, so an eviction costs a logarithmic step, and holds at most 16,384 entries as well as its byte budget.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

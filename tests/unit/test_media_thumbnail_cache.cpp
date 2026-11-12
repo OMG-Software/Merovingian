@@ -197,3 +197,69 @@ SCENARIO("thumbnail requests beyond the decoder's largest dimension share one ca
         }
     }
 }
+
+// C29 (ADR-0690): eviction takes the least recently used entry from a recency index, and the entry count is capped, so
+// one large insert cannot evict an unbounded number of tiny entries with a pass over the cache for each.
+SCENARIO("a large thumbnail evicts the oldest entries in order and the entry count is capped",
+         "[media][thumbnail][c29]")
+{
+    GIVEN("a cache filled past its entry cap with tiny thumbnails under a large byte budget")
+    {
+        auto cache = ThumbnailCache{};
+        auto constexpr budget = std::uint64_t{64U * 1024U * 1024U};
+        auto const cap = merovingian::media::max_thumbnail_cache_entries;
+        auto const total = cap + 100U;
+        for (auto number = std::size_t{0U}; number < total; ++number)
+        {
+            cache.insert(key("m" + std::to_string(number), 1U), thumbnail(10U), budget);
+        }
+
+        WHEN("the count is read and the oldest and newest entries are looked up")
+        {
+            THEN("the cache holds exactly the cap, the oldest hundred are gone and the newest stay")
+            {
+                REQUIRE(cache.entry_count() == cap);
+                REQUIRE_FALSE(cache.find(key("m0", 1U)).has_value());
+                REQUIRE_FALSE(cache.find(key("m99", 1U)).has_value());
+                REQUIRE(cache.find(key("m100", 1U)).has_value());
+                REQUIRE(cache.find(key("m" + std::to_string(total - 1U), 1U)).has_value());
+            }
+        }
+
+        WHEN("an entry used again is protected, and a thumbnail as big as the budget arrives")
+        {
+            REQUIRE(cache.find(key("m100", 1U)).has_value());
+            cache.insert(key("big", 1U), thumbnail(static_cast<std::size_t>(budget) - 64U), budget);
+
+            THEN("everything is evicted but the big one, within the budget")
+            {
+                REQUIRE(cache.entry_count() == 1U);
+                REQUIRE(cache.size_bytes() <= budget);
+                REQUIRE(cache.find(key("big", 1U)).has_value());
+            }
+        }
+    }
+
+    GIVEN("a small byte budget and a used entry")
+    {
+        auto cache = ThumbnailCache{};
+        auto constexpr budget = std::uint64_t{450U};
+        cache.insert(key("a", 1U), thumbnail(100U), budget);
+        cache.insert(key("b", 1U), thumbnail(100U), budget);
+        cache.insert(key("c", 1U), thumbnail(100U), budget);
+        REQUIRE(cache.find(key("a", 1U)).has_value());
+
+        WHEN("a double-sized thumbnail is inserted")
+        {
+            cache.insert(key("d", 1U), thumbnail(200U), budget);
+
+            THEN("the two least recently used entries go, in order, and the used one stays")
+            {
+                REQUIRE_FALSE(cache.find(key("b", 1U)).has_value());
+                REQUIRE_FALSE(cache.find(key("c", 1U)).has_value());
+                REQUIRE(cache.find(key("a", 1U)).has_value());
+                REQUIRE(cache.find(key("d", 1U)).has_value());
+            }
+        }
+    }
+}

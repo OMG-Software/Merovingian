@@ -101,7 +101,7 @@ current in-process runtime path.
   uploads, the federation media download and every PostgreSQL download are still buffered: `substring()` of a
   compressed TOASTed `bytea` decompresses the whole value for each chunk.
 - Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
-  64 MiB, least recently used first out; empty or `0` disables it), keyed by the source
+  64 MiB, least recently used first out, from a recency index, and at most 16,384 entries (ADR-0690); empty or `0` disables it), keyed by the source
   record, size and method, with each axis past the decoder's largest (4096) keyed as
   4096, since the worker clamps it to that; a hit is served only after the record has
   been checked as servable, so moderation needs no cache invalidation. After a decode,

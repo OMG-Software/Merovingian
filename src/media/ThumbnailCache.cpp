@@ -43,7 +43,10 @@ auto ThumbnailCache::find(ThumbnailCacheKey const& key) -> std::optional<CachedT
     {
         return std::nullopt;
     }
+    // Recency is a second index, so the least recently used entry is the first of it (C29, ADR-0690).
+    by_recency_.erase(found->second.last_used);
     found->second.last_used = ++clock_;
+    by_recency_.emplace(found->second.last_used, found->first);
     return found->second.thumbnail;
 }
 
@@ -58,24 +61,26 @@ auto ThumbnailCache::insert(ThumbnailCacheKey const& key, CachedThumbnail thumbn
     if (auto const existing = entries_.find(name); existing != entries_.end())
     {
         bytes_ -= existing->second.cost;
+        by_recency_.erase(existing->second.last_used);
         entries_.erase(existing);
     }
-    while (!entries_.empty() && bytes_ + cost > max_bytes)
+    // Each eviction is the first entry of the recency index: O(log n), not a pass over every entry. The count cap
+    // keeps one insert from evicting an unbounded number of tiny entries.
+    while (!by_recency_.empty() && (bytes_ + cost > max_bytes || entries_.size() >= max_thumbnail_cache_entries))
     {
-        auto const oldest = std::ranges::min_element(entries_, {}, [](auto const& entry) {
-            return entry.second.last_used;
-        });
-        // Not reachable with entries present; stated so that gcc's flow
-        // analysis (-Wnull-dereference) can see the iterator is valid.
+        auto const oldest = entries_.find(by_recency_.begin()->second);
+        by_recency_.erase(by_recency_.begin());
         if (oldest == entries_.end())
         {
-            break;
+            continue;
         }
         bytes_ -= oldest->second.cost;
         entries_.erase(oldest);
     }
     bytes_ += cost;
-    entries_.emplace(std::move(name), Entry{std::move(thumbnail), cost, ++clock_});
+    auto const last_used = ++clock_;
+    by_recency_.emplace(last_used, name);
+    entries_.emplace(std::move(name), Entry{std::move(thumbnail), cost, last_used});
 }
 
 auto ThumbnailCache::size_bytes() const noexcept -> std::uint64_t
