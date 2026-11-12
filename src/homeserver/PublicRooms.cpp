@@ -28,12 +28,30 @@ namespace merovingian::homeserver
 namespace
 {
 
+    // What a filtered request may still parse (C24). Charged with each event's size before it is parsed.
+    struct ExaminationBudget final
+    {
+        std::uint64_t remaining{0U};
+        bool exhausted{false};
+
+        [[nodiscard]] auto charge(std::uint64_t bytes) noexcept -> bool
+        {
+            if (bytes > remaining)
+            {
+                exhausted = true;
+                return false;
+            }
+            remaining -= bytes;
+            return true;
+        }
+    };
+
     // A string from the content of the room's current state event of this type. An index lookup, never a
     // scan of the store's state (ADR-0344): this runs once per published room under runtime.mutex on a path
     // any federating server can reach.
     [[nodiscard]] auto state_content_string(database::PersistentStore const& store, std::string_view room_id,
-                                            std::string_view event_type, std::string_view key)
-        -> std::optional<std::string>
+                                            std::string_view event_type, std::string_view key,
+                                            ExaminationBudget* examination = nullptr) -> std::optional<std::string>
     {
         auto const event_id = database::find_current_state_event_id(store, room_id, event_type, {});
         if (!event_id.has_value())
@@ -42,6 +60,10 @@ namespace
         }
         auto const event = store.events.find(*event_id);
         if (event == store.events.end())
+        {
+            return std::nullopt;
+        }
+        if (examination != nullptr && !examination->charge(event->json.size()))
         {
             return std::nullopt;
         }
@@ -71,10 +93,10 @@ namespace
     // An empty name, alias or avatar URL is a room without one: the response omits a field the room does not
     // have, and its types do not allow an empty alias or URI.
     [[nodiscard]] auto state_content_text(database::PersistentStore const& store, std::string_view room_id,
-                                          std::string_view event_type, std::string_view key)
-        -> std::optional<std::string>
+                                          std::string_view event_type, std::string_view key,
+                                          ExaminationBudget* examination = nullptr) -> std::optional<std::string>
     {
-        auto value = state_content_string(store, room_id, event_type, key);
+        auto value = state_content_string(store, room_id, event_type, key, examination);
         if (value.has_value() && value->empty())
         {
             return std::nullopt;
@@ -89,12 +111,13 @@ namespace
         std::optional<std::string> alias{};
     };
 
-    [[nodiscard]] auto read_room_text(database::PersistentStore const& store, std::string_view room_id) -> RoomText
+    [[nodiscard]] auto read_room_text(database::PersistentStore const& store, std::string_view room_id,
+                                      ExaminationBudget* examination = nullptr) -> RoomText
     {
         return {
-            state_content_text(store, room_id, "m.room.name", "name"),
-            state_content_string(store, room_id, "m.room.topic", "topic"),
-            state_content_text(store, room_id, "m.room.canonical_alias", "alias"),
+            state_content_text(store, room_id, "m.room.name", "name", examination),
+            state_content_string(store, room_id, "m.room.topic", "topic", examination),
+            state_content_text(store, room_id, "m.room.canonical_alias", "alias", examination),
         };
     }
 
@@ -178,7 +201,7 @@ auto public_rooms_scope(appservice::AppserviceRegistry const& registry, bool inc
 
 auto public_rooms_response_json(LocalDatabase const& database, federation::PublicRoomsFilter const& filter,
                                 std::size_t limit, std::size_t since_offset, PublicRoomsScope const& scope,
-                                std::size_t max_page_bytes) -> std::string
+                                std::size_t max_page_bytes, std::uint64_t max_examined_bytes) -> std::string
 {
     auto const& store = database.persistent_store;
     auto const page_size = std::max(limit, std::size_t{1U});
@@ -217,6 +240,9 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
         }
     }
 
+    // C24: the state a filter or search reads is bounded in bytes for the whole request; the rooms past that point are
+    // counted as published but not examined.
+    auto examination = ExaminationBudget{max_examined_bytes};
     auto chunk = std::string{};
     auto taken = std::size_t{0U};
     auto page_closed = false;
@@ -238,6 +264,10 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
             continue;
         }
         ++published;
+        if ((filtering_types || searching) && examination.exhausted)
+        {
+            continue;
+        }
 
         // Only what the filter or this page needs is read: past the page, an unfiltered room costs a count.
         auto const may_be_in_page = !page_closed && selected >= since_offset;
@@ -245,7 +275,12 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
         auto room_type = std::optional<std::string>{};
         if (filtering_types || may_be_in_page)
         {
-            room_type = state_content_text(store, room.room_id, "m.room.create", "type");
+            room_type = state_content_text(store, room.room_id, "m.room.create", "type",
+                                           filtering_types ? &examination : nullptr);
+        }
+        if (filtering_types && examination.exhausted)
+        {
+            continue; // the type could not be read: the room is not examined
         }
         if (filtering_types && !(room_type.has_value() ? wanted_types.contains(*room_type) : wants_untyped))
         {
@@ -255,7 +290,11 @@ auto public_rooms_response_json(LocalDatabase const& database, federation::Publi
         auto text = RoomText{};
         if (searching || may_be_in_page)
         {
-            text = read_room_text(store, room.room_id);
+            text = read_room_text(store, room.room_id, searching ? &examination : nullptr);
+        }
+        if (searching && examination.exhausted)
+        {
+            continue; // the text could not be read in full: the room is not examined
         }
         if (searching)
         {

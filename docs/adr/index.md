@@ -568,3 +568,4 @@
 * [0721 - Only a prompt answer proves a push gateway, and the reserve limits each host to a quarter share](0721-only-a-prompt-answer-proves-a-push-gateway-and-the-reserve-limits-each-host-to-a-quarter-share.md)
 * [0722 - The badges of one event share one glob step budget](0722-the-badges-of-one-event-share-one-glob-step-budget.md)
 * [0723 - Property path resolution is charged to the evaluation budget past a free allowance](0723-property-path-resolution-is-charged-to-the-evaluation-budget-past-a-free-allowance.md)
+* [0724 - A filtered directory request parses a bounded number of bytes](0724-a-filtered-directory-request-parses-a-bounded-number-of-bytes.md)

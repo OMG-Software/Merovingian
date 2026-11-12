@@ -66,6 +66,13 @@ findings that needed validation.
   many rules cannot make one event cost tens of millions of compares under the server lock. Ordinary events are
   unaffected.
 
+### A directory search parses a bounded number of bytes (ADR-0724)
+
+* `POST /publicRooms` with a search term or room-type filter (and the federation `publicRooms`) read and parsed the name,
+  topic, alias and create events of every published room under the server lock. One request now parses at most 4 MiB of
+  state events; past that the remaining rooms are not examined, so a search over a directory of very large rooms can
+  miss matches. `total_room_count_estimate` still counts every published room.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
