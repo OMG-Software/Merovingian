@@ -13780,6 +13780,27 @@ namespace
         return json_serialize(json_obj({json_member("reports", json_arr(std::move(reports)))}));
     }
 
+    // Writes the audit row for an accepted report unless the reporter already filed it inside the window the
+    // administrators' listing shows, and refuses a reporter past their daily share (C26, ADR-0686). The check is the
+    // in-memory `safety_reports` index: no read of `audit_log` on the request path.
+    [[nodiscard]] auto record_safety_report(ClientServerRuntime& rt, trust_safety::SafetyAuditEvent const& audit)
+        -> LocalHttpResponse
+    {
+        switch (rt.safety_reports.admit(audit.event_type, audit.actor, audit.entity, wall_clock_milliseconds(),
+                                        rt.limits.max_safety_report_rows))
+        {
+        case SafetyReportIndex::Admission::duplicate:
+            break;
+        case SafetyReportIndex::Admission::reporter_over_budget:
+            return {429U, matrix_error("M_LIMIT_EXCEEDED", "Too many reports filed today. Please try again later.",
+                                       3'600'000U)};
+        case SafetyReportIndex::Admission::admitted:
+            append_policy_audit(rt, audit);
+            break;
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
         -> LocalHttpResponse
     {
@@ -13816,16 +13837,7 @@ namespace
         // reporter, same event) among the rows the admin listing shows is acknowledged without
         // writing another. A member cannot grow the table faster than the events they can see.
         auto const audit = trust_safety::make_safety_audit_event(user, event_id, decision);
-        auto const recent =
-            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
-        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
-            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
-        });
-        if (!already_reported)
-        {
-            append_policy_audit(rt, audit);
-        }
-        return resp(200U, "{}");
+        return record_safety_report(rt, audit);
     }
 
     // POST /_matrix/client/v3/users/{userId}/report (spec v1.14). "The caller is not required to be joined to any
@@ -13865,16 +13877,7 @@ namespace
             return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
         }
         auto const audit = trust_safety::make_safety_audit_event(user, reported, decision);
-        auto const recent =
-            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
-        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
-            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
-        });
-        if (!already_reported)
-        {
-            append_policy_audit(rt, audit);
-        }
-        return resp(200U, "{}");
+        return record_safety_report(rt, audit);
     }
 
     [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
@@ -14166,6 +14169,11 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
         client_api.max_registration_validation_sessions_per_remote;
     rt.limits.max_uia_sessions = client_api.max_uia_sessions;
     rt.limits.max_safety_report_rows = client_api.max_safety_report_rows;
+    // Filled once, here, from the rows the audit log already holds; the report routes read this and not the log (C26).
+    rt.safety_reports.rebuild(
+        database::load_audit_events_by_type_prefix(rt.homeserver.database.persistent_store, "trust_safety.",
+                                                   rt.limits.max_safety_report_rows),
+        trust_safety::policy_action_name(trust_safety::PolicyAction::accept_report), rt.limits.max_safety_report_rows);
     rt.limits.max_notifications_page_size = client_api.max_notifications_page_size;
     rt.limits.max_relations_page_size = client_api.max_relations_page_size;
     rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;

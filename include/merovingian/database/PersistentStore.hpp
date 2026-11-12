@@ -561,6 +561,9 @@ struct PersistentStore final
     RowKeyIndex openid_hash_index{};
     RowGroupIndex openid_user_index{};
     ExaminedRows openid_rows_examined{};
+    // Calls of load_audit_events_by_type_prefix: a test reads the difference to prove a request path never reads the
+    // audit log (C26).
+    ExaminedRows audit_type_queries{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See

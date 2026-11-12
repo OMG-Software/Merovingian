@@ -614,3 +614,4 @@
 * [0683 - UIA sessions belong to an owner, and a full pool refuses instead of evicting](0683-uia-sessions-belong-to-an-owner-and-a-full-pool-refuses-instead-of-evicting.md)
 * [0684 - Identity validation sessions are capped per rate-limit client key](0684-identity-validation-sessions-are-capped-per-rate-limit-client-key.md)
 * [0685 - A password reset address keeps one code per interval and a daily mail cap](0685-a-password-reset-address-keeps-one-code-per-interval-and-a-daily-mail-cap.md)
+* [0686 - Safety reports are judged from an in-memory index and limited per reporter](0686-safety-reports-are-judged-from-an-in-memory-index-and-limited-per-reporter.md)

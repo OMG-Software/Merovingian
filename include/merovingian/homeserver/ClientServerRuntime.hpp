@@ -19,6 +19,7 @@
 #include "merovingian/homeserver/LoginTokenStore.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
+#include "merovingian/homeserver/SafetyReportIndex.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/http/ConnectionLimiter.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
@@ -68,6 +69,9 @@ struct ClientServerRuntime final
     // The login tokens POST /login/get_token has minted and nobody has redeemed (CS8, ADR-0548). In memory only,
     // bounded, and guarded by homeserver.mutex like the UIA sessions above.
     LoginTokenStore login_tokens{};
+    // Which reports the reporting routes have accepted, so a repeat or a flood costs no read of audit_log (C26,
+    // ADR-0686).
+    SafetyReportIndex safety_reports{};
     // CORS policy snapshot. Copied from `config.server().cors` at
     // `start_client_server()` time. CORS is not hot-reloadable: a config
     // change requires a server restart.

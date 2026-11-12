@@ -7,6 +7,7 @@ homeserver_sources = files(
   'ClientTxnPrune.cpp',
   'SessionTable.cpp',
   'LoginTokenStore.cpp',
+  'SafetyReportIndex.cpp',
   'RetentionSweep.cpp',
   'DefaultPushRuleset.cpp',
   'DeferredPduRetry.cpp',

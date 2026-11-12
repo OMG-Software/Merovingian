@@ -725,6 +725,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (shape, `id_access_token`, trusted `id_server`) before `create_room`, and are sent afterwards with
   `invite_user_by_threepid(..., max_total_seconds)` under the one ADR-0079 slot and `invite_deadline` of the remote
   invites; each call's timeouts are clamped to what is left of the deadline (ADR-0474). A failure leaves the room.
+- `POST /rooms/{roomId}/report/{eventId}` and `POST /users/{userId}/report` go through `record_safety_report` and
+  `ClientServerRuntime::safety_reports` (a `SafetyReportIndex`): never read `audit_log` (`load_audit_events_by_type_prefix`)
+  on the request path to find a repeat. 20 a minute per user (`builtin_per_user`), 100 distinct a day (C26, ADR-0686).
 - The cap on open identity validation sessions (`record_identity_validation_session`) is counted per `rate_limit_client_key`,
   never `req.remote_addr`: behind a proxy the raw peer is shared by every client (C10, ADR-0684).
 - `GET /relations?recurse=true` walks at most 3 levels and offers at most 2048 events beyond the first level; it

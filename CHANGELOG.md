@@ -391,6 +391,10 @@ The cap on open identity validation sessions (password reset, email and phone re
 
 The password reset mail is sent at most once a minute per address across all sessions, so a caller who knew the owner's address could take each minute's only send slot with a session of their own and leave the owner a session with no usable code. A session the throttle gave no code is now judged against the latest code mailed to its address (a code typed into a session still validates only that session, and a code a session has proved is spent from all of them). Keeping the throttle per address and not per client address keeps the mail one address can be sent bounded; at most 10 reset mails a day now go to one address, whoever asks.
 
+### Reporting no longer reads the audit log and is limited per user (ADR-0686)
+
+Every user or event report loaded the newest 1000 rows of its type from `audit_log` under the global lock to find a repeat (a sort of the whole table on PostgreSQL), the 20 reports a minute that the reporting routes declare was never applied, and a user could report any number of distinct remote user IDs. Reports are now judged from an in-memory index filled once at start-up from the stored rows, each user is limited to 20 reports a minute and 100 distinct reports a day (a further one is 429 `M_LIMIT_EXCEEDED`; a repeat is still acknowledged without a second row), so one user can no longer fill the administrators' listing.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

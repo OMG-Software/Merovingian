@@ -7007,6 +7007,7 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
 [[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
                                                     std::size_t limit) -> std::vector<PersistentAuditEvent>
 {
+    store.audit_type_queries.add(1U);
     limit = std::min(limit, max_audit_query_rows);
     if (limit == 0U)
     {
