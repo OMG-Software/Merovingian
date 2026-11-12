@@ -170,6 +170,11 @@ C11. The federation read providers (server ACL, room version, state, state_ids, 
 event) read main's store without `runtime.mutex` while writers changed it, so a remote server could race a read against a
 reallocation. Each now reads under the lock in main; a federation worker is unchanged.
 
+### A federation hierarchy request is answered by main (ADR-0712)
+
+C47. `GET /hierarchy` went to shard 0 whatever room it named, and shard 0's copy of a room another shard owns is its
+start-up snapshot, so the server ACL, the view check and the summaries could be stale. Main now answers it.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -3416,6 +3416,7 @@ namespace
 
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
                                                            std::string_view origin) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
         };
 
