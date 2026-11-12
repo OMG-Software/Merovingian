@@ -189,8 +189,11 @@ class AllowListTests(unittest.TestCase):
 
     def test_workflows_that_run_catch2_through_the_build_scripts_pass_a_job(self) -> None:
         # Any build-linux.sh / build-bsd.sh call in a workflow that runs the tests must say which job it is.
+        # A comment runs nothing, so the text after a `#` at the start of a line or after whitespace
+        # is dropped first; `${VAR#prefix}` keeps its `#`.
         for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for full_line in path.read_text(encoding="utf-8").splitlines():
+                line = re.split(r"(?:^|\s)#", full_line, maxsplit=1)[0]
                 if re.search(r"scripts/build-(linux|bsd)\.sh", line) and not re.search(
                     r"--(skip-job|no-tests|setup-only|compile-only)", line
                 ):

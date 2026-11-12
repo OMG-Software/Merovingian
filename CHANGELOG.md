@@ -25,6 +25,8 @@ Merovingian 1.0.0 is the first production release. It follows the release-gate s
   moves to the fix commit; the owner made this exception to the bump policy for this fix only (ADR-0651).
 * `tests/tooling/test_release_workflow.py`: the Linux and FreeBSD release jobs must install a package for every
   pkg-config module their build script checks, so a missing one fails on the pull request, not on the tag.
+* `tests/tooling/test_expected_skips.py`: a build script named in a workflow comment no longer counts as a test run
+  that needs `--skip-job`, and a `--skip-job` that appears only in a comment no longer satisfies the check.
 
 ### Documentation
 
