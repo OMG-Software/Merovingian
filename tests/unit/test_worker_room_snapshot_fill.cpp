@@ -418,3 +418,44 @@ SCENARIO("A worker's key mirror refreshes from main's answer, taking only the as
         }
     }
 }
+
+SCENARIO("A worker's key lookup reads only the asked server's rows, however many other servers are cached",
+         "[database][c44][c27][server-keys]")
+{
+    GIVEN("a store holding two keys of the asked server and 400 keys of 200 other servers, written by the store")
+    {
+        auto store = db::PersistentStore{};
+        for (auto number = 0U; number < 200U; ++number)
+        {
+            auto const other = "other" + std::to_string(number) + ".example";
+            REQUIRE(db::store_server_signing_key(store, {other, "ed25519:a", "public-a", 5000U}));
+            REQUIRE(db::store_server_signing_key(store, {other, "ed25519:b", "public-b", 5000U}));
+        }
+        REQUIRE(db::store_server_signing_key(store, {std::string{remote_server}, "ed25519:a", "public-a", 5000U}));
+        REQUIRE(db::store_server_signing_key(store, {std::string{remote_server}, "ed25519:b", "public-b", 5000U}));
+
+        WHEN("the asked server's keys are looked up")
+        {
+            auto const before = store.server_signing_key_rows_examined.value();
+            auto const keys = db::public_signing_keys_of_server(store, remote_server, 16U);
+            auto const examined = store.server_signing_key_rows_examined.value() - before;
+
+            THEN("both keys come back, and only those two rows were examined")
+            {
+                REQUIRE(keys.size() == 2U);
+                REQUIRE(examined == 2U);
+            }
+        }
+
+        WHEN("the index is out of step with the rows")
+        {
+            store.server_signing_keys.emplace_back("late.example", "ed25519:a", "public-late", 5000U);
+            auto const keys = db::public_signing_keys_of_server(store, remote_server, 16U);
+
+            THEN("the lookup falls back to a scan and still answers correctly")
+            {
+                REQUIRE(keys.size() == 2U);
+            }
+        }
+    }
+}

@@ -2910,21 +2910,43 @@ auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomRelo
                                                  std::size_t max_rows) -> std::vector<PersistentServerSigningKey>
 {
     auto keys = std::vector<PersistentServerSigningKey>{};
-    auto const lock = store.server_signing_keys_mutex.acquire();
-    for (auto const& held : store.server_signing_keys)
-    {
+    // Returns false once the cap is reached, which ends either walk.
+    auto const take = [&](PersistentServerSigningKey const& held) {
+        store.server_signing_key_rows_examined.add(1U);
         if (keys.size() >= max_rows)
         {
-            break;
+            return false;
         }
         // A row with a secret is one of this server's own keys: never copied, not even its public half.
         if (held.server_name != server_name || !held.secret_key.empty())
         {
-            continue;
+            return true;
         }
         auto key = PersistentServerSigningKey{held.server_name, held.key_id, held.public_key, held.valid_until_ts, {}};
         key.expired_ts = held.expired_ts;
         keys.push_back(std::move(key));
+        return keys.size() < max_rows;
+    };
+    auto const lock = store.server_signing_keys_mutex.acquire();
+    if (max_rows == 0U)
+    {
+        return keys;
+    }
+    // A federation worker may ask at any time, and main's signing path takes the same mutex: read the asked server's
+    // rows through the index (C27, ADR-0713) and scan only while it is out of step.
+    if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+    {
+        store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+            return take(store.server_signing_keys[position]);
+        });
+        return keys;
+    }
+    for (auto const& held : store.server_signing_keys)
+    {
+        if (!take(held))
+        {
+            break;
+        }
     }
     return keys;
 }

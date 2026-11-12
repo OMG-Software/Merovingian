@@ -98,7 +98,8 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 
 14. **A server's signing-key rows are read through `server_signing_key_index`** (C27, ADR-0713). Ask for one server's
     rows with `snapshot_server_signing_keys_of`, never `snapshot_server_signing_keys`, which copies every cached remote
-    key. Append only through `append_server_signing_key` (store_server_signing_key and refresh_remote_signing_keys do);
+    key. `public_signing_keys_of_server` (a federation worker's key lookup, ADR-0733) reads through the index too, counted
+    in `server_signing_key_rows_examined`; a new per-server reader does the same. Append only through `append_server_signing_key` (store_server_signing_key and refresh_remote_signing_keys do);
     the index is trusted only while it is in step with the row count and readers scan otherwise.
 
 ## Reloading a room (F-27, ADR-0360)

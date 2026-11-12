@@ -301,6 +301,9 @@ struct PersistentStore final
     // `server_signing_keys_mutex`; rows are only appended, so it is kept by the two writers below and trusted only
     // while `in_step` the row count, otherwise a reader scans.
     RowGroupIndex server_signing_key_index{};
+    // Rows of `server_signing_keys` a per-server reader visited (public_signing_keys_of_server), so a test shows the
+    // cost of a worker's key lookup is the asked server's rows, not every cached key.
+    ExaminedRows server_signing_key_rows_examined{};
     // Where refresh_remote_signing_keys reads one server's public key rows when set (ADR-0733): the federation worker
     // opens no database and sets this to ask main over its IPC channel. nullopt is a failed read. Unset everywhere
     // else, where the backing database is read.

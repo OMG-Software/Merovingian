@@ -261,7 +261,9 @@ prepared state row now moves the revision after the row is written, as well as a
   permits one read of each listed room, and each `room_sync` main sends permits one read at a generation it sent
   (recorded before the notification goes out). Later pages come from memory, each once, in order, for at most 60 s. No
   lock is held across a read, never `runtime.mutex`, and the read transaction has ended before page 0 is sent. A key
-  lookup is answered from main's memory, public columns, at most 256 rows (ADR-0735). Tests:
+  lookup is answered from main's memory, public columns, at most 256 rows, through the per-server signing-key index
+  (C27, ADR-0713), so it reads the asked server's rows and not every cached key under the mutex main's signing path
+  takes (`server_signing_key_rows_examined`, test `[c44][c27][server-keys]`) (ADR-0735). Tests:
   `[c44][worker-snapshot-service]` (permits, a race for one permit, no lock across the read, paging and expiry) and
   `[integration][c44][worker-snapshot-lock]` (a real SQLite file: a write without waiting is refused during the read
   and succeeds when page 0 is ready).
