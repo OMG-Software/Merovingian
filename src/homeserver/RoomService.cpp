@@ -770,15 +770,14 @@ namespace
 
         // The public keys come from the m.room.third_party_invite state event whose state key is
         // the signed token, never from the signed object itself.
-        auto const tpi_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
-            return s.room_id == room_id && s.event_type == "m.room.third_party_invite" && s.state_key == *token;
-        });
-        if (tpi_state == store.state.end())
+        auto const tpi_event_id =
+            database::find_current_state_event_id(store, room_id, "m.room.third_party_invite", *token);
+        if (!tpi_event_id.has_value())
         {
             return false;
         }
 
-        auto const tpi_event = find_event_json(store, tpi_state->event_id);
+        auto const tpi_event = find_event_json(store, *tpi_event_id);
         auto const* tpi_obj = std::get_if<canonicaljson::Object>(&tpi_event.storage());
         if (tpi_obj == nullptr)
         {
@@ -1186,20 +1185,15 @@ namespace
             }
         };
         auto pending_used = false;
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
             if (pending_invite_json.has_value() && state.event_type == "m.room.member" && state.state_key == invitee)
             {
                 strip(std::string{*pending_invite_json});
                 pending_used = true;
-                continue;
+                return;
             }
             strip(event_json_for_id(store, state.event_id));
-        }
+        });
         if (pending_invite_json.has_value() && !pending_used)
         {
             strip(std::string{*pending_invite_json});
@@ -1344,14 +1338,12 @@ namespace
     [[nodiscard]] auto room_created_here(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
         auto const& store = runtime.database.persistent_store;
-        auto const create = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
-            return entry.room_id == room_id && entry.event_type == "m.room.create" && entry.state_key.empty();
-        });
-        if (create == store.state.end())
+        auto const create_event_id = database::find_current_state_event_id(store, room_id, "m.room.create", "");
+        if (!create_event_id.has_value())
         {
             return false;
         }
-        auto const event = store.events.find_in_room(room_id, create->event_id);
+        auto const event = store.events.find_in_room(room_id, *create_event_id);
         return event != store.events.end() &&
                auth::identifier_server_name(event->sender_user_id) == runtime.config.server().server_name;
     }
@@ -1368,10 +1360,10 @@ namespace
     [[nodiscard]] auto membership_state_entry(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view user_id) -> std::optional<database::PersistentStateEvent>
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
-        });
-        return state == store.state.end() ? std::nullopt : std::optional<database::PersistentStateEvent>{*state};
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        return event_id.has_value() ? std::optional<database::PersistentStateEvent>{database::PersistentStateEvent{
+                                          std::string{room_id}, "m.room.member", std::string{user_id}, *event_id}}
+                                    : std::nullopt;
     }
 
     [[nodiscard]] auto store_or_update_membership(database::PersistentStore& store, std::string_view room_id,
@@ -1850,12 +1842,9 @@ namespace
     [[nodiscard]] auto current_membership_of(database::PersistentStore const& store, std::string_view room_id,
                                              std::string_view user_id) -> std::string
     {
-        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        return state_it == store.state.end()
-                   ? std::string{}
-                   : std::string{events::extract_content_membership(find_event_json(store, state_it->event_id))};
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        return event_id.has_value() ? std::string{events::extract_content_membership(find_event_json(store, *event_id))}
+                                    : std::string{};
     }
 
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
@@ -1863,48 +1852,50 @@ namespace
                                             std::string_view event_type, canonicaljson::Value const& event)
         -> events::AuthEventMap
     {
+        // One state index lookup per key the auth rules read (ADR-0344): the cost of authorising a composed event
+        // is bounded by the keys it names, never by the state of every room on the server.
         auto result = events::AuthEventMap{};
-        auto const invite_token = third_party_invite_token(event);
-        auto const authorising_user = join_authorising_user_of(event);
-        for (auto const& state : store.state)
+        auto const current = [&](std::string_view type, std::string_view state_key) -> std::optional<std::string> {
+            return database::find_current_state_event_id(store, room_id, type, state_key);
+        };
+        // Auth events selection: a join carrying join_authorised_via_users_server also names that user's
+        // current m.room.member event (R04).
+        if (auto const authorising_user = join_authorising_user_of(event); !authorising_user.empty())
         {
-            if (state.room_id != room_id)
+            if (auto const id = current("m.room.member", authorising_user); id.has_value())
             {
-                continue;
+                result.authorising_user_member = find_event_json(store, *id);
             }
-            // Auth events selection: a join carrying
-            // join_authorised_via_users_server also names that user's current
-            // m.room.member event (R04).
-            if (state.event_type == "m.room.member" && !authorising_user.empty() && state.state_key == authorising_user)
+        }
+        if (auto const id = current("m.room.create", ""); id.has_value())
+        {
+            result.create = find_event_json(store, *id);
+            result.create_event_id = *id;
+        }
+        if (auto const id = current("m.room.power_levels", ""); id.has_value())
+        {
+            result.power_levels = find_event_json(store, *id);
+        }
+        if (auto const id = current("m.room.join_rules", ""); id.has_value())
+        {
+            result.join_rules = find_event_json(store, *id);
+        }
+        if (auto const id = current("m.room.member", sender); id.has_value())
+        {
+            result.sender_member = find_event_json(store, *id);
+        }
+        if (event_type == "m.room.member")
+        {
+            if (auto const id = current("m.room.member", target_state_key); id.has_value())
             {
-                result.authorising_user_member = find_event_json(store, state.event_id);
+                result.target_member = find_event_json(store, *id);
             }
-            if (state.event_type == "m.room.create" && state.state_key.empty())
+        }
+        if (auto const invite_token = third_party_invite_token(event); !invite_token.empty())
+        {
+            if (auto const id = current("m.room.third_party_invite", invite_token); id.has_value())
             {
-                result.create = find_event_json(store, state.event_id);
-                result.create_event_id = state.event_id;
-            }
-            if (state.event_type == "m.room.power_levels" && state.state_key.empty())
-            {
-                result.power_levels = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.join_rules" && state.state_key.empty())
-            {
-                result.join_rules = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.member" && state.state_key == sender)
-            {
-                result.sender_member = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.member" && event_type == "m.room.member" &&
-                state.state_key == target_state_key)
-            {
-                result.target_member = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.third_party_invite" && !invite_token.empty() &&
-                state.state_key == invite_token)
-            {
-                result.third_party_invite = find_event_json(store, state.event_id);
+                result.third_party_invite = find_event_json(store, *id);
             }
         }
         return result;
@@ -2046,33 +2037,22 @@ namespace
                         return ComposeResult{std::nullopt, ComposeFailure::rejected};
                     }
                 }
-                for (auto const& state : runtime.database.persistent_store.state)
+                if (auto const authoriser_member = database::find_current_state_event_id(
+                        runtime.database.persistent_store, room_id, "m.room.member", authorising_user);
+                    authoriser_member.has_value() &&
+                    std::ranges::find(auth_events, *authoriser_member) == auth_events.end())
                 {
-                    if (state.room_id == room_id && state.event_type == "m.room.member" &&
-                        state.state_key == authorising_user)
-                    {
-                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
-                        {
-                            auth_events.push_back(state.event_id);
-                        }
-                        break;
-                    }
+                    auth_events.push_back(*authoriser_member);
                 }
             }
             auto const invite_token = third_party_invite_token(canonicaljson::Value{*input});
             if (!invite_token.empty())
             {
-                for (auto const& state : runtime.database.persistent_store.state)
+                if (auto const invite_event = database::find_current_state_event_id(
+                        runtime.database.persistent_store, room_id, "m.room.third_party_invite", invite_token);
+                    invite_event.has_value() && std::ranges::find(auth_events, *invite_event) == auth_events.end())
                 {
-                    if (state.room_id == room_id && state.event_type == "m.room.third_party_invite" &&
-                        state.state_key == invite_token)
-                    {
-                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
-                        {
-                            auth_events.push_back(state.event_id);
-                        }
-                        break;
-                    }
+                    auth_events.push_back(*invite_event);
                 }
             }
         }
@@ -4435,14 +4415,12 @@ auto stripped_state_pdus(database::PersistentStore const& store, std::string_vie
     auto entries = std::vector<std::string>{};
     for (auto const type : types)
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == type && current.state_key.empty();
-        });
-        if (state == store.state.end())
+        auto const state_event_id = database::find_current_state_event_id(store, room_id, type, "");
+        if (!state_event_id.has_value())
         {
             continue;
         }
-        auto const event = store.events.find_in_room(room_id, state->event_id);
+        auto const event = store.events.find_in_room(room_id, *state_event_id);
         if (event == store.events.end())
         {
             continue;
@@ -5985,10 +5963,8 @@ namespace
         {
             return false;
         }
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& row) {
-            return row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == user_id;
-        });
-        if (state == store.state.end() || state->event_id != event_id)
+        auto const member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        if (!member_event_id.has_value() || *member_event_id != event_id)
         {
             return false;
         }
@@ -6930,13 +6906,11 @@ namespace
 
     if (membership_it == runtime.database.persistent_store.memberships.end())
     {
-        auto const state_it =
-            std::ranges::find_if(runtime.database.persistent_store.state, [&](database::PersistentStateEvent const& s) {
-                return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == *user_id;
-            });
-        if (state_it != runtime.database.persistent_store.state.end())
+        auto const member_event_id = database::find_current_state_event_id(runtime.database.persistent_store, room_id,
+                                                                           "m.room.member", *user_id);
+        if (member_event_id.has_value())
         {
-            auto const event_it = runtime.database.persistent_store.events.find(state_it->event_id);
+            auto const event_it = runtime.database.persistent_store.events.find(*member_event_id);
             if (event_it != runtime.database.persistent_store.events.end())
             {
                 auto const parsed = canonicaljson::parse_lossless(event_it->json);

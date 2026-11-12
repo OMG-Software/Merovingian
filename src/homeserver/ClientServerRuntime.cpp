@@ -18777,17 +18777,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 continue;
             }
-            auto const invite_state =
-                std::ranges::find_if(rt.homeserver.database.persistent_store.state,
-                                     [&room_id, &invitee](database::PersistentStateEvent const& state) {
-                                         return state.room_id == room_id && state.event_type == "m.room.member" &&
-                                                state.state_key == invitee;
-                                     });
-            if (invite_state == rt.homeserver.database.persistent_store.state.end())
+            auto const invite_state_event_id = database::find_current_state_event_id(
+                rt.homeserver.database.persistent_store, room_id, "m.room.member", invitee);
+            if (!invite_state_event_id.has_value())
             {
                 continue;
             }
-            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, invite_state->event_id);
+            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, *invite_state_event_id);
             if (!invite_json.has_value())
             {
                 continue;
@@ -18795,7 +18791,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // Server-Server API, "Inviting to a room": the invitee's server is asked to sign the invite
             // before createRoom answers, so the client can use the invite at once (Complement
             // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
-            auto const invite_event_id = invite_state->event_id;
+            auto const invite_event_id = *invite_state_event_id;
             // Read once: remaining_seconds() rounds up, so 0 means the deadline has passed, and a 0 passed on
             // would mean "the whole default budget" to deliver_remote_invite.
             auto const seconds_left = invite_deadline.remaining_seconds();

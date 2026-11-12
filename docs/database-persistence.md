@@ -189,7 +189,8 @@ value. Test fixtures that do not exercise persistence select it through
   Every writer in `PersistentStore.cpp` keeps them in step, `reload_room` and both hydration paths rebuild them
   (`rebuild_state_index`), and a lookup scans while `state_indexed_rows` differs from `state.size()` or a position
   no longer names the row asked for (ADR-0344). Read state by key or by room through these, not by scanning the
-  vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`.
+  vector; a new writer of `state` must call `note_state_row_appended` or `rebuild_state_index`. Both count the rows
+  they look at in `state_rows_examined`, so a test proves a reader's cost by count.
 - `room_state_revision` counts the changes to a room's current state rows, in memory only and from zero at each start.
   A cache of something computed from those rows is valid for one revision (ADR-0624), so a writer that changes a
   current state row calls `note_room_state_changed`.

@@ -794,6 +794,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/hierarchy` reads state through `database::find_current_state_event_id` and
   `for_each_room_state_row` (ADR-0344), parses each child event once, and stops its walk at the end of the page
   plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
+- Composing a local event (`compose_signed_event`, `build_auth_event_map`, `current_membership_of`) and `createRoom`'s
+  remote-invite step read the room's state by key through `database::find_current_state_event_id` (run-3 C35): their
+  cost under the lock is the keys the event names, never every room's state. `[create_room][state-index]` in
+  `tests/integration/test_create_room_state_reads_flow.cpp` proves it with `state_rows_examined`.
 - `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
   most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event

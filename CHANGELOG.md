@@ -181,6 +181,14 @@ C27. Every local send and every key-server request with a query string copied th
 servers could grow without limit, while holding the runtime lock. The table is indexed by server name and read one server
 at a time, a remote key document may add at most 16 current and 64 retired keys, and the key-server cache matches the path
 without its query.
+### Composing an event reads its own room's state by key
+
+Every event the server composes (one per `createRoom` preset step, `initial_state` entry and invitee, under the
+runtime lock) was authorised against an auth map built by walking the current state of every room on the server, and
+`createRoom` walked it again per remote invitee. The auth map, the authorising-user and third-party-invite auth events,
+a user's current membership, the invite's stripped state, the room summary for knocks and the power and push lookups
+now read the room's own state through the state index (ADR-0344). `state_rows_examined` counts what the state readers
+look at; a test proves `createRoom` examines the same rows however much state other rooms hold (run-3 C35).
 
 ## 1.0.0
 

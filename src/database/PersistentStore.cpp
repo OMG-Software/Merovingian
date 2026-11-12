@@ -3808,12 +3808,14 @@ auto rebuild_state_index(PersistentStore& store) -> void
         {
             return std::nullopt;
         }
+        store.state_rows_examined.add(1U);
         if (entry->second < store.state.size() &&
             state_row_is(store.state[entry->second], room_id, event_type, state_key))
         {
             return store.state[entry->second].event_id;
         }
     }
+    store.state_rows_examined.add(store.state.size());
     for (auto const& row : store.state)
     {
         if (state_row_is(row, room_id, event_type, state_key))
@@ -3845,6 +3847,7 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
         };
         if (std::ranges::all_of(entry->second, names_the_room))
         {
+            store.state_rows_examined.add(entry->second.size());
             for (auto const position : entry->second)
             {
                 visit(store.state[position]);
@@ -3852,6 +3855,7 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
             return;
         }
     }
+    store.state_rows_examined.add(store.state.size());
     for (auto const& row : store.state)
     {
         if (row.room_id == room_id)

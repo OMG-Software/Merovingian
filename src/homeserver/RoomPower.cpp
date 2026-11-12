@@ -10,7 +10,6 @@
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
-#include <algorithm>
 #include <string>
 #include <variant>
 
@@ -25,14 +24,12 @@ namespace
     [[nodiscard]] auto current_state_value(database::PersistentStore const& store, std::string_view room_id,
                                            std::string_view event_type) -> canonicaljson::Value
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
-            return entry.room_id == room_id && entry.event_type == event_type && entry.state_key.empty();
-        });
-        if (state == store.state.end())
+        auto const state_event_id = database::find_current_state_event_id(store, room_id, event_type, "");
+        if (!state_event_id.has_value())
         {
             return canonicaljson::Value{};
         }
-        auto const event = store.events.find(state->event_id);
+        auto const event = store.events.find(*state_event_id);
         if (event == store.events.end())
         {
             return canonicaljson::Value{};

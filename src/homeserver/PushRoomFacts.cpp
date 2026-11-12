@@ -30,14 +30,12 @@ namespace
     [[nodiscard]] auto current_state_event(database::PersistentStore const& store, std::string_view room_id,
                                            std::string_view type, std::string_view state_key) -> canonicaljson::Value
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& row) {
-            return row.room_id == room_id && row.event_type == type && row.state_key == state_key;
-        });
-        if (state == store.state.end())
+        auto const state_event_id = database::find_current_state_event_id(store, room_id, type, state_key);
+        if (!state_event_id.has_value())
         {
             return canonicaljson::Value{};
         }
-        auto const event = store.events.find(state->event_id);
+        auto const event = store.events.find(*state_event_id);
         if (event == store.events.end())
         {
             return canonicaljson::Value{};

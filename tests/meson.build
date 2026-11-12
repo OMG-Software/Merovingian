@@ -837,6 +837,7 @@ shell = find_program('sh')
       'integration/test_push_delivery_flow.cpp',
       'integration/test_push_user_isolation_flow.cpp',
       'integration/test_request_lock_contention_flow.cpp',
+      'integration/test_create_room_state_reads_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_seccomp_sqlite_flow.cpp',
       'integration/test_secret_file_validation_flow.cpp',
