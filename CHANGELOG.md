@@ -334,6 +334,13 @@ reads the state, the membership counts (invited, joined, heroes) and the receipt
 so a sync costs the user's own rooms and their rows. A sync serves at most `server.client_api.max_sync_rooms` joined
 rooms, counted before the per-room work and not only for the rooms that end up in the response.
 
+### Unread counts parse a bounded number of bytes (ADR-0655)
+
+Run-3 finding C05. Counting a room's unread notifications parsed up to a thousand events in full, plus their parents, on
+every sync, however large the events were. A count now parses at most 512 KiB of event JSON; past that it is a lower
+bound, as it already was at 1,000 rows. Counts of ordinary events are exact. An incremental sync also no longer counts a
+joined room it is not going to send.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

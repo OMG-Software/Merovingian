@@ -196,3 +196,44 @@ SCENARIO("a /sync does per-room work for at most max_sync_rooms joined rooms", "
         }
     }
 }
+
+SCENARIO("an idle incremental /sync does not count the unread events of a room it does not send", "[sync][c05]")
+{
+    GIVEN("a room holding events above the user's join, and a user who has synced")
+    {
+        auto started = hs::start_client_server(merovingian::tests::caps_config(100U, 100U, 100U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = merovingian::tests::register_and_login_alice(runtime);
+        auto const room = create_room(runtime, token);
+        for (auto number = 0; number < 5; ++number)
+        {
+            auto const sent = hs::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room + "/send/m.room.message/n" + std::to_string(number),
+                          token, R"({"msgtype":"m.text","body":"x"})"});
+            REQUIRE(sent.response.status == 200U);
+        }
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const initial_before = store.sync_unread_rows_examined.value();
+        auto const initial = sync_body(runtime, token, "?timeout=0");
+        auto const* next = merovingian::tests::string_member(initial, "next_batch");
+        REQUIRE(next != nullptr);
+
+        THEN("the initial sync counted the room")
+        {
+            REQUIRE(store.sync_unread_rows_examined.value() > initial_before);
+        }
+
+        WHEN("an incremental sync finds nothing new")
+        {
+            auto const before = store.sync_unread_rows_examined.value();
+            auto const body = sync_body(runtime, token, "?timeout=0&since=" + *next);
+
+            THEN("no unread row was examined")
+            {
+                REQUIRE((joined_rooms(body) == nullptr || joined_rooms(body)->empty()));
+                REQUIRE(store.sync_unread_rows_examined.value() == before);
+            }
+        }
+    }
+}

@@ -26,6 +26,12 @@ inline constexpr auto main_thread_id = database::main_receipt_thread_id;
 // first (ADR-0617). Past it a count is a lower bound: it counts no event /sync would not.
 inline constexpr std::size_t max_unread_rows_examined{1000U};
 
+// The bytes of event JSON one unread count of one room may parse (ADR-0655): the events it classifies and the parents
+// it follows to find a thread. A row is up to 64 KiB, so the row budget alone allows tens of megabytes; past this the
+// count stops and, as at the row budget, is a lower bound. Events of ordinary size (a few hundred bytes) never reach
+// it.
+inline constexpr std::size_t max_unread_bytes_parsed{512U * 1024U};
+
 // Where one user has read up to in one room, from their m.read and m.read.private receipts.
 //
 // Spec (Client-Server API, "Marking notifications as read"): notifications up to and including
@@ -59,7 +65,9 @@ struct ReadMarkers final
 // with a rel_type of m.thread"; "a maximum of 3 hops is recommended". Thread roots, and events
 // related to them by other relations, are in the main timeline. Parents are looked up in
 // `store`; a parent it does not hold ends the search in the main timeline.
-[[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event)
-    -> std::string;
+// When `bytes_left` is given, parsing a stored parent spends its JSON size from it, and a parent that no longer fits
+// ends the search in the main timeline, as a missing parent does (ADR-0655).
+[[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event,
+                                   std::size_t* bytes_left = nullptr) -> std::string;
 
 } // namespace merovingian::sync

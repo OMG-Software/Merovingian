@@ -481,6 +481,9 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     auto const floor = std::ranges::upper_bound(rows, std::max(markers.unthreaded, *counted_after), {},
                                                 &database::PersistentEvent::stream_ordering);
     auto examined = std::size_t{0U};
+    // The JSON bytes this count may still parse (ADR-0655): sender-sized events are parsed in full and followed through
+    // up to three parents each, so the rows alone do not bound the work.
+    auto bytes_left = max_unread_bytes_parsed;
     for (auto row = rows.end(); row > floor && examined < max_unread_rows_examined;)
     {
         --row;
@@ -497,6 +500,11 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
         {
             continue;
         }
+        if (ev.json.size() > bytes_left)
+        {
+            break;
+        }
+        bytes_left -= ev.json.size();
         auto const parsed = canonicaljson::parse_lossless(ev.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
@@ -512,7 +520,7 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
         {
             continue;
         }
-        auto thread_id = event_thread_id(store, *root);
+        auto thread_id = event_thread_id(store, *root, &bytes_left);
         if (markers.covers(ev.stream_ordering, thread_id))
         {
             continue;

@@ -141,7 +141,8 @@ auto read_markers_for(database::PersistentStore const& store, std::string_view r
     return markers;
 }
 
-auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event) -> std::string
+auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event,
+                     std::size_t* bytes_left) -> std::string
 {
     // Parents are parsed into `parent`, which owns the object `current` points into while it is
     // examined.
@@ -168,6 +169,14 @@ auto event_thread_id(database::PersistentStore const& store, canonicaljson::Obje
         if (stored == store.events.end())
         {
             return std::string{main_thread_id};
+        }
+        if (bytes_left != nullptr)
+        {
+            if (stored->json.size() > *bytes_left)
+            {
+                return std::string{main_thread_id};
+            }
+            *bytes_left -= stored->json.size();
         }
         auto parsed = canonicaljson::parse_lossless(stored->json);
         auto const* parent_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());

@@ -439,3 +439,10 @@ through `for_each_room_membership_row` and its receipts through `receipts_in_roo
 `store.memberships` or `store.receipts` per room. Joined rooms that pass the room filter are counted in
 `processed_rooms` before any per-room work and the loop stops at `max_sync_rooms`. Tests prove cost with
 `state_rows_examined`, `membership_rows_examined` and `receipt_rows_examined`.
+
+## An unread count parses a bounded number of bytes (ADR-0655)
+
+`count_unread_by_thread` spends each classified event's JSON size, and `event_thread_id` each parent it parses, from
+`max_unread_bytes_parsed` (512 KiB); when the next event does not fit the count stops and is a lower bound, as at
+`max_unread_rows_examined`. Any new reader that parses sender-sized events per room takes a byte budget too. In
+`sync_json` the "nothing new" check for a room runs before its counts.

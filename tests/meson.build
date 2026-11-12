@@ -441,6 +441,7 @@ shell = find_program('sh')
       'unit/test_room_state_revision_at_apply.cpp',
       'unit/test_receipt_thread_uniqueness.cpp',
       'unit/test_receipt_index.cpp',
+      'unit/test_unread_byte_budget.cpp',
       'unit/test_server_acl_request_budget.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',

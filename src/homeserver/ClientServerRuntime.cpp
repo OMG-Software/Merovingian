@@ -6573,6 +6573,18 @@ namespace
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
 
+            // Incremental sync: suppress rooms that have nothing new to report. Done before the unread counts, which
+            // an omitted room never shows (ADR-0655).
+            // Without this check, re-dispatches after a long-poll timeout emit
+            // the full membership state of every joined room on every 5-second
+            // cycle, causing clients to receive the same stale payload repeatedly
+            // and making it appear as if the room is stuck.
+            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() &&
+                state_events.empty() && ephemeral_events.empty())
+            {
+                continue;
+            }
+
             // unread_notifications: counts are relative to the user's
             // m.read/m.read.private receipts, unthreaded and per thread, not
             // the sync position (#417, ported from the sliding-sync path).
@@ -6609,17 +6621,6 @@ namespace
                         thread_counts.push_back(json_member(thread_id, counts_object(counts)));
                     }
                 }
-            }
-
-            // Incremental sync: suppress rooms that have nothing new to report.
-            // Without this check, re-dispatches after a long-poll timeout emit
-            // the full membership state of every joined room on every 5-second
-            // cycle, causing clients to receive the same stale payload repeatedly
-            // and making it appear as if the room is stuck.
-            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() &&
-                state_events.empty() && ephemeral_events.empty())
-            {
-                continue;
             }
 
             ++join_count;
