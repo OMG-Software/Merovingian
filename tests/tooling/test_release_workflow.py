@@ -39,6 +39,21 @@ def check_tag_script(workflow: str, step_name: str = "Compare the tag with meson
     return "\n".join(kept) + "\n"
 
 
+def installed_packages(job: str) -> set[str]:
+    """The package arguments of a job's apt-get install and pkg install commands.
+
+    Only those commands count, so a package named in a comment or a `curl` call in another
+    step does not. Backslash continuations are joined first, and a trailing shell comment
+    ends the command."""
+    packages: set[str] = set()
+    for command in re.sub(r"\\\n", " ", job).splitlines():
+        match = re.search(r"(?:\bapt-get|\bpkg) install\b(.*)", command)
+        if match is not None:
+            arguments = re.split(r"(?:^|\s)#", match.group(1), maxsplit=1)[0]
+            packages.update(word for word in arguments.split() if not word.startswith("-"))
+    return packages
+
+
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_release_notes_say_where_the_complement_evidence_is(self) -> None:
         # GIVEN the repository release workflow.
@@ -343,7 +358,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 checked = re.findall(r"^check_pkg_config_module (\S+)$",
                                      (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8"),
                                      re.MULTILINE)
-                installed = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9.+_-]*", job_text(workflow, job)))
+                installed = installed_packages(job_text(workflow, job))
 
                 # WHEN the job's install step is compared with the script's checks.
                 missing = [module for module in checked if packages.get(module) not in installed]
