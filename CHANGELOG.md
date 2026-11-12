@@ -18,6 +18,14 @@ Merovingian 1.0.0 is the first production release. It follows the release-gate s
   environment to `main` and `v*` tags and hold the GPG secrets in it. Until then repository secrets remain readable by
   it.
 
+### Release workflow
+
+* `release.yml`: the hardened Linux tarball job now installs `libcurl4-openssl-dev`. The first `v1.0.0` run failed on
+  `missing pkg-config module: libcurl` and published nothing. The fix keeps the version at 1.0.0, and the `v1.0.0` tag
+  moves to the fix commit; the owner made this exception to the bump policy for this fix only (ADR-0651).
+* `tests/tooling/test_release_workflow.py`: the Linux and FreeBSD release jobs must install a package for every
+  pkg-config module their build script checks, so a missing one fails on the pull request, not on the tag.
+
 ### Documentation
 
 * `docs/versioning.md`: the scheme from 1.0.0 is `MAJOR.MINOR.BUILD`. `BUILD` is bumped once per branch as `PATCH` was.

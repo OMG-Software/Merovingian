@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -320,6 +321,39 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("release-evidence-freebsd-", workflow)
         self.assertIn("## Package checksums", workflow)
         self.assertIn("## Release evidence", workflow)
+
+    def test_each_release_build_installs_every_module_its_build_script_checks(self) -> None:
+        # GIVEN the release workflow and the pkg-config modules each build script refuses to
+        # build without. These jobs run only for a v* tag, so nothing else exercises their
+        # install lists: v1.0.0's first run failed on "missing pkg-config module: libcurl"
+        # (ADR-0651).
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        builds = [
+            # (job, build script, the package that provides each module on that runner)
+            ("linux-release-package", "build-linux.sh",
+             {"libsodium": "libsodium-dev", "openssl": "libssl-dev", "libpq": "libpq-dev",
+              "libcurl": "libcurl4-openssl-dev"}),
+            ("freebsd-release-package", "build-bsd.sh",
+             {"libsodium": "libsodium", "openssl": "openssl", "libpq": "postgresql17-client",
+              "libcurl": "curl"}),
+        ]
+
+        for job, script, packages in builds:
+            with self.subTest(job=job):
+                checked = re.findall(r"^check_pkg_config_module (\S+)$",
+                                     (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8"),
+                                     re.MULTILINE)
+                installed = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9.+_-]*", job_text(workflow, job)))
+
+                # WHEN the job's install step is compared with the script's checks.
+                missing = [module for module in checked if packages.get(module) not in installed]
+
+                # THEN the script checks something, every module it checks has a known package,
+                # and the job installs that package.
+                self.assertTrue(checked, f"no check_pkg_config_module lines found in {script}")
+                self.assertEqual([], [m for m in checked if m not in packages],
+                                 f"{script} checks a module this test has no {job} package for")
+                self.assertEqual([], missing, f"{job} does not install the package for these modules")
 
 
 if __name__ == "__main__":
