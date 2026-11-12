@@ -839,7 +839,7 @@ path decoding without blanket payload filtering, is recorded in proposed
 device lists, and realigns the row if state resolution left a different member event current. Inbound member
 events (`send_join`, `send_leave`, `send_knock`, `/invite`, PDUs over `/send`) pass a projection the same
 way, and `send_join`, `send_leave` and PDUs apply it to the roster through `apply_membership_to_roster`, which
-also records the device-list `changed`/`left` rows for the local members. At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
+also records the device-list `changed`/`left` rows for the local members. A join by a user of a server that had no joined member in the room sends that server every local member's device list; a join by a server that already has a member sends nothing (it has them), and the local members come from the roster's per-server group, not a scan of the accounts (`RoomMembers::members_of_server`, ADR-0706). At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
 roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
 does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 

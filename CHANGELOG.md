@@ -132,6 +132,13 @@ C30. Checking whether a fetched event was already stored walked every row of the
 per entry of a remote server's `/event_auth` answer. It is now one lookup by event ID. The answer is also refused when it
 holds more entries than `security.federation.backfill.max_auth_chain_ids`, or an entry that is not a well-formed PDU.
 
+### A remote join no longer re-sends every local device list (ADR-0706)
+
+C32. Each accepted remote join checked every roster member against every account and queued every device list of every
+local member for the joiner's server, under the runtime lock, even for a profile change or a second user of a server
+already in the room. The lists are now sent only when the joiner's server had no joined member in the room, and the local
+members are read from a per-server group in the room roster.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

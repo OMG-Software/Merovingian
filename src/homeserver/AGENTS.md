@@ -796,6 +796,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
   the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
   not visible (ADR-0414); it never judges the members one by one.
+- `broadcast_local_device_lists_to_remote_joiner` runs only when the joiner's server had no joined member in the room
+  before the event (`joiner_server_already_in_room`, read before `apply_membership_to_roster`), and lists the local members
+  with `RoomMembers::members_of_server`. Never scan `database.users` per roster member there (C32, ADR-0706).
 - `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
   joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
   walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create

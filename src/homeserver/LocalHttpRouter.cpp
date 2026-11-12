@@ -638,25 +638,23 @@ namespace
         });
     }
 
+    // The room's local members, from the roster's per-server group: the work is the number of local members, not of the
+    // roster or of the accounts on the server (C32, ADR-0706). A roster member on this server's name joined through
+    // this server, so it needs no second look in the account list.
     [[nodiscard]] auto joined_local_members(LocalDatabase const& database, std::string_view room_id,
                                             std::string_view local_server) -> std::vector<std::string>
     {
-        auto members = std::vector<std::string>{};
-        auto const room_it = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
-            return room.room_id == room_id;
-        });
-        if (room_it == database.rooms.end())
-        {
-            return members;
-        }
-        for (auto const& member : room_it->members)
-        {
-            if (server_name_from_user_id(member) == local_server && local_user_exists(database, member))
-            {
-                members.push_back(member);
-            }
-        }
-        return members;
+        auto const* const room = find_local_room(database, room_id);
+        return room == nullptr ? std::vector<std::string>{} : room->members.members_of_server(local_server);
+    }
+
+    // True when a joined member of `joiner`'s server is in the room. Read before the joiner's membership is applied
+    // to the roster: a server that already has one has been sent the local members' device lists.
+    [[nodiscard]] auto joiner_server_already_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                     std::string_view joining_user_id) -> bool
+    {
+        auto const* const room = find_local_room(runtime.database, room_id);
+        return room != nullptr && room->members.has_member_of_server(server_name_from_user_id(joining_user_id));
     }
 
     auto dispatch_device_list_update(HomeserverRuntime& runtime, std::string_view destination, std::string_view user_id,
@@ -692,10 +690,14 @@ namespace
         }
     }
 
+    // Sends every local member's device lists to the server of a user who just joined, unless that server already had
+    // a joined member in the room (`server_already_in_room`, read before the roster changed): then it has them and is
+    // told of changes as they happen. The work is one pass over the local members' devices (C32, ADR-0706).
     auto broadcast_local_device_lists_to_remote_joiner(HomeserverRuntime& runtime, std::string_view room_id,
-                                                       std::string_view joining_user_id) -> void
+                                                       std::string_view joining_user_id, bool server_already_in_room)
+        -> void
     {
-        if (runtime.dispatch_worker == nullptr)
+        if (runtime.dispatch_worker == nullptr || server_already_in_room)
         {
             return;
         }
@@ -719,6 +721,7 @@ namespace
     {
         for (auto const& change : changes)
         {
+            auto const server_already_in_room = joiner_server_already_in_room(runtime, room_id, change.user_id);
             if (!apply_membership_to_roster(runtime, room_id, change.user_id, change.membership))
             {
                 LOG_WARNING("Device-list change persistence failed after a membership followed state resolution; "
@@ -727,7 +730,7 @@ namespace
             }
             if (change.membership == "join")
             {
-                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id);
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id, server_already_in_room);
             }
         }
     }
@@ -2955,6 +2958,7 @@ namespace
             {
                 // The roster and the device-list changes this membership causes (a remote
                 // user's join or leave is `changed` or `left` for the local members).
+                auto const server_already_in_room = joiner_server_already_in_room(*rt, room_id, *envelope.state_key);
                 if (!apply_membership_to_roster(*rt, room_id, *envelope.state_key, membership))
                 {
                     LOG_WARNING("Device-list change persistence failed after membership PDU was accepted; event_id=" +
@@ -2962,7 +2966,8 @@ namespace
                 }
                 if (membership == "join")
                 {
-                    broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
+                    broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key,
+                                                                  server_already_in_room);
                 }
             }
             apply_recomputed_memberships(*rt, room_id, recomputed_memberships);
@@ -5929,6 +5934,7 @@ namespace
         {
             // The roster and the device-list changes this membership causes (a remote user's
             // join or leave is `changed` or `left` for the local members).
+            auto const server_already_in_room = joiner_server_already_in_room(runtime, room_id, *envelope.state_key);
             if (!apply_membership_to_roster(runtime, room_id, *envelope.state_key, membership))
             {
                 LOG_WARNING("Device-list change persistence failed after PDU was processed; event_id=" +
@@ -5936,7 +5942,8 @@ namespace
             }
             if (membership == "join")
             {
-                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key,
+                                                              server_already_in_room);
             }
             // Those device-list rows took stream ids after the one allocated above, and a long-poll
             // is woken only by a stream id past its own.

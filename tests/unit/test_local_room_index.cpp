@@ -163,3 +163,46 @@ SCENARIO("find_local_room answers as a scan would after the room list is edited"
         }
     }
 }
+
+SCENARIO("RoomMembers groups its members by server and keeps the groups in step", "[homeserver][rooms][c32]")
+{
+    GIVEN("a roster with members on two servers")
+    {
+        auto members = RoomMembers{"@a:one.example.org", "@b:two.example.org", "@c:one.example.org"};
+
+        THEN("each server's members are listed in joining order and a server with none has no group")
+        {
+            REQUIRE(members.has_member_of_server("one.example.org"));
+            REQUIRE(members.members_of_server("one.example.org") ==
+                    std::vector<std::string>{"@a:one.example.org", "@c:one.example.org"});
+            REQUIRE(members.members_of_server("two.example.org") == std::vector<std::string>{"@b:two.example.org"});
+            REQUIRE_FALSE(members.has_member_of_server("three.example.org"));
+            REQUIRE(members.members_of_server("three.example.org").empty());
+        }
+
+        WHEN("a member of the first server leaves and the second server's only member leaves")
+        {
+            REQUIRE(members.remove("@a:one.example.org"));
+            REQUIRE(members.remove("@b:two.example.org"));
+
+            THEN("the first server keeps its other member and the second server has none")
+            {
+                REQUIRE(members.members_of_server("one.example.org") == std::vector<std::string>{"@c:one.example.org"});
+                REQUIRE_FALSE(members.has_member_of_server("two.example.org"));
+            }
+        }
+
+        WHEN("a member named twice is added again and the roster is cleared")
+        {
+            REQUIRE_FALSE(members.add("@a:one.example.org"));
+            REQUIRE(members.members_of_server("one.example.org").size() == 2U);
+            members.clear();
+
+            THEN("no server has a member")
+            {
+                REQUIRE_FALSE(members.has_member_of_server("one.example.org"));
+                REQUIRE(members.members_of_server("one.example.org").empty());
+            }
+        }
+    }
+}

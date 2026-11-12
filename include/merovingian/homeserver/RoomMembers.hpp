@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/Identity.hpp"
+
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -19,7 +22,10 @@ namespace merovingian::homeserver
 // members and handed to the appservice module as a `std::vector<std::string> const&`) and a hash set of the same
 // members, so "is this user a member" is one lookup rather than a scan (ADR-0496).
 //
-// Every write goes through `add` or `remove`, which keep the two in step; the list is exposed read-only, so a write
+// A third view groups the members by the server name of their user ID, so "does this server have a member" and "which
+// members are this server's" cost the group, not the roster (C32, ADR-0706).
+//
+// Every write goes through `add` or `remove`, which keep the three in step; the list is exposed read-only, so a write
 // that skips the set does not compile. Callers hold `runtime.mutex`, as for the rest of `LocalDatabase`.
 class RoomMembers final
 {
@@ -54,6 +60,7 @@ public:
         {
             return false;
         }
+        by_server_[std::string{auth::user_id_server_name(user_id)}].push_back(user_id);
         list_.push_back(std::move(user_id));
         return true;
     }
@@ -77,6 +84,14 @@ public:
             return false;
         }
         set_.erase(found);
+        if (auto const group = by_server_.find(auth::user_id_server_name(user_id)); group != by_server_.end())
+        {
+            std::erase(group->second, user_id);
+            if (group->second.empty())
+            {
+                by_server_.erase(group);
+            }
+        }
         for (auto it = list_.begin(); it != list_.end(); ++it)
         {
             if (*it == user_id)
@@ -93,11 +108,26 @@ public:
     {
         list_.clear();
         set_.clear();
+        by_server_.clear();
     }
 
     [[nodiscard]] auto contains(std::string_view user_id) const -> bool
     {
         return set_.contains(user_id);
+    }
+
+    // Whether any member's user ID is on `server_name`.
+    [[nodiscard]] auto has_member_of_server(std::string_view server_name) const -> bool
+    {
+        return by_server_.contains(server_name);
+    }
+
+    // The members whose user ID is on `server_name`, in joining order.
+    [[nodiscard]] auto members_of_server(std::string_view server_name) const -> std::vector<std::string> const&
+    {
+        static auto const none = std::vector<std::string>{};
+        auto const group = by_server_.find(server_name);
+        return group == by_server_.end() ? none : group->second;
     }
 
     [[nodiscard]] auto values() const noexcept -> std::vector<std::string> const&
@@ -152,6 +182,7 @@ private:
 
     std::vector<std::string> list_{};
     std::unordered_set<std::string, IdHash, std::equal_to<>> set_{};
+    std::unordered_map<std::string, std::vector<std::string>, IdHash, std::equal_to<>> by_server_{};
 };
 
 } // namespace merovingian::homeserver

@@ -11,43 +11,47 @@
 // Tags: [pdu_ingestion][backfill].
 
 #include "../FederationSigningTestSupport.hpp"
-#include "../support/ScopedThreadJoin.hpp"
-#include "../support/TlsTestCertificate.hpp"
 #include "../support/ForgedUnsigned.hpp"
 #include "../support/RemoteRoomFixture.hpp"
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/TlsMockServer.hpp"
+#include "../support/TlsTestCertificate.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/Config.hpp"
-#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
+#include "merovingian/database/PersistentDeviceKey.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/events/EventSigner.hpp"
+#include "merovingian/federation/DispatchWorker.hpp"
+#include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/VerificationKeyResolution.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
 #include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
-#include "merovingian/homeserver/StateBookkeeping.hpp"
-#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
@@ -4330,6 +4334,78 @@ SCENARIO("An /event_auth entry reusing a stored event's ID with different conten
     GIVEN("an /event_auth chain carrying a forged copy of a stored event")
     {
         exercise_event_auth_last_resort(true);
+    }
+}
+
+// C32: a join by a user of a server this server already shares the room with is not answered with every local
+// member's device lists again. The roster holds `local_admin` (who has a device with keys) and, when
+// `server_already_in_room`, `remote_member`; the joiner is `remote_member` itself, as in a profile change.
+auto device_list_updates_sent_to_remote_after_join(bool server_already_in_room) -> std::size_t
+{
+    auto fixture =
+        RecoveryFixture{server_already_in_room ? "!c32-shared:local.example.org" : "!c32-first:local.example.org"};
+    auto& runtime = fixture.runtime();
+    REQUIRE(runtime.outbound_client != nullptr);
+    // Never started, so the queued EDUs stay in the store for the test to count.
+    auto dispatch_config = federation::DispatchWorkerConfig{};
+    dispatch_config.origin = runtime.config.server().server_name;
+    dispatch_config.key_id = "ed25519:test";
+    runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(
+        std::move(dispatch_config), *runtime.outbound_client,
+        [](std::string_view) {
+            return std::optional<federation::ServerDiscoveryResult>{};
+        },
+        federation::DispatchClock{}, federation::DispatchSleep{}, &runtime.database.persistent_store);
+    auto& store = runtime.database.persistent_store;
+    REQUIRE(database::store_device(store, {std::string{local_admin}, "ADMINDEV", "admin phone"}));
+    REQUIRE(database::store_device_key(
+        store, {std::string{local_admin}, "ADMINDEV", R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
+    auto* const room = homeserver::find_local_room(runtime.database, fixture.room_id);
+    REQUIRE(room != nullptr);
+    room->members.clear();
+    REQUIRE(room->members.add(std::string{local_admin}));
+    if (server_already_in_room)
+    {
+        REQUIRE(room->members.add(std::string{remote_member}));
+    }
+    auto const rejoin = make_remote_event_pdu(fixture.room_id, "m.room.member", std::string{remote_member},
+                                              remote_member, member_content("C32"), {fixture.bob_member_id()},
+                                              {fixture.create_id(), fixture.pl_id(), fixture.bob_member_id()}, 4, 10);
+    REQUIRE(fixture.ingest(rejoin).status == PduIngestionStatus::accepted);
+    auto sent = std::size_t{0U};
+    for (auto const& transaction : store.federation_transactions)
+    {
+        if (transaction.server_name == remote_server &&
+            transaction.body.find(R"("edu_type":"m.device_list_update")") != std::string::npos)
+        {
+            ++sent;
+        }
+    }
+    return sent;
+}
+
+SCENARIO("A join by a server that already shares the room is not sent every local device list again",
+         "[pdu_ingestion][device_list_broadcast][c32]")
+{
+    GIVEN("a room whose roster already holds a member of the joining user's server")
+    {
+        WHEN("that server's user joins again")
+        {
+            THEN("no m.device_list_update is queued for that server")
+            {
+                REQUIRE(device_list_updates_sent_to_remote_after_join(true) == 0U);
+            }
+        }
+    }
+    GIVEN("a room whose roster holds no member of the joining user's server")
+    {
+        WHEN("a user of that server joins")
+        {
+            THEN("that server is sent the local member's device list")
+            {
+                REQUIRE(device_list_updates_sent_to_remote_after_join(false) == 1U);
+            }
+        }
     }
 }
 
