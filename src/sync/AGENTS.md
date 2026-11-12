@@ -452,3 +452,10 @@ through `for_each_room_membership_row` and its receipts through `receipts_in_roo
 `/context` (each side of the event) and `/initialSync` walk `room_in_stream_order` in place and count every row they look
 at, visible or not, against `max_messages_events_examined`, as `/messages` does; when it ends a walk early the `start`
 or `end` token is the last row examined. Never copy a room's events into a vector to step through them.
+
+## Every list of a sync filter is capped (ADR-0657)
+
+Each list (`types`, `not_types`, `senders`, `not_senders`, `rooms`, `not_rooms`, `event_fields`) holds at most
+`max_filter_list_entries` (100). `filter_list_cap_problem` finds an over-cap list in an uploaded, inline or stored filter;
+`GET /sync`, `/messages`, `/context` and the upload call it and answer 400 `M_INVALID_PARAM`. The lenient parsers do
+not refuse, and a new endpoint that matches a filter's lists against rows with a plain scan calls it too.

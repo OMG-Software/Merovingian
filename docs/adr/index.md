@@ -604,3 +604,4 @@
 * [0654 - Classic sync reads per-room rows through indexes and serves at most max_sync_rooms joined rooms](0654-classic-sync-reads-per-room-rows-through-indexes-and-serves-at-most-max-sync-rooms-joined-rooms.md)
 * [0655 - An unread count parses a bounded number of bytes, and a room that is not sent is not counted](0655-an-unread-count-parses-a-bounded-number-of-bytes-and-an-idle-room-is-not-counted.md)
 * [0656 - /context and /initialSync examine a bounded number of rows and walk the room in place](0656-context-and-initialsync-examine-a-bounded-number-of-rows-and-walk-the-room-in-place.md)
+* [0657 - Every list of a sync filter holds at most one hundred entries](0657-every-list-of-a-sync-filter-holds-at-most-one-hundred-entries.md)

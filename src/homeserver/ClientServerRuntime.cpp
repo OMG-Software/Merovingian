@@ -19131,6 +19131,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 sync_request.filter = stored->json;
             }
+            // An inline filter, and one stored before the list cap existed, are refused the same way (ADR-0657).
+            if (auto const problem = sync::filter_list_cap_problem(*sync_request.filter); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+            }
         }
 
         // Spec (GET /sync, `set_presence`): omitted means the client "is automatically marked as
@@ -19616,6 +19621,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
 
                 auto const filter_argument = core::query_parameter(req.target, "filter");
+                if (auto const problem = sync::filter_list_cap_problem(filter_argument); problem.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+                }
                 auto const parsed_filter = sync::parse_room_event_filter_argument(filter_argument);
                 if (!parsed_filter.has_value())
                 {
@@ -20341,6 +20350,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
                 // /context, never silently dropped for an unfiltered page.
+                if (auto const problem = sync::filter_list_cap_problem(core::query_parameter(req.target, "filter"));
+                    problem.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+                }
                 if (!sync::parse_room_event_filter_argument(core::query_parameter(req.target, "filter")).has_value())
                 {
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
@@ -21367,6 +21381,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // The body is a `Filter`: a field of the wrong type is refused (Complement
             // TestFilter), and nothing is stored, counted against the user's cap or logged
             // as a stored filter.
+            // A list over the 100-entry cap has its own answer, M_INVALID_PARAM (ADR-0657).
+            if (auto const problem = sync::filter_list_cap_problem(req.body); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+            }
             if (auto const problem = sync::validate_filter_definition(req.body); problem.has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", *problem);

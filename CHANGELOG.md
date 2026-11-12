@@ -349,6 +349,14 @@ examine at most `server.client_api.max_messages_events_examined` rows (the budge
 once for each side of the event), without copying the room first, and when the budget ends the `start`/`end` tokens stand
 at the last row examined so the client can carry on.
 
+### A sync filter's lists are capped at 100 entries (ADR-0657)
+
+Run-3 finding C09. Each list of a filter (`types`, `not_types`, `senders`, `not_senders`, `rooms`, `not_rooms`,
+`event_fields`) may hold at most 100 entries. A longer one is refused with 400 `M_INVALID_PARAM` when the filter is
+uploaded, when it is given inline to `GET /sync`, `/messages` or `/context`, and when a filter stored before the cap is used
+by a sync. Before, one filter with 100,000 patterns made every sync that used it match each pattern against every row
+under the runtime lock.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

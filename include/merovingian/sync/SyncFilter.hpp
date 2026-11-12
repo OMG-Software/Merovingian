@@ -52,6 +52,17 @@ struct SyncFilter final
 // filter.
 [[nodiscard]] auto parse_room_event_filter_argument(std::string_view filter_argument) -> std::optional<RoomFilter>;
 
+// The most entries any one list of a filter may hold: `types`, `not_types`, `senders`, `not_senders`, `rooms`,
+// `not_rooms` and `event_fields` (ADR-0657). Every list is matched against rows under the runtime lock, so its length
+// multiplies the cost of every sync that uses the filter.
+inline constexpr std::size_t max_filter_list_entries = 100U;
+
+// The first list of a filter (an uploaded or inline `Filter`, or a flat `RoomEventFilter`) that holds more than
+// max_filter_list_entries entries, as a reason for a 400 `M_INVALID_PARAM`; `std::nullopt` when every list is within
+// the cap or the text is not a JSON object (other checks answer that). Looks at the lists the parse functions read, so
+// it also covers a filter stored before the cap.
+[[nodiscard]] auto filter_list_cap_problem(std::string_view filter_json) -> std::optional<std::string>;
+
 // Checks a `Filter` definition uploaded with `POST /user/{userId}/filter` against the spec's
 // Filter schema (Matrix v1.19 CS API § Filtering): the body is an object; `presence`,
 // `account_data` and `room` are objects; `room`'s `timeline`, `state`, `ephemeral` and
@@ -61,7 +72,8 @@ struct SyncFilter final
 // `event_format` is "client" or "federation". Returns a reason naming the first field that
 // breaks the schema, or `std::nullopt` for a definition that follows it. Unknown members are
 // ignored, as the spec allows servers to. The parse functions above stay lenient, so a filter
-// stored before this check still loads.
+// stored before this check still loads; the list cap alone is enforced again when a stored filter is used
+// (filter_list_cap_problem).
 [[nodiscard]] auto validate_filter_definition(std::string_view filter_json) -> std::optional<std::string>;
 
 // Applies the EventType include/exclude rules. Returns true when the event
