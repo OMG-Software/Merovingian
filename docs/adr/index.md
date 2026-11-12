@@ -578,3 +578,4 @@
 * [0674 - A to-device queue is shared out per sender, so no sender can evict or crowd out another](0674-a-to-device-queue-is-shared-out-per-sender-so-no-sender-can-crowd-out-or-evict-another.md)
 * [0705 - A fetched event is recognised as stored by one indexed lookup, and an /event_auth answer is capped by max_auth_chain_ids](0705-a-fetched-event-is-recognised-as-stored-by-one-indexed-lookup-and-an-event-auth-answer-is-capped.md)
 * [0706 - A remote join sends the local device lists only to a server that had no member in the room, from the roster's per-server group](0706-a-remote-join-sends-the-local-device-lists-only-to-a-server-that-had-no-member-in-the-room.md)
+* [0707 - Remote invites are bounded in bytes per sending server and in all, not only per local user](0707-remote-invites-are-bounded-in-bytes-per-sending-server-and-in-all.md)

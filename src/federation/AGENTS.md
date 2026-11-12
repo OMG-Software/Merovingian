@@ -246,7 +246,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `ip_address_in_allowed_private_range`, which re-checks each range with
    `config::private_ip_range_is_allowable` so loopback and link-local can never open.
 
-14. **An invite's `invite_room_state` is bounded in count and entry size in every room version (ADR-0619), validated
+14. **An invite's `invite_room_state` is bounded in count, entry size and total bytes (`max_invite_room_state_bytes`, 64 KiB,
+   ADR-0707) in every room version (ADR-0619), validated
    for room versions 12 and up, and otherwise left alone below.**
    Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
    full PDU of the room version, not a stripped event. `validate_invite_room_state`

@@ -139,6 +139,12 @@ local member for the joiner's server, under the runtime lock, even for a profile
 already in the room. The lists are now sent only when the joiner's server had no joined member in the room, and the local
 members are read from a per-server group in the room roster.
 
+### Remote invites are capped in bytes per sending server and in all (ADR-0707)
+
+C04. One remote server could keep up to 16 GiB of invite records here, spread over many local users, because only the
+per-user bytes and a count per server were bounded. A sending server may now hold 64 MiB of invites in all, remote invites
+together 256 MiB, and one invite's `invite_room_state` is limited to 64 KiB (a 400 `M_INVALID_PARAM` over it).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

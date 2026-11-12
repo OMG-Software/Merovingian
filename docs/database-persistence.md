@@ -933,7 +933,7 @@ value. Test fixtures that do not exercise persistence select it through
   recipient's rows, and the per-user limits evict a user's oldest row first, whichever device holds it.
 - `invites` is indexed by (room, user), by what a record is charged to and by origin (`invite_key_index`,
   `invite_quota_index`, `invite_origin_index`, ADR-0619). `invite_is_over_store_caps` is asked by every writer before it
-  builds a statement. The runtime rebuilds the indexes once it has set `local_server_name`, which hydration runs before.
+  builds a statement. The runtime rebuilds the indexes once it has set `local_server_name`, which hydration runs before. The same writers keep a byte ledger of the remote invites, per sending server and in all (`invite_origin_bytes`, `remote_invite_bytes_total`; limits `max_remote_invite_bytes_per_origin` 64 MiB and `max_remote_invite_bytes_total` 256 MiB, ADR-0707), rebuilt by `rebuild_invite_indexes` and trusted only while `invite_bytes_rows` equals the row count.
 - An inbound `m.direct_to_device` EDU writes all of its `to_device_messages` rows in ONE backend
   transaction (`database::enqueue_to_device_messages`, ADR-0166), through the same prepare/apply
   steps and evictions as the single-message and `/sendToDevice` writers. A failed commit stores

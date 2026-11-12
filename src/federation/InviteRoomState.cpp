@@ -103,12 +103,18 @@ auto validate_invite_room_state(std::string_view room_id, std::string_view room_
     {
         return refuse("invite_room_state has more entries than a room's stripped state can");
     }
+    auto total_bytes = std::size_t{0U};
     for (auto const& entry_json : invite_room_state_json)
     {
         if (entry_json.size() > events::max_event_size_bytes)
         {
             return refuse("invite_room_state entry exceeds the event size limit");
         }
+        total_bytes += entry_json.size();
+    }
+    if (total_bytes > max_invite_room_state_bytes)
+    {
+        return refuse("invite_room_state is larger than a room's stripped state can be");
     }
     // Versions 1 through 11: the spec says servers MAY validate, and servers
     // still migrating send stripped entries. Accept what arrives.

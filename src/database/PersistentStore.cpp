@@ -977,6 +977,102 @@ namespace
         return bytes;
     }
 
+    // Adds (or, with `subtract`, removes) one record's bytes to the per-origin and total ledger of remote invites.
+    auto charge_invite_bytes(PersistentStore& store, std::string_view origin, std::uint64_t bytes, bool subtract)
+        -> void
+    {
+        if (origin.empty())
+        {
+            return;
+        }
+        if (subtract)
+        {
+            auto const held = store.invite_origin_bytes.find(std::string{origin});
+            if (held != store.invite_origin_bytes.end())
+            {
+                held->second = held->second > bytes ? held->second - bytes : 0U;
+                if (held->second == 0U)
+                {
+                    store.invite_origin_bytes.erase(held);
+                }
+            }
+            store.remote_invite_bytes_total =
+                store.remote_invite_bytes_total > bytes ? store.remote_invite_bytes_total - bytes : 0U;
+            return;
+        }
+        store.invite_origin_bytes[std::string{origin}] += bytes;
+        store.remote_invite_bytes_total += bytes;
+    }
+
+    auto rebuild_invite_byte_ledger(PersistentStore& store) -> void
+    {
+        store.invite_origin_bytes.clear();
+        store.remote_invite_bytes_total = 0U;
+        for (auto const& invite : store.invites)
+        {
+            charge_invite_bytes(store, invite_origin_group_of(store.local_server_name, invite), invite_bytes(invite),
+                                false);
+        }
+        store.invite_bytes_rows = store.invites.size();
+    }
+
+    // C04 (ADR-0707): whether storing a record of `incoming_bytes` from `origin` would take that sending server over
+    // the bytes one server may hold in all, or all remote invites over the total. The record it replaces (`held`) is
+    // not counted. Two lookups in the ledger; while the ledger is out of step (rows just loaded) the rows are added
+    // up instead.
+    [[nodiscard]] auto invite_bytes_over_origin_or_total_cap(PersistentStore const& store, PersistentInvite const* held,
+                                                             std::string const& origin, std::uint64_t incoming_bytes)
+        -> bool
+    {
+        auto const max_origin = store.max_remote_invite_bytes_per_origin;
+        auto const max_total = store.max_remote_invite_bytes_total;
+        if ((max_origin == 0U && max_total == 0U) || origin.empty())
+        {
+            return false;
+        }
+        auto const& local = store.local_server_name;
+        auto origin_held = std::uint64_t{0U};
+        auto total_held = std::uint64_t{0U};
+        if (store.invite_bytes_rows == store.invites.size())
+        {
+            auto const found = store.invite_origin_bytes.find(origin);
+            origin_held = found == store.invite_origin_bytes.end() ? 0U : found->second;
+            total_held = store.remote_invite_bytes_total;
+        }
+        else
+        {
+            store.invite_rows_examined.add(store.invites.size());
+            for (auto const& row : store.invites)
+            {
+                auto const row_origin = invite_origin_group_of(local, row);
+                if (row_origin.empty())
+                {
+                    continue;
+                }
+                total_held += invite_bytes(row);
+                if (row_origin == origin)
+                {
+                    origin_held += invite_bytes(row);
+                }
+            }
+        }
+        if (held != nullptr)
+        {
+            auto const held_origin = invite_origin_group_of(local, *held);
+            if (!held_origin.empty())
+            {
+                auto const replaced = invite_bytes(*held);
+                total_held = total_held > replaced ? total_held - replaced : 0U;
+                if (held_origin == origin)
+                {
+                    origin_held = origin_held > replaced ? origin_held - replaced : 0U;
+                }
+            }
+        }
+        return (max_origin > 0U && origin_held + incoming_bytes > max_origin) ||
+               (max_total > 0U && total_held + incoming_bytes > max_total);
+    }
+
     auto sync_invite_indexes(PersistentStore& store) -> void
     {
         auto const& local = store.local_server_name;
@@ -996,6 +1092,10 @@ namespace
             store.invite_origin_index.rebuild(store.invites, [&local](PersistentInvite const& invite) {
                 return invite_origin_group_of(local, invite);
             });
+        }
+        if (store.invite_bytes_rows != rows)
+        {
+            rebuild_invite_byte_ledger(store);
         }
     }
 
@@ -1037,6 +1137,8 @@ namespace
         store.invite_key_index.note_appended(store.invites.size(), key);
         store.invite_quota_index.note_appended(store.invites.size(), quota);
         store.invite_origin_index.note_appended(store.invites.size(), origin);
+        charge_invite_bytes(store, origin, invite_bytes(store.invites.back()), false);
+        store.invite_bytes_rows = store.invites.size();
     }
 
     // Erases a record by moving the last into its place, so `invites` has no meaningful order.
@@ -1053,11 +1155,13 @@ namespace
         auto const last_quota = invite_quota_group_of(local, last);
         auto const erased_origin = invite_origin_group_of(local, erased);
         auto const last_origin = invite_origin_group_of(local, last);
+        charge_invite_bytes(store, erased_origin, invite_bytes(erased), true);
         if (position + 1U != old_count)
         {
             store.invites[position] = std::move(store.invites.back());
         }
         store.invites.pop_back();
+        store.invite_bytes_rows = store.invites.size();
         store.invite_key_index.erase_swap(position, erased_key, last_key, old_count);
         store.invite_quota_index.erase_swap(position, erased_quota, last_quota, old_count);
         store.invite_origin_index.erase_swap(position, erased_origin, last_origin, old_count);
@@ -1067,11 +1171,15 @@ namespace
     // group is fixed while it is indexed, so such a record is moved instead.
     auto replace_invite_row(PersistentStore& store, std::size_t position, PersistentInvite invite) -> void
     {
+        sync_invite_indexes(store);
         auto const& local = store.local_server_name;
         auto const& held = store.invites[position];
         if (invite_quota_group_of(local, held) == invite_quota_group_of(local, invite) &&
             invite_origin_group_of(local, held) == invite_origin_group_of(local, invite))
         {
+            auto const origin = invite_origin_group_of(local, held);
+            charge_invite_bytes(store, origin, invite_bytes(held), true);
+            charge_invite_bytes(store, origin, invite_bytes(invite), false);
             store.invites[position] = std::move(invite);
             return;
         }
@@ -3325,6 +3433,10 @@ namespace
     {
         return true;
     }
+    if (invite_bytes_over_origin_or_total_cap(store, held, origin_group, incoming_bytes))
+    {
+        return true;
+    }
     if (store.max_remote_invites_per_origin == 0U)
     {
         return false;
@@ -3349,6 +3461,7 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void
     store.invite_key_index.clear();
     store.invite_quota_index.clear();
     store.invite_origin_index.clear();
+    rebuild_invite_byte_ledger(store);
     sync_invite_indexes(store);
 }
 

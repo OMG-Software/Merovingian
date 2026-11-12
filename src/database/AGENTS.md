@@ -90,7 +90,8 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     `prepare_store_event_with_state` and `upsert_invite` ask `invite_is_over_store_caps` before building a statement; a new
     writer of `invites` does too. Change `invites` only through `append_invite_row`, `replace_invite_row` and
     `erase_invite_row`, and look a record up with `find_invite` or `find_invite_row`. Rows are charged by
-    `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`.
+    `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`. The same three functions keep the byte ledger of remote invites
+    (`charge_invite_bytes`) that the per-origin and server-wide byte caps read (C04, ADR-0707).
 
 ## Reloading a room (F-27, ADR-0360)
 

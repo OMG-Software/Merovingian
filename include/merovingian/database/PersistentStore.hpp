@@ -323,6 +323,16 @@ struct PersistentStore final
     std::uint32_t max_remote_invites_per_origin{16384U};
     std::uint32_t max_remote_knocks_per_user{128U};
     std::uint32_t remote_invite_origin_share_divisor{8U};
+    // The bytes one sending server may have stored across all local users, and the bytes all remote invites may
+    // take together, whatever the number of local users (C04, ADR-0707). Zero disables a bound.
+    std::uint64_t max_remote_invite_bytes_per_origin{67108864U};
+    std::uint64_t max_remote_invite_bytes_total{268435456U};
+    // The bytes the remote invite records hold, per sending server and in all, kept by the writers of `invites`
+    // beside the three indexes and rebuilt by `rebuild_invite_indexes`. Trusted only while `invite_bytes_rows`
+    // equals `invites.size()`; a check that finds it out of step adds the rows up instead.
+    std::unordered_map<std::string, std::uint64_t> invite_origin_bytes{};
+    std::uint64_t remote_invite_bytes_total{0U};
+    std::size_t invite_bytes_rows{0U};
     // Positions in `memberships` of each room's rows (ADR-0437), so a reader of one room's members does not scan
     // every room's. Maintained by every writer in PersistentStore.cpp and rebuilt after hydration and
     // `reload_room`; only trusted while `membership_indexed_rows == memberships.size()` and each position it
