@@ -5878,12 +5878,19 @@ namespace
         return {federation::PduIngestionStatus::internal_error, "event persistence pre-check failed"};
     }
 
-    // Release only the global mutex for the backend commit. Independent rooms
-    // can now commit concurrently (each still holds its own stripe), while the
-    // in-memory store stays protected against concurrent reads/writes. The
-    // early return inside the scope re-acquires on the way out, as does a
-    // throw from the backend.
+    // Invariant (ADR-0696): what memory holds after this commit equals what the commit wrote, for every row it
+    // touched. A current_state or membership row is also written by local sends, which take runtime.mutex but no room
+    // stripe; with runtime.mutex released, one could prepare that row from the old memory, commit after this, and apply
+    // before it, leaving memory and the database apart. So a commit that writes such a row keeps runtime.mutex, as a
+    // local send's commit does. Any other commit writes only this event's own rows and releases only the global mutex,
+    // so independent rooms commit concurrently (each still holds its own stripe); the scope re-acquires on the way out,
+    // as does a throw from the backend.
+    auto const writes_shared_rows = prepared->state.has_value() || prepared->membership.has_value();
     auto const committed = [&] {
+        if (writes_shared_rows)
+        {
+            return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
+        }
         auto const released = RuntimeLockRelease{global_guard};
         return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
     }();

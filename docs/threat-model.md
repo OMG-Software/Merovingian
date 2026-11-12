@@ -2033,6 +2033,16 @@ until the refresh).
   state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
   only against current state, exactly as before; that is phase B2.
 
+### A local state write inside a federated state event's commit window (run-3 C41, ADR-0696)
+
+- **Memory and the database could hold different current-state rows.** `ingest_pdu_event` released `runtime.mutex`
+  for every PDU's commit; a local state send, which takes `runtime.mutex` but no room stripe, could prepare the same
+  `current_state` or membership row from the old memory, commit after the federated event and apply before it. The
+  running server then authorised with one event and the database, and so a restart, with the other. **Mitigation:** a
+  PDU commit that writes a `current_state` or membership row keeps `runtime.mutex`, so every writer of those rows is
+  serialised from prepare to apply; a message's commit still releases it. Test: `[commit_window]`. **Residual risk:**
+  other rooms wait for one backend transaction per accepted federated state event, as they already did for local ones.
+
 ### PDU ban-evasion accepted into client timelines (v0.12.13, ADR-0064 phase B2)
 
 - **A banned (or otherwise power-restricted) user could keep messages

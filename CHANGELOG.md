@@ -220,6 +220,15 @@ before a further such event that cites no current tip stops becoming one. A send
 levels is exempt from that cap and limited only by its own server's tips, so tips other servers add never keep a
 moderator's ban or demotion out (ADR-0695).
 
+### A federated state event's commit no longer lets a local write slip in between
+
+`ingest_pdu_event` released the runtime lock for the database commit of every PDU, keeping only the room's lock. A
+local client's state send takes the runtime lock but not the room's, so it could write the same current-state row inside
+that window: the database kept the local event and memory the federated one, and a restart served a different power
+levels, join rules or membership row than the running server had. A PDU commit that writes a current-state or
+membership row now keeps the runtime lock, as a local send's commit already does, so memory always ends equal to what
+the database holds; a message still commits without it (ADR-0696).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

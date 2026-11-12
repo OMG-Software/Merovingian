@@ -763,6 +763,7 @@ shell = find_program('sh')
       'integration/test_security_audit_fed_6_8_11_flow.cpp',
       'integration/test_security_audit_m01_membership_auth_flow.cpp',
       'integration/test_security_audit_state_fallback_flow.cpp',
+      'integration/test_pdu_ingest_commit_window_flow.cpp',
       'integration/test_send_join_answer_flow.cpp',
       'integration/test_send_join_snapshot_store_flow.cpp',
       'integration/test_space_hierarchy_federation_flow.cpp',

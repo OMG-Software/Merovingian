@@ -180,7 +180,10 @@ never a 200 with an etag. Do not skip a malformed entry or ignore a write result
 `handle_client_server_request` and `handle_local_http_request` each take
 `HomeserverRuntime::mutex` around request state. Inbound federation takes it
 for setup and narrower runtime callbacks; its core runs outside the global
-lock, and prepared database commits release it. Anything holding the mutex
+lock, and prepared database commits release it, except a commit that writes a
+`current_state` or membership row: local writers of those rows take only
+`runtime.mutex`, so such a commit keeps it, and what memory holds after the
+commit is what the commit wrote (ADR-0696). Anything holding the mutex
 still blocks other clients and federation callbacks that need runtime state.
 
 Never make a blocking network call while holding it. Wrap the call — and only

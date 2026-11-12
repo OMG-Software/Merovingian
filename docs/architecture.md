@@ -506,11 +506,11 @@ Inbound federation PDUs used to be ingested while holding the global `Homeserver
 2. Lock the room's stripe mutex.
 3. Build the auth map and run `authorize_event_against_auth_events`.
 4. Prepare the persistent update with `database::prepare_store_event_with_state()`.
-5. Unlock the global `runtime.mutex` and commit the prepared statements with `database::commit_persistent_transaction()`, so commits for different rooms can overlap while each room's stripe remains held for ordering.
+5. Unlock the global `runtime.mutex` and commit the prepared statements with `database::commit_persistent_transaction()`, so commits for different rooms can overlap while each room's stripe remains held for ordering. A commit that writes a `current_state` or membership row keeps `runtime.mutex` instead: local sends write those rows under `runtime.mutex` without a stripe, and releasing it would let one apply before this commit's apply and leave memory and the database apart (ADR-0696).
 6. Re-lock the global `runtime.mutex` and call `database::apply_store_event_with_state()` to mirror the committed rows into the in-memory vectors.
 7. Update membership and the runtime's `LocalRoom` view while still under the stripe lock.
 
-This preserves ordering within a single room (all events for that room serialize on the same stripe) while allowing independent rooms to prepare, commit, and apply concurrently. The global `runtime.mutex` is no longer held across database commits.
+This preserves ordering within a single room (all events for that room serialize on the same stripe) while allowing independent rooms to prepare, commit, and apply concurrently. The global `runtime.mutex` is held across a commit only when it writes a `current_state` or membership row (ADR-0696).
 
 `handle_federation_http_request()` also avoids holding `HomeserverRuntime::mutex` across the federation core. It locks only long enough to check startup state, wire callbacks, publish `/_matrix/key/v2/server`, build the verified signed request, and evaluate local trust-safety policy; `handle_inbound_federation_request()` then runs without the global homeserver lock. `FederationRuntimeState` owns a federation-local mutex for its own mutable bookkeeping (`remotes`, accepted transaction IDs, and audit events), while production hooks such as `pdu_sink` and `edu_sink` re-enter `HomeserverRuntime` through their narrower existing locks. This prevents a worker shard from serializing whole `/send` transactions while each relayed PDU/EDU waits on worker-to-main IPC.
 
