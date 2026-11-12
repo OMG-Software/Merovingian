@@ -73,6 +73,15 @@ findings that needed validation.
   state events; past that the remaining rooms are not examined, so a search over a directory of very large rooms can
   miss matches. `total_room_count_estimate` still counts every published room.
 
+### Abandoned join candidates stop making calls, use few threads and hold the client's slot (ADR-0725)
+
+* Joining a room through the servers named by the client used to start one thread per candidate and release the client's
+  outbound slot as soon as the request stopped waiting, while candidates still queued went on to make their full calls, up
+  to 180 seconds each, outliving the request. A join now uses at most `join_parallelism` worker threads that take
+  candidates one at a time, makes no call once a winner exists or the request has stopped waiting, and keeps the client's
+  outbound slot until its last in-flight call ends. With `join_race_deadline_seconds` set, the calls also end at that
+  deadline.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

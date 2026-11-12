@@ -569,3 +569,4 @@
 * [0722 - The badges of one event share one glob step budget](0722-the-badges-of-one-event-share-one-glob-step-budget.md)
 * [0723 - Property path resolution is charged to the evaluation budget past a free allowance](0723-property-path-resolution-is-charged-to-the-evaluation-budget-past-a-free-allowance.md)
 * [0724 - A filtered directory request parses a bounded number of bytes](0724-a-filtered-directory-request-parses-a-bounded-number-of-bytes.md)
+* [0725 - A decided make_join race starts no further calls, is run by a fixed number of workers, and holds its request's slot to the end](0725-a-decided-make-join-race-starts-no-further-calls-and-its-calls-end-at-the-race-deadline.md)

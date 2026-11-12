@@ -36,7 +36,7 @@ This is the largest and most complex module — read this file carefully before 
 | `RoomPower.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `UserDirectorySearch.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
-| `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes, and a filtered or searched request in the bytes of state it parses (`max_public_rooms_examined_bytes`, ADR-0724), and a filtered or searched request in the bytes of state it parses (`max_public_rooms_examined_bytes`, ADR-0724) |
+| `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes, and a filtered or searched request in the bytes of state it parses (`max_public_rooms_examined_bytes`, ADR-0724) |
 | `RoomResidency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `InvitePermission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
 | `SendJoinPlanCache.cpp` | `SendJoinPlanCache`: the synchronised, bounded cache of the room-wide part of send_join answers and of the membership before a stored join (ADR-0624). Its own mutex, taken with `runtime.mutex` held; its callbacks never take `runtime.mutex` |
@@ -345,6 +345,17 @@ Before releasing it, take a `MembershipExchangeClaim` for the (room, user) pair;
 anything. A new path that changes a user's own membership over federation takes the claim, and a
 new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
 is overwritten when the exchange commits.
+
+The `make_join` race of `perform_federated_join` runs as at most `join_parallelism` worker tasks (`std::async`, parked in
+`orphan_futures_` when the caller stops waiting), never one thread per candidate. Their shared state is `MakeJoinRaceState`:
+a worker takes the next candidate with `next_candidate()` when it has finished the last, and is handed none once a winner
+exists or `cancel()` has been called (the caller calls it as soon as its wait ends); every call carries the race deadline as
+its `BoundedOutboundLimits` when `join_race_deadline_seconds` is set. The request's client-outbound slot is passed to
+`perform_federated_join` (`outbound_slot`) and moved into the race state with `adopt_slot()`: the last worker to end
+(`worker_finished()`, run by `MakeJoinWorkerExit` on every way out) releases it, so the client's budget counts the join while
+any of its calls runs, after the request has returned (C33, ADR-0725). A new task started for a client request that
+outlives the request is bounded the same way: a fixed number of workers, no work started after the request ended, and the
+request's slot held until the last one ends.
 
 ## Remote invites: reject, accept, rescind (Complement run 10)
 

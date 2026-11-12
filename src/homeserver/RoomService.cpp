@@ -88,6 +88,7 @@
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/MakeJoinRaceState.hpp"
 #include "merovingian/homeserver/NewEventBasis.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
@@ -5421,12 +5422,33 @@ namespace
         bool active_{false};
     };
 
+    // Tells the race state, on every way out of a worker, that the worker has ended: the last one releases the
+    // request's client-outbound slot (C33).
+    class MakeJoinWorkerExit final
+    {
+    public:
+        explicit MakeJoinWorkerExit(MakeJoinRaceState& state) noexcept
+            : state_{state}
+        {
+        }
+        MakeJoinWorkerExit(MakeJoinWorkerExit const&) = delete;
+        auto operator=(MakeJoinWorkerExit const&) -> MakeJoinWorkerExit& = delete;
+        ~MakeJoinWorkerExit()
+        {
+            state_.worker_finished();
+        }
+
+    private:
+        MakeJoinRaceState& state_;
+    };
+
     [[nodiscard]] auto perform_federated_join(
         HomeserverRuntime& runtime, std::string_view room_id, std::string const& user_id, std::string const& our_server,
         std::vector<std::string> candidates, std::vector<std::string> const& supported_versions,
         std::optional<database::PersistentServerSigningKey> const& signing_key, std::string_view key_id,
         core::SecretBuffer secret_key, std::optional<database::PersistentProfile> const& profile,
-        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room) -> FederatedJoinOutcome
+        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room,
+        std::optional<http::InFlightBudget::Slot>* outbound_slot = nullptr) -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
@@ -5448,21 +5470,19 @@ namespace
         auto const per_call_timeout = runtime.federation.config.join_timeout_seconds > 0U
                                           ? runtime.federation.config.join_timeout_seconds
                                           : runtime.federation.config.remote_timeout_seconds;
-        struct MakeJoinRaceState
-        {
-            std::mutex mtx{};
-            std::condition_variable cv{};
-            std::optional<std::pair<std::string, std::string>> winner{}; // {server, body}
-            std::string last_error{};
-            // A candidate answered 403: a resident refused this user the room, which
-            // the client is told as 403 rather than as an upstream failure.
-            bool refused{false};
-            int remaining{0};
-        };
-        auto race_state = std::make_shared<MakeJoinRaceState>();
-        race_state->remaining = static_cast<int>(candidates.size());
-        // Semaphore caps the number of concurrent in-flight make_join HTTP calls.
-        auto race_sem = std::make_shared<core::PortableSemaphore>(static_cast<std::size_t>(parallelism));
+        // C33: at most `parallelism` worker threads for this join, each taking the next candidate when it has finished
+        // the last, never one thread per candidate. The request's client-outbound slot moves into the race state below,
+        // so the last worker to end releases it, not this request's return.
+        auto const worker_total =
+            MakeJoinRaceState::worker_count(static_cast<std::size_t>(parallelism), candidates.size());
+        auto race_state = std::make_shared<MakeJoinRaceState>(candidates, worker_total);
+        // C33: the whole race, and so every call a candidate makes, ends at the race deadline (when one is set).
+        auto const race_bounds = std::optional<BoundedOutboundLimits>{
+            runtime.federation.config.join_race_deadline_seconds > 0U
+                ? std::optional<BoundedOutboundLimits>{BoundedOutboundLimits{
+                      OutboundDeadline{runtime.federation.config.join_race_deadline_seconds},
+                      std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}}
+                : std::nullopt};
         // Owned copies so tasks moved into orphan_futures_ are self-contained
         // and do not dangle on stack variables in join_room.
         auto room_id_copy = std::string{room_id};
@@ -5471,62 +5491,40 @@ namespace
         auto key_id_copy = std::string{key_id};
         auto sv_copy = supported_versions;
         auto race_futures = std::vector<std::future<void>>{};
-        race_futures.reserve(candidates.size());
-        for (auto const& candidate : candidates)
+        race_futures.reserve(worker_total);
+        for (auto worker = std::size_t{0U}; worker < worker_total; ++worker)
         {
-            log_diagnostic("room.join.remote.make_join", {
-                                                             {"actor",         user_id_copy, false},
-                                                             {"room_id",       room_id_copy, false},
-                                                             {"remote_server", candidate,    false}
-            });
-            // Each racer needs its own owned copy of the signing key so orphan
+            // Each worker needs its own owned copy of the signing key so orphan
             // futures do not dangle on the parameter span.
             auto secret_key_copy = core::SecretBuffer{secret_key.bytes()};
             race_futures.push_back(
-                std::async(std::launch::async, [&runtime, race_state, race_sem, room_id_copy, user_id_copy,
-                                                our_server_copy, key_id_copy, secret_key = std::move(secret_key_copy),
-                                                sv_copy, per_call_timeout, cand = candidate]() mutable {
-                    // Acquire a concurrency slot before making the HTTP call.
-                    race_sem->acquire();
-                    auto const slot = core::SemaphorePermit{*race_sem};
-                    // Bail early if another task already won.
+                std::async(std::launch::async, [&runtime, race_state, room_id_copy, user_id_copy, our_server_copy,
+                                                key_id_copy, secret_key = std::move(secret_key_copy), sv_copy,
+                                                per_call_timeout, race_bounds]() {
+                    // Whatever ends this worker, the last one releases the request's slot.
+                    auto const exit = MakeJoinWorkerExit{*race_state};
+                    while (auto cand = race_state->next_candidate())
                     {
-                        auto lk = std::unique_lock{race_state->mtx};
-                        if (race_state->winner.has_value())
-                        {
-                            if (--race_state->remaining == 0)
-                            {
-                                lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the
-                                             // waiter does not immediately block on it.
-                                race_state->cv.notify_one();
-                            }
-                            return;
-                        }
-                    }
-                    auto tx =
-                        federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
-                                                                  our_server_copy, room_id_copy, user_id_copy, sv_copy);
-                    auto call =
-                        perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id_copy, tx, key_id_copy,
-                                              std::move(secret_key), "room.join.remote.make_join_failed",
-                                              per_call_timeout, membership_template_max_response_bytes, std::nullopt);
-                    auto lk = std::unique_lock{race_state->mtx};
-                    if (call.ok && !race_state->winner.has_value())
-                    {
-                        race_state->winner = {cand, std::move(call.body)};
-                    }
-                    else if (!call.ok && !race_state->winner.has_value())
-                    {
-                        race_state->last_error = std::move(call.body);
-                        race_state->refused = race_state->refused || call.remote_status == 403U;
-                    }
-                    if (--race_state->remaining == 0 || race_state->winner.has_value())
-                    {
-                        lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the waiter
-                                     // does not immediately block on it.
-                        race_state->cv.notify_one();
+                        log_diagnostic("room.join.remote.make_join", {
+                                                                         {"actor",         user_id_copy, false},
+                                                                         {"room_id",       room_id_copy, false},
+                                                                         {"remote_server", *cand,        false}
+                        });
+                        auto tx = federation::make_outbound_make_membership(federation::FederationEndpoint::make_join,
+                                                                            *cand, our_server_copy, room_id_copy,
+                                                                            user_id_copy, sv_copy);
+                        auto call = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id_copy, tx,
+                                                          key_id_copy, core::SecretBuffer{secret_key.bytes()},
+                                                          "room.join.remote.make_join_failed", per_call_timeout,
+                                                          membership_template_max_response_bytes, race_bounds);
+                        race_state->record_answer(*cand, call.ok, std::move(call.body), call.remote_status == 403U);
                     }
                 }));
+        }
+        if (outbound_slot != nullptr)
+        {
+            race_state->adopt_slot(std::move(*outbound_slot));
+            outbound_slot->reset();
         }
         // Block until first winner, all candidates exhausted, or the overall race
         // deadline elapses — whichever comes first. The deadline bounds the WHOLE
@@ -5550,6 +5548,8 @@ namespace
                 race_state->cv.wait(lk, predicate);
             }
         }
+        // C33: from here no candidate that has not made its call makes one.
+        race_state->cancel();
         // Park still-running losers in orphan_futures_; discard completed ones.
         {
             auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
@@ -5992,7 +5992,9 @@ namespace
     // it released.
     [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, RuntimeLock& guard,
                                                    std::string_view room_id, std::string const& user_id,
-                                                   std::vector<std::string> candidates) -> OperationResult
+                                                   std::vector<std::string> candidates,
+                                                   std::optional<http::InFlightBudget::Slot>* outbound_slot = nullptr)
+        -> OperationResult
     {
         auto const our_server = runtime.config.server().server_name;
         // The room's own version is the only one offered, so a template for any other is
@@ -6016,7 +6018,7 @@ namespace
             return perform_federated_join(runtime, room_id, user_id, our_server, std::move(candidates),
                                           std::vector<std::string>{*room_version}, signing_key, key_id,
                                           std::move(secret_key), joining_profile,
-                                          FederatedJoinPurpose::join_through_resident);
+                                          FederatedJoinPurpose::join_through_resident, outbound_slot);
         }();
         if (joined.failure.has_value())
         {
@@ -6285,7 +6287,7 @@ namespace
         // Read under the lock: the profile goes into the join event the released region signs.
         auto const joining_profile = database::find_profile(runtime.database.persistent_store, *user_id);
         // Releasing the mutex frees it, not this request's thread: the exchange holds a slot until it returns.
-        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        auto outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
         if (!outbound_slot.has_value())
         {
             return client_outbound_limit_result(runtime);
@@ -6300,7 +6302,7 @@ namespace
             auto const released = RuntimeLockRelease{guard};
             return perform_federated_join(runtime, room_id, *user_id, our_server, std::move(candidates),
                                           supported_versions, signing_key, key_id, std::move(secret_key),
-                                          joining_profile);
+                                          joining_profile, FederatedJoinPurpose::enter_room, &outbound_slot);
         }();
         if (joined.failure.has_value())
         {
@@ -6753,13 +6755,13 @@ namespace
                             std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
                     if (!candidates.empty())
                     {
-                        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+                        auto outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
                         if (!outbound_slot.has_value())
                         {
                             return client_outbound_limit_result(runtime);
                         }
-                        auto joined_elsewhere =
-                            join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
+                        auto joined_elsewhere = join_through_other_resident(runtime, guard, room_id, *user_id,
+                                                                            std::move(candidates), &outbound_slot);
                         if (joined_elsewhere.ok)
                         {
                             return joined_elsewhere;

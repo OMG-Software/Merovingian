@@ -533,6 +533,7 @@ shell = find_program('sh')
       'unit/test_user_push_rules.cpp',
       'unit/test_push_retry_queue.cpp',
       'unit/test_push_badge_count.cpp',
+      'unit/test_make_join_race_state.cpp',
       'unit/test_push_email_digest_queue.cpp',
       'unit/test_push_rule_unread_classifier.cpp',
       'unit/test_push_room_facts.cpp',
