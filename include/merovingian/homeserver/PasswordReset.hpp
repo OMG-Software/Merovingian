@@ -25,6 +25,11 @@ inline constexpr auto password_reset_max_sends_in_flight = std::size_t{8U};
 // One reset email per address per this long, across every session (ADR-0481): requestToken is unauthenticated and
 // mails an address the caller names, so a new client_secret or a higher send_attempt must not mean another email.
 inline constexpr auto password_reset_address_interval_ms = std::uint64_t{60'000U};
+// And at most this many per address in any password_reset_address_window_ms (a day), whoever asks (C17, ADR-0685). Past
+// it a request is answered like a throttled one, and the code already mailed stays valid for every session of the
+// address.
+inline constexpr auto password_reset_address_daily_cap = std::size_t{10U};
+inline constexpr auto password_reset_address_window_ms = std::uint64_t{86'400'000U};
 
 [[nodiscard]] auto make_password_reset_token() -> std::optional<std::string>;
 

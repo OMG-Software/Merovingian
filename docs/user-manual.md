@@ -875,6 +875,8 @@ in can reset the password from their client (`m.login.email.identity`, an 8-char
 account). The message holds the code and the server name only, and the endpoint answers alike whether or not an account
 holds the address. Without a relay `POST /account/password/email/requestToken` is `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`.
 Phone-number reset is not supported (no SMS).
+A reset mail goes to one address at most once a minute and ten times a day, whoever asks; a session that asked inside the
+minute has no code of its own and is judged against the latest code mailed to the address (ADR-0685).
 
 Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
 `server.email.smtp_url` is set**; the section is independent of

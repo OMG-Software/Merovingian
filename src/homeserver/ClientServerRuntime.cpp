@@ -2328,6 +2328,65 @@ namespace
         return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
     }
 
+    // The latest code this server mailed for `address` that is still held by a session (C17, ADR-0685), empty when
+    // none is. The code is the same for every session of the address that asks within the throttle interval.
+    [[nodiscard]] auto latest_password_reset_code(ClientServerRuntime const& rt, std::string_view address)
+        -> std::string
+    {
+        auto const* latest = static_cast<RegistrationValidationSession const*>(nullptr);
+        for (auto const& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+                !candidate.reset_token.empty() &&
+                (latest == nullptr || candidate.reset_sent_at_ms > latest->reset_sent_at_ms))
+            {
+                latest = &candidate;
+            }
+        }
+        return latest == nullptr ? std::string{} : latest->reset_token;
+    }
+
+    // A code is single use: once one session of the address has proved it, no session of the address holds it.
+    auto spend_password_reset_code(ClientServerRuntime& rt, std::string_view address, std::string_view code) -> void
+    {
+        for (auto& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+                candidate.reset_token == code)
+            {
+                core::secure_zero(
+                    std::as_writable_bytes(std::span{candidate.reset_token.data(), candidate.reset_token.size()}));
+                candidate.reset_token.clear();
+            }
+        }
+    }
+
+    // Whether another reset mail may go to `address` today. Times older than a day are dropped as they are read.
+    // Only an address that was mailed has an entry, and only an address with an account is mailed.
+    [[nodiscard]] auto password_reset_mail_budget_left(ClientServerRuntime& rt, std::string const& address,
+                                                       std::uint64_t now_ms) -> bool
+    {
+        auto const entry = rt.password_reset_mail_times.find(address);
+        if (entry == rt.password_reset_mail_times.end())
+        {
+            return true;
+        }
+        std::erase_if(entry->second, [now_ms](std::uint64_t sent) {
+            return now_ms > sent && now_ms - sent >= password_reset_address_window_ms;
+        });
+        if (entry->second.empty())
+        {
+            rt.password_reset_mail_times.erase(entry);
+            return true;
+        }
+        return entry->second.size() < password_reset_address_daily_cap;
+    }
+
+    auto note_password_reset_mail(ClientServerRuntime& rt, std::string const& address, std::uint64_t now_ms) -> void
+    {
+        rt.password_reset_mail_times[address].push_back(now_ms);
+    }
+
     // Records the validation session for a requestToken the identity server
     // accepted. The identity server issued `sid` and is the only authority that
     // can say the 3PID's owner completed validation (AUTH-5: this server sends no
@@ -14881,7 +14940,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->send_attempt = body->send_attempt;
             send_code = session->validated_at_ms == 0U;
         }
-        if (send_code && !throttled)
+        // A day's mail to one address is capped as well as its pace (C17, ADR-0685); an address past the cap is
+        // answered as a throttled one is, and the code already mailed stays good for every session of the address.
+        if (send_code && !throttled && password_reset_mail_budget_left(rt, address, now_ms))
         {
             session->user_id = owner;
             session->reset_token.clear();
@@ -14893,6 +14954,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     session->reset_token = std::move(*token);
                     session->reset_sent_at_ms = now_ms;
+                    note_password_reset_mail(rt, address, now_ms);
                 }
             }
         }
@@ -14967,17 +15029,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "too many wrong codes; request a new one");
         }
         ++session->token_attempts;
-        // An empty stored code (no account) is compared like any other, so the work does not depend on it.
+        // An empty stored code (no account) is compared like any other, so the work does not depend on it. The code
+        // judged is this session's own or the latest one mailed to the address, whichever session asked for it (C17,
+        // ADR-0685): the address keeps one code per throttle interval, so a session the throttle gave no code of its
+        // own is not locked out. Both comparisons always run.
         auto const typed = normalize_password_reset_token(*token);
-        auto const stored =
-            session->reset_token.empty() ? std::string(password_reset_token_length, '-') : session->reset_token;
-        auto const matches =
-            crypto::constant_time_equal_variable_length(typed, stored) && !session->reset_token.empty();
+        auto const dummy = std::string(password_reset_token_length, '-');
+        auto const latest = latest_password_reset_code(rt, session->address);
+        auto const own_matches = crypto::constant_time_equal_variable_length(
+                                     typed, session->reset_token.empty() ? dummy : session->reset_token) &&
+                                 !session->reset_token.empty();
+        auto const latest_matches =
+            crypto::constant_time_equal_variable_length(typed, latest.empty() ? dummy : latest) && !latest.empty();
+        auto const matches = own_matches | latest_matches;
         if (!matches)
         {
             return dispatch_err(req, rt, 400U, "M_TOKEN_INCORRECT", "the code is not correct");
         }
         session->validated_at_ms = wall_clock_milliseconds();
+        spend_password_reset_code(rt, session->address, typed);
         core::secure_zero(std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
         session->reset_token.clear();
         return dispatch_resp(req, rt, 200U, R"({"success":true})");

@@ -387,6 +387,10 @@ User-interactive authentication sessions are shared by all users, and a full poo
 
 The cap on open identity validation sessions (password reset, email and phone registration, 3PID requests) counted sessions by the TCP peer address. Behind a reverse proxy every client has the proxy's address, so the per-client cap of 16 was one cap for the whole server and one client could use it up for everyone. It is now counted per client address as the rate limiter resolves it: trusted proxies and `X-Forwarded-For` honoured, IPv6 clients grouped by prefix.
 
+### The owner of an address can always use a reset code (ADR-0685)
+
+The password reset mail is sent at most once a minute per address across all sessions, so a caller who knew the owner's address could take each minute's only send slot with a session of their own and leave the owner a session with no usable code. A session the throttle gave no code is now judged against the latest code mailed to its address (a code typed into a session still validates only that session, and a code a session has proved is spent from all of them). Keeping the throttle per address and not per client address keeps the mail one address can be sent bounded; at most 10 reset mails a day now go to one address, whoever asks.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

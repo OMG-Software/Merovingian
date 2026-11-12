@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -56,6 +57,9 @@ struct ClientServerRuntime final
     ClientApiLimits limits{};
     std::vector<ClientDevice> devices{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
+    // When reset mail went to each address in the last day (C17, ADR-0685): only addresses that were mailed, so bounded
+    // by the accounts with an email address times password_reset_address_daily_cap. Guarded by homeserver.mutex.
+    std::unordered_map<std::string, std::vector<std::uint64_t>> password_reset_mail_times{};
     // Outstanding UIAA challenges. Bounded and TTL-pruned in
     // issue_uia_session(); in-memory only, because a UIAA session carries no
     // authority of its own (the credential travels in the auth block) and must

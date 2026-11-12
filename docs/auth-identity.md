@@ -567,6 +567,9 @@ so it has its own, deliberately separate, lifecycle:
   statement deleting every expired row (all users) and the deletes of the user's oldest live rows beyond
   `max_openid_tokens_per_user` (32) in one transaction.
   See `docs/database-persistence.md`.
+- **Password reset mail (C17, ADR-0685).** One mail per address per 60 seconds and ten per day, across every session
+  and caller. A session the throttle gave no code is judged against the latest code mailed to its address, and a code
+  proved by one session is spent from all of them.
 - **Revocation (F-77, ADR-0408).** `database::revoke_openid_tokens_for_user`
   deletes a user's rows from the table and the in-memory list.
   `deactivate_local_user`, `logout_all_local_user` and

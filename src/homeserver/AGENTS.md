@@ -113,6 +113,11 @@ and no access token are answered before the authentication gate. Rules for chang
   `reset_sent_at_ms` on the sessions of the address (the list is capped). A throttled request answers as usual, keeps an
   existing session's code and tries, and gives a new session no code. A session out of tries stays until it ages out
   so the throttle record survives it.
+  A throttled session has no code of its own, and a code typed into a session is judged against its own code or the
+  latest one mailed to the address (`latest_password_reset_code`), so the owner can use a code another caller caused to
+  be sent; the code is spent from every session of the address once one session proves it, and a caller never sees
+  it. At most `password_reset_address_daily_cap` (10) mails go to one address a day (`password_reset_mail_times`).
+  Never key the throttle per client address: it multiplies the mail one address can be sent (ADR-0685).
 - **Reset sends are counted by `password_reset_sends_in_flight_`, never by `orphan_futures_.size()`**, which holds
   unrelated background tasks. The permit releases the slot on every exit path.
 - **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
