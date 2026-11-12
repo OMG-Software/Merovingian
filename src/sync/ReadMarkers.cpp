@@ -72,7 +72,7 @@ auto read_markers_for(database::PersistentStore const& store, std::string_view r
 {
     // Spec: "Note that users can send both an m.read and m.read.private receipt, both of which are
     // capable of clearing notifications", and "the receipt which is more recent/ahead must be used".
-    // Only this user's rows in this room are read, through the store's receipt index (ADR-0651).
+    // Only this user's rows in this room are read, through the store's receipt index (ADR-0737).
     auto relevant = std::vector<database::PersistentReceipt const*>{};
     for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user))
     {

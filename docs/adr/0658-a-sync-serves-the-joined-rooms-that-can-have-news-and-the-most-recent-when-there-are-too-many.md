@@ -55,4 +55,4 @@ Chosen option: the first.
 
 ## Links
 
-* Refines ADR-0654. Uses ADR-0435 (room stream index), ADR-0440 (account-data index), ADR-0651 (receipt indexes).
+* Refines ADR-0654. Uses ADR-0435 (room stream index), ADR-0440 (account-data index), ADR-0737 (receipt indexes).

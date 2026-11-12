@@ -251,7 +251,7 @@ auto SlidingSyncRequestLookups::read_markers(std::string_view room_id) -> ReadMa
     {
         return found->second;
     }
-    // Only the user's own rows in this room, through the receipt index (ADR-0651): never a pass over the table.
+    // Only the user's own rows in this room, through the receipt index (ADR-0737): never a pass over the table.
     auto markers = read_markers_for(*m_store, room_id, m_user);
     return m_markers.emplace(key, std::move(markers)).first->second;
 }

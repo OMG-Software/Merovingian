@@ -16,7 +16,7 @@ the response against `max_sync_rooms`, so on an incremental sync every joined ro
 ## Decision Drivers
 
 * The work of one `/sync` is proportional to the caller's rooms and those rooms' own rows.
-* Indexed readers for state and memberships already exist (ADR-0344, ADR-0437); receipts got theirs in ADR-0651.
+* Indexed readers for state and memberships already exist (ADR-0344, ADR-0437); receipts got theirs in ADR-0737.
 * The response must not change.
 
 ## Considered Options
@@ -45,4 +45,4 @@ ADR-0659.
 
 ## Links
 
-* Builds on ADR-0344, ADR-0437, ADR-0603, ADR-0651, ADR-0616.
+* Builds on ADR-0344, ADR-0437, ADR-0603, ADR-0737, ADR-0616.

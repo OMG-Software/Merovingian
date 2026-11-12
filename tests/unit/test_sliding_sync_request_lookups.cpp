@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Security audit run 3, finding C07: a sliding sync request learns the caller's rooms from the user's own rows, and the
-// user's own receipt rows through the receipt index, however many rooms and lists it names (ADR-0665, ADR-0651).
+// user's own receipt rows through the receipt index, however many rooms and lists it names (ADR-0665, ADR-0737).
 //
 // Spec: MSC4186 list `filters` (is_invite, is_encrypted, room_types) and the `by_notification_count` sort.
 

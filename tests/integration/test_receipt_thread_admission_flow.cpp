@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Run-3 finding C23 (ADR-0651): a threaded receipt is accepted only for an event related to its thread, and /sync reads
+// Run-3 finding C23 (ADR-0737): a threaded receipt is accepted only for an event related to its thread, and /sync reads
 // receipts through the room indexes, so rows of other rooms and users cost it nothing.
 //
 // Spec: client-server-api.md, POST /rooms/{roomId}/receipt/{receiptType}/{eventId}: 400 when "The `event_id` is not

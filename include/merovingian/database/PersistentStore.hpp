@@ -491,7 +491,7 @@ struct PersistentStore final
     // Read receipts, local and federated. Write through store_receipt and
     // remove_receipt so the database row and this mirror stay in step.
     std::vector<PersistentReceipt> receipts{};
-    // Positions in `receipts` of each room's rows and of each (room, user)'s rows (ADR-0651), trusted as the other row
+    // Positions in `receipts` of each room's rows and of each (room, user)'s rows (ADR-0737), trusted as the other row
     // indexes are (ADR-0603). Read through receipts_in_room and receipts_of_user_in_room, never by looping `receipts`;
     // maintained by store_receipt and remove_receipt, rebuilt after hydration. `receipt_rows_examined` counts the
     // rows those readers looked at.
@@ -1440,7 +1440,7 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
                                   std::size_t max_rows = 0U) -> bool;
 // Whether a row with `key`'s (room, type, user, thread) identity is stored, through the receipt index.
 [[nodiscard]] auto has_receipt(PersistentStore const& store, PersistentReceipt const& key) -> bool;
-// The receipt rows of one room, or of one user in one room, read through the receipt indexes (ADR-0651), in no
+// The receipt rows of one room, or of one user in one room, read through the receipt indexes (ADR-0737), in no
 // particular order. The pointers are valid until the next receipt write.
 [[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)
     -> std::vector<PersistentReceipt const*>;

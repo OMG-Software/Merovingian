@@ -28,7 +28,7 @@ the cost, and nothing it holds can go stale or need maintaining by a writer.
   ADR-0609), checked against the room records once; `is_encrypted` and `room_type` use the room's current state by its
   index (`find_current_state_event_id`, ADR-0344); `m.direct` is parsed once into a set; a room's `m.tag` once per room.
 * Each room's `ReadMarkers` is computed once per request by `read_markers_for`, from the user's own receipt rows in that
-  room, read through the store's (room, user) receipt index (`receipts_of_user_in_room`, ADR-0651). The same object
+  room, read through the store's (room, user) receipt index (`receipts_of_user_in_room`, ADR-0737). The same object
   serves `build_room_response`, so the rooms a response builds share the answers. An earlier form of this change read
   the whole receipts table once per request; with the index in the store that pass is no longer needed.
 * The store passed in is the only source of receipts; the lookups take no separate receipt list.
@@ -40,7 +40,7 @@ the cost, and nothing it holds can go stale or need maintaining by a writer.
 
 ### Rejected: a second index of receipts for sliding sync
 
-The store's receipt index (ADR-0651, finding C23) is kept right by every receipt writer and rebuilt on load; /sync, the
+The store's receipt index (ADR-0737, finding C23) is kept right by every receipt writer and rebuilt on load; /sync, the
 push badge count and sliding sync all read through it. A second index here would need the same care on every writer to
 answer the same question.
 

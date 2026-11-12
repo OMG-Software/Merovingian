@@ -933,7 +933,7 @@ namespace
         }
     }
 
-    // The receipt indexes (ADR-0651): by room, and by (room, user). A receipt's room and user never change in place,
+    // The receipt indexes (ADR-0737): by room, and by (room, user). A receipt's room and user never change in place,
     // so an upsert that replaces a row leaves both indexes as they are.
     [[nodiscard]] auto receipt_room_group_of(PersistentReceipt const& row) -> std::string
     {
@@ -7460,7 +7460,7 @@ namespace
                left.user_id == right.user_id && left.thread_id == right.thread_id;
     }
 
-    // A receipt filed under a thread root, not the main timeline or no thread (ADR-0651).
+    // A receipt filed under a thread root, not the main timeline or no thread (ADR-0737).
     [[nodiscard]] auto is_threaded_receipt(PersistentReceipt const& receipt) noexcept -> bool
     {
         return !receipt.thread_id.empty() && receipt.thread_id != main_receipt_thread_id;
@@ -7520,7 +7520,7 @@ namespace
     // Commits `incoming` (and the deletion of `evicted`, and of the oldest remote rows when the table would pass
     // `max_rows`) as one transaction, then applies it to the mirror. Every row of one (user, room) the batch touches
     // is planned in memory first (at most the threaded cap and a few more rows), so the work is bounded by the batch
-    // and by the eviction, never by the table (ADR-0651, ADR-0652).
+    // and by the eviction, never by the table (ADR-0737, ADR-0652).
     [[nodiscard]] auto commit_receipts(PersistentStore& store, std::vector<PersistentReceipt> incoming,
                                        std::optional<PersistentReceipt> evicted, std::size_t max_rows) -> bool
     {
@@ -7580,7 +7580,7 @@ namespace
             else
             {
                 // A new threaded row past the cap takes the place of the user's own oldest threaded row in the
-                // room (ADR-0651), so a user cannot grow the table by naming thread after thread.
+                // room (ADR-0737), so a user cannot grow the table by naming thread after thread.
                 if (is_threaded_receipt(receipt) &&
                     static_cast<std::size_t>(std::ranges::count_if(plan.rows, is_threaded_receipt)) >=
                         max_threaded_receipt_rows_per_user_room)

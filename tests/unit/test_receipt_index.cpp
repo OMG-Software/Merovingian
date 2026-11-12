@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Run-3 finding C23 (ADR-0651): the receipts table is read by room and by (room, user) through two standing indexes,
+// Run-3 finding C23 (ADR-0737): the receipts table is read by room and by (room, user) through two standing indexes,
 // kept right by every writer and rebuilt on load, and one user's threaded receipts in one room are capped.
 //
 // Spec: Matrix Client-Server API v1.19, "Receipts": each user_id, receipt_type and thread tuple is associated with

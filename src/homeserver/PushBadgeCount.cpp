@@ -105,7 +105,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     ++result.table_walks;
     for (auto& [room_id, room] : rooms)
     {
-        // This user's rows in this room, through the receipt index (ADR-0651), never the whole table.
+        // This user's rows in this room, through the receipt index (ADR-0737), never the whole table.
         for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user_id))
         {
             if (receipt->receipt_type != "m.read" && receipt->receipt_type != "m.read.private")

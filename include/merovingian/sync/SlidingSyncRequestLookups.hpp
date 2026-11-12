@@ -22,7 +22,7 @@ inline constexpr std::size_t max_recency_rows_examined{1000U};
 // What one sliding sync request needs to know about the caller's rooms, each learned once per request and then
 // answered from memory (ADR-0665): the rooms the user is joined to and invited to (from the user's own membership
 // rows), the rooms of their `m.direct`, and, per room, its type, whether it is a favourite, and its read markers (from
-// the user's own receipt rows in the room, through the receipt index, ADR-0651). Without it every list, for every
+// the user's own receipt rows in the room, through the receipt index, ADR-0737). Without it every list, for every
 // joined room, scanned the whole membership, state or receipt table, so a list cost the rooms times the table.
 //
 // A request owns one, on its thread and under runtime.mutex; it is not thread-safe and its caches fill through

@@ -20,7 +20,7 @@ a few hundred joined users could send hundreds of such EDUs per second, each pri
 
 ## Considered Options
 
-* `store_receipts`: plan the whole batch in memory per (user, room) group through the ADR-0651 indexes, commit it (and
+* `store_receipts`: plan the whole batch in memory per (user, room) group through the ADR-0737 indexes, commit it (and
   the evictions) as one transaction, and take eviction victims from an ordered set of remote rows.
 * A min-heap of remote rows by stream position.
 * Charge a receipt EDU by its accepted receipts in the per-origin budget and keep the per-receipt commits.
@@ -30,7 +30,7 @@ a few hundred joined users could send hundreds of such EDUs per second, each pri
 Chosen option: the first.
 
 * `store_receipts(store, receipts, max_rows)` allocates each row's stream position, applies the threaded-row cap of
-  ADR-0651 to the in-memory copy of each touched (user, room) group, and commits every upsert and delete in ONE
+  ADR-0737 to the in-memory copy of each touched (user, room) group, and commits every upsert and delete in ONE
   transaction. The mirror changes only after the commit, so a failed commit changes nothing. The sink collects the
   EDU's accepted receipts and calls it once, then queues the appservice receipts.
 * `PersistentStore::receipt_remote_by_stream` is an ordered set of `(stream_id, (room, user) group)` for rows of users
@@ -51,4 +51,4 @@ Chosen option: the first.
 
 ## Links
 
-* Builds on ADR-0651 (receipt indexes) and ADR-0603 (row index trust).
+* Builds on ADR-0737 (receipt indexes) and ADR-0603 (row index trust).

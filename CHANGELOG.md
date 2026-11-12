@@ -319,9 +319,9 @@ A sliding sync room's timeline was built by a loop that did not count rows it pa
 
 ### Sliding sync list filters and the notification sort no longer scan whole tables per room (ADR-0665, ADR-0666)
 
-For each list, each joined room was tested against the filters by scanning the whole membership, current-state or receipt table, so a list cost the user's rooms times the tables, under the runtime lock. A request now learns the user's joined rooms and invites from their own membership rows, reads the room's encryption and type by the state index, parses `m.direct` once and reads each room's read markers from the user's own receipt rows through the receipt index (ADR-0651), once per room; every list and every room built shares that. The lists a room belongs to are looked up in a hash set rather than scanned in the window. The `by_recency` (with bump event types) and `by_name` sort keys are likewise read per room through the room indexes with a budget of 1000 rows per room, instead of one pass over every event and state row per list (ADR-0666).
+For each list, each joined room was tested against the filters by scanning the whole membership, current-state or receipt table, so a list cost the user's rooms times the tables, under the runtime lock. A request now learns the user's joined rooms and invites from their own membership rows, reads the room's encryption and type by the state index, parses `m.direct` once and reads each room's read markers from the user's own receipt rows through the receipt index (ADR-0737), once per room; every list and every room built shares that. The lists a room belongs to are looked up in a hash set rather than scanned in the window. The `by_recency` (with bump event types) and `by_name` sort keys are likewise read per room through the room indexes with a budget of 1000 rows per room, instead of one pass over every event and state row per list (ADR-0666).
 
-### Receipts are indexed by room and user, and a threaded receipt must belong to its thread (ADR-0651)
+### Receipts are indexed by room and user, and a threaded receipt must belong to its thread (ADR-0737)
 
 Run-3 finding C23. Read receipts are now found through two indexes (by room, and by room and user), so `/sync`, the push
 badge count and sliding sync read only the rows of the rooms they serve, not every receipt on the server. A threaded

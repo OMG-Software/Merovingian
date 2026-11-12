@@ -15,7 +15,7 @@ over every membership, and, in the push-rule unread classifier, every membership
 ## Decision Drivers
 
 * The work of one sync is proportional to the caller's own rows and their rooms' rows, never to a server-wide table.
-* The existing row indexes (ADR-0603, ADR-0651) are the pattern: correct on every insert, replacement and delete and on
+* The existing row indexes (ADR-0603, ADR-0737) are the pattern: correct on every insert, replacement and delete and on
   load, trusted only while in step with the vector.
 
 ## Considered Options
@@ -52,4 +52,4 @@ Chosen option: the first.
 
 ## Links
 
-* Builds on ADR-0603, ADR-0437, ADR-0344, ADR-0654, ADR-0651.
+* Builds on ADR-0603, ADR-0437, ADR-0344, ADR-0654, ADR-0737.

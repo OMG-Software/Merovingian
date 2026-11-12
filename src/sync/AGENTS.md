@@ -19,7 +19,7 @@ Spec authority:
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
-| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0651), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
+| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
@@ -424,7 +424,7 @@ redaction has been applied to are stored in their redacted form, and the seriali
 `unsigned.redacted_because` with `database::attach_redacted_because` (a new client-facing event serializer must
 call it, and `database::add_redaction_compat`).
 
-## Receipts are read through the store's receipt indexes (ADR-0651)
+## Receipts are read through the store's receipt indexes (ADR-0737)
 
 Never loop `store.receipts` in a request: use `database::receipts_in_room` (ephemeral `m.receipt` events, the sliding
 sync receipts extension and its wake check) or `database::receipts_of_user_in_room` (`read_markers_for`, the push badge

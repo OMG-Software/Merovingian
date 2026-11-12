@@ -289,7 +289,7 @@ namespace
             return resp;
         }
 
-        // The rows of each room that was asked for, through the receipt index (ADR-0651), never the whole table.
+        // The rows of each room that was asked for, through the receipt index (ADR-0737), never the whole table.
         auto by_room = std::map<std::string_view, ReceiptContentBuilder, std::less<>>{};
         auto rows = std::vector<database::PersistentReceipt const*>{};
         for (auto const room_id : joined_rooms)

@@ -5153,7 +5153,7 @@ namespace
                                           json_serialize(json_obj(std::move(content))), 0U});
     }
 
-    // The thread `event_id` of `room_id` belongs to, or nullopt when this server holds no such event there (ADR-0651).
+    // The thread `event_id` of `room_id` belongs to, or nullopt when this server holds no such event there (ADR-0737).
     [[nodiscard]] auto receipt_thread_of_event(database::PersistentStore const& store, std::string_view room_id,
                                                std::string_view event_id) -> std::optional<std::string>
     {
@@ -5172,7 +5172,7 @@ namespace
     }
 
     // Whether `thread_id` names a thread root of `room_id` (an event in the main timeline) and the event `event_id`
-    // is that root or belongs to its thread (ADR-0651). An event this server does not hold in the room is related to
+    // is that root or belongs to its thread (ADR-0737). An event this server does not hold in the room is related to
     // nothing: the endpoint answers 400 for it.
     [[nodiscard]] auto receipt_event_is_in_thread(database::PersistentStore const& store, std::string_view room_id,
                                                   std::string_view event_id, std::string_view thread_id) -> bool
@@ -5882,7 +5882,7 @@ namespace
         }
 
         auto receipts = sync::ReceiptContentBuilder{};
-        // The room's own rows, through the receipt index (ADR-0651), never the whole table.
+        // The room's own rows, through the receipt index (ADR-0737), never the whole table.
         for (auto const* receipt_row : database::receipts_in_room(runtime.database.persistent_store, room_id))
         {
             auto const& receipt = *receipt_row;
@@ -20938,7 +20938,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         // threaded receipt is accepted when the receipted event is the thread root itself or
                         // reaches it by an `m.thread` relation (event_thread_id). One event is in one thread, so
                         // a user cannot file receipts for an event under threads of their choosing; the rows one
-                        // user holds in a room are also capped by store_receipt (ADR-0651). The lookup is by
+                        // user holds in a room are also capped by store_receipt (ADR-0737). The lookup is by
                         // the event index and reads one event, not the table.
                         if (!thread_id.empty() && thread_id != sync::main_thread_id &&
                             !receipt_event_is_in_thread(rt.homeserver.database.persistent_store, room_id, event_id,
