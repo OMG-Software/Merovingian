@@ -190,6 +190,16 @@ a user's current membership, the invite's stripped state, the room summary for k
 now read the room's own state through the state index (ADR-0344). `state_rows_examined` counts what the state readers
 look at; a test proves `createRoom` examines the same rows however much state other rooms hold (run-3 C35).
 
+### State resolution reads each auth event once
+
+The iterative auth checks built an auth map for every event of the conflicted set by deep-copying the current create,
+power-levels, join-rules and member events, and the auth rules then searched those copies: the sender's level was a
+walk of `content.users`, and rule 9 compared two power-levels events entry by entry. A remote room creator chooses both
+the number of conflicted events and the size of the power-levels event, so one resolution under the runtime lock cost
+their product. Each distinct auth event is now copied and read into an index once per resolution, the auth rules look
+fields up in it, and rules 9.6 and 9.8 count the current entries at or above the sender's level instead of walking
+them. Decisions are unchanged; a 9.6 refusal no longer names the entry (ADR-0693).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

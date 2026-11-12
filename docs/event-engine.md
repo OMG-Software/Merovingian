@@ -521,6 +521,18 @@ per group over them, enlarging X is one traversal from every power event, and
 a mainline walk reuses what an earlier walk found. The cap still means one
 group's chain, and the mainline depth limit still counts every hop.
 
+The iterative auth checks read each distinct auth event once (ADR-0693). An
+`IndexedAuthEventCache` per resolution copies each create, power-levels,
+join-rules or member event the checks need once and reads it into an
+`IndexedAuthEvent`: its members, its scalar power levels decoded, its
+`users`, `events` and `notifications` maps hashed and sorted, and its
+`additional_creators` as a set. The auth rules run against these indexes
+(`authorize_event_against_auth_indexes`; `authorize_event_against_auth_events`
+indexes an `AuthEventMap` and calls it), so judging one event costs lookups,
+not a walk of each auth event, and rule 9 compares two power-levels events in
+the size of the new one. `StateResolutionResult::auth_events_prepared` counts
+the indexed events.
+
 As of 0.12.18, `security.federation.state_resolution` also configures group
 count, entries per group, aggregate submitted entries, distinct/conflicted
 keys and mainline depth. The aggregate entry limit is checked before indexing

@@ -20,6 +20,9 @@ struct StateResolutionResult final
     // the mainline positions. A test reads it to prove that one resolution costs the distinct events it
     // reaches, not the state size times the auth chain's depth (ADR-0599).
     std::size_t auth_walk_visits{0U};
+    // Distinct auth events the iterative auth checks copied and indexed, each once however many events they judged
+    // against it (ADR-0693). A test reads it to prove the checks do not copy an auth event per judged event.
+    std::size_t auth_events_prepared{0U};
 };
 
 } // namespace merovingian::events

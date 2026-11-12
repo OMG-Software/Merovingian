@@ -3,6 +3,7 @@ events_sources = files(
   'Event.cpp',
   'EventId.cpp',
   'EventSigner.cpp',
+  'IndexedAuthEvent.cpp',
   'Redaction.cpp',
   'MemberJoinSender.cpp',
   'RedactionValidity.cpp',
