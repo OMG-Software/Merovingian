@@ -158,6 +158,11 @@ Connections accepted but not yet sent their first request are capped at
 `listeners.max_queued_connections` (default 1024; `0` disables the cap), which
 used to bound the pool's queue: beyond it a new connection is closed at once.
 
+One client key may hold at most a sixteenth of that budget (at least one connection; 64 by default), and the same
+share of `server.http.keep_alive_max_connections`, so a few addresses cannot fill either budget for everyone
+(ADR-0719). A trusted proxy (empty key) is exempt. A connection that is readable but has waited 30 s for its key's
+worker share (`HttpServeTuning::ready_wait_timeout`) is closed instead of holding its pending slot for ever.
+
 ## HTTP keep-alive
 
 Matrix v1.19 is served over HTTP/1.1, where persistent connections are the

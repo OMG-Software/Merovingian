@@ -31,7 +31,10 @@ namespace merovingian::net
 //     clients over one address) but not from the first.
 // A readable connection that is over either cap stays parked and leaves the
 // poll set, so it cannot spin the loop; it is dispatched, oldest first, when an
-// ActiveShare is released.
+// ActiveShare is released. When `max_ready_wait` is set, a connection that has
+// waited that long readable without being dispatched is closed (audit run-3
+// C01): the first-byte deadline stops applying once a connection is readable,
+// so without it a client could hold a parked slot for as long as it likes.
 //
 // Ownership: a connection is owned by exactly one of {the parker, the holder of
 // the Dispatched value it was handed out in}. Handing it back is park() again.
@@ -73,6 +76,9 @@ public:
     {
         std::size_t max_active{1U};
         std::size_t max_active_per_client{1U};
+        // Longest a readable connection may wait for a share before it is
+        // closed; zero means no limit.
+        std::chrono::milliseconds max_ready_wait{0};
     };
 
     class State;

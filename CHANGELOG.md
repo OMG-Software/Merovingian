@@ -29,6 +29,13 @@ findings that needed validation.
   primary check.
 * `AttestationRecipeTests` in `tests/tooling/test_release_workflow.py` fails on any recipe in a Markdown or workflow
   file that lacks either flag or names the wrong workflow.
+### One client address cannot fill the pending-connection budget (ADR-0719)
+
+* A client address (an IPv6 /64) may now hold at most a sixteenth of `listeners.max_queued_connections` and of
+  `server.http.keep_alive_max_connections`, so five addresses can no longer make every listener refuse new
+  connections. A trusted proxy is exempt.
+* A connection that is readable but waits more than 30 s for its address's share of the workers is closed instead of
+  holding its slot for ever.
 
 ## 1.0.0
 

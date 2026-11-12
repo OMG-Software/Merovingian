@@ -1302,8 +1302,7 @@ namespace
             });
             return http::ConnectionPreference::close;
         }
-        auto reservation = ctx.dispatcher->try_reserve_keep_alive(policy.max_connections);
-        if (!reservation.has_value())
+        if (!ctx.dispatcher->reserve_keep_alive(connection, policy.max_connections))
         {
             log_diagnostic("connection.keep_alive_cap_reached",
                            {
@@ -1311,7 +1310,6 @@ namespace
             });
             return http::ConnectionPreference::close;
         }
-        connection.parked_reservation = std::move(reservation);
         return http::ConnectionPreference::keep_alive;
     }
 

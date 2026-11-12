@@ -563,3 +563,4 @@
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
 * [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)
 * [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md)
+* [0719 - One client key holds a sixteenth of the parked-connection budgets, and a readable connection waits a bounded time](0719-one-client-key-holds-a-sixteenth-of-the-parked-connection-budgets-and-a-readable-connection-waits-a-bounded-time.md)

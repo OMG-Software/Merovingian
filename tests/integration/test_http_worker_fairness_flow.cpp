@@ -843,3 +843,68 @@ SCENARIO("Shutdown with parked connections completes promptly", "[http-1][homese
         }
     }
 }
+
+// Audit run-3 C01: a few client keys must not be able to fill the process-wide pending-connection budget.
+SCENARIO("A few client addresses cannot fill the pending-connection budget and lock every other client out",
+         "[http-1][homeserver][http][integration][security]")
+{
+    GIVEN("a pool of four workers, a pending-connection budget of sixteen and three clients sending one byte each")
+    {
+        if (!other_client_available())
+        {
+            SKIP("127.0.0.2 is not a local address on this host");
+        }
+        auto config = base_config();
+        config.listeners().max_queued_connections = 16U;
+        config.server().http.max_connections_per_ip = 16U;
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+        auto runtime = std::move(runtime_result.runtime);
+        auto tuning = HttpServeTuning{};
+        tuning.first_byte_timeout = 20000ms;
+        auto listener = Listener{runtime, tuning};
+
+        auto held = std::vector<ClientSocket>{};
+        auto const open_and_send_a_byte = [&](char const* source) {
+            auto [status, socket] = connect_from(source, listener.port());
+            REQUIRE(status == SourceConnect::connected);
+            std::ignore = send_all(socket.fd(), "G");
+            held.push_back(std::move(socket));
+        };
+        auto constexpr attackers = std::array{"127.0.0.2", "127.0.0.3", "127.0.0.4"};
+
+        WHEN("each client holds one worker and then opens fifteen more connections that each send one byte")
+        {
+            for (auto const* source : attackers)
+            {
+                open_and_send_a_byte(source);
+            }
+            std::this_thread::sleep_for(300ms);
+            for (auto index = 0; index < 15; ++index)
+            {
+                for (auto const* source : attackers)
+                {
+                    open_and_send_a_byte(source);
+                }
+            }
+            auto const victim = timed_request_from("127.0.0.20", listener.port());
+
+            THEN("a fourth client is still served")
+            {
+                REQUIRE(victim.status == SourceConnect::connected);
+                INFO("victim's response: " << victim.response);
+                REQUIRE(victim.response.starts_with("HTTP/1.1 200"));
+            }
+        }
+
+        WHEN("no other client is connected")
+        {
+            auto const alone = timed_request_from("127.0.0.20", listener.port());
+
+            THEN("the same request is served")
+            {
+                REQUIRE(alone.response.starts_with("HTTP/1.1 200"));
+            }
+        }
+    }
+}

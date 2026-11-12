@@ -110,10 +110,9 @@ public:
     // A worker or a sync-pool task hands a kept-alive connection back.
     auto park_for_next_request(ConnectionOwner owner) -> void;
 
-    [[nodiscard]] auto try_reserve_keep_alive(std::uint32_t cap) -> std::optional<ParkingReservation>
-    {
-        return ParkingReservation::try_acquire(m_parked_keep_alive, cap);
-    }
+    // Reserves the connection's keep-alive parking in the process-wide budget and in its client key's share of it
+    // (C01), recording both on the connection. False when either is full; the connection then holds neither.
+    [[nodiscard]] auto reserve_keep_alive(HttpConnection& connection, std::uint32_t cap) -> bool;
     [[nodiscard]] auto parked_keep_alive() const noexcept -> std::uint32_t
     {
         return m_parked_keep_alive->load(std::memory_order_relaxed);
@@ -133,6 +132,10 @@ private:
 
     ParkingReservation::Counter m_parked_keep_alive{std::make_shared<std::atomic<std::uint32_t>>(0U)};
     ParkingReservation::Counter m_parked_new{std::make_shared<std::atomic<std::uint32_t>>(0U)};
+    // Parked connections per client key (C01), so a few keys cannot fill the budgets above. Declared before the parker:
+    // a parked connection holds a slot, and the parker's destructor closes it.
+    http::ConnectionLimiter m_pending_per_key{};
+    http::ConnectionLimiter m_keep_alive_per_key{};
     // Created by start() before any listener runs; the pointer never changes
     // afterwards, so the threads that use it need no lock to read it.
     std::unique_ptr<net::ConnectionParker> m_parker{};

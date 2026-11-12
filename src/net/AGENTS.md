@@ -24,6 +24,9 @@ No Matrix-specific logic lives here.
   parked connection at once and joins its thread; it does no blocking I/O, so this is bounded),
   then drain the thread pools. In-flight requests are allowed to complete; a connection a worker
   hands back after the parker has stopped is closed, not parked.
+- **A client key holds at most a sixteenth of each parked-connection budget (ADR-0719).** The dispatcher counts a
+  parked connection against its key in two `http::ConnectionLimiter`s, and `Limits::max_ready_wait` closes a connection
+  that stayed readable without a worker share.
 - **No worker waits on a quiet socket (ADR-0077).** Waiting for input — a first byte, the next
   keep-alive request — is the `ConnectionParker`'s job. A pool task that would block on a
   connection with nothing to read is the defect HTTP-1 fixed.

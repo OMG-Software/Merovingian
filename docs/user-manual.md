@@ -949,7 +949,9 @@ dispatcher, not by worker threads). Without a cap a connection flood grows
 that set until the process runs out of descriptors or memory. Past the cap a
 new connection is closed immediately, which sheds load in the one way the
 client can observe and retry. Raise it if legitimate bursts are being refused;
-lower it to shed load sooner under a smaller memory budget. The long-poll
+lower it to shed load sooner under a smaller memory budget. One client
+address may hold at most a sixteenth of the cap (and of `server.http.keep_alive_max_connections`), so a few
+addresses cannot fill it for everyone; a trusted reverse proxy is exempt (ADR-0719). The long-poll
 `/sync` pool's queue uses the same bound. The reload plan classifies this setting
 as reloadable, though the live reload control path is not yet wired; restart the
 server to apply a changed value today.
