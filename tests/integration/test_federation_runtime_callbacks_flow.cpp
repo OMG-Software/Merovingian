@@ -2050,7 +2050,9 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
                         return entry.user_id == oldest;
                     });
                 REQUIRE_FALSE(still_has_oldest);
-                REQUIRE(runtime->database.persistent_store.receipts.back().user_id == "@overflow:matrix.example.org");
+                REQUIRE(std::ranges::any_of(runtime->database.persistent_store.receipts, [](auto const& entry) {
+                    return entry.user_id == "@overflow:matrix.example.org";
+                }));
             }
         }
     }
@@ -2067,6 +2069,8 @@ SCENARIO("A peer flood at the receipt cap never evicts a local user's receipt",
         auto const key_id = std::string{"ed25519:auto"};
         auto runtime = edu_runtime(origin, key_id, "receipt-local-cap-seed", {"!busy:matrix.example.org"});
         auto& receipts = runtime->database.persistent_store.receipts;
+        // Who is local decides whose rows may be evicted (ADR-0652); a started runtime sets it from its config.
+        runtime->database.persistent_store.local_server_name = runtime->config.server().server_name;
         receipts.push_back(
             {"!busy:matrix.example.org", "m.read", "@local:example.org", "$e:matrix.example.org", 1U, 0U});
         for (auto index = std::size_t{1U}; index < merovingian::homeserver::max_inbound_receipt_entries; ++index)

@@ -313,6 +313,13 @@ receipt (`thread_id` other than `main`) is accepted only when its event is the t
 otherwise the request fails with 400 `M_INVALID_PARAM`, as the spec allows. One user holds at most 256 threaded
 receipt rows in one room; a new one replaces that user's own oldest.
 
+### A receipt EDU commits in one transaction (ADR-0652)
+
+Run-3 finding C36. An inbound `m.receipt` EDU used to scan the whole receipt table several times for each receipt and commit
+one database transaction per receipt while holding the runtime lock. Its accepted receipts are now stored together in one
+transaction, found through the receipt indexes, and when the table is full the oldest receipts of remote users are evicted
+from an ordered index, so the cost is bounded by the EDU. A local user's receipts are still never evicted.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

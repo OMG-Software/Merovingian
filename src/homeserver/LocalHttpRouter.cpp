@@ -6,11 +6,11 @@
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
-#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
@@ -39,6 +39,7 @@
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/EduType.hpp"
+#include "merovingian/federation/EventQuery.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
@@ -46,55 +47,54 @@
 #include "merovingian/federation/FederationResponse.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/RemoteDeviceListOutcome.hpp"
-#include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/EventQuery.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
-#include "merovingian/federation/KeyQuery.hpp"
-#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/federation/Security.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
 #include "merovingian/federation/ServerDiscovery.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
+#include "merovingian/homeserver/DeferredPduRetry.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
-#include "merovingian/homeserver/OperationResult.hpp"
-#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
-#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
-#include "merovingian/homeserver/RequestLockScope.hpp"
-#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
-#include "merovingian/homeserver/RuntimeLockRelease.hpp"
-#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
-#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
-#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/DeferredPduRetry.hpp"
-#include "merovingian/homeserver/FederationRequestRouting.hpp"
-#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/MediaService.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PublicRooms.hpp"
+#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RestrictedJoin.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
 #include "merovingian/homeserver/RoomResidency.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 #include "merovingian/homeserver/SendJoinAnswer.hpp"
+#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
+#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
@@ -106,12 +106,12 @@
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/CorrelationScope.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
-#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1943,6 +1943,7 @@ namespace
                 auto rooms_looked_at = std::size_t{0U};
                 auto users_looked_at = std::size_t{0U};
                 auto receipt_budget_spent = false;
+                auto accepted = std::vector<database::PersistentReceipt>{};
                 for (auto const& room_member : *root)
                 {
                     // A peer chooses how many rooms and users the EDU names; only so many are looked at, and the
@@ -2058,37 +2059,6 @@ namespace
                                 }
                                 thread_id = *thread_string;
                             }
-                            auto& store = rt->database.persistent_store;
-                            auto const replaces_existing =
-                                std::ranges::any_of(store.receipts, [&](auto const& current) {
-                                    return current.room_id == room_member.key && current.user_id == user_member.key &&
-                                           current.receipt_type == receipt_type_member.key &&
-                                           current.thread_id == thread_id;
-                                });
-                            // 0.12.5 audit, finding 13. Same shape as the typing cap: the
-                            // membership check above is the real bound, this evicts the oldest
-                            // receipt of a remote user if a peer floods a room it is in. A local
-                            // user's receipts are never evicted: they are that user's unread
-                            // state, and a peer must not be able to mark rooms unread for them.
-                            auto evicted = std::optional<database::PersistentReceipt>{};
-                            if (!replaces_existing && store.receipts.size() >= max_inbound_receipt_entries)
-                            {
-                                auto const& local_server = rt->config.server().server_name;
-                                auto victim = store.receipts.end();
-                                for (auto candidate = store.receipts.begin(); candidate != store.receipts.end();
-                                     ++candidate)
-                                {
-                                    if (server_name_from_user_id(candidate->user_id) != local_server &&
-                                        (victim == store.receipts.end() || candidate->stream_id < victim->stream_id))
-                                    {
-                                        victim = candidate;
-                                    }
-                                }
-                                if (victim != store.receipts.end())
-                                {
-                                    evicted = *victim;
-                                }
-                            }
                             auto incoming = database::PersistentReceipt{};
                             incoming.room_id = room_member.key;
                             incoming.receipt_type = receipt_type_member.key;
@@ -2096,15 +2066,20 @@ namespace
                             incoming.event_id = *first_event_id;
                             incoming.ts = ts;
                             incoming.thread_id = std::move(thread_id);
-                            // A receipt that cannot be committed is not kept: it is ephemeral
-                            // data the peer has already been told was accepted, and the next
-                            // receipt from this user replaces it in any case. Commit any
-                            // eviction with the upsert so failure preserves the old receipt.
-                            if (database::store_receipt(store, incoming, std::move(evicted)))
-                            {
-                                queue_appservice_receipt(*rt, incoming);
-                            }
+                            accepted.push_back(std::move(incoming));
                         }
+                    }
+                }
+                // The EDU's accepted receipts are committed in ONE transaction, with the oldest remote rows evicted
+                // in it when the table passes its cap (0.12.5 audit, finding 13; ADR-0652). A local user's receipts
+                // are never evicted: they are that user's unread state, and a peer must not be able to mark rooms
+                // unread for them. A batch that cannot be committed is not kept: it is ephemeral data the peer has
+                // already been told was accepted, and the next receipt from each user replaces it in any case.
+                if (database::store_receipts(rt->database.persistent_store, accepted, max_inbound_receipt_entries))
+                {
+                    for (auto const& stored : accepted)
+                    {
+                        queue_appservice_receipt(*rt, stored);
                     }
                 }
                 if (receipt_budget_spent)

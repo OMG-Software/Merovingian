@@ -599,3 +599,4 @@
 * [0665 - A sliding sync request learns the caller's rooms once, and every list reads that](0665-a-sliding-sync-request-learns-the-callers-rooms-once-and-every-list-reads-that.md)
 * [0666 - The recency and name sort keys are read per room through the indexes](0666-the-recency-and-name-sort-keys-are-read-per-room-through-the-indexes.md)
 * [0651 - Receipts are read through room and user indexes, and a threaded receipt must be related to its thread](0651-receipts-are-read-through-room-and-user-indexes-and-a-threaded-receipt-must-be-related-to-its-thread.md)
+* [0652 - A receipt EDU commits in one transaction, and the oldest remote rows are evicted from an ordered index](0652-a-receipt-edu-commits-in-one-transaction-and-remote-rows-are-evicted-from-an-ordered-index.md)

@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -288,5 +289,141 @@ SCENARIO("one user's threaded receipts in one room are capped, oldest first", "[
                 REQUIRE(thread_rows(store, "!other:example.org", alice) == cap);
             }
         }
+    }
+}
+
+SCENARIO("a batch of receipts commits in one transaction and evicts the oldest remote rows from an ordered index",
+         "[receipts][c36][index]")
+{
+    GIVEN("a table of 200 local rows (oldest) and 800 remote rows, and a cap of 1000 rows")
+    {
+        auto opened = db::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        store.local_server_name = "example.org";
+        for (auto user = std::size_t{0U}; user < 200U; ++user)
+        {
+            REQUIRE(db::store_receipt(
+                store, make_receipt("!l:example.org", "@local" + std::to_string(user) + ":example.org", "$l")));
+        }
+        for (auto user = std::size_t{0U}; user < 800U; ++user)
+        {
+            REQUIRE(db::store_receipt(
+                store, make_receipt("!r:example.org", "@remote" + std::to_string(user) + ":far.example", "$r")));
+        }
+        REQUIRE(store.receipts.size() == 1000U);
+        constexpr auto cap = std::size_t{1000U};
+
+        WHEN("a batch of three new receipts from new remote users is stored")
+        {
+            auto batch = std::vector<db::PersistentReceipt>{};
+            for (auto user = std::size_t{0U}; user < 3U; ++user)
+            {
+                batch.push_back(make_receipt("!r:example.org", "@new" + std::to_string(user) + ":far.example", "$n"));
+            }
+            auto const transactions = db::committed_transaction_count(store);
+            auto const examined = store.receipt_rows_examined.value();
+            REQUIRE(db::store_receipts(store, std::move(batch), cap));
+
+            THEN("one transaction was committed, and the table is at the cap")
+            {
+                REQUIRE(db::committed_transaction_count(store) - transactions == 1U);
+                REQUIRE(store.receipts.size() == cap);
+            }
+            THEN("the three oldest remote rows went, and no local row")
+            {
+                REQUIRE(db::receipts_of_user_in_room(store, "!r:example.org", "@remote0:far.example").empty());
+                REQUIRE(db::receipts_of_user_in_room(store, "!r:example.org", "@remote2:far.example").empty());
+                REQUIRE(db::receipts_of_user_in_room(store, "!r:example.org", "@remote3:far.example").size() == 1U);
+                REQUIRE(db::receipts_in_room(store, "!l:example.org").size() == 200U);
+                REQUIRE(db::receipts_of_user_in_room(store, "!r:example.org", "@new1:far.example").size() == 1U);
+            }
+            THEN("the rows examined are bounded by the batch, not the table")
+            {
+                REQUIRE(store.receipt_rows_examined.value() - examined <= 12U);
+                REQUIRE(store.receipt_room_index.in_step(store.receipts.size()));
+                REQUIRE(store.receipt_user_room_index.in_step(store.receipts.size()));
+            }
+        }
+
+        WHEN("a batch only replaces rows it already holds")
+        {
+            auto batch = std::vector<db::PersistentReceipt>{};
+            batch.push_back(make_receipt("!r:example.org", "@remote0:far.example", "$moved"));
+            batch.push_back(make_receipt("!r:example.org", "@remote0:far.example", "$moved-again"));
+            REQUIRE(db::store_receipts(store, std::move(batch), cap));
+
+            THEN("nothing is evicted and the later receipt of the batch wins")
+            {
+                REQUIRE(store.receipts.size() == cap);
+                auto const rows = db::receipts_of_user_in_room(store, "!r:example.org", "@remote0:far.example");
+                REQUIRE(rows.size() == 1U);
+                REQUIRE(rows.front()->event_id == "$moved-again");
+            }
+        }
+
+        WHEN("the cap is far below what the table holds")
+        {
+            auto batch = std::vector<db::PersistentReceipt>{};
+            batch.push_back(make_receipt("!l:example.org", "@local-new:example.org", "$ln"));
+
+            THEN("every remote row goes, and the cap is passed rather than a local row removed")
+            {
+                REQUIRE(db::store_receipts(store, std::move(batch), 1U));
+                REQUIRE(db::receipts_in_room(store, "!l:example.org").size() == 201U);
+                REQUIRE(db::receipts_in_room(store, "!r:example.org").empty());
+            }
+        }
+
+        WHEN("a batch holds an invalid row")
+        {
+            auto batch = std::vector<db::PersistentReceipt>{};
+            batch.push_back(make_receipt("!r:example.org", "@fine:far.example", "$f"));
+            batch.push_back(make_receipt("!r:example.org", "@bad:far.example", ""));
+
+            THEN("nothing is stored")
+            {
+                REQUIRE_FALSE(db::store_receipts(store, std::move(batch), cap));
+                REQUIRE(store.receipts.size() == cap);
+                REQUIRE_FALSE(db::has_receipt(store, make_receipt("!r:example.org", "@fine:far.example", "$f")));
+            }
+        }
+    }
+}
+
+SCENARIO("the ordered remote index is rebuilt on load and follows a changed local server name",
+         "[receipts][c36][index]")
+{
+    GIVEN("a database of remote and local receipts")
+    {
+        auto const path = unique_sqlite_path();
+        {
+            auto opened = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            opened.store.local_server_name = "example.org";
+            REQUIRE(db::store_receipt(opened.store, make_receipt("!a:example.org", "@old:far.example", "$1")));
+            REQUIRE(db::store_receipt(opened.store, make_receipt("!a:example.org", "@mine:example.org", "$2")));
+            REQUIRE(db::store_receipt(opened.store, make_receipt("!a:example.org", "@mid:far.example", "$3")));
+        }
+
+        WHEN("it is opened again and a batch passes the cap")
+        {
+            auto reloaded = db::open_sqlite_persistent_store(path.string());
+            REQUIRE(reloaded.ok);
+            auto& store = reloaded.store;
+            store.local_server_name = "example.org";
+            auto batch = std::vector<db::PersistentReceipt>{};
+            batch.push_back(make_receipt("!a:example.org", "@fresh:far.example", "$4"));
+            REQUIRE(db::store_receipts(store, std::move(batch), 3U));
+
+            THEN("the oldest remote row from before the reload is the one evicted")
+            {
+                REQUIRE(store.receipts.size() == 3U);
+                REQUIRE(db::receipts_of_user_in_room(store, "!a:example.org", "@old:far.example").empty());
+                REQUIRE(db::receipts_of_user_in_room(store, "!a:example.org", "@mine:example.org").size() == 1U);
+                REQUIRE(db::receipts_of_user_in_room(store, "!a:example.org", "@mid:far.example").size() == 1U);
+            }
+        }
+        std::filesystem::remove(path);
     }
 }

@@ -99,6 +99,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -491,6 +492,13 @@ struct PersistentStore final
     RowGroupIndex receipt_room_index{};
     RowGroupIndex receipt_user_room_index{};
     ExaminedRows receipt_rows_examined{};
+    // The remote users' rows ordered by stream position, as (stream_id, the row's (room, user) group), so the oldest
+    // remote row is the first entry (ADR-0652). "Remote" is a user on a server other than `local_server_name`.
+    // Trusted only while `receipt_remote_indexed_rows == receipts.size()` and it was built for the current
+    // `local_server_name`; a writer rebuilds it when it is not.
+    std::set<std::pair<std::uint64_t, std::string>> receipt_remote_by_stream{};
+    std::size_t receipt_remote_indexed_rows{0U};
+    std::string receipt_remote_indexed_server{};
     // An erase moves the last row into the gap, so the vector has no meaningful order (ADR-0618).
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     // Positions in `to_device_messages` of each (user, device) queue and of each user's rows (ADR-0618), trusted as
@@ -1367,6 +1375,15 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // Removes the receipt with `receipt`'s key. False if there was none or the
 // delete could not be committed.
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool;
+// Stores every receipt of `receipts` (an inbound m.receipt EDU's accepted rows) in ONE transaction, each at its own
+// newly allocated sync stream position, with the per-(user, room) threaded-row cap of store_receipt applied in order.
+// When `max_rows` is not zero and the table would hold more, the oldest rows of remote users that the batch does not
+// touch are deleted in the same transaction (a local user's rows never are). All or nothing: false on a backend
+// failure or an invalid row, with the mirror unchanged (ADR-0652).
+[[nodiscard]] auto store_receipts(PersistentStore& store, std::vector<PersistentReceipt> receipts,
+                                  std::size_t max_rows = 0U) -> bool;
+// Whether a row with `key`'s (room, type, user, thread) identity is stored, through the receipt index.
+[[nodiscard]] auto has_receipt(PersistentStore const& store, PersistentReceipt const& key) -> bool;
 // The receipt rows of one room, or of one user in one room, read through the receipt indexes (ADR-0651), in no
 // particular order. The pointers are valid until the next receipt write.
 [[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)

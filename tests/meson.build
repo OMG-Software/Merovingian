@@ -910,6 +910,7 @@ shell = find_program('sh')
       'integration/test_security_audit_run2_to_device_send_flow.cpp',
       'integration/test_sync_bounded_reads_flow.cpp',
       'integration/test_receipt_thread_admission_flow.cpp',
+      'integration/test_receipt_edu_commit_flow.cpp',
       'integration/test_stored_invite_caps_flow.cpp',
       'integration/test_security_issues_460_463_flow.cpp',
       'integration/test_server_signing_key_lifecycle_flow.cpp',
