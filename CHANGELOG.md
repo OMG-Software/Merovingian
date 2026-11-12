@@ -117,6 +117,16 @@ a digest of the sessions that each write keeps up to date, so a request reads no
 backup's content changes and is the same after a restart. A backup session over 16 KiB is refused with `400 M_TOO_LARGE`
 before anything is stored.
 
+### A to-device queue is shared out per sender (ADR-0674)
+
+Audit finding C12. When a device's (or a user's) to-device queue was full, a new message evicted the oldest queued rows whoever
+had sent them, so any local user or federated server could delete the room keys other senders had queued for a device that had
+not synced yet. Each sender (a local user, or a remote server for everything its users send) may now hold at most half of a
+queue once another sender is queued there; a message from a sender at its share evicts that sender's own oldest row, and a
+message that finds the queue full evicts the oldest row of the sender holding the most. No sender can fill a queue first to make
+others' messages fail, no message from a sender under its share is dropped, and a sender alone in a queue is limited as before.
+At the per-user bound the sender's oldest row across the user's devices goes first, as before.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -1181,7 +1181,7 @@ media-fetch-pool task.
   `max_create_room_initial_state` entries the same way, before the room is made (ADR-0316).
   Every account-data row, the server's own `m.tag` included, is also refused past
   `database::max_account_data_row_bytes` (256 KiB), and a room holds at most 100 tags of 1 KiB each (ADR-0339).
-  A to-device message is refused past `max_to_device_message_bytes`, a recipient's queue evicts its oldest rows past
+  A to-device message is refused past `max_to_device_message_bytes`, a recipient's queue is shared out per sender (a sender never evicts another's rows for its own share, ADR-0674) past
   `max_to_device_bytes_per_user_device`, and one `PUT /sendToDevice` names at most 1,000 local devices
   (ADR-0335, ADR-0336). A one-time or fallback key is a string of at most 256 bytes or a key object of at most 4 KiB
   (400 `M_BAD_JSON`), and `device_keys`, a cross-signing key or a signed key is at most 16 KiB (ADR-0338).

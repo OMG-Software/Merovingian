@@ -484,6 +484,7 @@ shell = find_program('sh')
       'unit/test_lazy_member_tracker.cpp',
       'unit/test_sync_pool_liveness.cpp',
       'unit/test_to_device_queue.cpp',
+      'unit/test_to_device_sender_share.cpp',
       'unit/test_security_audit_run2_to_device.cpp',
       'unit/test_timeline_window.cpp',
   'unit/test_to_device_index.cpp',

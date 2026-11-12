@@ -6829,12 +6829,125 @@ namespace
         std::string target_device_id{};
     };
 
+    struct RecipientQueue;
+
+    // What one sender holds of a bounded set of queued rows (run-3 C12, ADR-0674): the row and byte counts, and the
+    // rows by stream ID with the queue each is in, so the sender's oldest row is the first entry.
+    struct SenderHold final
+    {
+        std::uint64_t rows{0U};
+        std::uint64_t bytes{0U};
+        std::map<std::uint64_t, RecipientQueue*> by_id{};
+    };
+
+    // The queued rows of one bounded set (a device's queue, or all of a user's queues) grouped by who sent them, with
+    // the senders ranked by how much of the bound each holds (ADR-0674). A sender may hold at most half of the bound; a
+    // full set gives way by evicting the oldest row of the sender holding the most, ties going to the sender with the
+    // oldest row. Every operation is logarithmic in the number of senders. A sender is a local user ID or a remote
+    // server (`to_device_share_of`).
+    class ShareBook final
+    {
+    public:
+        // `rows` and `bytes` are the bound's limits; zero means that dimension is not bounded.
+        auto bound(std::uint64_t rows, std::uint64_t bytes) noexcept -> void
+        {
+            m_max_rows = rows;
+            m_max_bytes = bytes;
+        }
+
+        auto add(std::string const& sender, std::uint64_t stream_id, std::uint64_t bytes, RecipientQueue* queue) -> void
+        {
+            auto& hold = m_holds[sender];
+            if (hold.rows != 0U)
+            {
+                m_ranking.erase(key_of(sender, hold));
+            }
+            ++hold.rows;
+            hold.bytes += bytes;
+            hold.by_id.emplace(stream_id, queue);
+            m_ranking.insert(key_of(sender, hold));
+        }
+
+        auto remove(std::string const& sender, std::uint64_t stream_id, std::uint64_t bytes) -> void
+        {
+            auto const found = m_holds.find(sender);
+            if (found == m_holds.end())
+            {
+                return;
+            }
+            auto& hold = found->second;
+            m_ranking.erase(key_of(sender, hold));
+            hold.by_id.erase(stream_id);
+            --hold.rows;
+            hold.bytes -= bytes;
+            if (hold.rows == 0U)
+            {
+                m_holds.erase(found);
+                return;
+            }
+            m_ranking.insert(key_of(sender, hold));
+        }
+
+        // True when `sender` holds a row, another sender does too, and one more message of `bytes` would take `sender`
+        // past half of the bound. A sender alone in the set has no one to leave room for, so it may use all of it; the
+        // first message of another sender takes room back from the largest holder.
+        [[nodiscard]] auto must_evict_own(std::string const& sender, std::uint64_t bytes) const -> bool
+        {
+            auto const found = m_holds.find(sender);
+            if (found == m_holds.end() || m_holds.size() < 2U)
+            {
+                return false;
+            }
+            return (m_max_rows > 0U && found->second.rows + 1U > m_max_rows / 2U) ||
+                   (m_max_bytes > 0U && found->second.bytes + bytes > m_max_bytes / 2U);
+        }
+
+        // The sender holding the most of the bound, or nullptr when nothing is queued.
+        [[nodiscard]] auto largest() const -> std::string const*
+        {
+            return m_ranking.empty() ? nullptr : &std::get<3>(*m_ranking.rbegin());
+        }
+
+        // The sender's oldest row: its stream ID and queue.
+        [[nodiscard]] auto oldest_of(std::string const& sender) const -> std::pair<std::uint64_t, RecipientQueue*>
+        {
+            auto const& first = *m_holds.at(sender).by_id.begin();
+            return {first.first, first.second};
+        }
+
+    private:
+        // (share in parts per million of the tighter limit, rows, the inverse of the oldest stream ID so that the
+        // oldest row ranks higher, sender): the greatest key is the sender to take a row from.
+        using Key = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::string>;
+
+        [[nodiscard]] auto key_of(std::string const& sender, SenderHold const& hold) const -> Key
+        {
+            auto share = std::uint64_t{0U};
+            if (m_max_rows > 0U)
+            {
+                share = std::max(share, hold.rows * 1'000'000U / m_max_rows);
+            }
+            if (m_max_bytes > 0U)
+            {
+                share = std::max(share, hold.bytes * 1'000'000U / m_max_bytes);
+            }
+            return {share, hold.rows, std::numeric_limits<std::uint64_t>::max() - hold.by_id.begin()->first, sender};
+        }
+
+        std::uint64_t m_max_rows{0U};
+        std::uint64_t m_max_bytes{0U};
+        std::map<std::string, SenderHold> m_holds{};
+        std::set<Key> m_ranking{};
+    };
+
     // One row of a recipient's queue as the byte and count bounds see it.
     struct QueuedRow final
     {
         std::uint64_t stream_id{0U};
         std::uint64_t created_at_ms{0U};
         std::uint64_t bytes{0U};
+        // Who the row is charged to (run-3 C12, ADR-0674): a local sender's user ID, a remote sender's server.
+        std::string sender{};
     };
 
     // A recipient's rows, oldest first, and their total bytes. Built from the rows once per batch, so the
@@ -6846,15 +6959,17 @@ namespace
         std::string device_id{};
         std::deque<QueuedRow> rows{};
         std::uint64_t bytes{0U};
+        // The queue's rows by sender, against the per-device bound.
+        ShareBook book{};
     };
 
-    // All of one user's queues together (ADR-0618), with each non-empty queue listed under its oldest row, so the
-    // user's oldest row is the first entry whichever device holds it.
+    // All of one user's queues together (ADR-0618): their row and byte totals and, against the per-user bound, their
+    // rows by sender, so the oldest row of a sender across devices is found whichever device holds it.
     struct RecipientUser final
     {
         std::uint64_t rows{0U};
         std::uint64_t bytes{0U};
-        std::map<std::pair<std::uint64_t, std::string>, RecipientQueue*> oldest{};
+        ShareBook book{};
     };
 
     // The rows one atomic to-device write adds and evicts, and the statements
@@ -6889,20 +7004,16 @@ namespace
                store.max_to_device_bytes_per_user > 0U;
     }
 
-    auto list_queue(RecipientUser& user, RecipientQueue& queue) -> void
+    // What a sender's queued rows are charged to: a sender on this server is its own user ID, a sender on another
+    // server is that server, which chooses its users' IDs and so cannot be split by them (run-3 C12, ADR-0674).
+    [[nodiscard]] auto to_device_share_of(PersistentStore const& store, std::string_view sender_user_id) -> std::string
     {
-        if (!queue.rows.empty())
+        auto const colon = sender_user_id.find(':');
+        if (colon == std::string_view::npos || sender_user_id.substr(colon + 1U) == store.local_server_name)
         {
-            user.oldest.insert_or_assign({queue.rows.front().stream_id, queue.key}, &queue);
+            return std::string{sender_user_id};
         }
-    }
-
-    auto unlist_queue(RecipientUser& user, RecipientQueue const& queue) -> void
-    {
-        if (!queue.rows.empty())
-        {
-            user.oldest.erase({queue.rows.front().stream_id, queue.key});
-        }
+        return std::string{sender_user_id.substr(colon + 1U)};
     }
 
     [[nodiscard]] auto to_device_message_is_valid(PersistentStore const& store,
@@ -6933,7 +7044,8 @@ namespace
             return;
         }
         sync_to_device_indexes(store);
-        auto const queue_of = [&batch](std::string_view user_id, std::string_view device_id) -> RecipientQueue& {
+        auto const queue_of = [&batch, &store](std::string_view user_id,
+                                               std::string_view device_id) -> RecipientQueue& {
             auto key = std::string{};
             assign_recipient_key(key, user_id, device_id);
             auto& queue = batch.queues[key];
@@ -6942,6 +7054,8 @@ namespace
                 queue.key = std::move(key);
                 queue.user_id = std::string{user_id};
                 queue.device_id = std::string{device_id};
+                queue.book.bound(store.max_to_device_messages_per_user_device,
+                                 store.max_to_device_bytes_per_user_device);
             }
             return queue;
         };
@@ -6953,6 +7067,7 @@ namespace
             {
                 continue;
             }
+            user->second.book.bound(store.max_to_device_messages_per_user, store.max_to_device_bytes_per_user);
             for (auto const position :
                  positions_in_group(store.to_device_user_index, store.to_device_messages, message.target_user_id,
                                     to_device_user_group_of, store.to_device_rows_examined))
@@ -6960,7 +7075,10 @@ namespace
                 auto const& row = store.to_device_messages[position];
                 auto const bytes = static_cast<std::uint64_t>(row.content_json.size());
                 auto& queue = queue_of(row.target_user_id, row.target_device_id);
-                queue.rows.push_back({row.stream_id, row.created_at_ms, bytes});
+                auto const sender = to_device_share_of(store, row.sender_user_id);
+                queue.rows.push_back({row.stream_id, row.created_at_ms, bytes, sender});
+                queue.book.add(sender, row.stream_id, bytes, &queue);
+                user->second.book.add(sender, row.stream_id, bytes, &queue);
                 queue.bytes += bytes;
                 ++user->second.rows;
                 user->second.bytes += bytes;
@@ -6969,8 +7087,28 @@ namespace
         for (auto& [recipient, queue] : batch.queues)
         {
             std::ranges::sort(queue.rows, {}, &QueuedRow::stream_id);
-            list_queue(batch.users[queue.user_id], queue);
         }
+    }
+
+    // Takes the row `stream_id` out of `queue` for `batch`: the DELETE statement, the eviction record, and every
+    // total and share that counted it. The row is found by a binary search of the queue, which is in stream order.
+    auto evict_queued_row(ToDeviceBatch& batch, RecipientUser& user, RecipientQueue& queue, std::uint64_t stream_id)
+        -> void
+    {
+        auto const row = std::ranges::lower_bound(queue.rows, stream_id, {}, &QueuedRow::stream_id);
+        batch.statements.push_back(
+            record_statement("delete_to_device_message",
+                             "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                             "target_device_id = $3",
+                             {public_value(std::to_string(row->stream_id)), public_value(queue.user_id),
+                              public_value(queue.device_id)}));
+        batch.evicted.push_back({row->stream_id, queue.user_id, queue.device_id});
+        queue.bytes -= row->bytes;
+        --user.rows;
+        user.bytes -= row->bytes;
+        queue.book.remove(row->sender, row->stream_id, row->bytes);
+        user.book.remove(row->sender, row->stream_id, row->bytes);
+        queue.rows.erase(row);
     }
 
     // Allocates the message's stream id, works out which rows the per-recipient
@@ -6980,6 +7118,11 @@ namespace
     // Needs `index_to_device_recipients` to have run for the batch.
     // The stream id is consumed even if the batch is never committed; ids are
     // only ever skipped, never reused.
+    //
+    // Run-3 C12 (ADR-0674): no sender can stop another sender's message from being queued. At each bound (the device's
+    // queue, then the user's queues) a sender may hold at most half; a message from a sender at its share evicts that
+    // sender's own oldest row, and a message that finds the bound full evicts the oldest row of the sender holding the
+    // most, which is never the incoming sender's message itself. Nothing is dropped.
     auto prepare_to_device_enqueue(PersistentStore& store, PersistentToDeviceMessage message, ToDeviceBatch& batch)
         -> void
     {
@@ -6996,61 +7139,65 @@ namespace
             assign_recipient_key(key, message.target_user_id, message.target_device_id);
             auto& queue = batch.queues[key];
             auto& user = batch.users[message.target_user_id];
-            auto const evict = [&](RecipientQueue& from, QueuedRow const& row) {
-                batch.statements.push_back(
-                    record_statement("delete_to_device_message",
-                                     "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
-                                     "target_device_id = $3",
-                                     {public_value(std::to_string(row.stream_id)), public_value(from.user_id),
-                                      public_value(from.device_id)}));
-                batch.evicted.push_back({row.stream_id, from.user_id, from.device_id});
-                from.bytes -= row.bytes;
-                --user.rows;
-                user.bytes -= row.bytes;
-            };
-            unlist_queue(user, queue);
-            // created_at_ms == 0 is a row written before migration 019: its age is unknown, so it is not
-            // expired here, as in the drain. The count and byte bounds still apply to it.
+            auto const sender = to_device_share_of(store, message.sender_user_id);
+            // Rows come off the front in stream order, which is age order. created_at_ms == 0 is a row written before
+            // migration 019: its age is unknown, so it is not expired here, as in the drain; the count and byte bounds
+            // still apply to it.
             if (ttl_ms > 0U)
             {
-                std::erase_if(queue.rows, [&](QueuedRow const& row) {
-                    auto const expired =
-                        row.created_at_ms > 0U && now_ms > row.created_at_ms && now_ms - row.created_at_ms >= ttl_ms;
-                    if (expired)
+                for (auto row = queue.rows.begin(); row != queue.rows.end();)
+                {
+                    if (row->created_at_ms == 0U)
                     {
-                        evict(queue, row);
+                        ++row;
+                        continue;
                     }
-                    return expired;
-                });
+                    if (now_ms <= row->created_at_ms || now_ms - row->created_at_ms < ttl_ms)
+                    {
+                        break;
+                    }
+                    auto const stream_id = row->stream_id;
+                    evict_queued_row(batch, user, queue, stream_id);
+                    row = std::ranges::lower_bound(queue.rows, stream_id, {}, &QueuedRow::stream_id);
+                }
             }
-            // Oldest first: room is made for the incoming message by dropping the rows that have waited longest.
-            while (!queue.rows.empty() && ((store.max_to_device_messages_per_user_device > 0U &&
-                                            queue.rows.size() >= store.max_to_device_messages_per_user_device) ||
-                                           (store.max_to_device_bytes_per_user_device > 0U &&
-                                            queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device)))
-            {
-                evict(queue, queue.rows.front());
-                queue.rows.pop_front();
-            }
-            list_queue(user, queue);
-            // Then the user as a whole: the user's oldest row goes first, whichever device holds it.
-            while (!user.oldest.empty() && ((store.max_to_device_messages_per_user > 0U &&
-                                             user.rows >= store.max_to_device_messages_per_user) ||
-                                            (store.max_to_device_bytes_per_user > 0U &&
-                                             user.bytes + message_bytes > store.max_to_device_bytes_per_user)))
-            {
-                auto* const from = user.oldest.begin()->second;
-                user.oldest.erase(user.oldest.begin());
-                evict(*from, from->rows.front());
-                from->rows.pop_front();
-                list_queue(user, *from);
-            }
-            unlist_queue(user, queue);
-            queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes});
+            auto const settle = [&](ShareBook& book, auto const& over_budget) {
+                while (book.must_evict_own(sender, message_bytes))
+                {
+                    auto const [stream_id, from] = book.oldest_of(sender);
+                    evict_queued_row(batch, user, *from, stream_id);
+                }
+                while (over_budget())
+                {
+                    auto const* const victim = book.largest();
+                    if (victim == nullptr)
+                    {
+                        break;
+                    }
+                    auto const [stream_id, from] = book.oldest_of(*victim);
+                    evict_queued_row(batch, user, *from, stream_id);
+                }
+            };
+            settle(queue.book, [&] {
+                return !queue.rows.empty() &&
+                       ((store.max_to_device_messages_per_user_device > 0U &&
+                         queue.rows.size() >= store.max_to_device_messages_per_user_device) ||
+                        (store.max_to_device_bytes_per_user_device > 0U &&
+                         queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device));
+            });
+            // Then the user as a whole: whichever device holds a sender's oldest row loses it first (ADR-0618).
+            settle(user.book, [&] {
+                return (store.max_to_device_messages_per_user > 0U &&
+                        user.rows >= store.max_to_device_messages_per_user) ||
+                       (store.max_to_device_bytes_per_user > 0U &&
+                        user.bytes + message_bytes > store.max_to_device_bytes_per_user);
+            });
+            queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes, sender});
             queue.bytes += message_bytes;
             ++user.rows;
             user.bytes += message_bytes;
-            list_queue(user, queue);
+            queue.book.add(sender, message.stream_id, message_bytes, &queue);
+            user.book.add(sender, message.stream_id, message_bytes, &queue);
         }
 
         batch.statements.push_back(record_statement(

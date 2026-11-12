@@ -74,7 +74,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 11. **The to-device queue is bounded in rows, age and bytes, per device and per user, and read through its indexes**
     (ADR-0335, ADR-0336, ADR-0618). `index_to_device_recipients` gathers all the queues of every user a batch names through
     `to_device_user_index`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
-    recipient's queue, then the user's oldest rows across devices. The byte totals are never stored: they are summed from
+    recipient's queue, then the user's oldest rows across devices. The rows are shared out per sender (run-3 C12, ADR-0674): `ShareBook` (one per queue, one per user) ranks senders (a local user ID, or a remote server) by share; once another sender is queued a sender holds at most half of a bound and its next message evicts its own oldest row, and a full bound gives way by evicting the largest holder's oldest row; the incoming message is always stored. `evict_queued_row` is the only place a row leaves a batch's books. Never scan a queue for a sender's row. The byte totals are never stored: they are summed from
     the rows when the batch is prepared, so they cannot drift from them. Remove in-memory rows with `erase_to_device_rows`,
     which moves the last row into the gap, so the vector has no order; a writer calls `sync_to_device_indexes` first.
     Never scan `to_device_messages` in a request. `store_account_data` and the capped writers refuse content over
