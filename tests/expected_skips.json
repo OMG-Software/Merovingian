@@ -21,12 +21,6 @@
         "unverified": true
       },
       {
-        "test": "Landlocked production SQLite worker cannot open main's database for writing",
-        "message": "kernel has no Landlock support",
-        "reason": "Skips when the runner kernel has no Landlock; availability on GitHub runners not checked.",
-        "unverified": true
-      },
-      {
         "test": "A task is confined only when it has a seccomp filter and no_new_privs",
         "message": "cannot enforce on this kernel",
         "reason": "Child reports SKIP when the kernel cannot enforce the filter or Landlock; runner capability not checked.",

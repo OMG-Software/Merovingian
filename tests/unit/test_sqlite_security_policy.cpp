@@ -624,8 +624,8 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
                 CHECK(snapshot->events.front().signatures.size() == 1U);
                 CHECK(tables_read == std::vector<std::string>{"rooms", "membership", "invites", "events",
                                                               "current_state", "state_groups", "state_group_state",
-                                                              "event_state_groups", "event_edges", "event_auth",
-                                                              "event_signatures"});
+                                                              "event_state_groups", "forward_extremities",
+                                                              "event_edges", "event_auth", "event_signatures"});
             }
         }
 
@@ -639,10 +639,11 @@ SCENARIO("A room snapshot reads its tables in order and stops at the first one i
                                                              "state_groups",
                                                              "state_group_state",
                                                              "event_state_groups",
+                                                             "forward_extremities",
                                                              "event_edges",
                                                              "event_auth",
                                                              "event_signatures"};
-            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{11U}));
+            auto const failed = GENERATE(range(std::size_t{0U}, std::size_t{12U}));
             {
                 auto writer = RawSqlite{path};
                 REQUIRE(writer.handle != nullptr);

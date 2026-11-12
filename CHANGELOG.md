@@ -4,6 +4,15 @@ Fixes for the findings of the security audit of the 1.0.0 release candidate (run
 confirmed findings (9 high, 30 medium, 9 low, 1 informational), plus in-repository hardening for two of the four
 findings that needed validation.
 
+### Tests brought in line with the combined fixes
+
+* Tests written before other fixes on this branch landed now expect what those fixes do: the SQLite snapshot order
+  includes `forward_extremities` (C44), `RoomService.cpp` has one direct `store_event` call (C03 writes a join's auth
+  chain as an outlier batch), the keep-alive cap scenario connects from three client addresses because one address
+  now gets its share of the cap (C01, ADR-0719), and the expected-skips list drops the Landlock scenario that C44
+  removed. The Complement configuration lifts the two report routes' per-user limits (C26), as it does for the other
+  routes Complement calls in bursts.
+
 ### A worker cannot type into the terminal that started the server (ADR-0731)
 
 * A server started from a shell (the bootstrap-admin step, a debug run) gave the federation worker that shell's

@@ -92,6 +92,51 @@ namespace
     return fd;
 }
 
+enum class SourceConnect : std::uint8_t
+{
+    connected,
+    source_unavailable,
+    failed,
+};
+
+// Connects to 127.0.0.1:port from `source`, another loopback address. Linux
+// routes all of 127.0.0.0/8 to lo; a host without the alias reports
+// source_unavailable, which is the one precondition a scenario may skip on.
+[[nodiscard]] auto connect_from(char const* source, std::uint16_t port) -> std::pair<SourceConnect, int>
+{
+    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+        return {SourceConnect::failed, -1};
+    }
+    auto local = sockaddr_in{};
+    local.sin_family = AF_INET;
+    local.sin_port = 0U;
+    if (::inet_pton(AF_INET, source, &local.sin_addr) != 1)
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::bind(fd, reinterpret_cast<sockaddr const*>(&local), sizeof(local)) != 0)
+    {
+        auto const unavailable = errno == EADDRNOTAVAIL;
+        ::close(fd);
+        return {unavailable ? SourceConnect::source_unavailable : SourceConnect::failed, -1};
+    }
+    auto remote = sockaddr_in{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(port);
+    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    return {SourceConnect::connected, fd};
+}
+
 auto send_all(int fd, std::string_view data) -> bool
 {
     auto remaining = data;
@@ -1540,8 +1585,10 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
 
             auto request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
 
-            auto const first_fd = connect_loopback(port);
-            REQUIRE(first_fd >= 0);
+            // Each connection from its own client address: one address holds at most a share of the cap
+            // (C01, ADR-0719), and this scenario is about the server-wide cap.
+            auto const [first_status, first_fd] = connect_from("127.0.0.1", port);
+            REQUIRE(first_status == SourceConnect::connected);
             auto first_reader = PlainResponseReader{};
             REQUIRE(send_all(first_fd, request));
             auto const first_response = receive_response(first_fd, first_reader);
@@ -1549,15 +1596,19 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
             // before the next one is served, so the cap is observed exactly.
             std::this_thread::sleep_for(std::chrono::milliseconds{150});
 
-            auto const second_fd = connect_loopback(port);
-            REQUIRE(second_fd >= 0);
+            auto const [second_status, second_fd] = connect_from("127.0.0.2", port);
+            if (second_status == SourceConnect::source_unavailable)
+            {
+                SKIP("127.0.0.2 is not a local address on this host");
+            }
+            REQUIRE(second_status == SourceConnect::connected);
             auto second_reader = PlainResponseReader{};
             REQUIRE(send_all(second_fd, request));
             auto const second_response = receive_response(second_fd, second_reader);
             std::this_thread::sleep_for(std::chrono::milliseconds{150});
 
-            auto const third_fd = connect_loopback(port);
-            REQUIRE(third_fd >= 0);
+            auto const [third_status, third_fd] = connect_from("127.0.0.3", port);
+            REQUIRE(third_status == SourceConnect::connected);
             auto third_reader = PlainResponseReader{};
             REQUIRE(send_all(third_fd, request));
             auto const third_response = receive_response(third_fd, third_reader);
@@ -2400,51 +2451,6 @@ namespace
 {
 
 // 0.12.13 audit item 1 (ADR-0072): per-IP connection cap at accept time.
-
-enum class SourceConnect : std::uint8_t
-{
-    connected,
-    source_unavailable,
-    failed,
-};
-
-// Connects to 127.0.0.1:port from `source`, another loopback address. Linux
-// routes all of 127.0.0.0/8 to lo; a host without the alias reports
-// source_unavailable, which is the one precondition a scenario may skip on.
-[[nodiscard]] auto connect_from(char const* source, std::uint16_t port) -> std::pair<SourceConnect, int>
-{
-    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-    {
-        return {SourceConnect::failed, -1};
-    }
-    auto local = sockaddr_in{};
-    local.sin_family = AF_INET;
-    local.sin_port = 0U;
-    if (::inet_pton(AF_INET, source, &local.sin_addr) != 1)
-    {
-        ::close(fd);
-        return {SourceConnect::failed, -1};
-    }
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::bind(fd, reinterpret_cast<sockaddr const*>(&local), sizeof(local)) != 0)
-    {
-        auto const unavailable = errno == EADDRNOTAVAIL;
-        ::close(fd);
-        return {unavailable ? SourceConnect::source_unavailable : SourceConnect::failed, -1};
-    }
-    auto remote = sockaddr_in{};
-    remote.sin_family = AF_INET;
-    remote.sin_port = htons(port);
-    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
-    {
-        ::close(fd);
-        return {SourceConnect::failed, -1};
-    }
-    return {SourceConnect::connected, fd};
-}
 
 // Sends one keep-alive request and returns the response ("" if the server
 // closed the connection without answering). A refused connection may already
