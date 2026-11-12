@@ -59,6 +59,13 @@ findings that needed validation.
   event. All the badges of one event now share a single glob step budget; when it is spent the badge is a lower bound
   and the walk stops. The unread count in the email digest (one walk per due email) takes the same budget.
 
+### Push rule key paths are charged to the evaluation budget (ADR-0723)
+
+* Resolving a push-rule condition's key (for example `content.foo`) scans the event's members, which a sender can make
+  thousands wide. The scan past 64 members per object now draws from the evaluation's step budget, so a recipient with
+  many rules cannot make one event cost tens of millions of compares under the server lock. Ordinary events are
+  unaffected.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

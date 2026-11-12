@@ -567,3 +567,4 @@
 * [0720 - Destinations that deliver slowly hold a bounded share of the outbound queue and go after the others](0720-destinations-that-deliver-slowly-hold-a-bounded-share-of-the-outbound-queue-and-go-after-the-others.md)
 * [0721 - Only a prompt answer proves a push gateway, and the reserve limits each host to a quarter share](0721-only-a-prompt-answer-proves-a-push-gateway-and-the-reserve-limits-each-host-to-a-quarter-share.md)
 * [0722 - The badges of one event share one glob step budget](0722-the-badges-of-one-event-share-one-glob-step-budget.md)
+* [0723 - Property path resolution is charged to the evaluation budget past a free allowance](0723-property-path-resolution-is-charged-to-the-evaluation-budget-past-a-free-allowance.md)
