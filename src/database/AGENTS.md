@@ -136,7 +136,7 @@ key backup tables. Same trust rule as the state index: used only while built for
 reader scans. A writer calls its `sync_*` first and `note_appended` after a push; an erase of `one_time_keys`,
 `key_backup_sessions` or rows of a key table moves the last row into the gap (`erase_row_swap`), so those vectors have no
 meaningful order; `devices` and `key_backup_versions` keep order and rebuild. Hydration calls `rebuild_key_indexes`.
-Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`,
+Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`, `has_user_device`,
 `for_each_user_device_key`, `find_device_key`, `find_key_backup_session`, `count_key_backup_sessions`, never by looping the
 vector in a request. Tests prove cost with `user_rows_examined`, `membership_rows_examined`, `key_rows_examined`,
 `key_backup_rows_examined` and `device_table_rows_examined`.

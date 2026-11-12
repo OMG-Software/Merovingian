@@ -1617,10 +1617,7 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     // only have got there through a failure (a partial deactivation, a
     // revocation race, a leak), and honouring it would resurrect a session for
     // a device the user believes is gone. Fail closed rather than recreate it.
-    auto const device_exists = std::ranges::any_of(
-        runtime.database.persistent_store.devices, [&user_id, &device_id](database::PersistentDevice const& device) {
-            return device.user_id == user_id && device.device_id == device_id;
-        });
+    auto const device_exists = database::has_user_device(runtime.database.persistent_store, user_id, device_id);
     if (!device_exists)
     {
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.rejected", user_id,
@@ -2298,10 +2295,8 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     // failure anywhere leaves the device present and the call retryable, and a retry (or a repeat
     // of a call that answered 404) still revokes tokens an earlier failure left behind. Deleting
     // the row first made it the retry gate: the retry saw "not found" and never revoked.
-    auto const device_known = std::ranges::any_of(runtime.database.persistent_store.devices,
-                                                  [&user_id, &device_id](database::PersistentDevice const& device) {
-                                                      return device.user_id == user_id && device.device_id == device_id;
-                                                  });
+    // Through the user's own device rows and the session (user, device) index, not the two tables (run-3 C02).
+    auto const device_known = database::has_user_device(runtime.database.persistent_store, user_id, device_id);
     // Revoke only when a token is still live, so a repeated delete of a gone device writes nothing.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
@@ -2312,13 +2307,7 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
         }
     }
-    for (auto& session : runtime.database.sessions)
-    {
-        if (session.user_id == user_id && session.device_id == device_id)
-        {
-            session.revoked = true;
-        }
-    }
+    std::ignore = runtime.database.sessions.revoke_device(user_id, device_id);
     if (!device_known)
     {
         return make_operation_result(false, {}, "device not found", 404U);

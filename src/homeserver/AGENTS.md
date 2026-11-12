@@ -727,6 +727,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   truncated. A device-list announcement builds all of a user's EDUs with `federation::build_device_list_update_batch`
   (one `DeviceDisplayNames`, one key index; `PersistentStore::device_table_rows_examined` counts the rows read). Never call
   `build_device_list_update_content` per device in a loop: it scans both device tables each call.
+- `POST /delete_devices` refuses a `devices` list of more than `device_count_limit` entries (repeats counted) with `400 M_INVALID_PARAM` before the password check, handles a repeated ID once, and `delete_local_device` looks the device up through `database::has_user_device` and `SessionTable::revoke_device`, never by scanning `devices` or `sessions` (run-3 C02, ADR-0669).
 - A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
   path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
   storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that

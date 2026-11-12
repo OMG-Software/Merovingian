@@ -1084,6 +1084,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // Calls `visit` with each of the user's device rows; stops when it returns false.
 auto for_each_user_device(PersistentStore const& store, std::string_view user_id,
                           std::function<bool(PersistentDevice const&)> const& visit) -> void;
+// True when the user holds a device with this ID. Costs the user's own device rows (at most the per-user device
+// cap) through `device_user_index`, never the whole `devices` table (run-3 C02).
+[[nodiscard]] auto has_user_device(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> bool;
 // Calls `visit` with each of the user's cross-signing key rows; stops when it returns false.
 auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
                                      std::function<bool(PersistentCrossSigningKey const&)> const& visit) -> void;

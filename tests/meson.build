@@ -859,6 +859,7 @@ shell = find_program('sh')
       'integration/test_create_room_invite_3pid_flow.cpp',
       'integration/test_create_room_power_level_override_flow.cpp',
       'integration/test_device_caps_flow.cpp',
+      'integration/test_delete_devices_cost_flow.cpp',
       'integration/test_device_list_fanout_batch_flow.cpp',
       'integration/test_fallback_key_cap_flow.cpp',
       'integration/test_federation_edu_sink_cost_flow.cpp',

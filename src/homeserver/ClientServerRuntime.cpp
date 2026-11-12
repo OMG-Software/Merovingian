@@ -18367,10 +18367,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        auto const devices = string_array_member(*body_obj, "devices");
+        auto devices = string_array_member(*body_obj, "devices");
         if (devices.empty())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "devices must be a non-empty array of device IDs");
+        }
+        // Run-3 C02 (ADR-0669): no account holds more devices than the cap, so a longer list is refused before the
+        // password check or any lookup, and a repeated ID is handled once.
+        if (devices.size() > device_count_limit)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "devices names more device IDs than an account may hold");
+        }
+        {
+            auto seen = std::unordered_set<std::string>{};
+            std::erase_if(devices, [&seen](std::string const& device_id) {
+                return !seen.insert(device_id).second;
+            });
         }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)

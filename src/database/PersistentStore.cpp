@@ -1125,6 +1125,16 @@ auto for_each_user_device(PersistentStore const& store, std::string_view user_id
     }
 }
 
+auto has_user_device(PersistentStore const& store, std::string_view user_id, std::string_view device_id) -> bool
+{
+    auto found = false;
+    for_each_user_device(store, user_id, [&found, device_id](PersistentDevice const& device) {
+        found = device.device_id == device_id;
+        return !found;
+    });
+    return found;
+}
+
 auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
                                      std::function<bool(PersistentCrossSigningKey const&)> const& visit) -> void
 {
@@ -1906,10 +1916,8 @@ namespace
 
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool
 {
-    auto const existing = std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
-        return device.user_id == user_id && device.device_id == device_id;
-    });
-    if (existing == store.devices.end())
+    // Found through the user's own rows (run-3 C02), so an absent device costs the user's rows, not the table.
+    if (!has_user_device(store, user_id, device_id))
     {
         return false;
     }
@@ -1936,7 +1944,10 @@ namespace
     {
         return false;
     }
-    store.devices.erase(existing);
+    // The erase keeps the vector's order, so it shifts the rows after it once, for a device that exists.
+    store.devices.erase(std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
+        return device.user_id == user_id && device.device_id == device_id;
+    }));
     store.device_user_index.rebuild(store.devices, device_group_of);
     auto const of_device = [user_id, device_id](auto const& key) {
         return key.user_id == user_id && key.device_id == device_id;

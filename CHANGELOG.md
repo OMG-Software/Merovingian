@@ -81,6 +81,13 @@ findings that needed validation.
   candidates one at a time, makes no call once a winner exists or the request has stopped waiting, and keeps the client's
   outbound slot until its last in-flight call ends. With `join_race_deadline_seconds` set, the calls also end at that
   deadline.
+### POST /delete_devices is capped and looks devices up by index (ADR-0669)
+
+Audit finding C02. `POST /delete_devices` accepted a `devices` list of any length (about 260,000 IDs fit in the body) and
+scanned every device and session row on the server for each ID while holding the global lock. A list of more than 200
+entries (the per-account device limit, repeats counted) is now `400 M_INVALID_PARAM` before the password is checked, and
+repeated IDs are handled once. Deleting a device (here, `DELETE /devices/{deviceId}`, and the refresh-token device check)
+now reads only the account's own device rows and the device's own sessions.
 
 ## 1.0.0
 
