@@ -2589,7 +2589,7 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   **Mitigation:** each destination holds a bounded share; refusals are counted and logged
   (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
   most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
-  never-seen dead destinations counts as live until each has failed once.
+  never-seen dead destinations counts as live until each has failed once. Destinations that answer slowly but inside the limit hold at most half of it between them and go after the others (ADR-0720); a first burst to never-seen slow names still fills the queue until each has answered once.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create

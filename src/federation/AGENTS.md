@@ -221,6 +221,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `effective_max_pending_failing` slots between them (half the queue, never below one destination's own share, ADR-0621): `remember_destination_locked` is the
    only place a destination starts or stops failing, and past the share it cuts the largest holders' newest
    transactions. A failing destination past its backoff is always admitted: never refuse it, or it can never recover.
+   Destinations that deliver but slowly (an answer over a quarter of `slow_attempt_ms`) hold at most the same number
+   of slots between them, refused at enqueue and never shed, and `next_ready_locked` offers their oldest row only
+   when nothing else is ready (`set_slow_locked`, ADR-0720).
    A failing destination's transaction past `max_failing_transaction_age_ms` is deleted by `sweep_aged_locked`. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
    A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s

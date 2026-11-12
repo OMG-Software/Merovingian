@@ -201,6 +201,7 @@ auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> st
         auto taken = std::vector<std::size_t>{};
         auto taken_per_destination = std::unordered_map<std::string, std::size_t>{};
         auto taken_failing = std::size_t{0U};
+        auto taken_slow = std::size_t{0U};
         auto const now = now_ms_();
         for (auto const position : admitted)
         {
@@ -243,6 +244,21 @@ auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> st
                     continue;
                 }
                 ++taken_failing;
+            }
+            if (slow_destinations_.contains(transaction.destination))
+            {
+                // C20: a destination that answers slowly keeps what it holds, but cannot take the queue.
+                if (slow_slots_ + taken_slow >= effective_max_pending_failing(config_))
+                {
+                    log_diagnostic("enqueue.rejected", {
+                                                           {"transaction_id", transaction.transaction_id,         false},
+                                                           {"destination",    transaction.destination,            false},
+                                                           {"reason",         "slow destinations' share reached", false}
+                    });
+                    ++summary_.rejected;
+                    continue;
+                }
+                ++taken_slow;
             }
             // The age limit reads this. The transaction's body carries its own timestamp, set when it is sent.
             if (transaction.origin_server_ts.empty())
@@ -322,6 +338,10 @@ auto DispatchWorker::push_queue_locked(OutboundTransaction transaction) -> void
     {
         ++failing_slots_;
     }
+    if (slow_destinations_.contains(transaction.destination))
+    {
+        ++slow_slots_;
+    }
     queue_.push_back(std::move(transaction));
 }
 
@@ -349,12 +369,41 @@ auto DispatchWorker::release_destination_slot_locked(std::string const& destinat
     {
         --failing_slots_;
     }
+    if (slow_destinations_.contains(destination) && slow_slots_ > 0U)
+    {
+        --slow_slots_;
+    }
     if (held->second <= 1U)
     {
+        slow_destinations_.erase(destination);
         queued_per_destination_.erase(held);
         return;
     }
     --held->second;
+}
+
+auto DispatchWorker::set_slow_locked(std::string const& destination, bool slow) -> void
+{
+    auto const marked = slow_destinations_.contains(destination);
+    if (slow == marked)
+    {
+        return;
+    }
+    auto const held = queued_per_destination_.find(destination);
+    auto const slots = held != queued_per_destination_.end() ? held->second : std::size_t{0U};
+    if (!slow)
+    {
+        slow_slots_ -= std::min(slow_slots_, slots);
+        slow_destinations_.erase(destination);
+        return;
+    }
+    if (slots == 0U)
+    {
+        return; // nothing queued to protect the queue from; and the set stays bounded by the destinations holding a
+                // slot
+    }
+    slow_slots_ += slots;
+    slow_destinations_.insert(destination);
 }
 
 auto DispatchWorker::failing_share_reached_locked(std::string const& destination, std::uint64_t now,
@@ -576,6 +625,9 @@ auto DispatchWorker::join() -> void
 auto DispatchWorker::next_ready_locked(std::uint64_t due_by) const -> std::optional<std::size_t>
 {
     auto held_back = std::set<std::string_view>{in_flight_destinations_.begin(), in_flight_destinations_.end()};
+    // C20: a destination that answers slowly goes after every other destination that is ready, so it cannot keep every
+    // thread busy while others wait. It still goes when nothing else is ready. Its later rows stay behind its oldest.
+    auto slow_fallback = std::optional<std::size_t>{};
     for (auto position = std::size_t{0U}; position < queue_.size(); ++position)
     {
         auto const& candidate = queue_[position];
@@ -585,11 +637,18 @@ auto DispatchWorker::next_ready_locked(std::uint64_t due_by) const -> std::optio
         }
         if (candidate.next_retry_ts <= due_by)
         {
-            return position;
+            if (!slow_destinations_.contains(candidate.destination))
+            {
+                return position;
+            }
+            if (!slow_fallback.has_value())
+            {
+                slow_fallback = position;
+            }
         }
         held_back.insert(candidate.destination);
     }
-    return std::nullopt;
+    return slow_fallback;
 }
 
 auto DispatchWorker::take_next(OutboundTransaction& out, std::uint64_t due_by) -> bool
@@ -665,6 +724,7 @@ auto DispatchWorker::remember_destination_locked(FederationDestination const& de
         }
         return;
     }
+    set_slow_locked(destination.server_name, false);
     if (failing == failing_destinations_.end())
     {
         failing_slots_ += slots;
@@ -876,6 +936,10 @@ auto DispatchWorker::attempt(OutboundTransaction transaction) -> void
         {
             auto lock = std::lock_guard{mutex_};
             remember_destination_locked(destination);
+            // C20: an answer that took more than a quarter of the slow limit marks the destination slow, a quicker one
+            // clears it.
+            set_slow_locked(transaction.destination, destination.consecutive_failures == 0U && finished_at > now &&
+                                                         (finished_at - now) > config_.slow_attempt_ms / 4U);
             if (persistent_store_ != nullptr &&
                 !database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
             {

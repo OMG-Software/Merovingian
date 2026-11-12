@@ -37,6 +37,14 @@ findings that needed validation.
 * A connection that is readable but waits more than 30 s for its address's share of the workers is closed instead of
   holding its slot for ever.
 
+### A destination that answers slowly cannot keep the outbound queue and every delivery thread (ADR-0720)
+
+* A remote server that answers every transaction with 200 after about nine seconds is no longer treated as healthy for
+  the queue. A destination whose last answer took more than a quarter of `slow_attempt_ms` is marked slow: all such
+  destinations together may hold at most half of the outbound queue (new rows beyond that are refused, queued rows are
+  kept), and their transactions are sent only when no other destination has one ready. Order per destination is
+  unchanged.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
