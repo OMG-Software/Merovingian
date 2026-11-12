@@ -6,6 +6,7 @@
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
+#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
@@ -404,6 +405,10 @@ struct PersistentStore final
     // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
     // version) and the versions of each user. Same trust rule as above. A deleted session or version erases by
     // moving the last row into the gap, so `key_backup_sessions` has no meaningful order.
+    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions` and
+    // rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds it
+    // stale recomputes from the rows without storing the result.
+    std::unordered_map<std::string, KeyBackupDigest> key_backup_digests{};
     RowKeyIndex key_backup_session_index{};
     RowGroupIndex key_backup_version_session_index{};
     RowGroupIndex key_backup_user_version_index{};
@@ -1124,6 +1129,11 @@ auto rebuild_key_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto find_key_backup_session(PersistentStore const& store, std::string_view user_id,
                                            std::string_view version, std::string_view room_id,
                                            std::string_view session_id) -> PersistentKeyBackupSession const*;
+// The bytes that stand for the content of a backup version: the digest of its sessions (run-3 C22, ADR-0673). Equal for
+// equal content and different once a session is added, replaced or removed, so the etag derived from it changes exactly
+// when the backup does. Constant time while the stored digest is in step, otherwise a pass over the version's rows.
+[[nodiscard]] auto key_backup_content_digest(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view version) -> std::string;
 // Calls `visit` with each session of the backup. The order is not meaningful.
 auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
                                  std::function<void(PersistentKeyBackupSession const&)> const& visit) -> void;

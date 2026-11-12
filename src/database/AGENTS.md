@@ -150,6 +150,15 @@ vector in a request. Tests prove cost with `user_rows_examined`, `membership_row
 through `for_each_signer_key_signature` and `key_signatures_for_target_key`, counted in `key_rows_examined`. A new reader
 never loops the vector; hydration and a direct fill call `rebuild_key_signature_index`.
 
+## Key backup digests (ADR-0673)
+
+`PersistentStore::key_backup_digests` holds a `KeyBackupDigest` (session count and an order-independent sum of per-session
+BLAKE2b hashes) for each (user, version). `append_backup_session`, `replace_backup_session_json` and `erase_backup_session_at`
+are the only places a backup session row appears, changes or goes, and each moves the digest, healing it first when its count
+differs from the version's session count; `rebuild_key_indexes` rebuilds all of them. Read the content identity through
+`key_backup_content_digest` (constant time while in step, a recomputation that stores nothing otherwise); the client etag is a
+hash of the version and that digest. A new writer of `key_backup_sessions` goes through those three functions.
+
 ## The relation index (ADR-0430)
 
 `EventTable` lists every row with a usable `content."m.relates_to"` of an aggregated `rel_type` (`m.replace`,

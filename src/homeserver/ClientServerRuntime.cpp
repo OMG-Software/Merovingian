@@ -7954,26 +7954,11 @@ namespace
     [[nodiscard]] auto key_backup_etag(database::PersistentStore const& store, std::string_view user_id,
                                        std::string_view version) -> std::string
     {
-        auto sessions = std::vector<database::PersistentKeyBackupSession const*>{};
-        database::for_each_key_backup_session(store, user_id, version,
-                                              [&sessions](database::PersistentKeyBackupSession const& session) {
-                                                  sessions.push_back(&session);
-                                              });
-        std::ranges::sort(sessions, [](database::PersistentKeyBackupSession const* lhs,
-                                       database::PersistentKeyBackupSession const* rhs) {
-            return std::tie(lhs->room_id, lhs->session_id, lhs->json) <
-                   std::tie(rhs->room_id, rhs->session_id, rhs->json);
-        });
-
-        auto pieces = std::vector<std::string_view>{};
-        pieces.reserve(sessions.size() * 3U + 1U);
-        pieces.push_back(version);
-        for (auto const* session : sessions)
-        {
-            pieces.push_back(session->room_id);
-            pieces.push_back(session->session_id);
-            pieces.push_back(session->json);
-        }
+        // The etag is derived from the version's content digest, which every writer keeps (run-3 C22, ADR-0673): the
+        // work does not grow with the bytes the user has stored. It changes exactly when a session is added, replaced
+        // or removed, and is the same after a restart because hydration rebuilds the digest from the rows.
+        auto const digest = database::key_backup_content_digest(store, user_id, version);
+        auto const pieces = std::array<std::string_view, 2U>{version, digest};
         auto const etag = crypto::generic_hash(pieces);
         return etag.value_or("0");
     }
@@ -13121,6 +13106,54 @@ namespace
         return resp(200U, "{}");
     }
 
+    // Run-3 C22 (ADR-0673): true when a PUT of backup sessions carries a session over `max_uploaded_key_document_bytes`
+    // (16 KiB, the limit of every other uploaded key document). A real session is a few hundred bytes; before this the
+    // only bound was the 1 MiB body, so one user could store sessions of that size up to the session-count cap. The
+    // size judged is the stored one: the body of a single-session PUT, the canonical form of a session in a room or
+    // batch PUT. A body that does not parse is left for the store step to refuse.
+    [[nodiscard]] auto key_backup_put_has_oversized_session(auth::KeyApiEndpoint endpoint, LocalHttpRequest const& req)
+        -> bool
+    {
+        auto const oversized_in = [](canonicaljson::Object const& sessions) {
+            return std::ranges::any_of(sessions, [](canonicaljson::ObjectMember const& session) {
+                if (session.value == nullptr)
+                {
+                    return false;
+                }
+                auto const serialized = canonicaljson::serialize_canonical(*session.value);
+                return serialized.error == canonicaljson::CanonicalJsonError::none &&
+                       serialized.output.size() > max_uploaded_key_document_bytes;
+            });
+        };
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::put_room_key_backup:
+            return req.body.size() > max_uploaded_key_document_bytes;
+        case auth::KeyApiEndpoint::put_room_key_backup_room: {
+            auto const body = parsed_json_object(req.body);
+            auto const* sessions = body.has_value() ? object_member_as_object(*body, "sessions") : nullptr;
+            return sessions != nullptr && oversized_in(*sessions);
+        }
+        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
+            auto const body = parsed_json_object(req.body);
+            auto const* rooms = body.has_value() ? object_member_as_object(*body, "rooms") : nullptr;
+            if (rooms == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*rooms, [&oversized_in](canonicaljson::ObjectMember const& room) {
+                auto const* room_object =
+                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+                auto const* sessions =
+                    room_object == nullptr ? nullptr : object_member_as_object(*room_object, "sessions");
+                return sessions != nullptr && oversized_in(*sessions);
+            });
+        }
+        default:
+            return false;
+        }
+    }
+
     // ADR-0606: true when a PUT of sessions would leave the user holding more than
     // `max_key_backup_sessions_per_user`. Counts only the sessions the request would ADD: one already held in this
     // version is replaced (or kept) in place, so re-uploading a backup is never refused. Each offered session costs
@@ -13226,6 +13259,12 @@ namespace
         if (current_version == nullptr || current_version->version != session_ver)
         {
             return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
+        }
+        if (key_backup_put_has_oversized_session(route.endpoint, req))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "a key backup session may be at most " + std::to_string(max_uploaded_key_document_bytes) +
+                           " bytes");
         }
         if (key_backup_put_exceeds_cap(rt, route.endpoint, user, session_ver, req))
         {

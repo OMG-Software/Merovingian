@@ -695,6 +695,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   A held algorithm is a replacement and is never refused, even on a device above a lowered cap: only a request that adds
   an algorithm is judged against it. Any new per-device key material gets a cap the same way.
 - `POST /keys/signatures/upload` stores its signatures with `database::store_key_signatures` (one transaction) and counts the signer's rows with `for_each_signer_key_signature`; the merge into a published key reads `key_signatures_for_target_key` (run-3 C14, ADR-0672).
+- `PUT /room_keys/keys[...]` refuses a session over `max_uploaded_key_document_bytes` (16 KiB) with `400 M_TOO_LARGE` before the session-count check, and the backup's `etag` is `key_backup_etag`, a hash of the version and `database::key_backup_content_digest`; never rehash the sessions (run-3 C22, ADR-0673).
 - `POST /keys/query` is refused whole with `413 M_TOO_LARGE` over the same cap and reads each requested local user's device keys with `database::for_each_user_device_key`, never by looping `device_keys` (run-3 C19, ADR-0671).
 - `POST /keys/claim` is refused whole with `413 M_TOO_LARGE` when it names more than `federation::max_key_request_entries` users plus devices, before any key is claimed, and merges a remote answer through a hash set of the users the response holds (run-3 C13, ADR-0670).
 - `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it

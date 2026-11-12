@@ -109,6 +109,14 @@ and the cap check and the merge into a published key each read other signers' an
 held. An upload is now one database transaction, the signer's rows and a key's signatures come from indexes, and a replacement
 updates its row in place.
 
+### A key backup's etag no longer rehashes the backup, and a session has a size limit (ADR-0673)
+
+Audit finding C22. Every read of a backup version and every upload of backup sessions recomputed the backup's `etag` by
+hashing every stored session, with the global lock held, and a session could be up to the 1 MiB body. The etag now comes from
+a digest of the sessions that each write keeps up to date, so a request reads no session; it still changes whenever the
+backup's content changes and is the same after a restart. A backup session over 16 KiB is refused with `400 M_TOO_LARGE`
+before anything is stored.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

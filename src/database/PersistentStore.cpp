@@ -8,10 +8,12 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/crypto/ConstantTime.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -73,20 +75,21 @@
 #include "merovingian/database/RowGroupIndex.hpp"
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
-#include "merovingian/database/Migration.hpp"
 #include "merovingian/events/Limits.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <initializer_list>
@@ -1078,6 +1081,92 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    // Run-3 C22 (ADR-0673): the digest of a backup version's sessions, kept beside `key_backup_sessions`.
+    [[nodiscard]] auto backup_digest_key(std::string_view user_id, std::string_view version) -> std::string
+    {
+        return composite_key({user_id, version});
+    }
+
+    // The BLAKE2b hash of one session, as four limbs. The room and session IDs are length-prefixed so no two
+    // sessions hash the same pieces. A libsodium failure (it does not happen in practice) gives the zero hash.
+    [[nodiscard]] auto backup_session_limbs(PersistentKeyBackupSession const& session) -> std::array<std::uint64_t, 4U>
+    {
+        auto limbs = std::array<std::uint64_t, 4U>{};
+        auto const room_length = std::to_string(session.room_id.size());
+        auto const session_length = std::to_string(session.session_id.size());
+        auto const pieces = std::array<std::string_view, 7U>{
+            room_length, ":", session.room_id, session_length, ":", session.session_id, session.json};
+        auto const hash = crypto::generic_hash_bytes(pieces);
+        if (hash.has_value() && hash->size() >= sizeof(limbs))
+        {
+            std::memcpy(limbs.data(), hash->data(), sizeof(limbs));
+        }
+        return limbs;
+    }
+
+    auto digest_add(KeyBackupDigest& digest, PersistentKeyBackupSession const& session) -> void
+    {
+        auto const limbs = backup_session_limbs(session);
+        for (auto index = std::size_t{0U}; index < limbs.size(); ++index)
+        {
+            digest.sum[index] += limbs[index];
+        }
+        ++digest.count;
+    }
+
+    auto digest_remove(KeyBackupDigest& digest, PersistentKeyBackupSession const& session) -> void
+    {
+        auto const limbs = backup_session_limbs(session);
+        for (auto index = std::size_t{0U}; index < limbs.size(); ++index)
+        {
+            digest.sum[index] -= limbs[index];
+        }
+        --digest.count;
+    }
+
+    // The digest of a version computed from its rows (through the version index while it is in step).
+    [[nodiscard]] auto recompute_backup_digest(PersistentStore const& store, std::string_view user_id,
+                                               std::string_view version) -> KeyBackupDigest
+    {
+        auto digest = KeyBackupDigest{};
+        for (auto const position : positions_in_group(store.key_backup_version_session_index, store.key_backup_sessions,
+                                                      composite_key({user_id, version}), backup_session_group_of,
+                                                      store.key_backup_rows_examined))
+        {
+            digest_add(digest, store.key_backup_sessions[position]);
+        }
+        return digest;
+    }
+
+    // The stored digest of a version, healed first when it is not in step with the rows. Called by a writer BEFORE it
+    // changes the version's rows, so the delta it then applies starts from the right value.
+    [[nodiscard]] auto ensure_backup_digest(PersistentStore& store, std::string_view user_id, std::string_view version)
+        -> KeyBackupDigest&
+    {
+        auto const key = backup_digest_key(user_id, version);
+        auto& digest = store.key_backup_digests[key];
+        auto const indexed = store.key_backup_version_session_index.in_step(store.key_backup_sessions.size());
+        if (!indexed || digest.count != store.key_backup_version_session_index.count(key))
+        {
+            digest = recompute_backup_digest(store, user_id, version);
+        }
+        return digest;
+    }
+
+    auto rebuild_key_backup_digests(PersistentStore& store) -> void
+    {
+        store.key_backup_digests.clear();
+        for (auto const& session : store.key_backup_sessions)
+        {
+            digest_add(store.key_backup_digests[backup_digest_key(session.user_id, session.version)], session);
+        }
+    }
+
+} // namespace
+
 auto rebuild_key_indexes(PersistentStore& store) -> void
 {
     store.user_index.rebuild(store.users, user_key_of);
@@ -1088,6 +1177,7 @@ auto rebuild_key_indexes(PersistentStore& store) -> void
     store.cross_signing_key_user_index.rebuild(store.cross_signing_keys, cross_signing_key_group_of);
     store.key_backup_session_index.rebuild(store.key_backup_sessions, backup_session_key_of);
     store.key_backup_version_session_index.rebuild(store.key_backup_sessions, backup_session_group_of);
+    rebuild_key_backup_digests(store);
     store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
     store.to_device_recipient_index.rebuild(store.to_device_messages, to_device_recipient_group_of);
     store.to_device_user_index.rebuild(store.to_device_messages, to_device_user_group_of);
@@ -5023,6 +5113,7 @@ namespace
     auto erase_backup_session_at(PersistentStore& store, std::size_t position) -> void
     {
         auto& rows = store.key_backup_sessions;
+        digest_remove(ensure_backup_digest(store, rows[position].user_id, rows[position].version), rows[position]);
         auto const old_count = rows.size();
         auto const in_step = store.key_backup_session_index.in_step(old_count) &&
                              store.key_backup_version_session_index.in_step(old_count);
@@ -5058,9 +5149,21 @@ namespace
         }
     }
 
+    // Replaces the JSON of the session at `position`, moving the version's digest from the old content to the new.
+    auto replace_backup_session_json(PersistentStore& store, std::size_t position, std::string json) -> void
+    {
+        auto& row = store.key_backup_sessions[position];
+        auto& digest = ensure_backup_digest(store, row.user_id, row.version);
+        digest_remove(digest, row);
+        row.json = std::move(json);
+        digest_add(digest, row);
+    }
+
     // Appends `session` and records it in both indexes.
     auto append_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> void
     {
+        auto& digest = ensure_backup_digest(store, session.user_id, session.version);
+        digest_add(digest, session);
         store.key_backup_sessions.push_back(std::move(session));
         auto const& added = store.key_backup_sessions.back();
         store.key_backup_session_index.note_appended(store.key_backup_sessions.size(), backup_session_key_of(added));
@@ -5129,6 +5232,28 @@ auto find_key_backup_session(PersistentStore const& store, std::string_view user
 {
     auto const position = find_backup_session_position(store, user_id, version, room_id, session_id);
     return position.has_value() ? &store.key_backup_sessions[*position] : nullptr;
+}
+
+auto key_backup_content_digest(PersistentStore const& store, std::string_view user_id, std::string_view version)
+    -> std::string
+{
+    auto digest = KeyBackupDigest{};
+    auto const key = backup_digest_key(user_id, version);
+    auto const stored = store.key_backup_digests.find(key);
+    if (store.key_backup_version_session_index.in_step(store.key_backup_sessions.size()) &&
+        stored != store.key_backup_digests.end() &&
+        stored->second.count == store.key_backup_version_session_index.count(key))
+    {
+        digest = stored->second;
+    }
+    else
+    {
+        digest = recompute_backup_digest(store, user_id, version);
+    }
+    auto bytes = std::string(sizeof(digest.count) + sizeof(digest.sum), '\0');
+    std::memcpy(bytes.data(), &digest.count, sizeof(digest.count));
+    std::memcpy(bytes.data() + sizeof(digest.count), digest.sum.data(), sizeof(digest.sum));
+    return bytes;
 }
 
 auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
@@ -5256,6 +5381,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
     }
     sync_key_backup_session_indexes(store);
     erase_backup_sessions_at(store, backup_session_positions(store, user_id, version, std::nullopt));
+    store.key_backup_digests.erase(backup_digest_key(user_id, version));
     // Versions keep their order (the current one is the user's last), so this erase shifts and the version index,
     // which holds at most the versions, is rebuilt.
     store.key_backup_versions.erase(store.key_backup_versions.begin() + static_cast<std::ptrdiff_t>(*version_position));
@@ -5286,7 +5412,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
             find_backup_session_position(store, session.user_id, session.version, session.room_id, session.session_id);
         existing.has_value())
     {
-        store.key_backup_sessions[*existing].json = std::move(session.json);
+        replace_backup_session_json(store, *existing, std::move(session.json));
         return true;
     }
     append_backup_session(store, std::move(session));
@@ -5324,7 +5450,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
                                                                session.session_id);
             existing.has_value())
         {
-            store.key_backup_sessions[*existing].json = std::move(session.json);
+            replace_backup_session_json(store, *existing, std::move(session.json));
         }
         else
         {
