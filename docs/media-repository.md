@@ -531,6 +531,10 @@ The local HTTP router preserves the media repository status code instead of flat
   included, from an owner-to-count map kept in step on insert, erase, removal and hydration, so the check is O(1)
   under the runtime lock. Removing a record frees the owner's slot, not the server-wide one; cached remote
   media is never counted.
+- The per-user byte quota (`max_size_per_user`) is charged for every upload, a deduplicated one included (C42, ADR-0689): a user at their
+  quota is refused alike whether or not another user already holds the bytes, so a refusal tells them nothing about what the
+  server stores. The server-wide byte limit still skips a file the server already holds, since that adds no bytes; a deduplicated
+  upload also skips the database write of a blob, a timing difference this does not remove.
 - `502` when the remote media fetch transport is not available (outbound client or
   discovery network not configured in the runtime).
 

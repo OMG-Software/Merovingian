@@ -80,6 +80,8 @@ is reserved (`auth::localpart_is_reserved`).
   removes a local record keeps the map in step (`release_owner_slot`, the insert in `upload_local_media`,
   `rebuild_owner_record_counts` on restore). Never count by scanning the records: the check runs under
   `runtime.mutex`.
+- The per-user byte quota is charged for a deduplicated upload too (C42, ADR-0689): never pass a "stores a new blob" flag back into
+  `capacity_rejection_reason`, or a refusal reveals whether other users hold the bytes.
 - `RemoteMediaCacheEntry::size_bytes` is set at admission and hydration. `plan_remote_media_admission` sums
   it and never looks a record up per entry; it drops at most 16 expired entries per admission.
 

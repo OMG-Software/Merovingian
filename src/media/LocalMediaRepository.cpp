@@ -638,12 +638,12 @@ namespace
         return found == repository.owner_live_bytes.end() ? std::uint64_t{0U} : found->second;
     }
 
-    // Which capacity limit, if any, this upload would cross. Empty means it
-    // fits. `stores_new_blob` is false for an upload that deduplicates onto an
-    // existing blob, which adds a record but no bytes.
+    // Which capacity limit, if any, this upload would cross. Empty means it fits. The per-user byte quota is charged
+    // for every upload, deduplicated or not: whether it passes must not depend on what other users hold (C42,
+    // ADR-0689).
     [[nodiscard]] auto capacity_rejection_reason(LocalMediaRepository& repository,
                                                  LocalMediaUploadRequest const& request, std::uint64_t size_bytes,
-                                                 std::string_view storage_id, bool stores_new_blob) -> std::string
+                                                 std::string_view storage_id) -> std::string
     {
         auto const& limits = repository.config;
         if (request.from_remote_fetch)
@@ -675,7 +675,7 @@ namespace
         {
             return "media repository storage limit reached";
         }
-        if (stores_new_blob && limits.max_bytes_per_user != 0U &&
+        if (limits.max_bytes_per_user != 0U &&
             live_bytes_for_owner(repository, request.owner_user_id) + size_bytes > limits.max_bytes_per_user)
         {
             return "media quota for this user is exhausted";
@@ -945,8 +945,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     // existing links rather than shed load.
     auto deduplicated = false;
     auto* blob = find_live_blob(repository, "blake2b", digest, size_bytes);
-    if (auto const capacity_reason = capacity_rejection_reason(repository, request, size_bytes,
-                                                               make_storage_id(digest, size_bytes), blob == nullptr);
+    if (auto const capacity_reason =
+            capacity_rejection_reason(repository, request, size_bytes, make_storage_id(digest, size_bytes));
         !capacity_reason.empty())
     {
         ++repository.metrics.uploads_rejected;

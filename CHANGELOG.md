@@ -403,6 +403,10 @@ An administrator's policy rule change (adding or removing a rule, or the review 
 
 An application service's exclusive alias namespace stopped other users and services creating an alias in it but not deleting one: the alias's creator, a moderator of its room or a server administrator could remove a bridge's reserved alias with `DELETE /directory/room/{roomAlias}`. The delete is now refused with 400 `M_EXCLUSIVE` for everyone but the owning application service, as the Application Service API says ("prevents humans and other application services from creating/deleting entities in that namespace"), with no administrator exemption, as for creation.
 
+### A user at their media quota learns nothing about other users' files (ADR-0689)
+
+The per-user byte quota was checked only when an upload stored a new blob, so a user who had filled their quota got 200 for bytes the server already held and a quota refusal for bytes it did not, which confirmed that a known file was stored. The quota is now charged for every upload, a deduplicated one included, so a refusal no longer depends on what other users have stored. The server-wide byte limit still lets a file the server already holds pass (it adds no bytes), and the small timing difference of a deduplicated upload is not changed.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
