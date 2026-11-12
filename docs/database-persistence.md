@@ -948,6 +948,10 @@ value. Test fixtures that do not exercise persistence select it through
 - `to_device_messages` is indexed by (user, device) and by user (`to_device_recipient_index`, `to_device_user_index`,
   ADR-0618). An erase moves the last row into the gap, so the vector has no meaningful order. Send and sync read only the
   recipient's rows, and the per-user limits evict a user's oldest row first, whichever device holds it.
+- A federated join persists the resident's answer in few transactions: the state array in one (`ingest_send_join_state`),
+  the auth chain in one (`prepare_outlier_events_batch`, committed by `commit_prepared_outlier_batch` with `runtime.mutex`
+  released, then applied) and the member rows in one (`store_memberships_batch`), counted by `committed_transactions`
+  (C03, ADR-0714). The state-array and member commits keep the lock: they write `current_state` and membership rows.
 - `server_signing_keys` holds this server's keys and every cached remote key; `server_signing_key_index` groups the rows by
   server name, and a reader asks for one server's rows (`snapshot_server_signing_keys_of`) instead of copying the table
   (C27, ADR-0713).

@@ -102,6 +102,14 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     in `server_signing_key_rows_examined`; a new per-server reader does the same. Append only through `append_server_signing_key` (store_server_signing_key and refresh_remote_signing_keys do);
     the index is trusted only while it is in step with the row count and readers scan otherwise.
 
+15. **A federated join writes its auth chain and member rows in one transaction each** (C03, ADR-0714):
+    `store_outlier_events_batch` and `store_memberships_batch`. A new writer of many rows for one answer uses a batch,
+    never `store_event_with_state` or `store_membership` in a loop, which commits once per row.
+    A batch of events that write no `current_state` or membership row has `prepare_outlier_events_batch`,
+    `commit_prepared_outlier_batch` (reads no store state, so the caller may release its lock around it) and
+    `apply_prepared_outlier_batch`. A batch that writes those rows keeps the lock for its commit (ADR-0714).
+    `PersistentStore::test_before_backend_commit` is a test seam only.
+
 ## Reloading a room (F-27, ADR-0360)
 
 `reload_room` is `load_room_snapshot` (the database read; touches no row of the store, takes no lock) followed by

@@ -93,6 +93,7 @@
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/PendingStreamOrdering.hpp"
 #include "merovingian/homeserver/PersistOutcome.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
@@ -154,6 +155,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <future>
@@ -6347,6 +6349,14 @@ namespace
         // Persist auth chain events for auth-rule resolution. Signatures were
         // already verified inside perform_federated_join, with runtime.mutex
         // released.
+        auto auth_chain_rows = std::vector<database::PersistentEvent>{};
+        // Each ordering is reserved for the whole of the released commit below (ADR-0247): no sync position passes
+        // the oldest until its row is in memory. Destroyed with the lock held.
+        auto reserved_orderings = std::deque<PendingStreamOrdering>{};
+        // One block of orderings, one persisted watermark, for the whole chain: `allocate_stream_ordering` per event
+        // was one backend commit each. An ordering the filters leave unused is a gap, as a failed event leaves one.
+        auto const first_auth_ordering = allocate_stream_orderings(runtime.database, verified_auth_chain.size());
+        auto auth_orderings_used = std::uint64_t{0U};
         for (auto const& auth_entry : verified_auth_chain)
         {
             if (send_join_event_room_id(auth_entry, policy) != room_id)
@@ -6398,7 +6408,8 @@ namespace
                             auth_ids = json_string_array(*av);
                         }
                     }
-                    auto const stream_ordering = allocate_stream_ordering(runtime.database);
+                    auto const stream_ordering = first_auth_ordering + auth_orderings_used++;
+                    reserved_orderings.emplace_back(runtime.database, stream_ordering);
                     auto pe = database::PersistentEvent{};
                     pe.event_id = event_id;
                     pe.room_id = std::string{room_id};
@@ -6424,16 +6435,30 @@ namespace
                     // auth-only outliers). The room's current state comes
                     // from the `state` snapshot above.
                     pe.status = "outlier";
-                    if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
-                                                          std::nullopt) &&
-                        runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
-                            runtime.database.persistent_store.events.end())
-                    {
-                        return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
-                    }
+                    auth_chain_rows.push_back(std::move(pe));
                 }
             }
         }
+        // C03 (ADR-0714): every auth-chain event goes in one transaction, written with runtime.mutex released. The rows
+        // are prepared here, with the lock held, and applied here again; the commit reads no store state. The events
+        // write their own rows only (no current_state, no membership), and this room is not held: the outbound join
+        // lease defers its PDUs and refuses an overlapping join, and `exchange` is this user's claim.
+        auto auth_chain_batch =
+            database::prepare_outlier_events_batch(runtime.database.persistent_store, std::move(auth_chain_rows));
+        if (!auth_chain_batch.has_value())
+        {
+            return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
+        }
+        auto const auth_chain_committed = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return database::commit_prepared_outlier_batch(runtime.database.persistent_store, *auth_chain_batch);
+        }();
+        if (!auth_chain_committed)
+        {
+            return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
+        }
+        database::apply_prepared_outlier_batch(runtime.database.persistent_store, *auth_chain_batch);
+        reserved_orderings.clear();
         auto const room_known = std::ranges::any_of(runtime.database.persistent_store.rooms,
                                                     [&](database::PersistentRoom const& persistent_room) {
                                                         return persistent_room.room_id == room_id;
@@ -6550,19 +6575,30 @@ namespace
         }
         // GCOVR_EXCL_STOP
 
-        for (auto const& joined_member : joined_members)
+        // C03 (ADR-0714): the member rows of the whole answer in one transaction, not one INSERT commit each.
         {
-            if (joined_member == *user_id)
+            auto member_rows = std::vector<database::PersistentMembership>{};
+            member_rows.reserve(joined_members.size());
+            auto const first_member_ordering = allocate_stream_orderings(runtime.database, joined_members.size());
+            auto member_orderings_used = std::uint64_t{0U};
+            for (auto const& joined_member : joined_members)
             {
-                continue;
+                if (joined_member == *user_id)
+                {
+                    continue;
+                }
+                member_rows.push_back(
+                    {std::string{room_id}, joined_member, "join", first_member_ordering + member_orderings_used++});
             }
-            auto const joined_member_stream = allocate_stream_ordering(runtime.database);
-            auto const result = database::store_membership(
-                runtime.database.persistent_store, {std::string{room_id}, joined_member, "join", joined_member_stream});
-            if (result == database::MembershipStoreResult::already_exists)
+            if (!database::store_memberships_batch(runtime.database.persistent_store, std::move(member_rows)))
             {
-                std::ignore = database::update_membership(runtime.database.persistent_store, room_id, joined_member,
-                                                          "join", joined_member_stream);
+                log_diagnostic("room.join.failed",
+                               {
+                                   {"actor",   *user_id,                    false},
+                                   {"room_id", std::string{room_id},        false},
+                                   {"reason",  "member persistence failed", false}
+                },
+                               observability::LogEventSeverity::warning);
             }
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members)});

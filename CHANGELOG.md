@@ -366,6 +366,12 @@ runtime lock, so the number of commits was chosen by the resident. The auth chai
 `runtime.mutex` released, and the member rows in one transaction. The state-array and member commits still hold the lock,
 because they write `current_state` and membership rows; the ADR records what releasing them needs.
 
+### A federated join commits its auth chain and members once each (ADR-0714)
+
+C03. A federated join committed every auth-chain event and every member row of the resident's answer separately, under the
+runtime lock, so the number of commits was chosen by the resident. The auth chain is now stored in one transaction and the
+member rows in one. Preparing the statements with the lock released is not done (recorded in the ADR).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

@@ -73,6 +73,7 @@
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/database/PreparedCurrentState.hpp"
+#include "merovingian/database/PreparedOutlierBatch.hpp"
 #include "merovingian/database/PreparedStateGroup.hpp"
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
@@ -297,6 +298,10 @@ struct PersistentStore final
     CredentialTable<PersistentAccessToken> access_tokens{};
     CredentialTable<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
+    // Test seam: called with the statement count just before each non-empty backend transaction is written, on the
+    // committing thread, so a test can observe whether the caller holds its lock then (C03, ADR-0714). Never set in
+    // production.
+    std::function<void(std::size_t)> test_before_backend_commit{};
     // Positions in `server_signing_keys` of each server's rows (C27, ADR-0713), so choosing this server's own signing
     // key does not copy or walk the rows of every remote server that was ever cached. Guarded by
     // `server_signing_keys_mutex`; rows are only appended, so it is kept by the two writers below and trusted only
@@ -870,6 +875,24 @@ auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomRelo
 [[nodiscard]] auto public_signing_keys_of_server(PersistentStore const& store, std::string_view server_name,
                                                  std::size_t max_rows) -> std::vector<PersistentServerSigningKey>;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
+// Stores every event of `events` as one outlier row (no state, no membership) in ONE backend transaction, then applies
+// them in memory (C03, ADR-0714). An event this store already holds in the same room is left as it is; one held in
+// another room, or a refused write, fails the whole batch and changes nothing. The work for the commit is one
+// transaction however many events there are, where `store_event_with_state` per event was one commit each.
+[[nodiscard]] auto store_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events) -> bool;
+// The three steps of `store_outlier_events_batch`, for a caller that commits with its lock released (C03, ADR-0714).
+// `prepare_outlier_events_batch` reads the store (an event held in another room refuses the whole batch) and is called
+// with the owner's lock held; nullopt is a refusal that changed nothing. `commit_prepared_outlier_batch` writes the one
+// backend transaction and reads no store state, so the caller may release its lock around it.
+// `apply_prepared_outlier_batch` puts the rows in memory with the lock held again, skipping an event the store has
+// meanwhile come to hold.
+[[nodiscard]] auto prepare_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events)
+    -> std::optional<PreparedOutlierBatch>;
+[[nodiscard]] auto commit_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> bool;
+auto apply_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> void;
+// Sets each of `rows` (a `join` membership with its stream ordering) in ONE backend transaction: an INSERT for a row
+// the store does not hold, an UPDATE for one it does. All or nothing, with the in-memory rows changed after the commit.
+[[nodiscard]] auto store_memberships_batch(PersistentStore& store, std::vector<PersistentMembership> rows) -> bool;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
 [[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)

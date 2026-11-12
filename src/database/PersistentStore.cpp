@@ -565,6 +565,10 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
             return false;
         }
     }
+    if (store.test_before_backend_commit)
+    {
+        store.test_before_backend_commit(statements.size());
+    }
     if (!detail::persist_transaction_to_backend(store, statements))
     {
         return false;
@@ -3495,6 +3499,79 @@ namespace
     return MembershipStoreResult::stored;
 }
 
+[[nodiscard]] auto store_memberships_batch(PersistentStore& store, std::vector<PersistentMembership> rows) -> bool
+{
+    if (rows.empty())
+    {
+        return true;
+    }
+    if (!sync_stream_has_write_reserve(store))
+    {
+        return false;
+    }
+    sync_membership_key_index(store);
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(rows.size());
+    auto seen = std::set<std::pair<std::string, std::string>>{};
+    auto fresh = std::vector<PersistentMembership>{};
+    auto updates = std::vector<PersistentMembership>{};
+    for (auto& row : rows)
+    {
+        if (!seen.emplace(row.room_id, row.user_id).second)
+        {
+            continue;
+        }
+        if (membership_exists(store, row))
+        {
+            statements.push_back(record_statement(
+                "update_membership",
+                "UPDATE membership SET membership = $3, stream_ordering = $4 WHERE room_id = $1 AND user_id = $2",
+                {
+                    {row.room_id,                         false},
+                    {row.user_id,                         false},
+                    {row.membership,                      false},
+                    {std::to_string(row.stream_ordering), false}
+            }));
+            updates.push_back(std::move(row));
+        }
+        else
+        {
+            statements.push_back(record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
+                                                  {
+                                                      {row.room_id,                         false},
+                                                      {row.user_id,                         false},
+                                                      {row.membership,                      false},
+                                                      {std::to_string(row.stream_ordering), false}
+            }));
+            fresh.push_back(std::move(row));
+        }
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        log_diagnostic("membership.batch.rejected", {
+                                                        {"reason", "persistence backend rejected transaction", false}
+        });
+        return false;
+    }
+    for (auto& row : updates)
+    {
+        // Through the membership index: the work is one lookup per row, not a walk of every room's rows.
+        auto const* const held = find_membership_row(store, row.room_id, row.user_id);
+        if (held != nullptr)
+        {
+            auto& target = store.memberships[static_cast<std::size_t>(held - store.memberships.data())];
+            target.membership = std::move(row.membership);
+            target.stream_ordering = row.stream_ordering;
+        }
+    }
+    for (auto& row : fresh)
+    {
+        store.memberships.push_back(std::move(row));
+        note_membership_row_appended(store);
+    }
+    return true;
+}
+
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool
 {
@@ -4664,6 +4741,82 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
         return false;
     }
     apply_store_event_with_state(store, *prepared);
+    return true;
+}
+
+[[nodiscard]] auto prepare_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events)
+    -> std::optional<PreparedOutlierBatch>
+{
+    auto batch = PreparedOutlierBatch{};
+    auto seen = std::set<std::string>{};
+    for (auto& event : events)
+    {
+        if (!seen.insert(event.event_id).second)
+        {
+            continue;
+        }
+        if (auto const held = store.events.find(event.event_id); held != store.events.end())
+        {
+            if (held->room_id != event.room_id)
+            {
+                return std::nullopt;
+            }
+            continue;
+        }
+        auto update = prepare_store_event_with_state(store, std::move(event), std::nullopt, std::nullopt);
+        if (!update.has_value())
+        {
+            return std::nullopt;
+        }
+        batch.statements.insert(batch.statements.end(), update->statements.begin(), update->statements.end());
+        batch.updates.push_back(std::move(*update));
+    }
+    return batch;
+}
+
+[[nodiscard]] auto commit_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> bool
+{
+    if (batch.updates.empty())
+    {
+        return true;
+    }
+    if (!commit_persistent_transaction(store, batch.statements))
+    {
+        log_diagnostic("event_state.batch_rejected",
+                       {
+                           {"events", std::to_string(batch.updates.size()),       false},
+                           {"reason", "persistence backend rejected transaction", false}
+        });
+        return false;
+    }
+    return true;
+}
+
+auto apply_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> void
+{
+    for (auto const& update : batch.updates)
+    {
+        // An event this store came to hold while the transaction was being written was written by a transaction that
+        // committed first, or its own commit would have failed on the primary key: it is already in memory.
+        if (store.events.find(update.event.event_id) == store.events.end())
+        {
+            apply_store_event_with_state(store, update);
+        }
+    }
+}
+
+[[nodiscard]] auto store_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events) -> bool
+{
+    auto batch = prepare_outlier_events_batch(store, std::move(events));
+    if (!batch.has_value())
+    {
+        return false;
+    }
+    if (!commit_prepared_outlier_batch(store, *batch))
+    {
+        return false;
+    }
+    apply_prepared_outlier_batch(store, *batch);
     return true;
 }
 

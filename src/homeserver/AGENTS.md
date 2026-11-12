@@ -826,6 +826,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   store under `runtime.mutex` through `main_store_read_lock`, because the federation core calls them without it and every
   writer changes the store under it. A federation worker takes no lock there (`StoreReadGuard` guards its snapshot). A new
   provider that reads the store does the same, and none holds the lock across network I/O (C11, ADR-0711).
+- `join_room` writes a federated join's answer in few transactions (ADR-0714): the auth chain in one, with `runtime.mutex`
+  released around its commit (orderings reserved in `PendingStreamOrdering`s first, rows prepared before and applied after,
+  under `RuntimeLockRelease{guard}`); the state array and the member rows in one each, with the lock held, because they write
+  `current_state` and membership rows that a local send, an invite or a knock could also write. Release for them only after
+  every such writer checks a per-room claim. Never commit an answer-sized loop of rows one by one.
 - A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`) and then its
   content is rebuilt from an allow-list (`restrict_membership_template_content`): `membership`, and for a join the
   authorising user of another server. A `reason` or profile in the template is never signed as the user's; the user's own

@@ -607,3 +607,5 @@
 * [0657 - Every list of a sync filter holds at most one hundred entries](0657-every-list-of-a-sync-filter-holds-at-most-one-hundred-entries.md)
 * [0658 - A sync serves the joined rooms that can have news, and the most recently active when there are too many](0658-a-sync-serves-the-joined-rooms-that-can-have-news-and-the-most-recent-when-there-are-too-many.md)
 * [0659 - The per-request walks of a sync read device-list changes, filters, presence and room sources through indexes](0659-the-per-request-walks-of-a-sync-read-device-list-changes-filters-presence-and-room-sources-through-indexes.md)
+* [0714 - A federated join persists its auth chain and members in one transaction each](0714-a-federated-join-persists-its-auth-chain-and-members-in-one-transaction-each.md)
+* [0714 - A federated join commits its answer in one transaction per part, and writes the auth chain with the runtime lock released](0714-a-federated-join-persists-its-auth-chain-and-members-in-one-transaction-each.md)
