@@ -613,10 +613,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   see a room with no ACL (F-27, ADR-0360).
   Source: `src/federation_worker/AGENTS.md`, `src/database/AGENTS.md`.
 
-- **An inbound event's tip status is asked of `homeserver::event_may_become_forward_extremity`, and its limit is per sender's
-  server, never per room.** An event that cites a current tip is never refused. An accepted event that is not a tip writes
-  no `current_state` row or membership.
-  Why: a limit one server can fill would let its forks keep out another server's ban or demotion (ADR-0374, ADR-0602).
+- **An inbound event's tip status is asked of `homeserver::event_may_become_forward_extremity`. Its limits are per
+  sender's server, and per room for senders without power: a sender who may ban or change the power levels is exempt
+  from the per-room cap, which other servers can fill.** An event that cites a current tip is never refused. An accepted event that is not a tip writes no
+  `current_state` row or membership.
+  Why: a limit an attacker can fill must not keep out a moderator's ban or demotion, and one operator runs as many
+  server names as it likes (ADR-0374, ADR-0602, ADR-0695).
   Source: `src/homeserver/AGENTS.md`.
 
 - **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied

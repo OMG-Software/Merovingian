@@ -1050,6 +1050,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.state_resolution.max_state_tips_per_server");
     }
+    if (current.security().federation.state_resolution.max_unprivileged_state_tips !=
+        next.security().federation.state_resolution.max_unprivileged_state_tips)
+    {
+        add_change(plan, "security.federation.state_resolution.max_unprivileged_state_tips");
+    }
     if (current.security().federation.state_resolution.max_events_per_state_group !=
         next.security().federation.state_resolution.max_events_per_state_group)
     {

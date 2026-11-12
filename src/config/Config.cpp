@@ -1021,6 +1021,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    config.security().federation.state_resolution.max_state_groups, 4096U);
     validate_count("security.federation.state_resolution.max_state_tips_per_server",
                    config.security().federation.state_resolution.max_state_tips_per_server, 4096U);
+    validate_count("security.federation.state_resolution.max_unprivileged_state_tips",
+                   config.security().federation.state_resolution.max_unprivileged_state_tips, 4096U);
     validate_count("security.federation.state_resolution.max_events_per_state_group",
                    config.security().federation.state_resolution.max_events_per_state_group, 262144U);
     validate_count("security.federation.state_resolution.max_total_state_events",

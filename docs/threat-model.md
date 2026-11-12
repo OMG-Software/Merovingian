@@ -2827,10 +2827,13 @@ nothing, all from trusting the worker's view or the hook's transport.
   reverted, such as a demoted moderator's, stayed current. **Mitigation:** extremities that share a state group resolve as
   one, so message floods cost one state; an accepted event with no `state_key` is not made a tip once the room holds
   `max_state_groups` of them (ADR-0374); a refusal is a distinct status, logged at warning level, and callers handle it
-  (ADR-0375). One server holds at most `max_state_tips_per_server` tips unless an event cites a current tip (ADR-0602), and
+  (ADR-0375). One server holds at most `max_state_tips_per_server` tips unless an event cites a current tip (ADR-0602), senders
+  without power hold at most `max_unprivileged_state_tips` between them however many server names they run, while a
+  power holder is exempt from that cap and bounded only by its own server's (ADR-0695), and
   a PDU that leaves the distinct state groups unchanged reuses the last result (ADR-0600). Tests: `[f49]`, `[tip_cap]`,
-  `[state_memo]`. **Residual risk:** many colluding servers can still approach `max_state_groups` distinct state tips
-  between them, and more than that or a room whose state exceeds `max_total_state_events` still refuses; current state is then
+  `[state_memo]`, `[unprivileged_tip_cap]`. **Residual risk:** senders who hold power are bounded only per server
+  name, so in a room an attacker controls, its moderators on many names can still approach `max_state_groups` distinct state tips; while senders without
+  power fill the joint cap, an honest member's state event citing no current tip is stored but not a tip; and more than that or a room whose state exceeds `max_total_state_events` still refuses; current state is then
   the cache plus each accepted event's own row, and a state event resolution would revert can stay current until the tips
   are back within budget. Freezing current state instead would drop a ban, so it is not done.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,

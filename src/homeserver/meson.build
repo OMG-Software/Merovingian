@@ -39,6 +39,7 @@ homeserver_sources = files(
   'RedactionService.cpp',
   'RemoteTimestampEvent.cpp',
   'RoomPower.cpp',
+  'RoomPowerJudge.cpp',
   'StateContentCheck.cpp',
   'RoomResidency.cpp',
   'InvitePermission.cpp',

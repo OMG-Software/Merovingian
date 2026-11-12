@@ -3,63 +3,15 @@
 
 #include "merovingian/homeserver/RoomPower.hpp"
 
-#include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/canonicaljson/Parser.hpp"
-#include "merovingian/events/Authorization.hpp"
-#include "merovingian/homeserver/StoredRoomVersion.hpp"
-#include "merovingian/rooms/RoomVersionPolicy.hpp"
-
-#include <string>
-#include <variant>
+#include "merovingian/homeserver/RoomPowerJudge.hpp"
 
 namespace merovingian::homeserver
 {
 
-namespace
-{
-
-    // The current state event of (`event_type`, "") in the room, parsed; a null
-    // Value when the room has none or it cannot be read.
-    [[nodiscard]] auto current_state_value(database::PersistentStore const& store, std::string_view room_id,
-                                           std::string_view event_type) -> canonicaljson::Value
-    {
-        auto const state_event_id = database::find_current_state_event_id(store, room_id, event_type, "");
-        if (!state_event_id.has_value())
-        {
-            return canonicaljson::Value{};
-        }
-        auto const event = store.events.find(*state_event_id);
-        if (event == store.events.end())
-        {
-            return canonicaljson::Value{};
-        }
-        auto parsed = canonicaljson::parse_lossless(event->json);
-        return parsed.error == canonicaljson::ParseError::none ? std::move(parsed.value) : canonicaljson::Value{};
-    }
-
-    // The create event's declared version, through the shared rule (declared_room_version): a
-    // create without room_version is room version 1, which has no policy here.
-    [[nodiscard]] auto room_version_of(canonicaljson::Value const& create_event) -> std::string
-    {
-        auto const* root = std::get_if<canonicaljson::Object>(&create_event.storage());
-        return root == nullptr ? std::string{} : declared_room_version(*root);
-    }
-
-} // namespace
-
 auto may_send_state_event(database::PersistentStore const& store, std::string_view room_id, std::string_view user_id,
                           std::string_view event_type) -> bool
 {
-    auto const create_event = current_state_value(store, room_id, "m.room.create");
-    auto const* policy = rooms::find_room_version_policy(room_version_of(create_event));
-    if (policy == nullptr)
-    {
-        return false;
-    }
-    auto const power_levels = current_state_value(store, room_id, "m.room.power_levels");
-    return events::effective_sender_power(power_levels, user_id, create_event, *policy) >=
-           events::required_state_event_power(power_levels, event_type, *policy);
+    return RoomPowerJudge{store, room_id}.may_send_state_event(user_id, event_type);
 }
 
 } // namespace merovingian::homeserver

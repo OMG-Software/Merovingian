@@ -210,6 +210,16 @@ state before an event is now read once per distinct prev group, a set of prev gr
 from the group holding its result, and that result is stored once, chained off a resolved group that holds every key
 it keeps; the event's after-state is chained off it, so a rejected or non-state event adds no rows (ADR-0694).
 
+### Senders without power share one cap on a room's tips
+
+A room's forward extremities were limited only per sender server, keyed on the text after the sender's first `:`, so
+one operator running a few dozen server names in a room could still make it hold enough tips that every later PDU paid
+a resolution over all of them. The tips of senders who can neither ban nor change the power levels now also share
+`security.federation.state_resolution.max_unprivileged_state_tips` (default 128) for the room, whatever their servers,
+before a further such event that cites no current tip stops becoming one. A sender who may ban or change the power
+levels is exempt from that cap and limited only by its own server's tips, so tips other servers add never keep a
+moderator's ban or demotion out (ADR-0695).
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit

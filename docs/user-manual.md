@@ -732,6 +732,7 @@ not survive a restart. These limits are fixed. See
 |---|---|---|
 | `max_state_groups` | `1000` | 1..4,096 |
 | `max_state_tips_per_server` | `32` | 1..4,096 |
+| `max_unprivileged_state_tips` | `128` | 1..4,096 |
 | `max_events_per_state_group` | `65536` | 1..262,144 |
 | `max_total_state_events` | `131072` | 1..1,048,576 |
 | `max_conflicted_state_keys` | `65536` | 1..262,144 |
@@ -747,6 +748,12 @@ resolved the server logs `state.current.refused` at warning level and keeps the 
 event of that server that cites none of them stops becoming one (ADR-0602). Such an event is stored and delivered but does
 not change current state; a `send_join`, `send_leave` or `send_knock` past the limit is answered 503. Changing it needs a
 restart.
+
+`max_unprivileged_state_tips` is how many of a room's forward extremities the events of senders without power may hold
+together, whatever their servers, before a further such event that cites none of them stops becoming one (ADR-0695). A
+sender holds power when it may change the room's power levels or ban; it is exempt from this limit, and only
+`max_state_tips_per_server` applies to it.
+Changing it needs a restart.
 
 `appservice.*`:
 

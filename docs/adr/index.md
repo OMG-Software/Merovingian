@@ -587,3 +587,4 @@
 * [0713 - A server's signing keys are read by server name, and a remote key document is bounded](0713-a-servers-signing-keys-are-read-by-server-name-and-a-key-document-is-bounded.md)
 * [0693 - The auth rules read each auth event once, into an index](0693-the-auth-rules-read-each-auth-event-once-into-an-index.md)
 * [0694 - The state before an event is resolved and stored once per set of prev groups](0694-the-state-before-an-event-is-resolved-and-stored-once-per-set-of-prev-groups.md)
+* [0695 - A room's tips from senders without power share one cap, that power holders are exempt from](0695-a-rooms-tips-from-senders-without-power-share-one-cap-that-power-holders-are-exempt-from.md)

@@ -3,21 +3,22 @@
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/database/ResolvedStateMemo.hpp"
 #include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateKey.hpp"
-#include "merovingian/events/StateResolutionRequest.hpp"
-#include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateResolution.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/homeserver/CurrentStateRecompute.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
 #include "merovingian/homeserver/EventBookkeeping.hpp"
 #include "merovingian/homeserver/NewEventBasis.hpp"
+#include "merovingian/homeserver/RoomPowerJudge.hpp"
 #include "merovingian/homeserver/StateBeforeResult.hpp"
 #include "merovingian/homeserver/StoredWithBookkeeping.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -46,6 +47,7 @@ auto state_resolution_limits(config::FederationStateResolutionConfig const& conf
     limits.max_auth_chain_walk_events = static_cast<std::size_t>(config.max_auth_chain_walk_events);
     limits.max_total_state_events = static_cast<std::size_t>(config.max_total_state_events);
     limits.max_state_tips_per_server = static_cast<std::size_t>(config.max_state_tips_per_server);
+    limits.max_unprivileged_state_tips = static_cast<std::size_t>(config.max_unprivileged_state_tips);
     return limits;
 }
 
@@ -864,6 +866,39 @@ auto forward_extremities_stay_bounded(database::PersistentStore const& store, st
            store.forward_extremities.count_for_room(room_id) < limits.max_state_groups;
 }
 
+namespace
+{
+
+    // The room's tips whose sender holds no power by current state; a tip whose event is not stored counts as one.
+    // Each distinct sender is judged once.
+    [[nodiscard]] auto unprivileged_tip_count(database::PersistentStore const& store, std::string_view room_id,
+                                              RoomPowerJudge const& judge) -> std::size_t
+    {
+        auto holds_power = std::unordered_map<std::string, bool>{};
+        auto count = std::size_t{0U};
+        for (auto const& tip : store.forward_extremities.tips_of_room(room_id))
+        {
+            auto const event = store.events.find(tip);
+            if (event == store.events.end())
+            {
+                ++count;
+                continue;
+            }
+            auto known = holds_power.find(event->sender_user_id);
+            if (known == holds_power.end())
+            {
+                known = holds_power.emplace(event->sender_user_id, judge.holds_room_power(event->sender_user_id)).first;
+            }
+            if (!known->second)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+} // namespace
+
 auto event_may_become_forward_extremity(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view sender_user_id, std::vector<std::string> const& prev_event_ids,
                                         bool is_state_event, events::StateResolutionLimits const& limits) -> bool
@@ -879,9 +914,22 @@ auto event_may_become_forward_extremity(database::PersistentStore const& store, 
     {
         return false;
     }
+    // Two caps. Each server's own: only its own events fill it, so it never keeps out another server's ban or demotion
+    // (ADR-0602). And one for the room's tips from senders without power, whatever their servers, since one operator
+    // runs as many server names as it likes: a sender who may ban or change the power levels is exempt from it, so
+    // what others fill never refuses a moderator (ADR-0695).
     if (tips.count_for_sender_server(room_id, sender_user_id) < limits.max_state_tips_per_server)
     {
-        return true;
+        if (tips.count_for_room(room_id) < limits.max_unprivileged_state_tips)
+        {
+            return true; // Fewer tips than the joint cap, whoever holds them: nothing to judge.
+        }
+        auto const judge = RoomPowerJudge{store, room_id};
+        if (judge.holds_room_power(sender_user_id) ||
+            unprivileged_tip_count(store, room_id, judge) < limits.max_unprivileged_state_tips)
+        {
+            return true;
+        }
     }
     if (is_state_event || prev_event_ids.size() != 1U)
     {

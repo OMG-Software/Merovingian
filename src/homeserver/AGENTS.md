@@ -33,6 +33,7 @@ This is the largest and most complex module — read this file carefully before 
 | `RedactionService.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `RemoteDeviceListScope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
 | `StateContentCheck.cpp` | `state_content_refusal`: the `m.room.canonical_alias` and `m.room.encryption` content checks (F-19, ADR-0588). Called by `send_event_as_user` (so `PUT /state`, `PUT /send` and `POST /send` with a `state_key`) after the power check, and by `create_room` for `m.room.canonical_alias` entries of `initial_state`; never copy the checks into a route |
+| `RoomPowerJudge.cpp` | A room's power judged by current state, read once: `may_send_state_event`, and `holds_room_power` (may ban or change the power levels), whose senders are exempt from the joint tip cap (ADR-0695) |
 | `RoomPower.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `UserDirectorySearch.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
@@ -751,8 +752,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `max_state_groups` of them (ADR-0374). An accepted event citing no current tip is not made a tip once its sender's
   server holds `max_state_tips_per_server` of the room's tips (`event_may_become_forward_extremity`, ADR-0602), and then
   writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
-  another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
-  the same question.
+  another server reaches resolution. Senders without power also share `max_unprivileged_state_tips` of the room's tips
+  whatever their servers, but a sender who may ban or change the power levels (`RoomPowerJudge::holds_room_power`) is
+  exempt from that joint cap and limited only by its own server's (ADR-0695): never let a limit that other servers can
+  fill refuse a power holder. A new path that adds a tip for
+  an inbound event asks the same question.
 - `recompute_current_state` removes a key the resolution does not hold, except a row whose event has no state group and
   that no tip's state names (ADR-0615). `membership_changes` lists the membership rows it corrected: a caller applies each
   with `apply_membership_to_roster`, after the event's own membership. Pass the event's stream ordering, so `/sync` sees a

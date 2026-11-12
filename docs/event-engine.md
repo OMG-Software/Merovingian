@@ -771,7 +771,11 @@ tips (`event_may_become_forward_extremity`, ADR-0602), and then writes no
 `current_state` row or membership, since no tip holds its state; a message past
 that limit stays a tip only in a state group a tip already holds. A server is
 charged only for its own events, so a ban or a demotion from another server
-still reaches resolution. `send_join`, `send_leave` and `send_knock` past the
+still reaches resolution. One operator runs as many server names as it likes,
+so the tips of senders without power, whatever their servers, also share
+`max_unprivileged_state_tips` (default 128); a sender who may ban or change the
+power levels (`RoomPowerJudge`) is exempt from that cap and its tips are not
+charged to it; only its own server's cap applies to it (ADR-0695). `send_join`, `send_leave` and `send_knock` past the
 limit are answered 503 with nothing stored. Each room remembers its last
 resolved state by its sorted distinct state groups (`ResolvedStateMemo`,
 ADR-0600): a PDU that leaves those groups unchanged reuses the result and still

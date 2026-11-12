@@ -826,6 +826,7 @@ security.federation.query.max_missing_events_traversal=4096
 # security.federation.state_resolution
 security.federation.state_resolution.max_state_groups=1000
 security.federation.state_resolution.max_state_tips_per_server=32
+security.federation.state_resolution.max_unprivileged_state_tips=128
 security.federation.state_resolution.max_events_per_state_group=65536
 security.federation.state_resolution.max_total_state_events=131072
 security.federation.state_resolution.max_conflicted_state_keys=65536
