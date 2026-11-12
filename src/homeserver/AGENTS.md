@@ -799,6 +799,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
   the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
   not visible (ADR-0414); it never judges the members one by one.
+- The federation read providers wired by `wire_federation_callbacks_impl` (`backfill`, `event_query`, `state_query`,
+  `state_ids_query`, `event_auth_query`, `missing_events_query`, `room_server_acl`, `room_version_resolver`) read main's
+  store under `runtime.mutex` through `main_store_read_lock`, because the federation core calls them without it and every
+  writer changes the store under it. A federation worker takes no lock there (`StoreReadGuard` guards its snapshot). A new
+  provider that reads the store does the same, and none holds the lock across network I/O (C11, ADR-0711).
 - A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`) and then its
   content is rebuilt from an allow-list (`restrict_membership_template_content`): `membership`, and for a join the
   authorising user of another server. A `reason` or profile in the template is never signed as the user's; the user's own

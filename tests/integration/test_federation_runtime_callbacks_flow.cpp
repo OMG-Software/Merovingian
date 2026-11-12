@@ -2,8 +2,8 @@
 
 #include "FederationSigningTestSupport.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/crypto/Ed25519Provider.hpp"
 #include "merovingian/crypto/Ed25519PublicKey.hpp"
@@ -25,12 +25,12 @@
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/MembershipEventTemplate.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -47,6 +47,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -2243,6 +2245,81 @@ SCENARIO("PDU sink overload is returned to the federation peer as a retryable 5x
                 REQUIRE(*sink_invoked);
                 REQUIRE(response.status == 503U);
                 REQUIRE(response.body.find("M_UNKNOWN") != std::string::npos);
+            }
+        }
+    }
+}
+
+// C11: the federation read providers read main's store, which every writer changes under runtime.mutex, and the
+// federation core calls them without it. Each provider must take the lock itself (ADR-0711).
+SCENARIO("The federation read providers wait for runtime.mutex before reading the store",
+         "[homeserver][federation][providers][c11][concurrency]")
+{
+    GIVEN("a runtime whose federation callbacks are wired, and the test thread holding runtime.mutex")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "provider-lock-seed", {"!room:matrix.example.org"});
+        REQUIRE(merovingian::homeserver::handle_federation_http_request(
+                    *runtime, edu_request(origin, key_id, "txn-provider-lock-wire", "m.typing",
+                                          typing_content("!room:matrix.example.org", "@first:matrix.example.org")))
+                    .status == 200U);                                             // Fixture: wires the callbacks.
+        REQUIRE(static_cast<bool>(runtime->federation.room_server_acl_provider)); // Fixture: wired.
+        auto const room = std::string{"!room:matrix.example.org"};
+        auto const reads = std::vector<std::function<void()>>{
+            [&] {
+                std::ignore = runtime->federation.room_server_acl_provider(room, origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.room_version_resolver(room);
+            },
+            [&] {
+                std::ignore = runtime->federation.event_query_provider("$event", origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.state_query_provider(room, "$event", origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.state_ids_query_provider(room, "$event", origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.event_auth_query_provider(room, "$event", origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.missing_events_query_provider(room, "{}", origin);
+            },
+            [&] {
+                std::ignore = runtime->federation.backfill_provider({});
+            },
+        };
+
+        WHEN("each provider is called from another thread while the lock is held, then the lock is released")
+        {
+            auto finished_while_locked = std::size_t{0U};
+            for (auto const& read : reads)
+            {
+                auto held = merovingian::homeserver::RuntimeLock{runtime->mutex};
+                // As the typing case above: the mutex reports no waiters, so the test waits until the thread is
+                // running, then gives it time it would need only to finish unlocked work. A provider that takes
+                // the lock cannot finish while it is held, so the timing can only miss a regression.
+                auto entering = std::promise<void>{};
+                auto entered = entering.get_future();
+                auto done = std::async(std::launch::async, [&read, &entering] {
+                    entering.set_value();
+                    read();
+                });
+                entered.wait();
+                if (done.wait_for(std::chrono::milliseconds{150}) == std::future_status::ready)
+                {
+                    ++finished_while_locked;
+                }
+                held.unlock();
+                done.get();
+            }
+
+            THEN("none of them finished while the lock was held")
+            {
+                REQUIRE(finished_while_locked == 0U);
             }
         }
     }

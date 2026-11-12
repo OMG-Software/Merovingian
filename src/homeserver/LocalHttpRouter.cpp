@@ -657,6 +657,16 @@ namespace
         return room != nullptr && room->members.has_member_of_server(server_name_from_user_id(joining_user_id));
     }
 
+    // C11 (ADR-0711): main's store is changed by its writers under runtime.mutex, and the federation core calls the
+    // read providers below without it, so each reads under it. A federation worker answers from its own snapshot,
+    // guarded against the reload swap by StoreReadGuard instead (it sets `federation_policy_decided_upstream`), and
+    // takes no lock here. The providers do no network I/O, so the lock is never held across any. Recursive: a caller
+    // that already holds it takes it again.
+    [[nodiscard]] auto main_store_read_lock(HomeserverRuntime const& runtime) -> RuntimeLock
+    {
+        return runtime.federation_policy_decided_upstream ? RuntimeLock{} : RuntimeLock{runtime.mutex};
+    }
+
     auto dispatch_device_list_update(HomeserverRuntime& runtime, std::string_view destination, std::string_view user_id,
                                      std::uint64_t stream_id) -> void
     {
@@ -3324,6 +3334,7 @@ namespace
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             // FED-2: refuses (403) a server with no joined user in the room unless
             // the room is world readable.
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_backfill_response(rt->database.persistent_store, req,
                                                        rt->federation.config.query_policy);
         };
@@ -3362,27 +3373,32 @@ namespace
         // state/state_ids/backfill/get_missing_events, main's for /event.
         runtime.federation.event_query_provider = [rt](std::string_view event_id,
                                                        std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_event_response(rt->database.persistent_store, event_id,
                                                     rt->config.server().server_name, origin);
         };
 
         runtime.federation.state_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                        std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_state_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.state_ids_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                            std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.event_auth_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                             std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_event_auth_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
                                                                 std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin,
                                                                  rt->federation.config.query_policy);
         };
@@ -3428,6 +3444,7 @@ namespace
         // invites into rooms it did not hold under v10 redaction, which keeps the
         // `origin` key v11 and later strip (Complement run 10, F1).
         runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return stored_room_version(rt->database.persistent_store, room_id).value_or(std::string{});
         };
 
@@ -3442,6 +3459,7 @@ namespace
 
         runtime.federation.room_server_acl_provider = [rt](std::string_view room_id,
                                                            std::string_view server_name) -> bool {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
         };
 

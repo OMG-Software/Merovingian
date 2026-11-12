@@ -582,3 +582,4 @@
 * [0708 - A user's knock records are capped in bytes, and a knock keeps one entry per state](0708-a-users-knock-records-are-capped-in-bytes-and-a-knock-keeps-one-entry-per-state.md)
 * [0709 - A resident's membership template content is rebuilt from an allow-list before it is signed](0709-a-residents-membership-template-content-is-rebuilt-from-an-allow-list.md)
 * [0710 - The unsigned strip parses any text with a unicode escape, and a bare /event answer is stored as canonical JSON](0710-the-unsigned-strip-parses-any-text-with-an-escape-and-a-bare-event-answer-is-canonicalised.md)
+* [0711 - The federation read providers read main's store under the runtime lock](0711-the-federation-read-providers-read-main-s-store-under-the-runtime-lock.md)

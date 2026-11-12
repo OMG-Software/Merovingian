@@ -164,6 +164,12 @@ C43. A bare `GET /event` answer was kept verbatim, and `unsigned` written with a
 that decides whether to strip it, so the remote server's `unsigned` was stored and served on. The strip now parses any
 text with an escape, and a bare answer is re-serialised as canonical JSON.
 
+### Federation reads of main's store now hold the runtime lock (ADR-0711)
+
+C11. The federation read providers (server ACL, room version, state, state_ids, event_auth, backfill, get_missing_events,
+event) read main's store without `runtime.mutex` while writers changed it, so a remote server could race a read against a
+reallocation. Each now reads under the lock in main; a federation worker is unchanged.
+
 ## 1.0.0
 
 Merovingian 1.0.0 is the first production release. It follows the release-gate security audit (run 2, at commit
