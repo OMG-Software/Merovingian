@@ -200,20 +200,36 @@ Linux packages create the `merovingian` system user and group, install the syste
 unit, and stage the example configuration at `/etc/merovingian/
 merovingian.conf.example`.
 
-The FreeBSD package creates the same user and group, and installs an rc.d script
-that reads `/usr/local/etc/merovingian/merovingian.conf`. It stages only a sample,
-whose secret file settings still point at `/etc/merovingian`. Create the file, move
-those paths, and enable the service:
+The BSD packages create the same user and group, with `/var/db/merovingian` as its
+home, and install an rc.d script that creates `/var/db/merovingian`,
+`/var/log/merovingian` and `/var/run/merovingian`. They stage
+`merovingian.conf.sample`, made from the BSD example
+[`config/merovingian.conf.bsd.example`](../config/merovingian.conf.bsd.example), not
+the Linux one. Each package fills in its own configuration directory, which is also
+where the rc.d script looks for the config. Secret files belong in the same
+directory, and the commented SQLite path points into `/var/db/merovingian`
+([ADR-0738](adr/0738-one-bsd-example-config-whose-configuration-directory-each-package-fills-in.md)):
+
+| System | Config the rc.d script reads | Secret files |
+|---|---|---|
+| FreeBSD | `/usr/local/etc/merovingian/merovingian.conf` | `/usr/local/etc/merovingian/` |
+| OpenBSD | `/etc/merovingian/merovingian.conf` | `/etc/merovingian/` |
+| NetBSD (pkgsrc) | `/usr/pkg/etc/merovingian/merovingian.conf` | `/usr/pkg/etc/merovingian/` |
+
+On FreeBSD, create the file from the sample and enable the service:
 
 ```sh
 cp /usr/local/etc/merovingian/merovingian.conf.sample \
    /usr/local/etc/merovingian/merovingian.conf
-sed -i '' 's|/etc/merovingian/|/usr/local/etc/merovingian/|' \
-   /usr/local/etc/merovingian/merovingian.conf
 sysrc merovingian_enable=YES
 ```
 
-Use `/usr/local/etc/merovingian` wherever the steps below say `/etc/merovingian`.
+On OpenBSD, `pkg_add` installs the sample. Copy it to
+`/etc/merovingian/merovingian.conf` and run `rcctl enable merovingian`. Read the
+federation worker note above before the first start on either system.
+
+Wherever the steps below say `/etc/merovingian`, use your system's directory from the
+table, and use `/var/db/merovingian` wherever they say `/var/lib/merovingian`.
 
 ### Install the portable static Linux tarball
 
@@ -456,7 +472,9 @@ such as `0s`, `30`, `30ms`, and `forever` are rejected.
 ### Configuration parameter reference
 
 The complete, authoritative accepted-key list lives in
-[`config/merovingian.conf.example`](../config/merovingian.conf.example). The
+[`config/merovingian.conf.example`](../config/merovingian.conf.example). Its BSD
+edition, [`config/merovingian.conf.bsd.example`](../config/merovingian.conf.bsd.example),
+holds the same keys with BSD paths; a tooling test fails if the two drift apart. The
 following sections describe each group and the situations in which you might
 change them.
 
