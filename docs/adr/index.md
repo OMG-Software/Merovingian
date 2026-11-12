@@ -561,3 +561,4 @@
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
+* [0651 - The v1.0.0 tag moves to the release-workflow fix without a version bump](0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)

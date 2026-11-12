@@ -37,6 +37,11 @@ that the version remains consistent with the base branch; if another branch
 has used that version in the meantime, update all locations together to the
 next available build number. There is no separate merge-time bump.
 
+The one exception is the `release.yml` fix that let 1.0.0 publish: the owner
+kept it at 1.0.0 and moved the unpublished `v1.0.0` tag to it
+([ADR-0651](adr/0651-the-v1-0-0-tag-moves-to-the-release-workflow-fix-without-a-version-bump.md)).
+It is not a precedent.
+
 For a documentation-only branch, keep the current version and add the change
 notes to its `Documentation` section in `CHANGELOG.md`. Changes to coding
 guidance and `AGENTS.md` files are documentation changes. If the branch later
