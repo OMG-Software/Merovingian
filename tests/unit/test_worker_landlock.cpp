@@ -9,18 +9,19 @@
 // part 3.
 
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ReloadPolicy.hpp"
-#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/platform/LandlockAccess.hpp"
 #include "merovingian/platform/LandlockAddRuleOutcome.hpp"
+#include "merovingian/platform/LandlockHardening.hpp"
 #include "merovingian/platform/LandlockHardeningOps.hpp"
 #include "merovingian/platform/LandlockPathRule.hpp"
-#include "merovingian/platform/LandlockHardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <cerrno>
@@ -337,7 +338,7 @@ SCENARIO("A landlock_restrict_self failure is fatal even with the opt-out", "[pl
 SCENARIO("A successful Landlock ruleset contains exactly the expected rules, never the worker's secrets",
          "[platform][worker_landlock]")
 {
-    GIVEN("a worker config with a master key, TLS keys, and both database URI files set")
+    GIVEN("a worker config with a master key, TLS keys, a SQLite database and a database URI file set")
     {
         auto config = merovingian::config::Config{};
         config.database().backend = merovingian::config::DatabaseBackend::sqlite;
@@ -348,7 +349,6 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
         config.listeners().client.tls_private_key_file = "/etc/merovingian/tls/client.key";
         config.listeners().federation.tls_certificate_file = "/etc/merovingian/tls/federation.crt";
         config.listeners().federation.tls_private_key_file = "/etc/merovingian/tls/federation.key";
-        config.federation_worker().database_uri_file = "/etc/merovingian/fed-worker-db-uri";
 
         WHEN("the worker's Landlock rules are built and applied")
         {
@@ -366,14 +366,11 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
                 REQUIRE(recording.restrict_self_called);
             }
 
-            AND_THEN("the SQLite database directory is granted read-only")
+            AND_THEN("no rule grants the SQLite database, its directory or anything under it (ADR-0733)")
             {
-                auto const it = std::find_if(rules.begin(), rules.end(), [](LandlockPathRule const& rule) {
-                    return rule.path == "/var/lib/merovingian";
-                });
-                REQUIRE(it != rules.end());
-                REQUIRE(it->access == LandlockAccess::read_only);
-                REQUIRE(it->required);
+                REQUIRE(std::none_of(rules.begin(), rules.end(), [](LandlockPathRule const& rule) {
+                    return rule.path.starts_with("/var/lib/merovingian");
+                }));
             }
 
             AND_THEN("none of the worker's secret file paths appear anywhere in the ruleset")
@@ -385,7 +382,6 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
                 };
                 REQUIRE_FALSE(contains_path(config.security().secrets.master_key_file));
                 REQUIRE_FALSE(contains_path(config.database().uri_file));
-                REQUIRE_FALSE(contains_path(config.federation_worker().database_uri_file));
                 REQUIRE_FALSE(contains_path(config.listeners().client.tls_certificate_file));
                 REQUIRE_FALSE(contains_path(config.listeners().client.tls_private_key_file));
                 REQUIRE_FALSE(contains_path(config.listeners().federation.tls_certificate_file));
@@ -397,21 +393,27 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
 
 #endif // __linux__
 
-SCENARIO("A PostgreSQL-backed worker requests no database directory rule", "[platform][worker_landlock]")
+// ADR-0733: the worker opens no database, so no rule grants one, even when the configuration passed in still names
+// main's SQLite file (a caller that forgot to clear it).
+SCENARIO("A worker's Landlock rules grant no database directory on either backend",
+         "[platform][worker_landlock][c44][landlock-no-database]")
 {
-    GIVEN("a worker config with database.backend=postgresql")
+    GIVEN("a configuration naming main's SQLite file, on each backend")
     {
+        auto const backend =
+            GENERATE(merovingian::config::DatabaseBackend::sqlite, merovingian::config::DatabaseBackend::postgresql);
         auto config = merovingian::config::Config{};
-        config.database().backend = merovingian::config::DatabaseBackend::postgresql;
+        config.database().backend = backend;
+        config.database().sqlite_path = "/var/lib/merovingian/merovingian.sqlite3";
 
         WHEN("the worker's Landlock rules are built")
         {
             auto const rules = merovingian::platform::build_worker_landlock_rules(config);
 
-            THEN("no rule names the SQLite path -- PostgreSQL is reached over a socket, unaffected by Landlock")
+            THEN("no rule names the database file, its directory or anything under it")
             {
                 REQUIRE(std::none_of(rules.begin(), rules.end(), [](LandlockPathRule const& rule) {
-                    return rule.path.find("merovingian.sqlite3") != std::string::npos;
+                    return rule.path.starts_with("/var/lib/merovingian");
                 }));
             }
         }
@@ -891,23 +893,24 @@ SCENARIO("Landlock ABI 6 signal scope is requested when the kernel supports it",
 // ============================================================================
 // Secret-exposure guard: no Landlock rule may cover a configured secret.
 // A rule on a directory grants everything beneath it, so an exact-path check
-// is not enough — e.g. the SQLite read-write grant on the database directory
-// would silently expose a master key an operator placed beside the database.
+// is not enough — e.g. a directory grant would silently expose a master key
+// an operator placed in that directory.
 // ============================================================================
 
 SCENARIO("A Landlock rule on a directory holding a configured secret is detected",
          "[platform][security][worker_landlock]")
 {
-    GIVEN("an operator who put the master key next to the SQLite database")
+    GIVEN("a rule granting a directory where an operator put the master key")
     {
         auto config = merovingian::config::Config{};
-        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
-        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
         config.security().secrets.master_key_file = "/srv/merovingian/master.key";
 
         WHEN("the worker's rules are checked against its secret paths")
         {
-            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            // No rule comes from the database keys (ADR-0733), so the directory rule is added by hand: the check
+            // must still catch any rule that covers a secret.
+            auto rules = merovingian::platform::build_worker_landlock_rules(config);
+            rules.push_back({.path = "/srv/merovingian", .access = LandlockAccess::read_only, .required = true});
             auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
                 rules, merovingian::platform::worker_landlock_secret_paths(config));
 
@@ -924,16 +927,17 @@ SCENARIO("A Landlock rule on a directory holding a configured secret is detected
 SCENARIO("A Landlock rule on a directory holding the SMTP password file is detected",
          "[platform][security][worker_landlock][email]")
 {
-    GIVEN("an operator who put the SMTP password file next to the SQLite database")
+    GIVEN("a rule granting a directory where an operator put the SMTP password file")
     {
         auto config = merovingian::config::Config{};
-        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
-        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
         config.server().email.password_file = "/srv/merovingian/smtp-password";
 
         WHEN("the worker's rules are checked against its secret paths")
         {
-            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            // No rule comes from the database keys (ADR-0733), so the directory rule is added by hand: the check
+            // must still catch any rule that covers a secret.
+            auto rules = merovingian::platform::build_worker_landlock_rules(config);
+            rules.push_back({.path = "/srv/merovingian", .access = LandlockAccess::read_only, .required = true});
             auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
                 rules, merovingian::platform::worker_landlock_secret_paths(config));
 
@@ -960,7 +964,6 @@ SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
         config.security().registration.token_file = "/etc/merovingian/registration-token";
         config.listeners().client.tls_private_key_file = "/etc/merovingian/client.key";
         config.listeners().federation.tls_private_key_file = "/etc/merovingian/federation.key";
-        config.federation_worker().database_uri_file = "/etc/merovingian/fed-worker-db-uri";
         config.server().email.password_file = "/etc/merovingian/smtp-password";
 
         WHEN("the worker's rules are checked against its secret paths")
@@ -970,7 +973,7 @@ SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
 
             THEN("every configured secret is listed and none is covered")
             {
-                REQUIRE(secrets.size() == 7U);
+                REQUIRE(secrets.size() == 6U);
                 REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
             }
         }
@@ -1029,17 +1032,18 @@ SCENARIO("Rule coverage is decided by path component, not string prefix", "[plat
 SCENARIO("A Landlock rule on a directory holding an appservice registration file is detected",
          "[platform][security][worker_landlock][registration_secret]")
 {
-    GIVEN("an operator who put a registration file inside the SQLite database directory")
+    GIVEN("a rule granting a directory where an operator put a registration file")
     {
         auto config = merovingian::config::Config{};
-        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
-        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
         config.appservice().registration_files = {"/etc/merovingian/appservices/other.yaml",
                                                   "/srv/merovingian/bridge.yaml"};
 
         WHEN("the worker's rules are checked against its secret paths")
         {
-            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            // No rule comes from the database keys (ADR-0733), so the directory rule is added by hand: the check
+            // must still catch any rule that covers a secret.
+            auto rules = merovingian::platform::build_worker_landlock_rules(config);
+            rules.push_back({.path = "/srv/merovingian", .access = LandlockAccess::read_only, .required = true});
             auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
             auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(rules, secrets);
 

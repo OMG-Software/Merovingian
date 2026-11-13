@@ -92,6 +92,21 @@ auto SessionTable::erase_device(std::string_view user_id, std::string_view devic
     return positions.size();
 }
 
+auto SessionTable::revoke_device(std::string_view user_id, std::string_view device_id) -> std::size_t
+{
+    auto const found = device_index_.find(device_key(user_id, device_id));
+    if (found == device_index_.end())
+    {
+        return 0U;
+    }
+    examined_.add(found->second.size());
+    for (auto const position : found->second)
+    {
+        sessions_[position].revoked = true;
+    }
+    return found->second.size();
+}
+
 auto SessionTable::set_access_token_hash(LocalSession& session, std::string hash) -> void
 {
     auto position = std::size_t{0U};

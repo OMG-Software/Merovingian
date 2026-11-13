@@ -92,6 +92,84 @@ namespace
     return fd;
 }
 
+enum class SourceConnect : std::uint8_t
+{
+    connected,
+    source_unavailable,
+    failed,
+};
+
+// Connects to 127.0.0.1:port from `source`, another loopback address. Linux
+// routes all of 127.0.0.0/8 to lo; a host without the alias reports
+// source_unavailable, which is the one precondition a scenario may skip on.
+[[nodiscard]] auto connect_from(char const* source, std::uint16_t port) -> std::pair<SourceConnect, int>
+{
+    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+        return {SourceConnect::failed, -1};
+    }
+    auto local = sockaddr_in{};
+    local.sin_family = AF_INET;
+    local.sin_port = 0U;
+    if (::inet_pton(AF_INET, source, &local.sin_addr) != 1)
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::bind(fd, reinterpret_cast<sockaddr const*>(&local), sizeof(local)) != 0)
+    {
+        auto const unavailable = errno == EADDRNOTAVAIL;
+        ::close(fd);
+        return {unavailable ? SourceConnect::source_unavailable : SourceConnect::failed, -1};
+    }
+    auto remote = sockaddr_in{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(port);
+    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    return {SourceConnect::connected, fd};
+}
+
+// Stops the listener on every exit from a scenario, including a SKIP or a
+// failed REQUIRE: destroying a joinable std::thread would abort the binary.
+// ShutdownSignal::fire and ThreadPool::request_stop are both idempotent.
+class ServerStop final
+{
+public:
+    ServerStop(merovingian::net::ShutdownSignal& shutdown, std::thread& thread,
+               merovingian::net::ThreadPool& pool) noexcept
+        : m_shutdown{shutdown}
+        , m_thread{thread}
+        , m_pool{pool}
+    {
+    }
+    ServerStop(ServerStop const&) = delete;
+    auto operator=(ServerStop const&) -> ServerStop& = delete;
+    ServerStop(ServerStop&&) = delete;
+    auto operator=(ServerStop&&) -> ServerStop& = delete;
+    ~ServerStop()
+    {
+        m_shutdown.fire();
+        if (m_thread.joinable())
+        {
+            m_thread.join();
+        }
+        m_pool.request_stop();
+    }
+
+private:
+    merovingian::net::ShutdownSignal& m_shutdown;
+    std::thread& m_thread;
+    merovingian::net::ThreadPool& m_pool;
+};
+
 auto send_all(int fd, std::string_view data) -> bool
 {
     auto remaining = data;
@@ -1511,6 +1589,10 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
     {
         auto config = registration_enabled_config();
         config.server().http.keep_alive_max_connections = 2U;
+        // A trusted proxy's connections have no client key, so they are exempt from the per-key share of the cap
+        // (C01, ADR-0719) and count only against the server-wide cap this scenario is about. That keeps every
+        // connection on 127.0.0.1, which every platform has: the BSDs configure no other loopback address.
+        config.server().trusted_proxies = {"127.0.0.1"};
         auto runtime_result = merovingian::homeserver::start_client_server(config);
         REQUIRE(runtime_result.started);
 
@@ -1537,6 +1619,8 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
                 merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
                                                     merovingian::homeserver::HttpDispatchMode::local_router, pool);
             }};
+            // A failed REQUIRE must not leave server_thread joinable.
+            auto const stop = ServerStop{shutdown, server_thread, pool};
 
             auto request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
 
@@ -2401,51 +2485,6 @@ namespace
 
 // 0.12.13 audit item 1 (ADR-0072): per-IP connection cap at accept time.
 
-enum class SourceConnect : std::uint8_t
-{
-    connected,
-    source_unavailable,
-    failed,
-};
-
-// Connects to 127.0.0.1:port from `source`, another loopback address. Linux
-// routes all of 127.0.0.0/8 to lo; a host without the alias reports
-// source_unavailable, which is the one precondition a scenario may skip on.
-[[nodiscard]] auto connect_from(char const* source, std::uint16_t port) -> std::pair<SourceConnect, int>
-{
-    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-    {
-        return {SourceConnect::failed, -1};
-    }
-    auto local = sockaddr_in{};
-    local.sin_family = AF_INET;
-    local.sin_port = 0U;
-    if (::inet_pton(AF_INET, source, &local.sin_addr) != 1)
-    {
-        ::close(fd);
-        return {SourceConnect::failed, -1};
-    }
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::bind(fd, reinterpret_cast<sockaddr const*>(&local), sizeof(local)) != 0)
-    {
-        auto const unavailable = errno == EADDRNOTAVAIL;
-        ::close(fd);
-        return {unavailable ? SourceConnect::source_unavailable : SourceConnect::failed, -1};
-    }
-    auto remote = sockaddr_in{};
-    remote.sin_family = AF_INET;
-    remote.sin_port = htons(port);
-    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
-    {
-        ::close(fd);
-        return {SourceConnect::failed, -1};
-    }
-    return {SourceConnect::connected, fd};
-}
-
 // Sends one keep-alive request and returns the response ("" if the server
 // closed the connection without answering). A refused connection may already
 // be closed, so a failed send is not an error here.
@@ -2469,39 +2508,6 @@ enum class SourceConnect : std::uint8_t
     auto const received = ::recv(fd, byte.data(), byte.size(), 0);
     return received == 0 || (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
 }
-
-// Stops the listener on every exit from a scenario, including a SKIP or a
-// failed REQUIRE: destroying a joinable std::thread would abort the binary.
-// ShutdownSignal::fire and ThreadPool::request_stop are both idempotent.
-class ServerStop final
-{
-public:
-    ServerStop(merovingian::net::ShutdownSignal& shutdown, std::thread& thread,
-               merovingian::net::ThreadPool& pool) noexcept
-        : m_shutdown{shutdown}
-        , m_thread{thread}
-        , m_pool{pool}
-    {
-    }
-    ServerStop(ServerStop const&) = delete;
-    auto operator=(ServerStop const&) -> ServerStop& = delete;
-    ServerStop(ServerStop&&) = delete;
-    auto operator=(ServerStop&&) -> ServerStop& = delete;
-    ~ServerStop()
-    {
-        m_shutdown.fire();
-        if (m_thread.joinable())
-        {
-            m_thread.join();
-        }
-        m_pool.request_stop();
-    }
-
-private:
-    merovingian::net::ShutdownSignal& m_shutdown;
-    std::thread& m_thread;
-    merovingian::net::ThreadPool& m_pool;
-};
 
 // Polls until `predicate` holds or `limit` passes; releasing a slot happens on
 // the server's worker thread once it sees the client's close.

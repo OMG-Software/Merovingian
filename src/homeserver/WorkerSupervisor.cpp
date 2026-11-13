@@ -71,21 +71,62 @@ namespace
         return fd;
     }
 
-    constexpr auto worker_fixed_fds = std::array<int, 3>{kWorkerIpcFd, kWorkerIpcKeyFd, kWorkerDbUriFd};
+    constexpr auto worker_fixed_fds = std::array<int, 2>{kWorkerIpcFd, kWorkerIpcKeyFd};
+
+    // The spawn attributes of one worker start. ADR-0731: the worker starts in a session of its own, so it has no
+    // controlling terminal, wherever the C library offers POSIX_SPAWN_SETSID; merovingian-fed-worker calls setsid()
+    // itself first where it does not, so a worker never shares the terminal of the shell that started the server.
+    class WorkerSpawnAttributes
+    {
+    public:
+        WorkerSpawnAttributes()
+        {
+            if (auto const rc = ::posix_spawnattr_init(&m_attributes); rc != 0)
+            {
+                throw std::runtime_error{"posix_spawnattr_init: " + std::string{::strerror(rc)}};
+            }
+#ifdef POSIX_SPAWN_SETSID
+            if (auto const rc = ::posix_spawnattr_setflags(&m_attributes, static_cast<short>(POSIX_SPAWN_SETSID));
+                rc != 0)
+            {
+                std::ignore = ::posix_spawnattr_destroy(&m_attributes);
+                throw std::runtime_error{"posix_spawnattr_setflags(POSIX_SPAWN_SETSID): " +
+                                         std::string{::strerror(rc)}};
+            }
+#endif
+        }
+
+        ~WorkerSpawnAttributes() noexcept
+        {
+            std::ignore = ::posix_spawnattr_destroy(&m_attributes);
+        }
+
+        WorkerSpawnAttributes(WorkerSpawnAttributes const&) = delete;
+        auto operator=(WorkerSpawnAttributes const&) -> WorkerSpawnAttributes& = delete;
+        WorkerSpawnAttributes(WorkerSpawnAttributes&&) = delete;
+        auto operator=(WorkerSpawnAttributes&&) -> WorkerSpawnAttributes& = delete;
+
+        // The attributes, valid while this object lives.
+        [[nodiscard]] auto get() noexcept -> posix_spawnattr_t*
+        {
+            return &m_attributes;
+        }
+
+    private:
+        posix_spawnattr_t m_attributes{};
+    };
 
 } // namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
                                    std::uint32_t request_timeout_seconds, std::uint32_t shard_index,
-                                   core::SecretBuffer ipc_auth_key_material, std::uint32_t max_frame_bytes,
-                                   core::SecretBuffer worker_database_uri_material)
+                                   core::SecretBuffer ipc_auth_key_material, std::uint32_t max_frame_bytes)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
     , shard_index_{shard_index}
     , ipc_auth_key_material_{std::move(ipc_auth_key_material)}
     , max_frame_bytes_{max_frame_bytes}
-    , worker_database_uri_material_{std::move(worker_database_uri_material)}
 {
 }
 
@@ -153,12 +194,6 @@ auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescri
 {
     auto const reserved = std::array<int, 2>{kWorkerIpcFd, kWorkerIpcKeyFd};
     return make_worker_secret_pipe(key, reserved);
-}
-
-auto make_worker_db_uri_pipe(std::span<std::uint8_t const> uri) -> core::FileDescriptor
-{
-    auto const reserved = std::array<int, 3>{kWorkerIpcFd, kWorkerIpcKeyFd, kWorkerDbUriFd};
-    return make_worker_secret_pipe(uri, reserved);
 }
 
 auto WorkerSupervisor::set_channel_request_handler(ChannelRequestHandler handler) -> void
@@ -393,19 +428,6 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     auto key_read_fd = make_worker_key_pipe(ipc_auth_key_material_.bytes());
     auto const ipc_key_fd_str = std::to_string(kWorkerIpcKeyFd);
 
-    // ADR-0062 part 2: hand the worker a separate, least-privilege database
-    // connection URI the same way, over a third inherited pipe — but only
-    // when the caller (WorkerPool) actually derived one. Empty
-    // worker_database_uri_material_ means database.backend=sqlite (no role
-    // to separate) or federation.worker.allow_shared_database_credentials=true
-    // (the worker shares main's credentials instead); in either case no
-    // --db-uri-fd is passed and the worker keeps its own copy of
-    // database.uri_file/runtime_role/migration_role untouched.
-    auto const has_db_uri = !worker_database_uri_material_.bytes().empty();
-    auto db_uri_read_fd =
-        has_db_uri ? make_worker_db_uri_pipe(worker_database_uri_material_.bytes()) : core::FileDescriptor{};
-    auto const db_uri_fd_str = std::to_string(kWorkerDbUriFd);
-
     auto const ipc_fd_str = std::to_string(kWorkerIpcFd);
     auto const shard_index_str = std::to_string(shard_index_);
 
@@ -413,13 +435,9 @@ auto WorkerSupervisor::spawn_and_connect() -> void
         worker_path_.c_str(),   "--config", config_path_.c_str(),    "--ipc-fd", ipc_fd_str.c_str(), "--ipc-key-fd",
         ipc_key_fd_str.c_str(), "--shard",  shard_index_str.c_str(),
     };
-    if (has_db_uri)
-    {
-        argv.push_back("--db-uri-fd");
-        argv.push_back(db_uri_fd_str.c_str());
-    }
     argv.push_back(nullptr);
 
+    auto spawn_attributes = WorkerSpawnAttributes{};
     posix_spawn_file_actions_t file_actions{};
     ::posix_spawn_file_actions_init(&file_actions);
     // Close the server-side fd in the child first.  The socketpair may have
@@ -432,12 +450,13 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     // child's copy only; make_worker_key_pipe guarantees the source is neither
     // fixed fd, so this cannot be a same-fd dup2 or be clobbered by the one above.
     ::posix_spawn_file_actions_adddup2(&file_actions, key_read_fd.get(), kWorkerIpcKeyFd);
-    if (has_db_uri)
+    // ADR-0731: the worker never reads stdin, and main's may be the operator's terminal. This action comes last, so
+    // any source the actions above take from fd 0 is placed before fd 0 is replaced. stdout and stderr stay: logs.
+    if (auto const open_rc = ::posix_spawn_file_actions_addopen(&file_actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        open_rc != 0)
     {
-        // Same guarantee as above, extended to the third fixed fd:
-        // make_worker_db_uri_pipe keeps its source off all three reserved
-        // numbers, so this dup2 cannot collide with either of the other two.
-        ::posix_spawn_file_actions_adddup2(&file_actions, db_uri_read_fd.get(), kWorkerDbUriFd);
+        ::posix_spawn_file_actions_destroy(&file_actions);
+        throw std::runtime_error{"posix_spawn_file_actions_addopen(/dev/null): " + std::string{::strerror(open_rc)}};
     }
 
     // Minimal allowlist environment: PATH only (issue #330). The strings and
@@ -445,10 +464,11 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     auto const worker_env = homeserver::build_minimal_worker_env();
 
     pid_t pid{-1};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
     auto const rc =
-        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv.data()),
-                      const_cast<char* const*>(worker_env.argv.data()));
+        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, spawn_attributes.get(),
+                      const_cast<char* const*>(argv.data()), const_cast<char* const*>(worker_env.argv.data()));
+    // NOLINTEND(cppcoreguidelines-pro-type-const-cast)
     ::posix_spawn_file_actions_destroy(&file_actions);
 
     if (rc != 0)
@@ -457,8 +477,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
 
     client_fd.reset();
-    key_read_fd.reset();    // the child inherited its own copy; this one is no longer needed
-    db_uri_read_fd.reset(); // ditto, when a db-uri pipe was created
+    key_read_fd.reset(); // the child inherited its own copy; this one is no longer needed
     worker_pid_.store(pid);
 
     auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,

@@ -12,4 +12,10 @@
 share/doc/merovingian/README.md
 share/doc/merovingian/user-manual.md
 share/doc/merovingian/release-process.md
+@comment the sample is config/merovingian.conf.bsd.example (never the Linux
+@comment example) with @SYSCONFDIR@ set to ${SYSCONFDIR} by SUBST_CMD (ADR-0738)
+share/examples/merovingian/
+@sample ${SYSCONFDIR}/merovingian/
+share/examples/merovingian/merovingian.conf.sample
+@sample ${SYSCONFDIR}/merovingian/merovingian.conf
 @rcscript ${RCDIR}/merovingian

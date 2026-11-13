@@ -25,6 +25,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -85,34 +86,41 @@ private:
     std::filesystem::path path_{};
 };
 
-// Hide only this scenario's SQLite file while the worker handles room_sync.
-// SQLite may create a new empty file at the original path; restore() removes
-// that file and renames the saved database back. Destruction is the fallback
-// restore path if an assertion exits early.
-class SqliteFileRestorer final
+// Hide one table that main's room snapshot reads while the worker handles
+// room_sync, so the read fails. Hiding the database file no longer does: main
+// reads for the worker through readers it opened at start (ADR-0739), which keep
+// the original file open. A renamed table is seen by every connection, because
+// SQLite checks the schema before each statement. `invites` is read by the
+// snapshot and is never written in this scenario, whose room has no invites.
+// Destruction is the fallback restore path if an assertion exits early.
+class SqliteTableHider final
 {
 public:
-    explicit SqliteFileRestorer(std::filesystem::path database_path)
-        : database_path_{std::move(database_path)}
-        , backup_path_{database_path_.string() + ".worker-snapshot-backup"}
+    explicit SqliteTableHider(std::filesystem::path const& database_path)
     {
+        if (sqlite3_open_v2(database_path.string().c_str(), &connection_, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
+        {
+            sqlite3_close(connection_);
+            connection_ = nullptr;
+            return;
+        }
+        sqlite3_busy_timeout(connection_, 5000);
     }
 
-    SqliteFileRestorer(SqliteFileRestorer const&) = delete;
-    auto operator=(SqliteFileRestorer const&) -> SqliteFileRestorer& = delete;
-    SqliteFileRestorer(SqliteFileRestorer&&) = delete;
-    auto operator=(SqliteFileRestorer&&) -> SqliteFileRestorer& = delete;
+    SqliteTableHider(SqliteTableHider const&) = delete;
+    auto operator=(SqliteTableHider const&) -> SqliteTableHider& = delete;
+    SqliteTableHider(SqliteTableHider&&) = delete;
+    auto operator=(SqliteTableHider&&) -> SqliteTableHider& = delete;
 
-    ~SqliteFileRestorer()
+    ~SqliteTableHider()
     {
         std::ignore = restore();
+        sqlite3_close(connection_);
     }
 
     [[nodiscard]] auto hide() -> bool
     {
-        auto error = std::error_code{};
-        std::filesystem::rename(database_path_, backup_path_, error);
-        hidden_ = !error;
+        hidden_ = execute("ALTER TABLE invites RENAME TO invites_hidden_by_test");
         return hidden_;
     }
 
@@ -122,22 +130,17 @@ public:
         {
             return true;
         }
-
-        auto error = std::error_code{};
-        std::filesystem::remove(database_path_, error);
-        error.clear();
-        std::filesystem::rename(backup_path_, database_path_, error);
-        if (error)
-        {
-            return false;
-        }
-        hidden_ = false;
-        return true;
+        hidden_ = !execute("ALTER TABLE invites_hidden_by_test RENAME TO invites");
+        return !hidden_;
     }
 
 private:
-    std::filesystem::path database_path_{};
-    std::filesystem::path backup_path_{};
+    [[nodiscard]] auto execute(char const* sql) noexcept -> bool
+    {
+        return connection_ != nullptr && sqlite3_exec(connection_, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+
+    sqlite3* connection_{nullptr};
     bool hidden_{false};
 };
 
@@ -330,13 +333,11 @@ SCENARIO("A failed worker room reload cannot serve federation reads with stale A
         {
             change_acl_to_deny(runtime, admin_token, room_id);
 
-            // Test-only fault injection: hide just this scenario's SQLite data
-            // file. The runtime and worker each reopen short-lived SQLite
-            // connections, so room_sync sees a fresh empty file and its room
-            // snapshot read fails. The committed main-store snapshot remains
-            // loaded in memory and authoritative. Restore before teardown.
-            auto database_file = SqliteFileRestorer{config.database().sqlite_path};
-            REQUIRE(database_file.hide());
+            // Test-only fault injection: hide one table main's room snapshot
+            // reads, so the worker's room_sync fails. Main's own state stays in
+            // memory and authoritative. Restore before teardown.
+            auto database_table = SqliteTableHider{config.database().sqlite_path};
+            REQUIRE(database_table.hide());
             proxy.notify_room_changed(room_id);
 
             // Poll the test-observable room-sync status until the worker reports
@@ -355,7 +356,7 @@ SCENARIO("A failed worker room reload cannot serve federation reads with stale A
                 std::this_thread::sleep_for(20ms);
             }
             REQUIRE(failed_generation > 0U);
-            REQUIRE(database_file.restore());
+            REQUIRE(database_table.restore());
 
             auto const response = proxy.handle(make_signed_read());
 

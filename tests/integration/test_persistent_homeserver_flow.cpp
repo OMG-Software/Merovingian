@@ -21,6 +21,8 @@
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/PersistentStoreOpenResult.hpp"
 #include "merovingian/database/Schema.hpp"
+#include "merovingian/database/TableLoadProfile.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -28,14 +30,13 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/RuntimeStartOptions.hpp"
-#include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/RuntimeStartOptions.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/observability/BoundedText.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -836,6 +837,33 @@ SCENARIO("Persistent homeserver startup fails closed on schema mismatch", "[data
             {
                 REQUIRE_FALSE(started.started);
                 REQUIRE(started.reason == "database schema validation failed");
+            }
+        }
+    }
+}
+
+SCENARIO("A worker whose store main does not fill refuses to start, and says why",
+         "[database][homeserver][integration][c44][fill-store]")
+{
+    GIVEN("a federation worker's start options whose fill from main fails, as when main is stopping")
+    {
+        auto options = merovingian::homeserver::RuntimeStartOptions{};
+        options.config = registration_enabled_config();
+        options.signing_disabled = true;
+        options.load_appservices = false;
+        options.database_load_profile = merovingian::database::TableLoadProfile::federation_worker;
+        options.fill_store = [](merovingian::database::PersistentStore&) {
+            return false;
+        };
+
+        WHEN("the runtime starts")
+        {
+            auto const started = merovingian::homeserver::start_runtime(options);
+
+            THEN("it refuses, naming the fill rather than a schema the worker never opened (ADR-0733)")
+            {
+                REQUIRE_FALSE(started.started);
+                REQUIRE(started.reason == "the store could not be filled from main");
             }
         }
     }

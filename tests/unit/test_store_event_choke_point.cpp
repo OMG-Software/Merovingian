@@ -12,7 +12,7 @@
 // is not one of the reviewed, documented exceptions below, so that
 // regression cannot recur unnoticed.
 //
-// Style follows tests/unit/test_worker_db_uri.cpp's source-tree consistency
+// Style follows tests/unit/test_worker_table_load_profile.cpp's source-tree consistency
 // scenarios: reads the checked-in .cpp files directly (not runtime data) via
 // MEROVINGIAN_TEST_SOURCE_ROOT.
 
@@ -69,14 +69,15 @@ namespace
 [[nodiscard]] auto reviewed_call_sites() -> std::map<std::string, std::size_t>
 {
     return {
-        // join_room's auth-chain persist loop (outlier). The join event
-        // itself, like every local event, goes through
-        // homeserver::store_event_with_bookkeeping (ADR-0228). The send_join
-        // snapshot moved to the prepare list below (one transaction).
         // leave_room's rejection of a remote invite (outlier: the signed leave
         // that ends an invite to a room whose state this server does not hold,
         // like the invite it replaces, so the user's sync can report it).
-        {"src/homeserver/RoomService.cpp",      2U},
+        // join_room's auth chain no longer calls it: the chain is stored as
+        // outliers in one prepared batch (prepare_outlier_events_batch,
+        // run-3 C03, ADR-0714). The join event itself, like every local
+        // event, goes through homeserver::store_event_with_bookkeeping
+        // (ADR-0228); the send_join snapshot is in the prepare list below.
+        {"src/homeserver/RoomService.cpp",     1U},
         // membership_acceptor (inbound send_join/send_leave/send_knock
         // acceptance — has its own compute_state_before/record_event_state/
         // recompute_current_state sequence, the same trust boundary as

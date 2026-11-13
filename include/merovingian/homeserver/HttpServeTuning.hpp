@@ -17,6 +17,10 @@ struct HttpServeTuning final
     // byte within this window, or the dispatcher closes it without a worker
     // ever touching it.
     std::chrono::milliseconds first_byte_timeout{5000};
+    // A readable connection that has waited this long for a worker share (its
+    // client already holds its share of the workers) is closed (audit run-3
+    // C01). Zero disables the limit.
+    std::chrono::milliseconds ready_wait_timeout{30000};
     // Minimum request-body rate: once `body_rate_grace` has passed since the
     // body read started, the bytes received so far must be at least
     // `body_min_bytes_per_second` x (elapsed - grace); otherwise 408 and close.

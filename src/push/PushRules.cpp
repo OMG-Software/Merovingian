@@ -27,35 +27,7 @@ namespace merovingian::push
 namespace
 {
 
-    // Splits a Matrix "dot-separated property path"
-    // (docs/matrix-v1.19-spec/appendices.md#dot-separated-property-paths)
-    // into its segments. A literal '.' or '\' inside a property name is
-    // escaped as "\." / "\\"; any other backslash sequence is left as-is.
-    [[nodiscard]] auto split_property_path(std::string_view key) -> std::vector<std::string>
-    {
-        auto segments = std::vector<std::string>{};
-        auto current = std::string{};
-        for (auto index = std::size_t{0U}; index < key.size(); ++index)
-        {
-            auto const character = key[index];
-            if (character == '\\' && index + 1U < key.size() && (key[index + 1U] == '.' || key[index + 1U] == '\\'))
-            {
-                current.push_back(key[index + 1U]);
-                ++index;
-            }
-            else if (character == '.')
-            {
-                segments.push_back(std::move(current));
-                current.clear();
-            }
-            else
-            {
-                current.push_back(character);
-            }
-        }
-        segments.push_back(std::move(current));
-        return segments;
-    }
+    using GlobBudget = PushEvaluationBudget;
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -66,32 +38,66 @@ namespace
         return it == object.end() ? nullptr : it->value.get();
     }
 
-    // Walks `event` following a dot-separated property path (with the `\.`
-    // / `\\` segment escaping split_property_path already decodes) and
-    // returns the leaf value, or nullptr when any intermediate segment is
-    // absent or not an object, or the leaf itself is absent. Shared by every
-    // condition kind that resolves a `key` path: `event_match`,
-    // `event_property_is`, and `event_property_contains`.
-    [[nodiscard]] auto resolve_event_property(canonicaljson::Value const& event, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    // Members of one object a path segment may scan for free: an ordinary event has few, so the default rules keep
+    // running when the budget is spent. Each member past it is charged one step (C25, ADR-0723).
+    constexpr std::size_t free_path_scan_members = 64U;
+
+    [[nodiscard]] constexpr auto path_scan_cost(std::size_t members) noexcept -> std::uint64_t
     {
-        auto const segments = split_property_path(key);
+        return members > free_path_scan_members ? static_cast<std::uint64_t>(members - free_path_scan_members) : 0U;
+    }
+
+    // Walks `event` following a Matrix dot-separated property path
+    // (docs/matrix-v1.19-spec/appendices.md#dot-separated-property-paths): a literal '.' or '\' inside a property
+    // name is escaped as "\." / "\\", and any other backslash sequence is left as-is. Returns the leaf value, or
+    // nullptr when an intermediate segment is absent or not an object, the leaf is absent, or the budget cannot pay
+    // for the walk. Shared by every condition kind that resolves a `key` path.
+    //
+    // Each segment is found by a linear scan of an object the sender chose, so the members it may visit past the free
+    // allowance are charged to the evaluation's budget before the scan (C25, ADR-0723), and the path is decoded one
+    // segment at a time into one string, never split into a vector first.
+    [[nodiscard]] auto resolve_event_property(canonicaljson::Value const& event, std::string_view key,
+                                              GlobBudget& budget) -> canonicaljson::Value const*
+    {
+        auto segment = std::string{};
         auto const* current = &event;
-        for (auto const& segment : segments)
+        auto index = std::size_t{0U};
+        while (true)
         {
+            segment.clear();
+            while (index < key.size() && key[index] != '.')
+            {
+                if (key[index] == '\\' && index + 1U < key.size() &&
+                    (key[index + 1U] == '.' || key[index + 1U] == '\\'))
+                {
+                    ++index;
+                }
+                segment.push_back(key[index]);
+                ++index;
+            }
             auto const* object = std::get_if<canonicaljson::Object>(&current->storage());
-            if (object == nullptr)
+            if (object == nullptr || !budget.charge(path_scan_cost(object->size())))
             {
                 return nullptr;
             }
-            auto const* member = object_member(*object, segment);
-            if (member == nullptr)
+            current = object_member(*object, segment);
+            if (current == nullptr || index >= key.size())
             {
-                return nullptr;
+                return current;
             }
-            current = member;
+            ++index; // the '.' that ended the segment
         }
-        return current;
+    }
+
+    // A string member of the event's top-level object, as a view into `event`, or nullopt. One scan of the members,
+    // for the fixed keys the evaluator reads once per evaluation (`sender`, `room_id`), so it is not charged.
+    [[nodiscard]] auto top_level_string(canonicaljson::Value const& event, std::string_view key)
+        -> std::optional<std::string_view>
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+        auto const* member = object == nullptr ? nullptr : object_member(*object, key);
+        auto const* value = member == nullptr ? nullptr : std::get_if<std::string>(&member->storage());
+        return value == nullptr ? std::nullopt : std::optional<std::string_view>{*value};
     }
 
     // Returns the leaf value as a view into `event`, which must outlive it, so a value the sender
@@ -99,10 +105,10 @@ namespace
     // unresolvable (see resolve_event_property) or the leaf is not a string — matching the spec's
     // "If the property ... is completely absent ... or does not have a string value, then the
     // condition will not match" rule for event_match.
-    [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key)
-        -> std::optional<std::string_view>
+    [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key,
+                                                GlobBudget& budget) -> std::optional<std::string_view>
     {
-        auto const* current = resolve_event_property(event, key);
+        auto const* current = resolve_event_property(event, key, budget);
         if (current == nullptr)
         {
             return std::nullopt;
@@ -166,28 +172,6 @@ namespace
                (character >= '0' && character <= '9') || character == '_';
     }
 
-    // The work one recipient's evaluation of one event may spend on matching content.body against
-    // glob patterns, across every rule (ADR-0343). One step is one turn of the matcher's inner
-    // loops. Past the budget a glob does not match and `exhausted` is set, so the caller can log it.
-    struct GlobBudget final
-    {
-        std::uint64_t remaining{max_push_glob_steps_per_evaluation};
-        std::uint64_t spent{0U};
-        bool exhausted{false};
-
-        // Takes `steps` from the budget; false (and exhausted) when it holds fewer.
-        [[nodiscard]] auto charge(std::uint64_t steps) noexcept -> bool
-        {
-            if (steps > remaining)
-            {
-                exhausted = true;
-                return false;
-            }
-            remaining -= steps;
-            spent += steps;
-            return true;
-        }
-    };
 
     [[nodiscard]] auto fold_ascii(char character) noexcept -> char
     {
@@ -505,7 +489,7 @@ namespace
         switch (condition.kind)
         {
         case PushConditionKind::event_match: {
-            auto const value = event_property_as_string(event, condition.key);
+            auto const value = event_property_as_string(event, condition.key, budget);
             if (!value.has_value())
             {
                 return false;
@@ -519,7 +503,7 @@ namespace
             {
                 return false;
             }
-            auto const body = event_property_as_string(event, "content.body");
+            auto const body = event_property_as_string(event, "content.body", budget);
             if (!body.has_value())
             {
                 return false;
@@ -549,7 +533,7 @@ namespace
             {
                 return false;
             }
-            auto const* actual = resolve_event_property(event, condition.key);
+            auto const* actual = resolve_event_property(event, condition.key, budget);
             return actual != nullptr && scalar_values_equal(*actual, *condition.value);
         }
         case PushConditionKind::event_property_contains: {
@@ -557,7 +541,7 @@ namespace
             {
                 return false;
             }
-            auto const* actual = resolve_event_property(event, condition.key);
+            auto const* actual = resolve_event_property(event, condition.key, budget);
             auto const* array = actual == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&actual->storage());
             // The sender chooses the array and the recipient the conditions, so the scan is
             // charged to the evaluation's budget before it runs (ADR-0607).
@@ -592,7 +576,7 @@ namespace
         {
             return false;
         }
-        auto const body = event_property_as_string(event, "content.body");
+        auto const body = event_property_as_string(event, "content.body", budget);
         return body.has_value() && glob_matches_word_boundary_substring(*body, rule.content_pattern, budget);
     }
 
@@ -844,7 +828,7 @@ namespace
                                               PushEvaluationContext const& context, GlobBudget& budget)
         -> PushEvaluationResult
     {
-        auto const sender = event_property_as_string(event, "sender").value_or(std::string_view{});
+        auto const sender = top_level_string(event, "sender").value_or(std::string_view{});
         // "Homeservers MUST NOT notify the Push Gateway for events that the
         // user has sent themselves."
         if (!sender.empty() && sender == context.receiving_user_id)
@@ -880,13 +864,13 @@ namespace
                 return make_result(rule);
             }
         }
+        auto const room_id = top_level_string(event, "room_id");
         for (auto const& rule : ruleset.room_rules)
         {
             if (!rule.enabled)
             {
                 continue;
             }
-            auto const room_id = event_property_as_string(event, "room_id");
             if (room_id.has_value() && *room_id == rule.rule_id)
             {
                 return make_result(rule);
@@ -916,9 +900,16 @@ namespace
 auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
                          PushEvaluationContext const& context) -> PushEvaluationResult
 {
-    auto budget = GlobBudget{};
+    auto budget = PushEvaluationBudget{};
+    return evaluate_push_rules(ruleset, event, context, budget);
+}
+
+auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                         PushEvaluationContext const& context, PushEvaluationBudget& budget) -> PushEvaluationResult
+{
+    auto const spent_before = budget.spent;
     auto result = evaluate_within_budget(ruleset, event, context, budget);
-    result.glob_steps_used = budget.spent;
+    result.glob_steps_used = budget.spent - spent_before;
     result.glob_budget_exhausted = budget.exhausted;
     return result;
 }

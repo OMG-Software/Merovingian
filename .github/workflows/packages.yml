@@ -7,11 +7,11 @@ on:
     branches: [main]
   # release.yml calls this workflow for a v* tag, so a tagged release ships
   # exactly the packages `latest` does, staged and signed by the same jobs
-  # (ADR-0650, ADR-0652). Staging and signing run for a push to main or a v*
+  # (ADR-0650, ADR-0742). Staging and signing run for a push to main or a v*
   # tag; publishing `latest` runs only for main, so it skips for a tag.
   workflow_call:
 jobs:
-  # ADR-0580, ADR-0653: every job below that needs nothing else waits for this one. The analyses join the runner queue
+  # ADR-0580, ADR-0743: every job below that needs nothing else waits for this one. The analyses join the runner queue
   # when a pull request is pushed, the build and test jobs a few seconds later behind their own gates, and the package
   # jobs a minute after that, so with the runners free each tier takes them in that order. The jobs that wait use
   # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
@@ -40,7 +40,7 @@ jobs:
             image: ubuntu:24.04
           - release: '26.04'
             image: ubuntu:26.04
-          # The interim release, pinned by release as ci.yml tests it (ADR-0652).
+          # The interim release, pinned by release as ci.yml tests it (ADR-0742).
           - release: '26.10'
             image: ubuntu:26.10
     container: ${{ matrix.image }}
@@ -90,7 +90,7 @@ jobs:
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       # Every release builds merovingian_<version>_<arch>.deb; the release it
       # was built on goes into the name, read from the image itself, so every
-      # published package names the platform it installs on (ADR-0652).
+      # published package names the platform it installs on (ADR-0742).
       - name: Name the package after its Ubuntu release
         run: |
           . /etc/os-release
@@ -303,7 +303,7 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
-          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0742).
           release: '15'
           prepare: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
@@ -316,7 +316,7 @@ jobs:
             pkg add ./merovingian-*.pkg
             cp scripts/check-startup-hardening-gate.sh /tmp/check-startup-hardening-gate.sh
             su -m nobody -c "sh /tmp/check-startup-hardening-gate.sh /usr/local/bin/merovingian-server"
-            # Name the package after the FreeBSD major release it was built on (ADR-0652).
+            # Name the package after the FreeBSD major release it was built on (ADR-0742).
             major="$(freebsd-version -u | cut -d. -f1)"
             for f in merovingian-*.pkg; do mv "$f" "${f%.pkg}-freebsd${major}.pkg"; done
       - name: Attest FreeBSD package
@@ -352,7 +352,7 @@ jobs:
               --require-pkg-config "libsodium libpng16 libturbojpeg" \
               meson ninja git bison gmake libsodium postgresql-client curl png jpeg
           # The package's own name is in its +CONTENTS, so the file can name the
-          # OpenBSD release it was built on (ADR-0652).
+          # OpenBSD release it was built on (ADR-0742).
           run: |
             set -e
             sh scripts/build-openbsd-pkg.sh
@@ -408,7 +408,7 @@ jobs:
             # libraries and pkg-config files are the only OpenSSL in sight.
             if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
           # The package's own name is in its +CONTENTS, so the file can name the
-          # NetBSD release it was built on (ADR-0652).
+          # NetBSD release it was built on (ADR-0742).
           run: |
             set -e
             sh scripts/build-netbsd-pkg.sh
@@ -478,7 +478,7 @@ jobs:
             --bounding-set=-all --inh-caps=-all \
             sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       # As the Ubuntu packages are named: -debian13.deb, from the image itself
-      # (ADR-0652). The Complement step attaches the package it tested under the
+      # (ADR-0742). The Complement step attaches the package it tested under the
       # unsuffixed -debian.deb name, so the two never collide in a release.
       - name: Name the package after its Debian release
         run: |
@@ -839,7 +839,7 @@ jobs:
   stage-package-assets:
     name: Stage unsigned package assets
     # A push to main stages `latest`; a v* tag (release.yml calls this workflow)
-    # stages the tagged release from the same list (ADR-0652).
+    # stages the tagged release from the same list (ADR-0742).
     if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]
     runs-on: ubuntu-latest
@@ -850,7 +850,7 @@ jobs:
       # Every package names the platform it installs on (-ubuntu26.04,
       # -debian13, .fc45, .el10, .tumbleweed, .leap16, -freebsd15, -openbsd7.x,
       # -netbsd10.x, linux-static), so all land directly in packages/ without
-      # colliding (ADR-0652). Every one is required: a missing one stops staging.
+      # colliding (ADR-0742). Every one is required: a missing one stops staging.
       - uses: actions/download-artifact@v8
         with:
           name: ubuntu-deb-package-24.04

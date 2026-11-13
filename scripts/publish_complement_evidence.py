@@ -28,7 +28,7 @@ tests/complement/run.toml (detached, ASCII-armoured), checks each signature
 verifies to that key, and uploads them with their signatures, the tested
 package and the package's own signature with `gh release upload`. The package
 goes up as merovingian_<v>_<arch>-debian.deb, because the release already has
-its own -debian13.deb build (ADR-0652); the bytes are the tested ones. A reader
+its own -debian13.deb build (ADR-0742); the bytes are the tested ones. A reader
 then has, from the release alone, the bytes that were tested and the record
 that says so. Existing release assets are never replaced (no --clobber).
 """
@@ -50,7 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_CONFIG = REPO_ROOT / "tests" / "complement" / "run.toml"
 # The Debian package packages.yml publishes: merovingian_<version>_<arch>-debian<release>.deb.
 # The release number is required: a bare -debian.deb is the name this script attaches, never
-# one latest publishes (ADR-0652).
+# one latest publishes (ADR-0742).
 TESTED_PACKAGE = re.compile(r"(merovingian_[0-9][0-9.]*_[a-z0-9]+)-debian[0-9]+\.deb")
 
 
@@ -119,7 +119,7 @@ def publish(args: argparse.Namespace) -> None:
             raise Refused(f"the signature on {path.name} does not verify to the maintainer key {key}")
 
     # The release already carries its own Debian 13 package under the name the
-    # candidate has (-debian13.deb, ADR-0652), and nothing is ever replaced, so the
+    # candidate has (-debian13.deb, ADR-0742), and nothing is ever replaced, so the
     # tested bytes go up under the release-less -debian.deb name. A rename changes
     # no byte: the results' SHA-256 and the maintainer signature still hold.
     with tempfile.TemporaryDirectory() as staging:

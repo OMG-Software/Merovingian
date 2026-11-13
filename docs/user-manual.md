@@ -203,20 +203,36 @@ Linux packages create the `merovingian` system user and group, install the syste
 unit, and stage the example configuration at `/etc/merovingian/
 merovingian.conf.example`.
 
-The FreeBSD package creates the same user and group, and installs an rc.d script
-that reads `/usr/local/etc/merovingian/merovingian.conf`. It stages only a sample,
-whose secret file settings still point at `/etc/merovingian`. Create the file, move
-those paths, and enable the service:
+The BSD packages create the same user and group, with `/var/db/merovingian` as its
+home, and install an rc.d script that creates `/var/db/merovingian`,
+`/var/log/merovingian` and `/var/run/merovingian`. They stage
+`merovingian.conf.sample`, made from the BSD example
+[`config/merovingian.conf.bsd.example`](../config/merovingian.conf.bsd.example), not
+the Linux one. Each package fills in its own configuration directory, which is also
+where the rc.d script looks for the config. Secret files belong in the same
+directory, and the commented SQLite path points into `/var/db/merovingian`
+([ADR-0738](adr/0738-one-bsd-example-config-whose-configuration-directory-each-package-fills-in.md)):
+
+| System | Config the rc.d script reads | Secret files |
+|---|---|---|
+| FreeBSD | `/usr/local/etc/merovingian/merovingian.conf` | `/usr/local/etc/merovingian/` |
+| OpenBSD | `/etc/merovingian/merovingian.conf` | `/etc/merovingian/` |
+| NetBSD (pkgsrc) | `/usr/pkg/etc/merovingian/merovingian.conf` | `/usr/pkg/etc/merovingian/` |
+
+On FreeBSD, create the file from the sample and enable the service:
 
 ```sh
 cp /usr/local/etc/merovingian/merovingian.conf.sample \
    /usr/local/etc/merovingian/merovingian.conf
-sed -i '' 's|/etc/merovingian/|/usr/local/etc/merovingian/|' \
-   /usr/local/etc/merovingian/merovingian.conf
 sysrc merovingian_enable=YES
 ```
 
-Use `/usr/local/etc/merovingian` wherever the steps below say `/etc/merovingian`.
+On OpenBSD, `pkg_add` installs the sample. Copy it to
+`/etc/merovingian/merovingian.conf` and run `rcctl enable merovingian`. Read the
+federation worker note above before the first start on either system.
+
+Wherever the steps below say `/etc/merovingian`, use your system's directory from the
+table, and use `/var/db/merovingian` wherever they say `/var/lib/merovingian`.
 
 ### Install the portable static Linux tarball
 
@@ -460,7 +476,9 @@ such as `0s`, `30`, `30ms`, and `forever` are rejected.
 ### Configuration parameter reference
 
 The complete, authoritative accepted-key list lives in
-[`config/merovingian.conf.example`](../config/merovingian.conf.example). The
+[`config/merovingian.conf.example`](../config/merovingian.conf.example). Its BSD
+edition, [`config/merovingian.conf.bsd.example`](../config/merovingian.conf.bsd.example),
+holds the same keys with BSD paths; a tooling test fails if the two drift apart. The
 following sections describe each group and the situations in which you might
 change them.
 
@@ -546,21 +564,23 @@ Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 r
 
 `server.client_api` budgets bound room timelines, paging, scan work, sliding-sync state and transient sessions. A higher timeline maximum allows a larger client-requested limit; it does not make the client request more messages automatically. Search context can multiply work by page size, so tune both together. A bounded `/sync` room list is not a capacity guarantee for a user's entire room set.
 
+A sliding-sync connection also keeps at most 64 KiB of its request's lists, and one device's connections 256 KiB together; a list may name at most 16 `room_types`, 16 `not_room_types` and 16 ranges, and a `conn_id` or list name is at most 255 bytes. Over any of these the request is `400 M_INVALID_PARAM`. These are fixed limits, not configuration keys (ADR-0663).
+
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
 
 `max_create_room_invites` and `max_create_room_initial_state` limit the entries of one `POST /createRoom` (ADR-0316). Each entry stores one event while the server holds its global lock, so a request past either cap is refused with HTTP 400 `M_TOO_LARGE` before anything is stored. A user listed twice in `invite` is invited once, and the raw list length is what is counted.
 
-The to-device queue is bounded in bytes as well as rows (ADR-0335). `max_to_device_message_bytes` is the largest content one to-device message may have: a client `PUT /sendToDevice` with any message over it is refused with HTTP 413 `M_TOO_LARGE` and queues nothing, while an inbound `m.direct_to_device` EDU loses only the oversized message. `max_to_device_bytes_per_user_device` is the content bytes one `(user, device)` queue may hold; when a new message would pass it the device's oldest rows are evicted first, as `max_to_device_messages_per_user_device` does for rows. One `PUT /sendToDevice` may address at most 1,000 local devices (a `*` counts one per device) and is refused with 413 `M_TOO_LARGE` past that (ADR-0336). A message larger than the byte budget could never be queued, so the validator refuses a message limit over the budget. `max_to_device_messages_per_user` and `max_to_device_bytes_per_user` bound all of one user's queues together; past either, the user's oldest rows are evicted first, whichever device holds them (ADR-0618).
+The to-device queue is bounded in bytes as well as rows (ADR-0335). A queue is shared out per sender (a user of this server, or a remote server as a whole): once another sender is queued, one sender holds at most half of a device's or a user's budget and a message from a sender at that share evicts the sender's own oldest row; a message that finds the budget full evicts the oldest row of the sender holding the most, and is always queued (ADR-0674). `max_to_device_message_bytes` is the largest content one to-device message may have: a client `PUT /sendToDevice` with any message over it is refused with HTTP 413 `M_TOO_LARGE` and queues nothing, while an inbound `m.direct_to_device` EDU loses only the oversized message. `max_to_device_bytes_per_user_device` is the content bytes one `(user, device)` queue may hold; when a new message would pass it the device's oldest rows are evicted first, as `max_to_device_messages_per_user_device` does for rows. One `PUT /sendToDevice` may address at most 1,000 local devices (a `*` counts one per device) and is refused with 413 `M_TOO_LARGE` past that (ADR-0336). A message larger than the byte budget could never be queued, so the validator refuses a message limit over the budget. `max_to_device_messages_per_user` and `max_to_device_bytes_per_user` bound all of one user's queues together; past either, the user's oldest rows are evicted first, whichever device holds them (ADR-0618).
 
-A local user holds at most 1,024 invites and 32 MiB of them from other servers, with at most an eighth of each from one server, and one server may hold at most 16,384 invites here in all. Past these an invite is answered 403 `M_FORBIDDEN`. Invites from this server's own users are not counted. A user may have at most 128 knocks pending on rooms elsewhere (ADR-0619). These limits are fixed.
+A local user holds at most 1,024 invites and 32 MiB of them from other servers, with at most an eighth of each from one server, and one server may hold at most 16,384 invites and 64 MiB of them here in all, whatever the number of users, while all remote invites together may take at most 256 MiB (ADR-0707). An invite's `invite_room_state` may take at most 64 KiB. Past these an invite is answered 403 `M_FORBIDDEN` (400 `M_INVALID_PARAM` for an over-large `invite_room_state`). Invites from this server's own users are not counted. A user may have at most 128 knocks pending on rooms elsewhere, holding at most 2 MiB between them (ADR-0619, ADR-0708); a resident's `knock_room_state` keeps one entry for each state, the last. These limits are fixed.
 
 Uploaded keys and room tags are bounded by fixed limits rather than configuration. A one-time or fallback key must be a string of 1 to 256 bytes or a key object (`key`, optional `signatures` object and boolean `fallback`) of at most 4 KiB, or `/keys/upload` answers 400 `M_BAD_JSON`; `device_keys`, each cross-signing key and each signed key of a signature upload may be at most 16 KiB, or the request answers 400 `M_TOO_LARGE` (ADR-0338). A room holds at most 100 tags per user, each tag's value at most 1 KiB, and a tag name at most 255 bytes (the spec's limit; 400 `M_INVALID_PARAM`); any account-data row, including the `m.tag` row the server writes itself, is at most 256 KiB (ADR-0339).
 
-Per-user caps bound end-to-end key material, filters, account data, push rules and room aliases. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_fallback_keys_per_device` limits the fallback keys held for one device. A device keeps one fallback key per algorithm, as the Matrix specification requires, and a new fallback key replaces the previous key of its algorithm, so the cap bounds the distinct algorithms (the key ID up to its first `:`); replacing the key of an algorithm the device already holds always succeeds, even on a device left above a lowered cap, which can add no algorithm until it is back under it (GHSA-3p9g-gpvx-2cx9, ADR-0594). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_key_backup_sessions_per_user` limits the backed-up room-key sessions a user holds across all their backup versions, and `max_key_backup_versions_per_user` the versions themselves. A `PUT /room_keys/keys` (whole, per room or per session) is checked before anything is written and counts only the sessions it would add, so replacing a session already held is always accepted; one that would take the user over the cap is refused with `M_TOO_LARGE`, as is a `POST /room_keys/version` past the version cap. Deleting sessions or a version makes room (ADR-0606). `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. `max_room_aliases_per_user` limits the room aliases a user has created through `PUT /directory/room/{roomAlias}` and `POST /createRoom` (`room_alias_name`), and `max_room_aliases_per_room` the aliases one room holds; a new alias past either is refused with `M_TOO_LARGE` and an alias that already exists keeps its old answer. A registered application service is exempt from the per-user cap only. Deleting an alias makes room. Two more per-user limits are fixed in code and have no configuration key (ADR-0582): a user holds at most 200 devices, and a login that would create a 201st is refused with HTTP 403 `M_FORBIDDEN` (logging in with a device the user already has still works; the user can delete a device to make room, nothing is evicted); and a device display name (`initial_device_display_name` on login and registration, `display_name` on a device rename) is at most 256 bytes, refused with HTTP 400 `M_TOO_LARGE` and never truncated.
+Per-user caps bound end-to-end key material, filters, account data, push rules and room aliases. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_fallback_keys_per_device` limits the fallback keys held for one device. A device keeps one fallback key per algorithm, as the Matrix specification requires, and a new fallback key replaces the previous key of its algorithm, so the cap bounds the distinct algorithms (the key ID up to its first `:`); replacing the key of an algorithm the device already holds always succeeds, even on a device left above a lowered cap, which can add no algorithm until it is back under it (GHSA-3p9g-gpvx-2cx9, ADR-0594). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_key_backup_sessions_per_user` limits the backed-up room-key sessions a user holds across all their backup versions, and `max_key_backup_versions_per_user` the versions themselves. A `PUT /room_keys/keys` (whole, per room or per session) is checked before anything is written and counts only the sessions it would add, so replacing a session already held is always accepted; one that would take the user over the cap is refused with `M_TOO_LARGE`, as is a `POST /room_keys/version` past the version cap. Deleting sessions or a version makes room (ADR-0606). `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`, and each list of a filter (`types`, `not_types`, `senders`, `not_senders`, `rooms`, `not_rooms`, `event_fields`) may hold at most 100 entries, refused with `M_INVALID_PARAM` at upload and whenever a filter is used (ADR-0657); a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. `max_room_aliases_per_user` limits the room aliases a user has created through `PUT /directory/room/{roomAlias}` and `POST /createRoom` (`room_alias_name`), and `max_room_aliases_per_room` the aliases one room holds; a new alias past either is refused with `M_TOO_LARGE` and an alias that already exists keeps its old answer. A registered application service is exempt from the per-user cap only. Deleting an alias makes room. Two more per-user limits are fixed in code and have no configuration key (ADR-0582): a user holds at most 200 devices, and a login that would create a 201st is refused with HTTP 403 `M_FORBIDDEN` (logging in with a device the user already has still works; the user can delete a device to make room, nothing is evicted); and a device display name (`initial_device_display_name` on login and registration, `display_name` on a device rename) is at most 256 bytes, refused with HTTP 400 `M_TOO_LARGE` and never truncated.
 
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. `sync_max_in_flight` bounds parked, queued and running sync long-polls together and is not limited by `sync_threads`, because a parked wait holds no thread (ADR-0569, ADR-0570); each parked wait keeps its socket open, so a high value needs file-descriptor headroom. The per-device and per-user caps cannot exceed the global cap.
 
-`security.federation.backfill.max_state_ids` and `max_auth_chain_ids` bound advertised lists, including events already in local storage. `max_snapshot_events` bounds their unique union. `max_outbound_calls` bounds general recovery calls, `max_snapshot_outbound_calls` bounds event/auth-chain materialisation, and `max_total_outbound_calls` plus `timeout` are shared across the entire incoming PDU recovery. The deadline prevents new work and shortens HTTP timeouts; synchronous discovery, verification or database work already in progress is not preempted. Failed requests consume calls too; remote timeouts are shortened to the remaining deadline. None of these controls bypass signature, hash, authorization or server-ACL checks.
+`security.federation.backfill.max_state_ids` and `max_auth_chain_ids` bound advertised lists, including events already in local storage. `max_auth_chain_ids` also bounds the entries of a `/event_auth` answer: above it the answer is refused whole, and so is one holding an entry that is not a well-formed PDU. `max_snapshot_events` bounds their unique union. `max_outbound_calls` bounds general recovery calls, `max_snapshot_outbound_calls` bounds event/auth-chain materialisation, and `max_total_outbound_calls` plus `timeout` are shared across the entire incoming PDU recovery. The deadline prevents new work and shortens HTTP timeouts; synchronous discovery, verification or database work already in progress is not preempted. Failed requests consume calls too; remote timeouts are shortened to the remaining deadline. None of these controls bypass signature, hash, authorization or server-ACL checks.
 
 The default 65,536-ID caps cover the supplied 51,463-state/47,596-auth-chain response, but not necessarily the network work to fetch every uncached event. Recovery may still fail on call/time/body caps or remote errors. An ordinary PDU that is still unresolved after recovery is kept in the `deferred_pdus` table (at most 100 per room, 1000 in total, 16 MiB of JSON) and retried with a back-off from 30 seconds to one hour until it is placed, 10 retries have failed or 24 hours have passed (audit event `federation.pdu_deferral_expired`); a PDU dropped before R03 is not restored.
 
@@ -572,10 +592,10 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 
 | Key suffix | Default | Valid range |
 |---|---|---|
-| `max_sync_rooms` | `1000` | 1..10,000 |
+| `max_sync_rooms` | `1000` | 1..10,000; the joined rooms one `/sync` serves (ADR-0654) |
 | `max_sync_events_per_room` | `100` | 1..1,000 |
 | `max_search_events_scanned` | `10000` | 1..1,000,000 |
-| `max_messages_events_examined` | `10000` | 1..1,000,000 |
+| `max_messages_events_examined` | `10000` | 1..1,000,000; also the rows `/context` (per side) and `/initialSync` examine (ADR-0656) |
 | `max_messages_page_size` | `500` | 1..1,000 |
 | `max_context_events` | `100` | 1..1,000 |
 | `max_search_page_size` | `100` | 1..1,000 |
@@ -585,8 +605,8 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `sliding_sync_max_required_state_entries` | `256` | 1..4,096 |
 | `sliding_sync_connections_per_device` | `16` | 1..64 |
 | `max_registration_validation_sessions` | `1024` | 1..65,536 |
-| `max_registration_validation_sessions_per_remote` | `16` | 1..256 |
-| `max_uia_sessions` | `2048` | 1..65,536 |
+| `max_registration_validation_sessions_per_remote` | `16` | 1..256; counted per client address as the rate limiter resolves it (ADR-0684) |
+| `max_uia_sessions` | `2048` | 1..65,536; one owner holds at most 16, and a full pool answers a new challenge 429 (ADR-0683) |
 | `max_safety_report_rows` | `1000` | 1..10,000 |
 | `max_notifications_page_size` | `1000` | 1..10,000 |
 | `max_relations_page_size` | `500` | 1..1,000 |
@@ -664,7 +684,7 @@ gateway hosts have all answered promptly within the last hour, and one gateway h
 carry at most an eighth of the batches in flight; a batch over either is dropped like one
 over the whole limit, with the reason in the `scope` of `push.delivery.dropped`, so
 gateways that never answer cannot hold every slot. A gateway never reached since the
-server started shares the other three quarters until it answers once. ADR-0634.
+A gateway is proved by an answer within an eighth of `total_timeout_seconds`; one that answers more slowly (but within half) stops counting as reachable without being counted as a failed delivery, and while the reserve is in use one gateway host carries at most a thirty-second of the budget. ADR-0634, ADR-0721.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
@@ -736,6 +756,7 @@ not survive a restart. These limits are fixed. See
 |---|---|---|
 | `max_state_groups` | `1000` | 1..4,096 |
 | `max_state_tips_per_server` | `32` | 1..4,096 |
+| `max_unprivileged_state_tips` | `128` | 1..4,096 |
 | `max_events_per_state_group` | `65536` | 1..262,144 |
 | `max_total_state_events` | `131072` | 1..1,048,576 |
 | `max_conflicted_state_keys` | `65536` | 1..262,144 |
@@ -751,6 +772,12 @@ resolved the server logs `state.current.refused` at warning level and keeps the 
 event of that server that cites none of them stops becoming one (ADR-0602). Such an event is stored and delivered but does
 not change current state; a `send_join`, `send_leave` or `send_knock` past the limit is answered 503. Changing it needs a
 restart.
+
+`max_unprivileged_state_tips` is how many of a room's forward extremities the events of senders without power may hold
+together, whatever their servers, before a further such event that cites none of them stops becoming one (ADR-0695). A
+sender holds power when it may change the room's power levels or ban; it is exempt from this limit, and only
+`max_state_tips_per_server` applies to it.
+Changing it needs a restart.
 
 `appservice.*`:
 
@@ -870,6 +897,8 @@ in can reset the password from their client (`m.login.email.identity`, an 8-char
 account). The message holds the code and the server name only, and the endpoint answers alike whether or not an account
 holds the address. Without a relay `POST /account/password/email/requestToken` is `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`.
 Phone-number reset is not supported (no SMS).
+A reset mail goes to one address at most once a minute and ten times a day, whoever asks; a session that asked inside the
+minute has no code of its own and is judged against the latest code mailed to the address (ADR-0685).
 
 Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
 `server.email.smtp_url` is set**; the section is independent of
@@ -953,7 +982,9 @@ dispatcher, not by worker threads). Without a cap a connection flood grows
 that set until the process runs out of descriptors or memory. Past the cap a
 new connection is closed immediately, which sheds load in the one way the
 client can observe and retry. Raise it if legitimate bursts are being refused;
-lower it to shed load sooner under a smaller memory budget. The long-poll
+lower it to shed load sooner under a smaller memory budget. One client
+address may hold at most a sixteenth of the cap (and of `server.http.keep_alive_max_connections`), so a few
+addresses cannot fill it for everyone; a trusted reverse proxy is exempt (ADR-0719). The long-poll
 `/sync` pool's queue uses the same bound. The reload plan classifies this setting
 as reloadable, though the live reload control path is not yet wired; restart the
 server to apply a changed value today.
@@ -1412,16 +1443,18 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 | `federation.worker.ipc_max_dispatch_queue_bytes` | `134217728` (128 MiB) | Cap on the bytes of those queued frames. `0` disables the cap (not recommended). **Requires restart.** |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
-| `federation.worker.database_uri_file` | `/etc/merovingian/fed-worker-db-uri` | Secret file holding a PostgreSQL connection URI for a **separate, least-privilege** worker login (ADR-0062 part 2) — see [`docs/database-persistence.md`](database-persistence.md), "Federation worker least-privilege role", and `packaging/postgresql/provision-federation-worker-role.sql`. Required (the file must exist and be readable) when `database.backend=postgresql` and federation is enabled, unless `allow_shared_database_credentials=true`. Ignored for `database.backend=sqlite`. Same secret-file permission rules as `database.uri_file` (owner-only, regular file). |
-| `federation.worker.allow_shared_database_credentials` | `false` | Explicit opt-out: lets the worker connect with main's own database credentials instead of a separate role, when `database_uri_file` is not provisioned. Every startup logs `CRITICAL` while this applies. Ignored for `database.backend=sqlite`. |
+| `federation.worker.database_uri_file` | — | **Retired in 1.0.1 (ADR-0736).** The federation worker opens no database (ADR-0733), so a configuration that still sets this key is refused at start-up with an error naming it. Remove the line; the worker's PostgreSQL role and its login can be dropped (`DROP ROLE`). |
+| `federation.worker.allow_shared_database_credentials` | — | **Retired in 1.0.1 (ADR-0736).** Refused at start-up with an error naming it, like `database_uri_file` above. Remove the line. |
 | `federation.worker.allow_without_landlock` | `false` | Explicit opt-out (ADR-0062 part 3): the worker restricts its own filesystem access with Linux Landlock before handling any inbound request. **Requires Linux 5.13+ with Landlock enabled** (`CONFIG_SECURITY_LANDLOCK=y`, and included in the `lsm=` boot parameter if that parameter is set). On a kernel without Landlock the worker refuses to start unless this is `true`, in which case it runs with **no filesystem sandbox** and logs `CRITICAL` on every start — a worker compromised through a memory-safety bug can then open any file this process's Unix permissions allow, including the operator master key and TLS private keys. Any other Landlock failure (not merely "unavailable") is always fatal regardless of this setting. |
 
 The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
 socket pair inherited at spawn. Every frame is encrypted with an ephemeral
 `crypto_kx` key exchange and `crypto_secretstream_xchacha20poly1305` AEAD —
 no sensitive material crosses the channel in plaintext. The server signing
-key is never forwarded; the worker reads it from the same database, and
-client access tokens are stripped from every request before forwarding. If
+key never reaches the worker, which never signs, and client access tokens are
+stripped from every request before forwarding. The worker opens no database:
+main sends it the rooms it serves, and a server's public signing keys, over
+this channel (1.0.1, ADR-0733). If
 the worker crashes, the supervisor restarts it with exponential back-off
 (1s, 2s, 4s, 8s, capped at 30s).
 
@@ -3089,7 +3122,7 @@ pg_restore --list "$backup/database.dump" > "$backup/database.list"
 
 **SQLite:** with the server stopped, use SQLite's backup command rather than
 copying a file while it may be written. The server currently pins DELETE
-journal mode, and worker reads refuse WAL databases.
+journal mode.
 
 ```bash
 sqlite3 -readonly /var/lib/merovingian/merovingian.sqlite3 ".backup '$backup/database.sqlite3'"
@@ -3155,8 +3188,8 @@ until that failure is resolved.
    original roles, memberships and login credentials **before** restoring;
    archive ownership and grants depend on them. The provisioning scripts use
    `CREATE ROLE`, so do not blindly rerun them against roles that already exist.
-   Ensure both main and the worker connect to the restored database, with their
-   original separate privilege boundaries.
+   Ensure main connects to the restored database with its original privilege
+   boundaries. The federation worker opens no database (ADR-0733).
 
    PostgreSQL, after the deployment's roles exist (the example login/database
    owner is `merovingian`):
@@ -3197,7 +3230,8 @@ until that failure is resolved.
    signing key and server name with the recovery record. Through the loopback
    client listener, check `/_matrix/client/versions`, authenticate a known test
    account, read existing room history and download an existing media item.
-   Confirm both main and worker database access work without widening grants.
+   Confirm main's database access works without widening grants, and that
+   each federation worker reports it filled its store from main.
 6. Stop the isolated instance before transferring it to the live deployment,
    then restore the intended listener/proxy exposure and network access. Keep
    the original stopped. Retain the pre-restore and pre-upgrade recovery sets;

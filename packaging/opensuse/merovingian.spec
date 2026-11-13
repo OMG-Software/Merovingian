@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -54,7 +54,7 @@ implementation, runtime hardening, and auditable dependency boundaries.
 %autosetup
 
 %build
-# The hardened profile, as every package and release build (ADR-0652):
+# The hardened profile, as every package and release build (ADR-0742):
 # %%meson passes --buildtype=plain, and the later --buildtype=release wins.
 %meson \
     --buildtype=release \
@@ -115,6 +115,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Nov 12 2026 James Chapman <claude@ping.me.uk> - 1.0.1-1
+- Merovingian 1.0.1
+
 * Wed Nov 11 2026 James Chapman <claude@ping.me.uk> - 1.0.0-1
 - Merovingian 1.0.0
 

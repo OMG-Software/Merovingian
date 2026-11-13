@@ -59,7 +59,7 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 Every Linux image and the FreeBSD VM are pinned by release, never a moving tag such as
 `ubuntu:rolling` or `fedora:latest`, so the release CI tests is the release a package is
 built for; a new release is added by editing the workflows
-([ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD and NetBSD VMs run each action's default release.
+([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD and NetBSD VMs run each action's default release.
 "Build for" is the minimum version above.
 Earlier Linux releases (Ubuntu 22.04, Debian 12, RHEL 9) fail on **both** counts
 — pre-C++26 toolchain and too-old glibc — and even after installing a newer
@@ -113,7 +113,7 @@ carry a job-level `continue-on-error`; a failure there fails the run
 
 | Platform | CI job | Toolchain | Notes |
 |---|---|---|---|
-| Linux (glibc, Ubuntu 26.04 LTS) | `ubuntu-build-and-test` | clang | Reference platform; GitHub's `ubuntu-26.04` runner image, named by release, never `ubuntu-latest` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)). Ubuntu 24.04 is packaged but not built and tested ([ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) |
+| Linux (glibc, Ubuntu 26.04 LTS) | `ubuntu-build-and-test` | clang | Reference platform; GitHub's `ubuntu-26.04` runner image, named by release, never `ubuntu-latest` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)). Ubuntu 24.04 is packaged but not built and tested ([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) |
 | Linux (Ubuntu 26.10) | `ubuntu-interim-build-and-test` (check `ubuntu-26.10-build-and-test`) | clang, container | apt-supplied libraries; `ubuntu:26.10`, pinned by release, since GitHub has runner images for LTS releases only |
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
 | Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:45` |
@@ -143,7 +143,7 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 |---|---|---|
 | Ubuntu `.deb`, one each for 24.04 LTS, 26.04 LTS and 26.10, named `-ubuntu<release>.deb` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) | `packages.yml` (`deb`; the required check "Debian package" is `deb-all-releases`, which passes only when every release built) | Tier 1 Ubuntu |
 | Debian 13 (trixie) `.deb`, named `-debian13.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
-| Fedora `.rpm`, one each for Fedora 44 and 45 (`.fc44`, `.fc45`; [ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md), [ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
+| Fedora `.rpm`, one each for Fedora 44 and 45 (`.fc44`, `.fc45`; [ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md), [ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
 | RHEL-compatible `.rpm` (AlmaLinux 10, `.el10`) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
 | OpenSUSE `.rpm`, one each for Tumbleweed (`.tumbleweed`) and Leap 16.0 (`.leap16`) | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
 | FreeBSD 15 `.pkg`, named `-freebsd15.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
@@ -155,7 +155,7 @@ A package installs only on the distribution release it was built on, because it 
 that release's libraries, so each supported release has its own, and its file name says which.
 Every package is x86_64 and built with the hardened profile. A tagged release ships exactly the
 set above, the same as `latest`: `release.yml` calls `packages.yml`, whose own staging and signing
-jobs serve the tag ([ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The Complement step attaches the Debian 13 package it
+jobs serve the tag ([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The Complement step attaches the Debian 13 package it
 tested beside it, as `-debian.deb` (`release-process.md`, "Complement").
 
 The OpenBSD package job builds with standalone `pkg_create(1)` (no ports tree),

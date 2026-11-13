@@ -80,7 +80,7 @@ if grep -q "Early Phase 1 bootstrap implementation" README.md; then
     fail "README status still describes the project as early Phase 1"
 fi
 
-# Signed release infrastructure (ADR-0652): packages.yml builds, attests, checksums
+# Signed release infrastructure (ADR-0742): packages.yml builds, attests, checksums
 # and signs every published package, for the rolling `latest` release and, called
 # by release.yml, for every tag. release.yml must call it with the attestation
 # permission and the secrets its signing job needs.
@@ -128,7 +128,7 @@ if ! [ -s /tmp/merovingian.licenses.json ]; then
 fi
 
 # SBOM (ADR-0598): packages.yml attaches it to `latest` and to every tag
-# (ADR-0652), and it must generate from licenses.md and the wraps. A fixed commit
+# (ADR-0742), and it must generate from licenses.md and the wraps. A fixed commit
 # and creation time keep this check free of git, which the BSD release VMs may
 # not have a history for.
 if ! grep -qF "scripts/generate_sbom.py" .github/workflows/packages.yml; then

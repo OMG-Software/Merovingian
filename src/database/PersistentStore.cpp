@@ -8,10 +8,12 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/crypto/ConstantTime.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -73,20 +75,21 @@
 #include "merovingian/database/RowGroupIndex.hpp"
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
-#include "merovingian/database/Migration.hpp"
 #include "merovingian/events/Limits.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <initializer_list>
@@ -562,6 +565,10 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
             return false;
         }
     }
+    if (store.test_before_backend_commit)
+    {
+        store.test_before_backend_commit(statements.size());
+    }
     if (!detail::persist_transaction_to_backend(store, statements))
     {
         return false;
@@ -754,6 +761,26 @@ namespace
     {
         return key.user_id;
     }
+    // The key of a signature row (signer, target user, target key), its signer, and its target (user, key): the
+    // three indexes beside `key_signatures` (run-3 C14, ADR-0672).
+    [[nodiscard]] auto key_signature_key_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return composite_key({signature.signer_user_id, signature.target_user_id, signature.target_device_id});
+    }
+    [[nodiscard]] auto key_signature_signer_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return signature.signer_user_id;
+    }
+    [[nodiscard]] auto key_signature_target_key_of(PersistentKeySignature const& signature) -> std::string
+    {
+        return composite_key({signature.target_user_id, signature.target_device_id});
+    }
+    [[nodiscard]] auto key_signature_indexes_in_step(PersistentStore const& store) -> bool
+    {
+        auto const rows = store.key_signatures.size();
+        return store.key_signature_indexed_rows == rows && store.key_signature_key_index.in_step(rows) &&
+               store.key_signature_signer_index.in_step(rows) && store.key_signature_target_key_index.in_step(rows);
+    }
     [[nodiscard]] auto one_time_key_group_of(PersistentOneTimeKey const& key) -> std::string
     {
         return composite_key({key.user_id, key.device_id});
@@ -871,6 +898,137 @@ namespace
         }
     }
 
+    // The device-list, filter and presence indexes (ADR-0659).
+    [[nodiscard]] auto device_list_observer_group_of(PersistentDeviceListChange const& row) -> std::string
+    {
+        return row.observer_user_id;
+    }
+    [[nodiscard]] auto filter_user_group_of(PersistentFilter const& row) -> std::string
+    {
+        return row.user_id;
+    }
+    [[nodiscard]] auto presence_user_key_of(PersistentPresence const& row) -> std::string
+    {
+        return row.user_id;
+    }
+    auto sync_device_list_index(PersistentStore& store) -> void
+    {
+        if (!store.device_list_observer_index.in_step(store.device_list_changes.size()))
+        {
+            store.device_list_observer_index.rebuild(store.device_list_changes, device_list_observer_group_of);
+        }
+    }
+    auto sync_filter_index(PersistentStore& store) -> void
+    {
+        if (!store.filter_user_index.in_step(store.filters.size()))
+        {
+            store.filter_user_index.rebuild(store.filters, filter_user_group_of);
+        }
+    }
+    auto sync_presence_index(PersistentStore& store) -> void
+    {
+        if (!store.presence_user_index.in_step(store.presence_states.size()))
+        {
+            store.presence_user_index.rebuild(store.presence_states, presence_user_key_of);
+        }
+    }
+
+    // The receipt indexes (ADR-0737): by room, and by (room, user). A receipt's room and user never change in place,
+    // so an upsert that replaces a row leaves both indexes as they are.
+    [[nodiscard]] auto receipt_room_group_of(PersistentReceipt const& row) -> std::string
+    {
+        return row.room_id;
+    }
+    [[nodiscard]] auto receipt_user_room_group_of(PersistentReceipt const& row) -> std::string
+    {
+        return composite_key({row.room_id, row.user_id});
+    }
+    [[nodiscard]] auto receipt_is_remote(PersistentStore const& store, PersistentReceipt const& row) -> bool
+    {
+        // The part of the user ID after its first colon is the server name.
+        auto const colon = row.user_id.find(':');
+        auto const server =
+            colon == std::string::npos ? std::string_view{} : std::string_view{row.user_id}.substr(colon + 1U);
+        return server != store.local_server_name;
+    }
+    [[nodiscard]] auto receipt_remote_index_in_step(PersistentStore const& store) noexcept -> bool
+    {
+        return store.receipt_remote_indexed_rows == store.receipts.size() &&
+               store.receipt_remote_indexed_server == store.local_server_name;
+    }
+    auto rebuild_receipt_remote_index(PersistentStore& store) -> void
+    {
+        store.receipt_remote_by_stream.clear();
+        for (auto const& row : store.receipts)
+        {
+            if (receipt_is_remote(store, row))
+            {
+                store.receipt_remote_by_stream.emplace(row.stream_id, receipt_user_room_group_of(row));
+            }
+        }
+        store.receipt_remote_indexed_rows = store.receipts.size();
+        store.receipt_remote_indexed_server = store.local_server_name;
+    }
+    auto sync_receipt_indexes(PersistentStore& store) -> void
+    {
+        if (!store.receipt_room_index.in_step(store.receipts.size()))
+        {
+            store.receipt_room_index.rebuild(store.receipts, receipt_room_group_of);
+        }
+        if (!store.receipt_user_room_index.in_step(store.receipts.size()))
+        {
+            store.receipt_user_room_index.rebuild(store.receipts, receipt_user_room_group_of);
+        }
+        if (!receipt_remote_index_in_step(store))
+        {
+            rebuild_receipt_remote_index(store);
+        }
+    }
+    // Erases the receipt row at `position` by moving the last row into its place, keeping the indexes in step. The
+    // indexes must be in step: every caller syncs them first.
+    auto erase_receipt_position(PersistentStore& store, std::size_t position) -> void
+    {
+        auto& rows = store.receipts;
+        auto const old_count = rows.size();
+        auto const erased_room = receipt_room_group_of(rows[position]);
+        auto const last_room = receipt_room_group_of(rows.back());
+        auto const erased_user_room = receipt_user_room_group_of(rows[position]);
+        auto const last_user_room = receipt_user_room_group_of(rows.back());
+        if (receipt_remote_index_in_step(store) && receipt_is_remote(store, rows[position]))
+        {
+            store.receipt_remote_by_stream.erase({rows[position].stream_id, erased_user_room});
+        }
+        auto const remote_was_in_step = receipt_remote_index_in_step(store);
+        if (position + 1U != old_count)
+        {
+            rows[position] = std::move(rows.back());
+        }
+        rows.pop_back();
+        store.receipt_room_index.erase_swap(position, erased_room, last_room, old_count);
+        store.receipt_user_room_index.erase_swap(position, erased_user_room, last_user_room, old_count);
+        if (remote_was_in_step)
+        {
+            store.receipt_remote_indexed_rows = rows.size();
+        }
+    }
+    // Appends `row`, keeping the indexes in step.
+    auto append_receipt_row(PersistentStore& store, PersistentReceipt row) -> void
+    {
+        auto const remote_was_in_step = receipt_remote_index_in_step(store);
+        store.receipts.push_back(std::move(row));
+        auto const& added = store.receipts.back();
+        store.receipt_room_index.note_appended(store.receipts.size(), receipt_room_group_of(added));
+        store.receipt_user_room_index.note_appended(store.receipts.size(), receipt_user_room_group_of(added));
+        if (remote_was_in_step)
+        {
+            if (receipt_is_remote(store, added))
+            {
+                store.receipt_remote_by_stream.emplace(added.stream_id, receipt_user_room_group_of(added));
+            }
+            store.receipt_remote_indexed_rows = store.receipts.size();
+        }
+    }
+
     // Erases the rows at `positions` (any order), each by moving the last row into its place, so
     // `to_device_messages` has no meaningful order. Highest first, so the row moved into a gap is never one still
     // to be erased. The indexes must be in step: every caller syncs them first.
@@ -954,6 +1112,148 @@ namespace
         return bytes;
     }
 
+    auto sync_server_signing_key_index(PersistentStore& store) -> void
+    {
+        if (!store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+        {
+            store.server_signing_key_index.rebuild(store.server_signing_keys,
+                                                   [](PersistentServerSigningKey const& row) {
+                                                       return row.server_name;
+                                                   });
+        }
+    }
+
+    // Appends a row and keeps the index in step. The caller holds `server_signing_keys_mutex`.
+    auto append_server_signing_key(PersistentStore& store, PersistentServerSigningKey row) -> void
+    {
+        sync_server_signing_key_index(store);
+        auto const server_name = row.server_name;
+        store.server_signing_keys.push_back(std::move(row));
+        store.server_signing_key_index.note_appended(store.server_signing_keys.size(), server_name);
+    }
+
+    // The position of the row for (server, key), through the index while it is in step. The caller holds the mutex.
+    [[nodiscard]] auto find_server_signing_key_position(PersistentStore const& store, std::string_view server_name,
+                                                        std::string_view key_id) -> std::optional<std::size_t>
+    {
+        auto const matches = [&](PersistentServerSigningKey const& row) {
+            return row.server_name == server_name && row.key_id == key_id;
+        };
+        if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+        {
+            auto found = std::optional<std::size_t>{};
+            store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+                if (matches(store.server_signing_keys[position]))
+                {
+                    found = position;
+                    return false;
+                }
+                return true;
+            });
+            return found;
+        }
+        auto const it = std::ranges::find_if(store.server_signing_keys, matches);
+        return it == store.server_signing_keys.end()
+                   ? std::nullopt
+                   : std::optional<std::size_t>{static_cast<std::size_t>(it - store.server_signing_keys.begin())};
+    }
+
+    // Adds (or, with `subtract`, removes) one record's bytes to the per-origin and total ledger of remote invites.
+    auto charge_invite_bytes(PersistentStore& store, std::string_view origin, std::uint64_t bytes, bool subtract)
+        -> void
+    {
+        if (origin.empty())
+        {
+            return;
+        }
+        if (subtract)
+        {
+            auto const held = store.invite_origin_bytes.find(std::string{origin});
+            if (held != store.invite_origin_bytes.end())
+            {
+                held->second = held->second > bytes ? held->second - bytes : 0U;
+                if (held->second == 0U)
+                {
+                    store.invite_origin_bytes.erase(held);
+                }
+            }
+            store.remote_invite_bytes_total =
+                store.remote_invite_bytes_total > bytes ? store.remote_invite_bytes_total - bytes : 0U;
+            return;
+        }
+        store.invite_origin_bytes[std::string{origin}] += bytes;
+        store.remote_invite_bytes_total += bytes;
+    }
+
+    auto rebuild_invite_byte_ledger(PersistentStore& store) -> void
+    {
+        store.invite_origin_bytes.clear();
+        store.remote_invite_bytes_total = 0U;
+        for (auto const& invite : store.invites)
+        {
+            charge_invite_bytes(store, invite_origin_group_of(store.local_server_name, invite), invite_bytes(invite),
+                                false);
+        }
+        store.invite_bytes_rows = store.invites.size();
+    }
+
+    // C04 (ADR-0707): whether storing a record of `incoming_bytes` from `origin` would take that sending server over
+    // the bytes one server may hold in all, or all remote invites over the total. The record it replaces (`held`) is
+    // not counted. Two lookups in the ledger; while the ledger is out of step (rows just loaded) the rows are added
+    // up instead.
+    [[nodiscard]] auto invite_bytes_over_origin_or_total_cap(PersistentStore const& store, PersistentInvite const* held,
+                                                             std::string const& origin, std::uint64_t incoming_bytes)
+        -> bool
+    {
+        auto const max_origin = store.max_remote_invite_bytes_per_origin;
+        auto const max_total = store.max_remote_invite_bytes_total;
+        if ((max_origin == 0U && max_total == 0U) || origin.empty())
+        {
+            return false;
+        }
+        auto const& local = store.local_server_name;
+        auto origin_held = std::uint64_t{0U};
+        auto total_held = std::uint64_t{0U};
+        if (store.invite_bytes_rows == store.invites.size())
+        {
+            auto const found = store.invite_origin_bytes.find(origin);
+            origin_held = found == store.invite_origin_bytes.end() ? 0U : found->second;
+            total_held = store.remote_invite_bytes_total;
+        }
+        else
+        {
+            store.invite_rows_examined.add(store.invites.size());
+            for (auto const& row : store.invites)
+            {
+                auto const row_origin = invite_origin_group_of(local, row);
+                if (row_origin.empty())
+                {
+                    continue;
+                }
+                total_held += invite_bytes(row);
+                if (row_origin == origin)
+                {
+                    origin_held += invite_bytes(row);
+                }
+            }
+        }
+        if (held != nullptr)
+        {
+            auto const held_origin = invite_origin_group_of(local, *held);
+            if (!held_origin.empty())
+            {
+                auto const replaced = invite_bytes(*held);
+                total_held = total_held > replaced ? total_held - replaced : 0U;
+                if (held_origin == origin)
+                {
+                    origin_held = origin_held > replaced ? origin_held - replaced : 0U;
+                }
+            }
+        }
+        return (max_origin > 0U && origin_held + incoming_bytes > max_origin) ||
+               (max_total > 0U && total_held + incoming_bytes > max_total);
+    }
+
     auto sync_invite_indexes(PersistentStore& store) -> void
     {
         auto const& local = store.local_server_name;
@@ -973,6 +1273,10 @@ namespace
             store.invite_origin_index.rebuild(store.invites, [&local](PersistentInvite const& invite) {
                 return invite_origin_group_of(local, invite);
             });
+        }
+        if (store.invite_bytes_rows != rows)
+        {
+            rebuild_invite_byte_ledger(store);
         }
     }
 
@@ -1014,6 +1318,8 @@ namespace
         store.invite_key_index.note_appended(store.invites.size(), key);
         store.invite_quota_index.note_appended(store.invites.size(), quota);
         store.invite_origin_index.note_appended(store.invites.size(), origin);
+        charge_invite_bytes(store, origin, invite_bytes(store.invites.back()), false);
+        store.invite_bytes_rows = store.invites.size();
     }
 
     // Erases a record by moving the last into its place, so `invites` has no meaningful order.
@@ -1030,11 +1336,13 @@ namespace
         auto const last_quota = invite_quota_group_of(local, last);
         auto const erased_origin = invite_origin_group_of(local, erased);
         auto const last_origin = invite_origin_group_of(local, last);
+        charge_invite_bytes(store, erased_origin, invite_bytes(erased), true);
         if (position + 1U != old_count)
         {
             store.invites[position] = std::move(store.invites.back());
         }
         store.invites.pop_back();
+        store.invite_bytes_rows = store.invites.size();
         store.invite_key_index.erase_swap(position, erased_key, last_key, old_count);
         store.invite_quota_index.erase_swap(position, erased_quota, last_quota, old_count);
         store.invite_origin_index.erase_swap(position, erased_origin, last_origin, old_count);
@@ -1044,16 +1352,106 @@ namespace
     // group is fixed while it is indexed, so such a record is moved instead.
     auto replace_invite_row(PersistentStore& store, std::size_t position, PersistentInvite invite) -> void
     {
+        sync_invite_indexes(store);
         auto const& local = store.local_server_name;
         auto const& held = store.invites[position];
         if (invite_quota_group_of(local, held) == invite_quota_group_of(local, invite) &&
             invite_origin_group_of(local, held) == invite_origin_group_of(local, invite))
         {
+            auto const origin = invite_origin_group_of(local, held);
+            charge_invite_bytes(store, origin, invite_bytes(held), true);
+            charge_invite_bytes(store, origin, invite_bytes(invite), false);
             store.invites[position] = std::move(invite);
             return;
         }
         erase_invite_row(store, position);
         append_invite_row(store, std::move(invite));
+    }
+
+} // namespace
+
+namespace
+{
+
+    // Run-3 C22 (ADR-0673): the digest of a backup version's sessions, kept beside `key_backup_sessions`.
+    [[nodiscard]] auto backup_digest_key(std::string_view user_id, std::string_view version) -> std::string
+    {
+        return composite_key({user_id, version});
+    }
+
+    // The BLAKE2b hash of one session, as four limbs. The room and session IDs are length-prefixed so no two
+    // sessions hash the same pieces. A libsodium failure (it does not happen in practice) gives the zero hash.
+    [[nodiscard]] auto backup_session_limbs(PersistentKeyBackupSession const& session) -> std::array<std::uint64_t, 4U>
+    {
+        auto limbs = std::array<std::uint64_t, 4U>{};
+        auto const room_length = std::to_string(session.room_id.size());
+        auto const session_length = std::to_string(session.session_id.size());
+        auto const pieces = std::array<std::string_view, 7U>{
+            room_length, ":", session.room_id, session_length, ":", session.session_id, session.json};
+        auto const hash = crypto::generic_hash_bytes(pieces);
+        if (hash.has_value() && hash->size() >= sizeof(limbs))
+        {
+            std::memcpy(limbs.data(), hash->data(), sizeof(limbs));
+        }
+        return limbs;
+    }
+
+    auto digest_add(KeyBackupDigest& digest, PersistentKeyBackupSession const& session) -> void
+    {
+        auto const limbs = backup_session_limbs(session);
+        for (auto index = std::size_t{0U}; index < limbs.size(); ++index)
+        {
+            digest.sum[index] += limbs[index];
+        }
+        ++digest.count;
+    }
+
+    auto digest_remove(KeyBackupDigest& digest, PersistentKeyBackupSession const& session) -> void
+    {
+        auto const limbs = backup_session_limbs(session);
+        for (auto index = std::size_t{0U}; index < limbs.size(); ++index)
+        {
+            digest.sum[index] -= limbs[index];
+        }
+        --digest.count;
+    }
+
+    // The digest of a version computed from its rows (through the version index while it is in step).
+    [[nodiscard]] auto recompute_backup_digest(PersistentStore const& store, std::string_view user_id,
+                                               std::string_view version) -> KeyBackupDigest
+    {
+        auto digest = KeyBackupDigest{};
+        for (auto const position : positions_in_group(store.key_backup_version_session_index, store.key_backup_sessions,
+                                                      composite_key({user_id, version}), backup_session_group_of,
+                                                      store.key_backup_rows_examined))
+        {
+            digest_add(digest, store.key_backup_sessions[position]);
+        }
+        return digest;
+    }
+
+    // The stored digest of a version, healed first when it is not in step with the rows. Called by a writer BEFORE it
+    // changes the version's rows, so the delta it then applies starts from the right value.
+    [[nodiscard]] auto ensure_backup_digest(PersistentStore& store, std::string_view user_id, std::string_view version)
+        -> KeyBackupDigest&
+    {
+        auto const key = backup_digest_key(user_id, version);
+        auto& digest = store.key_backup_digests[key];
+        auto const indexed = store.key_backup_version_session_index.in_step(store.key_backup_sessions.size());
+        if (!indexed || digest.count != store.key_backup_version_session_index.count(key))
+        {
+            digest = recompute_backup_digest(store, user_id, version);
+        }
+        return digest;
+    }
+
+    auto rebuild_key_backup_digests(PersistentStore& store) -> void
+    {
+        store.key_backup_digests.clear();
+        for (auto const& session : store.key_backup_sessions)
+        {
+            digest_add(store.key_backup_digests[backup_digest_key(session.user_id, session.version)], session);
+        }
     }
 
 } // namespace
@@ -1068,9 +1466,16 @@ auto rebuild_key_indexes(PersistentStore& store) -> void
     store.cross_signing_key_user_index.rebuild(store.cross_signing_keys, cross_signing_key_group_of);
     store.key_backup_session_index.rebuild(store.key_backup_sessions, backup_session_key_of);
     store.key_backup_version_session_index.rebuild(store.key_backup_sessions, backup_session_group_of);
+    rebuild_key_backup_digests(store);
     store.key_backup_user_version_index.rebuild(store.key_backup_versions, backup_version_group_of);
     store.to_device_recipient_index.rebuild(store.to_device_messages, to_device_recipient_group_of);
     store.to_device_user_index.rebuild(store.to_device_messages, to_device_user_group_of);
+    store.receipt_room_index.rebuild(store.receipts, receipt_room_group_of);
+    store.receipt_user_room_index.rebuild(store.receipts, receipt_user_room_group_of);
+    rebuild_receipt_remote_index(store);
+    store.device_list_observer_index.rebuild(store.device_list_changes, device_list_observer_group_of);
+    store.filter_user_index.rebuild(store.filters, filter_user_group_of);
+    store.presence_user_index.rebuild(store.presence_states, presence_user_key_of);
     rebuild_invite_indexes(store);
 }
 
@@ -1123,6 +1528,16 @@ auto for_each_user_device(PersistentStore const& store, std::string_view user_id
             return;
         }
     }
+}
+
+auto has_user_device(PersistentStore const& store, std::string_view user_id, std::string_view device_id) -> bool
+{
+    auto found = false;
+    for_each_user_device(store, user_id, [&found, device_id](PersistentDevice const& device) {
+        found = device.device_id == device_id;
+        return !found;
+    });
+    return found;
 }
 
 auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
@@ -1906,10 +2321,8 @@ namespace
 
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool
 {
-    auto const existing = std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
-        return device.user_id == user_id && device.device_id == device_id;
-    });
-    if (existing == store.devices.end())
+    // Found through the user's own rows (run-3 C02), so an absent device costs the user's rows, not the table.
+    if (!has_user_device(store, user_id, device_id))
     {
         return false;
     }
@@ -1936,7 +2349,10 @@ namespace
     {
         return false;
     }
-    store.devices.erase(existing);
+    // The erase keeps the vector's order, so it shifts the rows after it once, for a device that exists.
+    store.devices.erase(std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
+        return device.user_id == user_id && device.device_id == device_id;
+    }));
     store.device_user_index.rebuild(store.devices, device_group_of);
     auto const of_device = [user_id, device_id](auto const& key) {
         return key.user_id == user_id && key.device_id == device_id;
@@ -1984,11 +2400,9 @@ namespace
     if (key.secret_key.empty())
     {
         auto const lock = store.server_signing_keys_mutex.acquire();
-        auto const existing =
-            std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
-                return row.server_name == key.server_name && row.key_id == key.key_id;
-            });
-        if (existing != store.server_signing_keys.end() && !existing->secret_key.empty() &&
+        auto const position = find_server_signing_key_position(store, key.server_name, key.key_id);
+        auto const* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+        if (existing != nullptr && !existing->secret_key.empty() &&
             (existing->public_key != key.public_key || key.expired_ts != 0U))
         {
             log_diagnostic("server_signing_key.rejected",
@@ -2033,11 +2447,10 @@ namespace
         return false;
     }
     auto const lock = store.server_signing_keys_mutex.acquire();
-    auto const existing =
-        std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
-            return row.server_name == key.server_name && row.key_id == key.key_id;
-        });
-    if (existing != store.server_signing_keys.end())
+    // The row is changed in place; the index holds positions, which an in-place change does not move.
+    auto const position = find_server_signing_key_position(store, key.server_name, key.key_id);
+    auto* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+    if (existing != nullptr)
     {
         if (existing->expired_ts == 0U)
         {
@@ -2055,7 +2468,7 @@ namespace
         }
         return true;
     }
-    store.server_signing_keys.push_back(std::move(key));
+    append_server_signing_key(store, std::move(key));
     return true;
 }
 
@@ -2063,12 +2476,9 @@ namespace
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>
 {
     auto const lock = store.server_signing_keys_mutex.acquire();
-    auto const existing =
-        std::ranges::find_if(store.server_signing_keys, [server_name, key_id](PersistentServerSigningKey const& key) {
-            return key.server_name == server_name && key.key_id == key_id;
-        });
-    return existing == store.server_signing_keys.end() ? std::nullopt
-                                                       : std::optional<PersistentServerSigningKey>{*existing};
+    auto const position = find_server_signing_key_position(store, server_name, key_id);
+    return position.has_value() ? std::optional<PersistentServerSigningKey>{store.server_signing_keys[*position]}
+                                : std::nullopt;
 }
 
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store) -> std::vector<PersistentServerSigningKey>
@@ -2077,13 +2487,45 @@ namespace
     return store.server_signing_keys;
 }
 
+[[nodiscard]] auto snapshot_server_signing_keys_of(PersistentStore const& store, std::string_view server_name)
+    -> std::vector<PersistentServerSigningKey>
+{
+    auto const lock = store.server_signing_keys_mutex.acquire();
+    auto rows = std::vector<PersistentServerSigningKey>{};
+    if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+    {
+        store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+            rows.push_back(store.server_signing_keys[position]);
+            return true;
+        });
+        return rows;
+    }
+    for (auto const& row : store.server_signing_keys)
+    {
+        if (row.server_name == server_name)
+        {
+            rows.push_back(row);
+        }
+    }
+    return rows;
+}
+
 [[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool
 {
-    if (store.backend == PersistentStoreBackend::memory)
+    auto rows = std::optional<std::vector<PersistentServerSigningKey>>{};
+    if (store.remote_signing_key_source)
+    {
+        // The federation worker's store (ADR-0733): main answers from its own key table, public columns only.
+        rows = store.remote_signing_key_source(server_name);
+    }
+    else if (store.backend == PersistentStoreBackend::memory)
     {
         return true;
     }
-    auto rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    else
+    {
+        rows = detail::load_remote_signing_keys_from_backend(store, server_name);
+    }
     if (!rows.has_value())
     {
         log_diagnostic("server_signing_keys.refresh_failed",
@@ -2096,15 +2538,18 @@ namespace
     auto const lock = store.server_signing_keys_mutex.acquire();
     for (auto& row : *rows)
     {
+        // Only the asked server's public rows are taken, whatever the source answered.
+        if (row.server_name != server_name || !row.secret_key.empty())
+        {
+            continue;
+        }
         // Only the public columns were read. A row this process holds with a
         // secret is this server's own key: leave it exactly as it is.
-        auto const existing =
-            std::ranges::find_if(store.server_signing_keys, [&row](PersistentServerSigningKey const& held) {
-                return held.server_name == row.server_name && held.key_id == row.key_id;
-            });
-        if (existing == store.server_signing_keys.end())
+        auto const position = find_server_signing_key_position(store, row.server_name, row.key_id);
+        auto* const existing = position.has_value() ? &store.server_signing_keys[*position] : nullptr;
+        if (existing == nullptr)
         {
-            store.server_signing_keys.push_back(std::move(row));
+            append_server_signing_key(store, std::move(row));
         }
         else if (existing->secret_key.empty())
         {
@@ -2414,6 +2859,7 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
     }
     auto const& room_id = snapshot.room_id;
     store.resolved_state_memo.forget_room(room_id);
+    store.state_before_memo.forget_room(room_id);
     ++store.room_state_revisions[room_id];
 
     // Replace this room's slice of the store: drop every existing row keyed
@@ -2523,6 +2969,127 @@ auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) ->
         }
     }
     std::ignore = store.events.insert_all(std::move(snapshot.events));
+    // The room's tips are the snapshot's (ADR-0733), each charged to the server of its event's sender.
+    store.forward_extremities.erase_room(room_id);
+    for (auto& tip : snapshot.forward_extremities)
+    {
+        auto const event = store.events.find(tip.event_id);
+        auto const sender = event != store.events.end() ? event->sender_user_id : std::string{};
+        std::ignore = store.forward_extremities.insert(std::move(tip), sender);
+    }
+}
+
+auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomReloadSnapshot> snapshots) -> std::size_t
+{
+    // Each table is inserted once: EventTable::insert_all merges the stream order of everything it holds, so a call
+    // per room would cost rooms times rows.
+    auto events = std::vector<PersistentEvent>{};
+    auto groups = std::vector<PersistentStateGroup>{};
+    auto group_entries = std::vector<PersistentStateGroupStateEntry>{};
+    auto mappings = std::vector<PersistentEventStateGroup>{};
+    auto tips = std::vector<PersistentForwardExtremity>{};
+    auto rooms_added = std::size_t{0U};
+    for (auto& snapshot : snapshots)
+    {
+        if (snapshot.nothing_to_apply)
+        {
+            continue;
+        }
+        if (snapshot.room.has_value())
+        {
+            store.rooms.push_back(std::move(*snapshot.room));
+            ++rooms_added;
+        }
+        std::ranges::move(snapshot.memberships, std::back_inserter(store.memberships));
+        std::ranges::move(snapshot.invites, std::back_inserter(store.invites));
+        std::ranges::move(snapshot.state, std::back_inserter(store.state));
+        for (auto& event : snapshot.events)
+        {
+            for (auto const& prev_id : event.prev_event_ids)
+            {
+                store.event_edges.push_back({event.event_id, prev_id});
+            }
+            for (auto const& auth_id : event.auth_event_ids)
+            {
+                store.event_auth.push_back({event.event_id, auth_id});
+            }
+            for (auto const& signature : event.signatures)
+            {
+                store.event_signatures.push_back(
+                    {event.event_id, signature.server_name, signature.key_id, signature.signature});
+            }
+            events.push_back(std::move(event));
+        }
+        std::ranges::move(snapshot.state_groups, std::back_inserter(groups));
+        std::ranges::move(snapshot.state_group_state, std::back_inserter(group_entries));
+        std::ranges::move(snapshot.event_state_groups, std::back_inserter(mappings));
+        std::ranges::move(snapshot.forward_extremities, std::back_inserter(tips));
+    }
+    std::ignore = store.events.insert_all(std::move(events));
+    std::ignore = store.state_groups.insert_all(std::move(groups));
+    store.state_group_state.insert_all(std::move(group_entries));
+    store.event_state_groups.insert_all(std::move(mappings));
+    for (auto& tip : tips)
+    {
+        auto const event = store.events.find(tip.event_id);
+        auto const sender = event != store.events.end() ? event->sender_user_id : std::string{};
+        std::ignore = store.forward_extremities.insert(std::move(tip), sender);
+    }
+    rebuild_state_index(store);
+    rebuild_membership_index(store);
+    rebuild_key_indexes(store);
+    rebuild_redaction_state(store);
+    return rooms_added;
+}
+
+[[nodiscard]] auto load_room_ids(PersistentStore const& store) -> std::optional<std::vector<std::string>>
+{
+    return detail::load_room_ids_from_backend(store);
+}
+
+[[nodiscard]] auto public_signing_keys_of_server(PersistentStore const& store, std::string_view server_name,
+                                                 std::size_t max_rows) -> std::vector<PersistentServerSigningKey>
+{
+    auto keys = std::vector<PersistentServerSigningKey>{};
+    // Returns false once the cap is reached, which ends either walk.
+    auto const take = [&](PersistentServerSigningKey const& held) {
+        store.server_signing_key_rows_examined.add(1U);
+        if (keys.size() >= max_rows)
+        {
+            return false;
+        }
+        // A row with a secret is one of this server's own keys: never copied, not even its public half.
+        if (held.server_name != server_name || !held.secret_key.empty())
+        {
+            return true;
+        }
+        auto key = PersistentServerSigningKey{held.server_name, held.key_id, held.public_key, held.valid_until_ts, {}};
+        key.expired_ts = held.expired_ts;
+        keys.push_back(std::move(key));
+        return keys.size() < max_rows;
+    };
+    auto const lock = store.server_signing_keys_mutex.acquire();
+    if (max_rows == 0U)
+    {
+        return keys;
+    }
+    // A federation worker may ask at any time, and main's signing path takes the same mutex: read the asked server's
+    // rows through the index (C27, ADR-0713) and scan only while it is out of step.
+    if (store.server_signing_key_index.in_step(store.server_signing_keys.size()))
+    {
+        store.server_signing_key_index.for_each(std::string{server_name}, [&](std::size_t position) {
+            return take(store.server_signing_keys[position]);
+        });
+        return keys;
+    }
+    for (auto const& held : store.server_signing_keys)
+    {
+        if (!take(held))
+        {
+            break;
+        }
+    }
+    return keys;
 }
 
 namespace
@@ -2932,6 +3499,79 @@ namespace
     return MembershipStoreResult::stored;
 }
 
+[[nodiscard]] auto store_memberships_batch(PersistentStore& store, std::vector<PersistentMembership> rows) -> bool
+{
+    if (rows.empty())
+    {
+        return true;
+    }
+    if (!sync_stream_has_write_reserve(store))
+    {
+        return false;
+    }
+    sync_membership_key_index(store);
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(rows.size());
+    auto seen = std::set<std::pair<std::string, std::string>>{};
+    auto fresh = std::vector<PersistentMembership>{};
+    auto updates = std::vector<PersistentMembership>{};
+    for (auto& row : rows)
+    {
+        if (!seen.emplace(row.room_id, row.user_id).second)
+        {
+            continue;
+        }
+        if (membership_exists(store, row))
+        {
+            statements.push_back(record_statement(
+                "update_membership",
+                "UPDATE membership SET membership = $3, stream_ordering = $4 WHERE room_id = $1 AND user_id = $2",
+                {
+                    {row.room_id,                         false},
+                    {row.user_id,                         false},
+                    {row.membership,                      false},
+                    {std::to_string(row.stream_ordering), false}
+            }));
+            updates.push_back(std::move(row));
+        }
+        else
+        {
+            statements.push_back(record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
+                                                  {
+                                                      {row.room_id,                         false},
+                                                      {row.user_id,                         false},
+                                                      {row.membership,                      false},
+                                                      {std::to_string(row.stream_ordering), false}
+            }));
+            fresh.push_back(std::move(row));
+        }
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        log_diagnostic("membership.batch.rejected", {
+                                                        {"reason", "persistence backend rejected transaction", false}
+        });
+        return false;
+    }
+    for (auto& row : updates)
+    {
+        // Through the membership index: the work is one lookup per row, not a walk of every room's rows.
+        auto const* const held = find_membership_row(store, row.room_id, row.user_id);
+        if (held != nullptr)
+        {
+            auto& target = store.memberships[static_cast<std::size_t>(held - store.memberships.data())];
+            target.membership = std::move(row.membership);
+            target.stream_ordering = row.stream_ordering;
+        }
+    }
+    for (auto& row : fresh)
+    {
+        store.memberships.push_back(std::move(row));
+        note_membership_row_appended(store);
+    }
+    return true;
+}
+
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool
 {
@@ -3167,7 +3807,24 @@ namespace
     if (invite_is_knock(invite))
     {
         auto const others = charged.size() - (held != nullptr && quota_of(*held) == quota_group ? 1U : 0U);
-        return store.max_remote_knocks_per_user > 0U && others + 1U > store.max_remote_knocks_per_user;
+        if (store.max_remote_knocks_per_user > 0U && others + 1U > store.max_remote_knocks_per_user)
+        {
+            return true;
+        }
+        if (store.max_remote_knock_bytes_per_user == 0U)
+        {
+            return false;
+        }
+        // C31: the bytes of the user's other knock records, at most `max_remote_knocks_per_user` rows.
+        auto knock_bytes = invite_bytes(invite);
+        for (auto const position : charged)
+        {
+            if (&store.invites[position] != held)
+            {
+                knock_bytes += invite_bytes(store.invites[position]);
+            }
+        }
+        return knock_bytes > store.max_remote_knock_bytes_per_user;
     }
 
     auto const origin_group = invite_origin_group_of(local, invite);
@@ -3204,6 +3861,10 @@ namespace
     {
         return true;
     }
+    if (invite_bytes_over_origin_or_total_cap(store, held, origin_group, incoming_bytes))
+    {
+        return true;
+    }
     if (store.max_remote_invites_per_origin == 0U)
     {
         return false;
@@ -3228,6 +3889,7 @@ auto rebuild_invite_indexes(PersistentStore& store) -> void
     store.invite_key_index.clear();
     store.invite_quota_index.clear();
     store.invite_origin_index.clear();
+    rebuild_invite_byte_ledger(store);
     sync_invite_indexes(store);
 }
 
@@ -3496,12 +4158,14 @@ auto rebuild_state_index(PersistentStore& store) -> void
         {
             return std::nullopt;
         }
+        store.state_rows_examined.add(1U);
         if (entry->second < store.state.size() &&
             state_row_is(store.state[entry->second], room_id, event_type, state_key))
         {
             return store.state[entry->second].event_id;
         }
     }
+    store.state_rows_examined.add(store.state.size());
     for (auto const& row : store.state)
     {
         if (state_row_is(row, room_id, event_type, state_key))
@@ -3533,6 +4197,7 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
         };
         if (std::ranges::all_of(entry->second, names_the_room))
         {
+            store.state_rows_examined.add(entry->second.size());
             for (auto const position : entry->second)
             {
                 visit(store.state[position]);
@@ -3540,6 +4205,7 @@ auto for_each_room_state_row(PersistentStore const& store, std::string_view room
             return;
         }
     }
+    store.state_rows_examined.add(store.state.size());
     for (auto const& row : store.state)
     {
         if (row.room_id == room_id)
@@ -4041,6 +4707,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                                                         update.state->state_key,
                                                                         update.state->event_id),
                                              store.state_transitions.size() - 1U);
+        // Invariant (ADR-0697): the revision moves after every in-memory change to a room's current state, so no
+        // reader can stamp a revision newer than the row it read. Prepare moved it too, but a caller may let readers in
+        // between prepare and apply; they read the old row under that revision, and this move makes their stamp stale.
+        note_room_state_changed(store, update.state->room_id);
     }
     if (update.membership.has_value())
     {
@@ -4071,6 +4741,82 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
         return false;
     }
     apply_store_event_with_state(store, *prepared);
+    return true;
+}
+
+[[nodiscard]] auto prepare_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events)
+    -> std::optional<PreparedOutlierBatch>
+{
+    auto batch = PreparedOutlierBatch{};
+    auto seen = std::set<std::string>{};
+    for (auto& event : events)
+    {
+        if (!seen.insert(event.event_id).second)
+        {
+            continue;
+        }
+        if (auto const held = store.events.find(event.event_id); held != store.events.end())
+        {
+            if (held->room_id != event.room_id)
+            {
+                return std::nullopt;
+            }
+            continue;
+        }
+        auto update = prepare_store_event_with_state(store, std::move(event), std::nullopt, std::nullopt);
+        if (!update.has_value())
+        {
+            return std::nullopt;
+        }
+        batch.statements.insert(batch.statements.end(), update->statements.begin(), update->statements.end());
+        batch.updates.push_back(std::move(*update));
+    }
+    return batch;
+}
+
+[[nodiscard]] auto commit_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> bool
+{
+    if (batch.updates.empty())
+    {
+        return true;
+    }
+    if (!commit_persistent_transaction(store, batch.statements))
+    {
+        log_diagnostic("event_state.batch_rejected",
+                       {
+                           {"events", std::to_string(batch.updates.size()),       false},
+                           {"reason", "persistence backend rejected transaction", false}
+        });
+        return false;
+    }
+    return true;
+}
+
+auto apply_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> void
+{
+    for (auto const& update : batch.updates)
+    {
+        // An event this store came to hold while the transaction was being written was written by a transaction that
+        // committed first, or its own commit would have failed on the primary key: it is already in memory.
+        if (store.events.find(update.event.event_id) == store.events.end())
+        {
+            apply_store_event_with_state(store, update);
+        }
+    }
+}
+
+[[nodiscard]] auto store_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events) -> bool
+{
+    auto batch = prepare_outlier_events_batch(store, std::move(events));
+    if (!batch.has_value())
+    {
+        return false;
+    }
+    if (!commit_prepared_outlier_batch(store, *batch))
+    {
+        return false;
+    }
+    apply_prepared_outlier_batch(store, *batch);
     return true;
 }
 
@@ -4447,6 +5193,7 @@ auto rebuild_forward_extremity_servers(PersistentStore& store) -> void
     }
     // A resolution reads an event's status, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    store.state_before_memo.forget_room(existing->room_id);
     note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [status](PersistentEvent& event) {
         event.status = std::string{status};
@@ -4510,6 +5257,7 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     }
     // A resolution reads an event's JSON, so what it came to may no longer hold (ADR-0600).
     store.resolved_state_memo.forget_room(existing->room_id);
+    store.state_before_memo.forget_room(existing->room_id);
     note_room_state_changed(store, existing->room_id);
     store.events.modify(existing, [&json](PersistentEvent& event) {
         event.json = std::move(json);
@@ -4802,6 +5550,9 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
         store.key_signature_target_index[store.key_signatures[position].target_user_id].push_back(position);
     }
     store.key_signature_indexed_rows = store.key_signatures.size();
+    store.key_signature_key_index.rebuild(store.key_signatures, key_signature_key_of);
+    store.key_signature_signer_index.rebuild(store.key_signatures, key_signature_signer_of);
+    store.key_signature_target_key_index.rebuild(store.key_signatures, key_signature_target_key_of);
 }
 
 [[nodiscard]] auto key_signatures_for_target(PersistentStore const& store, std::string_view target_user_id)
@@ -4844,50 +5595,91 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
 
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool
 {
-    if (!key_payload_is_valid(signature.json) || signature.target_device_id.empty())
+    return store_key_signatures(store, std::vector<PersistentKeySignature>{std::move(signature)});
+}
+
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures) -> bool
+{
+    auto all_accepted = true;
+    std::erase_if(signatures, [&all_accepted](PersistentKeySignature const& signature) {
+        auto const refused = !key_payload_is_valid(signature.json) || signature.target_device_id.empty();
+        all_accepted = all_accepted && !refused;
+        return refused;
+    });
+    if (signatures.empty())
+    {
+        return all_accepted;
+    }
+    // One transaction for the whole upload (run-3 C14): a commit per signature was most of the cost.
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(signatures.size());
+    for (auto const& signature : signatures)
+    {
+        statements.push_back(record_statement(
+            "upsert_key_signature",
+            "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
+            "target_user_id, target_device_id) DO UPDATE SET json = $4",
+            {public_value(signature.signer_user_id), public_value(signature.target_user_id),
+             public_value(signature.target_device_id), sensitive_value(signature.json)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    if (!record_and_persist(
-            store, record_statement("upsert_key_signature",
-                                    "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
-                                    "target_user_id, target_device_id) DO UPDATE SET json = $4",
-                                    {public_value(signature.signer_user_id), public_value(signature.target_user_id),
-                                     public_value(signature.target_device_id), sensitive_value(signature.json)})))
-    {
-        return false;
-    }
-    // Rows pushed directly (tests) leave the index behind the vector; a stale
-    // index is rebuilt below rather than patched.
-    auto const index_was_current = store.key_signature_indexed_rows == store.key_signatures.size();
-    auto const existing =
-        std::ranges::find_if(store.key_signatures, [&signature](PersistentKeySignature const& current) {
-            return current.signer_user_id == signature.signer_user_id &&
-                   current.target_user_id == signature.target_user_id &&
-                   current.target_device_id == signature.target_device_id;
-        });
-    if (existing != store.key_signatures.end())
-    {
-        // Updated in place: the row keeps its position, so the index stays valid.
-        existing->json = std::move(signature.json);
-        if (!index_was_current)
-        {
-            rebuild_key_signature_index(store);
-        }
-        return true;
-    }
-    auto const target_user_id = signature.target_user_id;
-    store.key_signatures.push_back(std::move(signature));
-    if (index_was_current)
-    {
-        store.key_signature_target_index[target_user_id].push_back(store.key_signatures.size() - 1U);
-        store.key_signature_indexed_rows = store.key_signatures.size();
-    }
-    else
+    // A stale index (rows pushed directly) is rebuilt first, so every lookup below is exact.
+    if (!key_signature_indexes_in_step(store))
     {
         rebuild_key_signature_index(store);
     }
-    return true;
+    for (auto& signature : signatures)
+    {
+        auto const key = key_signature_key_of(signature);
+        if (auto const existing = store.key_signature_key_index.find(key);
+            existing.has_value() && *existing < store.key_signatures.size() &&
+            key_signature_key_of(store.key_signatures[*existing]) == key)
+        {
+            // Updated in place: the row keeps its position, so every index stays valid.
+            store.key_signatures[*existing].json = std::move(signature.json);
+            continue;
+        }
+        store.key_signatures.push_back(std::move(signature));
+        auto const& added = store.key_signatures.back();
+        store.key_signature_target_index[added.target_user_id].push_back(store.key_signatures.size() - 1U);
+        store.key_signature_indexed_rows = store.key_signatures.size();
+        store.key_signature_key_index.note_appended(store.key_signatures.size(), key_signature_key_of(added));
+        store.key_signature_signer_index.note_appended(store.key_signatures.size(), added.signer_user_id);
+        store.key_signature_target_key_index.note_appended(store.key_signatures.size(),
+                                                            key_signature_target_key_of(added));
+    }
+    return all_accepted;
+}
+
+auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,
+                                   std::function<bool(PersistentKeySignature const&)> const& visit) -> void
+{
+    for (auto const position : positions_in_group(store.key_signature_signer_index, store.key_signatures,
+                                                  std::string{signer_user_id}, key_signature_signer_of,
+                                                  store.key_rows_examined))
+    {
+        if (!visit(store.key_signatures[position]))
+        {
+            return;
+        }
+    }
+}
+
+[[nodiscard]] auto key_signatures_for_target_key(PersistentStore const& store, std::string_view target_user_id,
+                                                 std::string_view target_key_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>
+{
+    auto matches = std::vector<std::reference_wrapper<PersistentKeySignature const>>{};
+    for (auto const position : positions_in_group(store.key_signature_target_key_index, store.key_signatures,
+                                                  composite_key({target_user_id, target_key_id}),
+                                                  key_signature_target_key_of, store.key_rows_examined))
+    {
+        matches.emplace_back(store.key_signatures[position]);
+    }
+    return matches;
 }
 
 namespace
@@ -4948,6 +5740,7 @@ namespace
     auto erase_backup_session_at(PersistentStore& store, std::size_t position) -> void
     {
         auto& rows = store.key_backup_sessions;
+        digest_remove(ensure_backup_digest(store, rows[position].user_id, rows[position].version), rows[position]);
         auto const old_count = rows.size();
         auto const in_step = store.key_backup_session_index.in_step(old_count) &&
                              store.key_backup_version_session_index.in_step(old_count);
@@ -4983,9 +5776,21 @@ namespace
         }
     }
 
+    // Replaces the JSON of the session at `position`, moving the version's digest from the old content to the new.
+    auto replace_backup_session_json(PersistentStore& store, std::size_t position, std::string json) -> void
+    {
+        auto& row = store.key_backup_sessions[position];
+        auto& digest = ensure_backup_digest(store, row.user_id, row.version);
+        digest_remove(digest, row);
+        row.json = std::move(json);
+        digest_add(digest, row);
+    }
+
     // Appends `session` and records it in both indexes.
     auto append_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> void
     {
+        auto& digest = ensure_backup_digest(store, session.user_id, session.version);
+        digest_add(digest, session);
         store.key_backup_sessions.push_back(std::move(session));
         auto const& added = store.key_backup_sessions.back();
         store.key_backup_session_index.note_appended(store.key_backup_sessions.size(), backup_session_key_of(added));
@@ -5054,6 +5859,28 @@ auto find_key_backup_session(PersistentStore const& store, std::string_view user
 {
     auto const position = find_backup_session_position(store, user_id, version, room_id, session_id);
     return position.has_value() ? &store.key_backup_sessions[*position] : nullptr;
+}
+
+auto key_backup_content_digest(PersistentStore const& store, std::string_view user_id, std::string_view version)
+    -> std::string
+{
+    auto digest = KeyBackupDigest{};
+    auto const key = backup_digest_key(user_id, version);
+    auto const stored = store.key_backup_digests.find(key);
+    if (store.key_backup_version_session_index.in_step(store.key_backup_sessions.size()) &&
+        stored != store.key_backup_digests.end() &&
+        stored->second.count == store.key_backup_version_session_index.count(key))
+    {
+        digest = stored->second;
+    }
+    else
+    {
+        digest = recompute_backup_digest(store, user_id, version);
+    }
+    auto bytes = std::string(sizeof(digest.count) + sizeof(digest.sum), '\0');
+    std::memcpy(bytes.data(), &digest.count, sizeof(digest.count));
+    std::memcpy(bytes.data() + sizeof(digest.count), digest.sum.data(), sizeof(digest.sum));
+    return bytes;
 }
 
 auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
@@ -5181,6 +6008,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
     }
     sync_key_backup_session_indexes(store);
     erase_backup_sessions_at(store, backup_session_positions(store, user_id, version, std::nullopt));
+    store.key_backup_digests.erase(backup_digest_key(user_id, version));
     // Versions keep their order (the current one is the user's last), so this erase shifts and the version index,
     // which holds at most the versions, is rebuilt.
     store.key_backup_versions.erase(store.key_backup_versions.begin() + static_cast<std::ptrdiff_t>(*version_position));
@@ -5211,7 +6039,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
             find_backup_session_position(store, session.user_id, session.version, session.room_id, session.session_id);
         existing.has_value())
     {
-        store.key_backup_sessions[*existing].json = std::move(session.json);
+        replace_backup_session_json(store, *existing, std::move(session.json));
         return true;
     }
     append_backup_session(store, std::move(session));
@@ -5249,7 +6077,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
                                                                session.session_id);
             existing.has_value())
         {
-            store.key_backup_sessions[*existing].json = std::move(session.json);
+            replace_backup_session_json(store, *existing, std::move(session.json));
         }
         else
         {
@@ -6179,6 +7007,7 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
 [[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
                                                     std::size_t limit) -> std::vector<PersistentAuditEvent>
 {
+    store.audit_type_queries.add(1U);
     limit = std::min(limit, max_audit_query_rows);
     if (limit == 0U)
     {
@@ -6222,6 +7051,98 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
         return false;
     }
     store.admin_actions.push_back(std::move(action));
+    return true;
+}
+
+namespace
+{
+
+    [[nodiscard]] auto policy_rule_upsert_statement(PersistentPolicyRule const& rule) -> PreparedStatement
+    {
+        return record_statement("upsert_policy_rule",
+                                "INSERT INTO policy_rules VALUES ($1, $2, $3, $4, $5) ON CONFLICT (rule_id) DO UPDATE "
+                                "SET scope = $2, entity = $3, action = $4, reason = $5",
+                                {
+                                    {rule.rule_id, false},
+                                    {rule.scope,   false},
+                                    {rule.entity,  false},
+                                    {rule.action,  false},
+                                    {rule.reason,  false}
+        });
+    }
+
+    [[nodiscard]] auto admin_action_insert_statement(PersistentAdminAction const& action) -> PreparedStatement
+    {
+        return record_statement("append_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
+                                {
+                                    {action.admin_user_id, false},
+                                    {action.action,        false},
+                                    {action.target,        false}
+        });
+    }
+
+    auto mirror_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> void
+    {
+        auto existing = std::ranges::find_if(store.policy_rules, [&rule](PersistentPolicyRule const& current) {
+            return current.rule_id == rule.rule_id;
+        });
+        if (existing != store.policy_rules.end())
+        {
+            *existing = std::move(rule);
+            return;
+        }
+        store.policy_rules.push_back(std::move(rule));
+    }
+
+} // namespace
+
+[[nodiscard]] auto commit_policy_rule_with_audit(PersistentStore& store, PersistentPolicyRule rule,
+                                                 PersistentAdminAction action, PersistentAuditEvent audit) -> bool
+{
+    if (rule.rule_id.empty() || rule.scope.empty() || rule.entity.empty() || rule.action.empty())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements =
+        std::vector<PreparedStatement>{policy_rule_upsert_statement(rule), admin_action_insert_statement(action),
+                                       audit_insert_statement("policy_rule_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    mirror_policy_rule(store, std::move(rule));
+    store.admin_actions.push_back(std::move(action));
+    remember_audit_event(store, std::move(audit));
+    return true;
+}
+
+[[nodiscard]] auto commit_policy_rule_removal_with_audit(PersistentStore& store, std::string_view rule_id,
+                                                         PersistentAdminAction action, PersistentAuditEvent audit)
+    -> bool
+{
+    if (rule_id.empty())
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.policy_rules, [rule_id](PersistentPolicyRule const& current) {
+        return current.rule_id == rule_id;
+    });
+    if (existing == store.policy_rules.end())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("delete_policy_rule", "DELETE FROM policy_rules WHERE rule_id = $1", {public_value(rule_id)}),
+        admin_action_insert_statement(action), audit_insert_statement("policy_rule_audit", audit)};
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    store.policy_rules.erase(existing);
+    store.admin_actions.push_back(std::move(action));
+    remember_audit_event(store, std::move(audit));
     return true;
 }
 
@@ -6539,68 +7460,246 @@ namespace
                left.user_id == right.user_id && left.thread_id == right.thread_id;
     }
 
+    // A receipt filed under a thread root, not the main timeline or no thread (ADR-0737).
+    [[nodiscard]] auto is_threaded_receipt(PersistentReceipt const& receipt) noexcept -> bool
+    {
+        return !receipt.thread_id.empty() && receipt.thread_id != main_receipt_thread_id;
+    }
+
+    [[nodiscard]] auto find_receipt_position(PersistentStore const& store, PersistentReceipt const& key)
+        -> std::optional<std::size_t>
+    {
+        return find_in_group(
+            store.receipt_user_room_index, store.receipts, receipt_user_room_group_of(key), receipt_user_room_group_of,
+            [&key](PersistentReceipt const& current) {
+                return same_receipt_key(current, key);
+            },
+            store.receipt_rows_examined);
+    }
+
+    // Erases the row with `key`'s identity, if there is one. The indexes must be in step.
+    auto erase_receipt_row(PersistentStore& store, PersistentReceipt const& key) -> void
+    {
+        if (auto const position = find_receipt_position(store, key); position.has_value())
+        {
+            erase_receipt_position(store, *position);
+        }
+    }
+
+} // namespace
+
+namespace
+{
+
+    // One (user, room)'s receipt rows as the batch leaves them, beside the rows as the store holds them.
+    struct ReceiptGroupPlan final
+    {
+        std::vector<PersistentReceipt> original{};
+        std::vector<PersistentReceipt> rows{};
+    };
+
+    [[nodiscard]] auto receipt_row_is_valid(PersistentReceipt const& receipt) noexcept -> bool
+    {
+        // Defence in depth (F-53): an event ID, and the thread root's event ID a receipt may be filed
+        // under, are at most 255 bytes (Appendices, "Event IDs"). Callers check the shape; this keeps a
+        // row from growing past what a receipt can mean, whichever path writes it.
+        return !receipt.room_id.empty() && !receipt.receipt_type.empty() && !receipt.user_id.empty() &&
+               !receipt.event_id.empty() && receipt.event_id.size() <= events::max_id_length_bytes &&
+               receipt.thread_id.size() <= events::max_id_length_bytes;
+    }
+
+    [[nodiscard]] auto receipt_delete_statement(PersistentReceipt const& victim) -> PreparedStatement
+    {
+        return record_statement(
+            "delete_receipt",
+            "DELETE FROM receipts WHERE room_id = $1 AND receipt_type = $2 AND user_id = $3 AND thread_id = $4",
+            {public_value(victim.room_id), public_value(victim.receipt_type), public_value(victim.user_id),
+             public_value(victim.thread_id)});
+    }
+
+    // Commits `incoming` (and the deletion of `evicted`, and of the oldest remote rows when the table would pass
+    // `max_rows`) as one transaction, then applies it to the mirror. Every row of one (user, room) the batch touches
+    // is planned in memory first (at most the threaded cap and a few more rows), so the work is bounded by the batch
+    // and by the eviction, never by the table (ADR-0737, ADR-0652).
+    [[nodiscard]] auto commit_receipts(PersistentStore& store, std::vector<PersistentReceipt> incoming,
+                                       std::optional<PersistentReceipt> evicted, std::size_t max_rows) -> bool
+    {
+        if (!std::ranges::all_of(incoming, receipt_row_is_valid))
+        {
+            return false;
+        }
+        if (incoming.empty())
+        {
+            return true;
+        }
+        sync_receipt_indexes(store);
+        auto plans = std::map<std::string, ReceiptGroupPlan>{};
+        auto const plan_for = [&](PersistentReceipt const& key) -> ReceiptGroupPlan& {
+            auto const group = receipt_user_room_group_of(key);
+            auto const found = plans.find(group);
+            if (found != plans.end())
+            {
+                return found->second;
+            }
+            auto& plan = plans[group];
+            for (auto const position : positions_in_group(store.receipt_user_room_index, store.receipts, group,
+                                                          receipt_user_room_group_of, store.receipt_rows_examined))
+            {
+                plan.original.push_back(store.receipts[position]);
+            }
+            plan.rows = plan.original;
+            return plan;
+        };
+        auto statements = std::vector<PreparedStatement>{};
+        if (evicted.has_value())
+        {
+            auto& plan = plan_for(*evicted);
+            std::erase_if(plan.rows, [&](PersistentReceipt const& row) {
+                return same_receipt_key(row, *evicted);
+            });
+            statements.push_back(receipt_delete_statement(*evicted));
+        }
+        // The batch takes its sync stream positions together and persists the counter once, inside its own
+        // transaction, instead of one commit per position (ADR-0652). The ceiling check is allocate_sync_stream_id's.
+        if (store.next_sync_stream_id + incoming.size() >=
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        {
+            throw std::overflow_error{"the sync stream counter is at its ceiling"};
+        }
+        for (auto& receipt : incoming)
+        {
+            receipt.stream_id = ++store.next_sync_stream_id;
+            auto& plan = plan_for(receipt);
+            auto const existing = std::ranges::find_if(plan.rows, [&](PersistentReceipt const& row) {
+                return same_receipt_key(row, receipt);
+            });
+            if (existing != plan.rows.end())
+            {
+                *existing = receipt;
+            }
+            else
+            {
+                // A new threaded row past the cap takes the place of the user's own oldest threaded row in the
+                // room (ADR-0737), so a user cannot grow the table by naming thread after thread.
+                if (is_threaded_receipt(receipt) &&
+                    static_cast<std::size_t>(std::ranges::count_if(plan.rows, is_threaded_receipt)) >=
+                        max_threaded_receipt_rows_per_user_room)
+                {
+                    auto oldest = plan.rows.end();
+                    for (auto row = plan.rows.begin(); row != plan.rows.end(); ++row)
+                    {
+                        if (is_threaded_receipt(*row) &&
+                            (oldest == plan.rows.end() || row->stream_id < oldest->stream_id))
+                        {
+                            oldest = row;
+                        }
+                    }
+                    if (oldest != plan.rows.end())
+                    {
+                        statements.push_back(receipt_delete_statement(*oldest));
+                        plan.rows.erase(oldest);
+                    }
+                }
+                plan.rows.push_back(receipt);
+            }
+            statements.push_back(record_statement(
+                "upsert_receipt",
+                "INSERT INTO receipts (room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id) VALUES "
+                "($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, receipt_type, user_id, thread_id) DO UPDATE SET "
+                "event_id = $5, ts = $6, stream_id = $7",
+                {public_value(receipt.room_id), public_value(receipt.receipt_type), public_value(receipt.user_id),
+                 public_value(receipt.thread_id), public_value(receipt.event_id),
+                 public_value(std::to_string(receipt.ts)), public_value(std::to_string(receipt.stream_id))}));
+        }
+        statements.push_back(record_statement("upsert_sync_stream_watermark",
+                                              "INSERT INTO sync_stream_watermark (singleton, watermark) VALUES (1, $1) "
+                                              "ON CONFLICT (singleton) DO UPDATE SET watermark = excluded.watermark",
+                                              {
+                                                  {std::to_string(store.next_sync_stream_id), false}
+        }));
+        // Past `max_rows` the oldest remote rows go: read from the ordered index, so the cost is the number evicted,
+        // not the table (a local user's receipts are their unread state; a peer must not be able to erase them).
+        auto victims = std::vector<PersistentReceipt>{};
+        if (max_rows != 0U)
+        {
+            auto total = store.receipts.size();
+            for (auto const& [group, plan] : plans)
+            {
+                total = total + plan.rows.size() - plan.original.size();
+            }
+            auto need = total > max_rows ? total - max_rows : std::size_t{0U};
+            for (auto entry = store.receipt_remote_by_stream.begin();
+                 need > 0U && entry != store.receipt_remote_by_stream.end(); ++entry)
+            {
+                if (plans.contains(entry->second))
+                {
+                    continue;
+                }
+                for (auto const position :
+                     positions_in_group(store.receipt_user_room_index, store.receipts, entry->second,
+                                        receipt_user_room_group_of, store.receipt_rows_examined))
+                {
+                    auto const& row = store.receipts[position];
+                    if (row.stream_id == entry->first && receipt_is_remote(store, row))
+                    {
+                        victims.push_back(row);
+                        statements.push_back(receipt_delete_statement(row));
+                        --need;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!commit_persistent_transaction(store, statements))
+        {
+            return false;
+        }
+        for (auto& [group, plan] : plans)
+        {
+            auto positions = positions_in_group(store.receipt_user_room_index, store.receipts, group,
+                                                receipt_user_room_group_of, store.receipt_rows_examined);
+            std::ranges::sort(positions, std::greater<>{});
+            for (auto const position : positions)
+            {
+                erase_receipt_position(store, position);
+            }
+            for (auto& row : plan.rows)
+            {
+                append_receipt_row(store, std::move(row));
+            }
+        }
+        for (auto const& victim : victims)
+        {
+            erase_receipt_row(store, victim);
+        }
+        return true;
+    }
+
 } // namespace
 
 [[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt,
                                  std::optional<PersistentReceipt> evicted) -> bool
 {
-    if (receipt.room_id.empty() || receipt.receipt_type.empty() || receipt.user_id.empty() || receipt.event_id.empty())
-    {
-        return false;
-    }
-    // Defence in depth (F-53): an event ID, and the thread root's event ID a receipt may be filed
-    // under, are at most 255 bytes (Appendices, "Event IDs"). Callers check the shape; this keeps a
-    // row from growing past what a receipt can mean, whichever path writes it.
-    if (receipt.event_id.size() > events::max_id_length_bytes || receipt.thread_id.size() > events::max_id_length_bytes)
-    {
-        return false;
-    }
-    receipt.stream_id = allocate_sync_stream_id(store);
-    auto statements = std::vector<PreparedStatement>{};
-    if (evicted.has_value())
-    {
-        statements.push_back(record_statement(
-            "delete_receipt",
-            "DELETE FROM receipts WHERE room_id = $1 AND receipt_type = $2 AND user_id = $3 AND thread_id = $4",
-            {public_value(evicted->room_id), public_value(evicted->receipt_type), public_value(evicted->user_id),
-             public_value(evicted->thread_id)}));
-    }
-    statements.push_back(record_statement(
-        "upsert_receipt",
-        "INSERT INTO receipts (room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id) VALUES ($1, $2, "
-        "$3, $4, $5, $6, $7) ON CONFLICT (room_id, receipt_type, user_id, thread_id) DO UPDATE SET event_id = $5, "
-        "ts = $6, stream_id = $7",
-        {public_value(receipt.room_id), public_value(receipt.receipt_type), public_value(receipt.user_id),
-         public_value(receipt.thread_id), public_value(receipt.event_id), public_value(std::to_string(receipt.ts)),
-         public_value(std::to_string(receipt.stream_id))}));
-    if (!commit_persistent_transaction(store, statements))
-    {
-        return false;
-    }
-    if (evicted.has_value())
-    {
-        std::erase_if(store.receipts, [&evicted](PersistentReceipt const& current) {
-            return same_receipt_key(current, *evicted);
-        });
-    }
-    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
-        return same_receipt_key(current, receipt);
-    });
-    if (existing != store.receipts.end())
-    {
-        *existing = std::move(receipt);
-        return true;
-    }
-    store.receipts.push_back(std::move(receipt));
-    return true;
+    auto batch = std::vector<PersistentReceipt>{};
+    batch.push_back(std::move(receipt));
+    return commit_receipts(store, std::move(batch), std::move(evicted), 0U);
+}
+
+[[nodiscard]] auto store_receipts(PersistentStore& store, std::vector<PersistentReceipt> receipts, std::size_t max_rows)
+    -> bool
+{
+    return commit_receipts(store, std::move(receipts), std::nullopt, max_rows);
+}
+
+[[nodiscard]] auto has_receipt(PersistentStore const& store, PersistentReceipt const& key) -> bool
+{
+    return find_receipt_position(store, key).has_value();
 }
 
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool
 {
-    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
-        return same_receipt_key(current, receipt);
-    });
-    if (existing == store.receipts.end())
+    sync_receipt_indexes(store);
+    if (!find_receipt_position(store, receipt).has_value())
     {
         return false;
     }
@@ -6612,8 +7711,33 @@ namespace
     {
         return false;
     }
-    store.receipts.erase(existing);
+    erase_receipt_row(store, receipt);
     return true;
+}
+
+[[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentReceipt const*>
+{
+    auto rows = std::vector<PersistentReceipt const*>{};
+    for (auto const position : positions_in_group(store.receipt_room_index, store.receipts, std::string{room_id},
+                                                  receipt_room_group_of, store.receipt_rows_examined))
+    {
+        rows.push_back(&store.receipts[position]);
+    }
+    return rows;
+}
+
+[[nodiscard]] auto receipts_of_user_in_room(PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::vector<PersistentReceipt const*>
+{
+    auto rows = std::vector<PersistentReceipt const*>{};
+    for (auto const position :
+         positions_in_group(store.receipt_user_room_index, store.receipts, composite_key({room_id, user_id}),
+                            receipt_user_room_group_of, store.receipt_rows_examined))
+    {
+        rows.push_back(&store.receipts[position]);
+    }
+    return rows;
 }
 
 namespace
@@ -6628,12 +7752,125 @@ namespace
         std::string target_device_id{};
     };
 
+    struct RecipientQueue;
+
+    // What one sender holds of a bounded set of queued rows (run-3 C12, ADR-0674): the row and byte counts, and the
+    // rows by stream ID with the queue each is in, so the sender's oldest row is the first entry.
+    struct SenderHold final
+    {
+        std::uint64_t rows{0U};
+        std::uint64_t bytes{0U};
+        std::map<std::uint64_t, RecipientQueue*> by_id{};
+    };
+
+    // The queued rows of one bounded set (a device's queue, or all of a user's queues) grouped by who sent them, with
+    // the senders ranked by how much of the bound each holds (ADR-0674). A sender may hold at most half of the bound; a
+    // full set gives way by evicting the oldest row of the sender holding the most, ties going to the sender with the
+    // oldest row. Every operation is logarithmic in the number of senders. A sender is a local user ID or a remote
+    // server (`to_device_share_of`).
+    class ShareBook final
+    {
+    public:
+        // `rows` and `bytes` are the bound's limits; zero means that dimension is not bounded.
+        auto bound(std::uint64_t rows, std::uint64_t bytes) noexcept -> void
+        {
+            m_max_rows = rows;
+            m_max_bytes = bytes;
+        }
+
+        auto add(std::string const& sender, std::uint64_t stream_id, std::uint64_t bytes, RecipientQueue* queue) -> void
+        {
+            auto& hold = m_holds[sender];
+            if (hold.rows != 0U)
+            {
+                m_ranking.erase(key_of(sender, hold));
+            }
+            ++hold.rows;
+            hold.bytes += bytes;
+            hold.by_id.emplace(stream_id, queue);
+            m_ranking.insert(key_of(sender, hold));
+        }
+
+        auto remove(std::string const& sender, std::uint64_t stream_id, std::uint64_t bytes) -> void
+        {
+            auto const found = m_holds.find(sender);
+            if (found == m_holds.end())
+            {
+                return;
+            }
+            auto& hold = found->second;
+            m_ranking.erase(key_of(sender, hold));
+            hold.by_id.erase(stream_id);
+            --hold.rows;
+            hold.bytes -= bytes;
+            if (hold.rows == 0U)
+            {
+                m_holds.erase(found);
+                return;
+            }
+            m_ranking.insert(key_of(sender, hold));
+        }
+
+        // True when `sender` holds a row, another sender does too, and one more message of `bytes` would take `sender`
+        // past half of the bound. A sender alone in the set has no one to leave room for, so it may use all of it; the
+        // first message of another sender takes room back from the largest holder.
+        [[nodiscard]] auto must_evict_own(std::string const& sender, std::uint64_t bytes) const -> bool
+        {
+            auto const found = m_holds.find(sender);
+            if (found == m_holds.end() || m_holds.size() < 2U)
+            {
+                return false;
+            }
+            return (m_max_rows > 0U && found->second.rows + 1U > m_max_rows / 2U) ||
+                   (m_max_bytes > 0U && found->second.bytes + bytes > m_max_bytes / 2U);
+        }
+
+        // The sender holding the most of the bound, or nullptr when nothing is queued.
+        [[nodiscard]] auto largest() const -> std::string const*
+        {
+            return m_ranking.empty() ? nullptr : &std::get<3>(*m_ranking.rbegin());
+        }
+
+        // The sender's oldest row: its stream ID and queue.
+        [[nodiscard]] auto oldest_of(std::string const& sender) const -> std::pair<std::uint64_t, RecipientQueue*>
+        {
+            auto const& first = *m_holds.at(sender).by_id.begin();
+            return {first.first, first.second};
+        }
+
+    private:
+        // (share in parts per million of the tighter limit, rows, the inverse of the oldest stream ID so that the
+        // oldest row ranks higher, sender): the greatest key is the sender to take a row from.
+        using Key = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::string>;
+
+        [[nodiscard]] auto key_of(std::string const& sender, SenderHold const& hold) const -> Key
+        {
+            auto share = std::uint64_t{0U};
+            if (m_max_rows > 0U)
+            {
+                share = std::max(share, hold.rows * 1'000'000U / m_max_rows);
+            }
+            if (m_max_bytes > 0U)
+            {
+                share = std::max(share, hold.bytes * 1'000'000U / m_max_bytes);
+            }
+            return {share, hold.rows, std::numeric_limits<std::uint64_t>::max() - hold.by_id.begin()->first, sender};
+        }
+
+        std::uint64_t m_max_rows{0U};
+        std::uint64_t m_max_bytes{0U};
+        std::map<std::string, SenderHold> m_holds{};
+        std::set<Key> m_ranking{};
+    };
+
     // One row of a recipient's queue as the byte and count bounds see it.
     struct QueuedRow final
     {
         std::uint64_t stream_id{0U};
         std::uint64_t created_at_ms{0U};
         std::uint64_t bytes{0U};
+        // Who the row is charged to (run-3 C12, ADR-0674): a local sender's user ID, a remote sender's server.
+        std::string sender{};
     };
 
     // A recipient's rows, oldest first, and their total bytes. Built from the rows once per batch, so the
@@ -6645,15 +7882,17 @@ namespace
         std::string device_id{};
         std::deque<QueuedRow> rows{};
         std::uint64_t bytes{0U};
+        // The queue's rows by sender, against the per-device bound.
+        ShareBook book{};
     };
 
-    // All of one user's queues together (ADR-0618), with each non-empty queue listed under its oldest row, so the
-    // user's oldest row is the first entry whichever device holds it.
+    // All of one user's queues together (ADR-0618): their row and byte totals and, against the per-user bound, their
+    // rows by sender, so the oldest row of a sender across devices is found whichever device holds it.
     struct RecipientUser final
     {
         std::uint64_t rows{0U};
         std::uint64_t bytes{0U};
-        std::map<std::pair<std::uint64_t, std::string>, RecipientQueue*> oldest{};
+        ShareBook book{};
     };
 
     // The rows one atomic to-device write adds and evicts, and the statements
@@ -6688,20 +7927,16 @@ namespace
                store.max_to_device_bytes_per_user > 0U;
     }
 
-    auto list_queue(RecipientUser& user, RecipientQueue& queue) -> void
+    // What a sender's queued rows are charged to: a sender on this server is its own user ID, a sender on another
+    // server is that server, which chooses its users' IDs and so cannot be split by them (run-3 C12, ADR-0674).
+    [[nodiscard]] auto to_device_share_of(PersistentStore const& store, std::string_view sender_user_id) -> std::string
     {
-        if (!queue.rows.empty())
+        auto const colon = sender_user_id.find(':');
+        if (colon == std::string_view::npos || sender_user_id.substr(colon + 1U) == store.local_server_name)
         {
-            user.oldest.insert_or_assign({queue.rows.front().stream_id, queue.key}, &queue);
+            return std::string{sender_user_id};
         }
-    }
-
-    auto unlist_queue(RecipientUser& user, RecipientQueue const& queue) -> void
-    {
-        if (!queue.rows.empty())
-        {
-            user.oldest.erase({queue.rows.front().stream_id, queue.key});
-        }
+        return std::string{sender_user_id.substr(colon + 1U)};
     }
 
     [[nodiscard]] auto to_device_message_is_valid(PersistentStore const& store,
@@ -6732,7 +7967,8 @@ namespace
             return;
         }
         sync_to_device_indexes(store);
-        auto const queue_of = [&batch](std::string_view user_id, std::string_view device_id) -> RecipientQueue& {
+        auto const queue_of = [&batch, &store](std::string_view user_id,
+                                               std::string_view device_id) -> RecipientQueue& {
             auto key = std::string{};
             assign_recipient_key(key, user_id, device_id);
             auto& queue = batch.queues[key];
@@ -6741,6 +7977,8 @@ namespace
                 queue.key = std::move(key);
                 queue.user_id = std::string{user_id};
                 queue.device_id = std::string{device_id};
+                queue.book.bound(store.max_to_device_messages_per_user_device,
+                                 store.max_to_device_bytes_per_user_device);
             }
             return queue;
         };
@@ -6752,6 +7990,7 @@ namespace
             {
                 continue;
             }
+            user->second.book.bound(store.max_to_device_messages_per_user, store.max_to_device_bytes_per_user);
             for (auto const position :
                  positions_in_group(store.to_device_user_index, store.to_device_messages, message.target_user_id,
                                     to_device_user_group_of, store.to_device_rows_examined))
@@ -6759,7 +7998,10 @@ namespace
                 auto const& row = store.to_device_messages[position];
                 auto const bytes = static_cast<std::uint64_t>(row.content_json.size());
                 auto& queue = queue_of(row.target_user_id, row.target_device_id);
-                queue.rows.push_back({row.stream_id, row.created_at_ms, bytes});
+                auto const sender = to_device_share_of(store, row.sender_user_id);
+                queue.rows.push_back({row.stream_id, row.created_at_ms, bytes, sender});
+                queue.book.add(sender, row.stream_id, bytes, &queue);
+                user->second.book.add(sender, row.stream_id, bytes, &queue);
                 queue.bytes += bytes;
                 ++user->second.rows;
                 user->second.bytes += bytes;
@@ -6768,8 +8010,28 @@ namespace
         for (auto& [recipient, queue] : batch.queues)
         {
             std::ranges::sort(queue.rows, {}, &QueuedRow::stream_id);
-            list_queue(batch.users[queue.user_id], queue);
         }
+    }
+
+    // Takes the row `stream_id` out of `queue` for `batch`: the DELETE statement, the eviction record, and every
+    // total and share that counted it. The row is found by a binary search of the queue, which is in stream order.
+    auto evict_queued_row(ToDeviceBatch& batch, RecipientUser& user, RecipientQueue& queue, std::uint64_t stream_id)
+        -> void
+    {
+        auto const row = std::ranges::lower_bound(queue.rows, stream_id, {}, &QueuedRow::stream_id);
+        batch.statements.push_back(
+            record_statement("delete_to_device_message",
+                             "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                             "target_device_id = $3",
+                             {public_value(std::to_string(row->stream_id)), public_value(queue.user_id),
+                              public_value(queue.device_id)}));
+        batch.evicted.push_back({row->stream_id, queue.user_id, queue.device_id});
+        queue.bytes -= row->bytes;
+        --user.rows;
+        user.bytes -= row->bytes;
+        queue.book.remove(row->sender, row->stream_id, row->bytes);
+        user.book.remove(row->sender, row->stream_id, row->bytes);
+        queue.rows.erase(row);
     }
 
     // Allocates the message's stream id, works out which rows the per-recipient
@@ -6779,6 +8041,11 @@ namespace
     // Needs `index_to_device_recipients` to have run for the batch.
     // The stream id is consumed even if the batch is never committed; ids are
     // only ever skipped, never reused.
+    //
+    // Run-3 C12 (ADR-0674): no sender can stop another sender's message from being queued. At each bound (the device's
+    // queue, then the user's queues) a sender may hold at most half; a message from a sender at its share evicts that
+    // sender's own oldest row, and a message that finds the bound full evicts the oldest row of the sender holding the
+    // most, which is never the incoming sender's message itself. Nothing is dropped.
     auto prepare_to_device_enqueue(PersistentStore& store, PersistentToDeviceMessage message, ToDeviceBatch& batch)
         -> void
     {
@@ -6795,61 +8062,65 @@ namespace
             assign_recipient_key(key, message.target_user_id, message.target_device_id);
             auto& queue = batch.queues[key];
             auto& user = batch.users[message.target_user_id];
-            auto const evict = [&](RecipientQueue& from, QueuedRow const& row) {
-                batch.statements.push_back(
-                    record_statement("delete_to_device_message",
-                                     "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
-                                     "target_device_id = $3",
-                                     {public_value(std::to_string(row.stream_id)), public_value(from.user_id),
-                                      public_value(from.device_id)}));
-                batch.evicted.push_back({row.stream_id, from.user_id, from.device_id});
-                from.bytes -= row.bytes;
-                --user.rows;
-                user.bytes -= row.bytes;
-            };
-            unlist_queue(user, queue);
-            // created_at_ms == 0 is a row written before migration 019: its age is unknown, so it is not
-            // expired here, as in the drain. The count and byte bounds still apply to it.
+            auto const sender = to_device_share_of(store, message.sender_user_id);
+            // Rows come off the front in stream order, which is age order. created_at_ms == 0 is a row written before
+            // migration 019: its age is unknown, so it is not expired here, as in the drain; the count and byte bounds
+            // still apply to it.
             if (ttl_ms > 0U)
             {
-                std::erase_if(queue.rows, [&](QueuedRow const& row) {
-                    auto const expired =
-                        row.created_at_ms > 0U && now_ms > row.created_at_ms && now_ms - row.created_at_ms >= ttl_ms;
-                    if (expired)
+                for (auto row = queue.rows.begin(); row != queue.rows.end();)
+                {
+                    if (row->created_at_ms == 0U)
                     {
-                        evict(queue, row);
+                        ++row;
+                        continue;
                     }
-                    return expired;
-                });
+                    if (now_ms <= row->created_at_ms || now_ms - row->created_at_ms < ttl_ms)
+                    {
+                        break;
+                    }
+                    auto const stream_id = row->stream_id;
+                    evict_queued_row(batch, user, queue, stream_id);
+                    row = std::ranges::lower_bound(queue.rows, stream_id, {}, &QueuedRow::stream_id);
+                }
             }
-            // Oldest first: room is made for the incoming message by dropping the rows that have waited longest.
-            while (!queue.rows.empty() && ((store.max_to_device_messages_per_user_device > 0U &&
-                                            queue.rows.size() >= store.max_to_device_messages_per_user_device) ||
-                                           (store.max_to_device_bytes_per_user_device > 0U &&
-                                            queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device)))
-            {
-                evict(queue, queue.rows.front());
-                queue.rows.pop_front();
-            }
-            list_queue(user, queue);
-            // Then the user as a whole: the user's oldest row goes first, whichever device holds it.
-            while (!user.oldest.empty() && ((store.max_to_device_messages_per_user > 0U &&
-                                             user.rows >= store.max_to_device_messages_per_user) ||
-                                            (store.max_to_device_bytes_per_user > 0U &&
-                                             user.bytes + message_bytes > store.max_to_device_bytes_per_user)))
-            {
-                auto* const from = user.oldest.begin()->second;
-                user.oldest.erase(user.oldest.begin());
-                evict(*from, from->rows.front());
-                from->rows.pop_front();
-                list_queue(user, *from);
-            }
-            unlist_queue(user, queue);
-            queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes});
+            auto const settle = [&](ShareBook& book, auto const& over_budget) {
+                while (book.must_evict_own(sender, message_bytes))
+                {
+                    auto const [stream_id, from] = book.oldest_of(sender);
+                    evict_queued_row(batch, user, *from, stream_id);
+                }
+                while (over_budget())
+                {
+                    auto const* const victim = book.largest();
+                    if (victim == nullptr)
+                    {
+                        break;
+                    }
+                    auto const [stream_id, from] = book.oldest_of(*victim);
+                    evict_queued_row(batch, user, *from, stream_id);
+                }
+            };
+            settle(queue.book, [&] {
+                return !queue.rows.empty() &&
+                       ((store.max_to_device_messages_per_user_device > 0U &&
+                         queue.rows.size() >= store.max_to_device_messages_per_user_device) ||
+                        (store.max_to_device_bytes_per_user_device > 0U &&
+                         queue.bytes + message_bytes > store.max_to_device_bytes_per_user_device));
+            });
+            // Then the user as a whole: whichever device holds a sender's oldest row loses it first (ADR-0618).
+            settle(user.book, [&] {
+                return (store.max_to_device_messages_per_user > 0U &&
+                        user.rows >= store.max_to_device_messages_per_user) ||
+                       (store.max_to_device_bytes_per_user > 0U &&
+                        user.bytes + message_bytes > store.max_to_device_bytes_per_user);
+            });
+            queue.rows.push_back({message.stream_id, message.created_at_ms, message_bytes, sender});
             queue.bytes += message_bytes;
             ++user.rows;
             user.bytes += message_bytes;
-            list_queue(user, queue);
+            queue.book.add(sender, message.stream_id, message_bytes, &queue);
+            user.book.add(sender, message.stream_id, message_bytes, &queue);
         }
 
         batch.statements.push_back(record_statement(
@@ -7194,12 +8465,29 @@ namespace
     {
         batch_pairs.emplace(change.observer_user_id, change.subject_user_id);
     }
+    // Found through the observer index: the rows of the observers the batch names, not the table (ADR-0659).
+    sync_device_list_index(store);
     auto existing_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
-    for (auto const& existing : store.device_list_changes)
+    auto stale_positions = std::vector<std::size_t>{};
     {
-        if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+        auto observers = std::set<std::string_view>{};
+        for (auto const& change : changes)
         {
-            existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+            if (!observers.insert(change.observer_user_id).second)
+            {
+                continue;
+            }
+            for (auto const position : positions_in_group(store.device_list_observer_index, store.device_list_changes,
+                                                          change.observer_user_id, device_list_observer_group_of,
+                                                          store.device_list_rows_examined))
+            {
+                auto const& existing = store.device_list_changes[position];
+                if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+                {
+                    existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+                    stale_positions.push_back(position);
+                }
+            }
         }
     }
     // One stream position for the whole batch: the primary key is
@@ -7233,12 +8521,26 @@ namespace
     }
     // The views above point into `changes` and `store.device_list_changes`;
     // they are done with before either is modified.
-    std::erase_if(store.device_list_changes, [&](PersistentDeviceListChange const& existing) {
-        return batch_pairs.contains({existing.observer_user_id, existing.subject_user_id});
-    });
-    store.device_list_changes.insert(store.device_list_changes.end(), std::make_move_iterator(changes.begin()),
-                                     std::make_move_iterator(changes.end()));
+    erase_rows_swap(store.device_list_changes, store.device_list_observer_index, std::move(stale_positions),
+                    device_list_observer_group_of);
+    for (auto& change : changes)
+    {
+        store.device_list_changes.push_back(std::move(change));
+        store.device_list_observer_index.note_appended(store.device_list_changes.size(),
+                                                       device_list_observer_group_of(store.device_list_changes.back()));
+    }
     return true;
+}
+
+auto for_each_observer_device_list_change(PersistentStore const& store, std::string_view observer,
+                                          std::function<void(PersistentDeviceListChange const&)> const& visit) -> void
+{
+    for (auto const position :
+         positions_in_group(store.device_list_observer_index, store.device_list_changes, std::string{observer},
+                            device_list_observer_group_of, store.device_list_rows_examined))
+    {
+        visit(store.device_list_changes[position]);
+    }
 }
 
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
@@ -7268,16 +8570,42 @@ namespace
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.presence_states, [&state](PersistentPresence const& current) {
-        return current.user_id == state.user_id;
-    });
-    if (existing != store.presence_states.end())
+    sync_presence_index(store);
+    if (auto const* current = find_presence_state(store, state.user_id); current != nullptr)
     {
-        *existing = std::move(state);
+        store.presence_states[static_cast<std::size_t>(current - store.presence_states.data())] = std::move(state);
         return true;
     }
     store.presence_states.push_back(std::move(state));
+    store.presence_user_index.note_appended(store.presence_states.size(), store.presence_states.back().user_id);
     return true;
+}
+
+[[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
+    -> PersistentPresence const*
+{
+    if (store.presence_user_index.in_step(store.presence_states.size()))
+    {
+        store.presence_rows_examined.add(1U);
+        auto const position = store.presence_user_index.find(std::string{user_id});
+        if (!position.has_value())
+        {
+            return nullptr;
+        }
+        if (*position < store.presence_states.size() && store.presence_states[*position].user_id == user_id)
+        {
+            return &store.presence_states[*position];
+        }
+    }
+    store.presence_rows_examined.add(store.presence_states.size());
+    for (auto const& row : store.presence_states)
+    {
+        if (row.user_id == user_id)
+        {
+            return &row;
+        }
+    }
+    return nullptr;
 }
 
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool
@@ -7467,25 +8795,43 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         return false;
     }
     // Keep the in-memory mirror in sync; replace existing entry if present.
-    auto const existing = std::ranges::find_if(store.filters, [&filter](PersistentFilter const& f) {
-        return f.user_id == filter.user_id && f.filter_id == filter.filter_id;
-    });
-    if (existing != store.filters.end())
+    sync_filter_index(store);
+    auto const existing = find_in_group(
+        store.filter_user_index, store.filters, filter.user_id, filter_user_group_of,
+        [&filter](PersistentFilter const& f) {
+            return f.filter_id == filter.filter_id;
+        },
+        store.filter_rows_examined);
+    if (existing.has_value())
     {
-        *existing = std::move(filter);
+        store.filters[*existing] = std::move(filter);
         return true;
     }
     store.filters.push_back(std::move(filter));
+    store.filter_user_index.note_appended(store.filters.size(), store.filters.back().user_id);
     return true;
 }
 
 [[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
     -> std::optional<PersistentFilter>
 {
-    auto const it = std::ranges::find_if(store.filters, [user_id, filter_id](PersistentFilter const& f) {
-        return f.user_id == user_id && f.filter_id == filter_id;
-    });
-    return it == store.filters.end() ? std::nullopt : std::optional<PersistentFilter>{*it};
+    auto const position = find_in_group(
+        store.filter_user_index, store.filters, std::string{user_id}, filter_user_group_of,
+        [filter_id](PersistentFilter const& f) {
+            return f.filter_id == filter_id;
+        },
+        store.filter_rows_examined);
+    return position.has_value() ? std::optional<PersistentFilter>{store.filters[*position]} : std::nullopt;
+}
+
+auto for_each_user_filter(PersistentStore const& store, std::string_view user_id,
+                          std::function<void(PersistentFilter const&)> const& visit) -> void
+{
+    for (auto const position : positions_in_group(store.filter_user_index, store.filters, std::string{user_id},
+                                                  filter_user_group_of, store.filter_rows_examined))
+    {
+        visit(store.filters[position]);
+    }
 }
 
 [[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool
@@ -7912,61 +9258,176 @@ auto rebuild_notification_index(PersistentStore& store) -> void
     return result;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto openid_hash_of(PersistentOpenidToken const& row) -> std::string
+    {
+        return row.token_hash;
+    }
+    [[nodiscard]] auto openid_user_of(PersistentOpenidToken const& row) -> std::string
+    {
+        return row.user_id;
+    }
+
+    // A writer calls this first, so an index a direct edit of the vector left stale is rebuilt before it is relied on.
+    auto sync_openid_indexes(PersistentStore& store) -> void
+    {
+        if (!store.openid_hash_index.in_step(store.openid_tokens.size()) ||
+            !store.openid_user_index.in_step(store.openid_tokens.size()))
+        {
+            rebuild_openid_token_indexes(store);
+        }
+    }
+
+    // Erases the rows at `positions` (any order, no repeats) by moving the last row into each gap, highest first,
+    // and keeps both indexes in step. The indexes must be in step before the call.
+    auto erase_openid_rows(PersistentStore& store, std::vector<std::size_t> positions) -> void
+    {
+        std::ranges::sort(positions, std::greater<>{});
+        auto& rows = store.openid_tokens;
+        for (auto const position : positions)
+        {
+            auto const old_count = rows.size();
+            auto const erased_hash = rows[position].token_hash;
+            auto const erased_user = rows[position].user_id;
+            auto const last_hash = rows.back().token_hash;
+            auto const last_user = rows.back().user_id;
+            if (position + 1U != old_count)
+            {
+                rows[position] = std::move(rows.back());
+            }
+            rows.pop_back();
+            store.openid_hash_index.erase_swap(position, erased_hash, last_hash, old_count);
+            store.openid_user_index.erase_swap(position, erased_user, last_user, old_count);
+        }
+    }
+
+    // The expiry as the epoch-millisecond text the column holds.
+    [[nodiscard]] auto openid_ms(std::chrono::system_clock::time_point point) -> std::string
+    {
+        return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(point.time_since_epoch()).count());
+    }
+
+} // namespace
+
+auto rebuild_openid_token_indexes(PersistentStore& store) -> void
+{
+    store.openid_hash_index.rebuild(store.openid_tokens, openid_hash_of);
+    store.openid_user_index.rebuild(store.openid_tokens, openid_user_of);
+}
+
+[[nodiscard]] auto find_openid_token(PersistentStore const& store, std::string const& token_hash)
+    -> PersistentOpenidToken const*
+{
+    auto const& rows = store.openid_tokens;
+    if (store.openid_hash_index.in_step(rows.size()))
+    {
+        store.openid_rows_examined.add(1U);
+        auto const position = store.openid_hash_index.find(token_hash);
+        if (!position.has_value())
+        {
+            return nullptr;
+        }
+        if (*position < rows.size() && rows[*position].token_hash == token_hash)
+        {
+            return &rows[*position];
+        }
+    }
+    store.openid_rows_examined.add(rows.size());
+    auto const found = std::ranges::find_if(rows, [&token_hash](PersistentOpenidToken const& row) {
+        return row.token_hash == token_hash;
+    });
+    return found == rows.end() ? nullptr : &*found;
+}
+
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool
 {
     if (token.user_id.empty() || !token_is_hash(token.token_hash))
     {
         return false;
     }
-    auto const expires_at_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(token.expires_at.time_since_epoch()).count();
-    if (!record_and_persist(
-            store, record_statement("insert_openid_token",
-                                    "INSERT INTO openid_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
-                                    {public_value(token.user_id), sensitive_value(token.token_hash),
-                                     public_value(std::to_string(expires_at_ms))})))
+    auto const now = std::chrono::system_clock::now();
+    if (token.expires_at <= now)
+    {
+        // Already expired: it would be swept at once, so it is never stored.
+        return true;
+    }
+    sync_openid_indexes(store);
+    auto& rows = store.openid_tokens;
+
+    // Every expired row goes, whoever holds it. One pass over the rows, one statement however many there are.
+    store.openid_rows_examined.add(rows.size());
+    auto doomed = std::vector<std::size_t>{};
+    for (auto position = std::size_t{0U}; position < rows.size(); ++position)
+    {
+        if (rows[position].expires_at <= now)
+        {
+            doomed.push_back(position);
+        }
+    }
+    auto const expired_count = doomed.size();
+
+    // The user's live rows beyond the cap, oldest first, are evicted so this one fits (ADR-0682).
+    auto live = std::vector<std::size_t>{};
+    for (auto const position :
+         positions_in_group(store.openid_user_index, rows, token.user_id, openid_user_of, store.openid_rows_examined))
+    {
+        if (rows[position].expires_at > now)
+        {
+            live.push_back(position);
+        }
+    }
+    std::ranges::sort(live, [&rows](std::size_t left, std::size_t right) {
+        return rows[left].expires_at < rows[right].expires_at;
+    });
+    auto const keep = max_openid_tokens_per_user - 1U;
+    auto evicted_hashes = std::vector<std::string>{};
+    if (live.size() > keep)
+    {
+        for (auto index = std::size_t{0U}; index < live.size() - keep; ++index)
+        {
+            doomed.push_back(live[index]);
+            evicted_hashes.push_back(rows[live[index]].token_hash);
+        }
+    }
+
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(record_statement(
+        "insert_openid_token", "INSERT INTO openid_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+        {public_value(token.user_id), sensitive_value(token.token_hash), public_value(openid_ms(token.expires_at))}));
+    if (expired_count != 0U)
+    {
+        auto const integer = std::string{store.backend == PersistentStoreBackend::postgresql ? "BIGINT" : "INTEGER"};
+        statements.push_back(record_statement("prune_openid_tokens",
+                                              "DELETE FROM openid_tokens WHERE CAST(expires_at AS " + integer +
+                                                  ") <= CAST($1 AS " + integer + ")",
+                                              {public_value(openid_ms(now))}));
+    }
+    for (auto const& hash : evicted_hashes)
+    {
+        statements.push_back(record_statement("evict_openid_token", "DELETE FROM openid_tokens WHERE token_hash = $1",
+                                              {sensitive_value(hash)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    store.openid_tokens.push_back(token);
-
-    // Retention: every insert also sweeps every already-expired row (not
-    // just this user's), since an OpenID token's natural lifecycle bound is
-    // its own short expiry rather than a per-user row count -- unlike
-    // store_notification, which caps by count because notification history
-    // has no expiry of its own.
-    auto const now = std::chrono::system_clock::now();
-    auto stale_hashes = std::vector<std::string>{};
-    for (auto const& row : store.openid_tokens)
-    {
-        if (row.expires_at <= now)
-        {
-            stale_hashes.push_back(row.token_hash);
-        }
-    }
-    for (auto const& stale_hash : stale_hashes)
-    {
-        std::ignore = record_and_persist(store, record_statement("prune_openid_token",
-                                                                 "DELETE FROM openid_tokens WHERE token_hash = $1",
-                                                                 {sensitive_value(stale_hash)}));
-        auto const stale = std::ranges::find_if(store.openid_tokens, [&](PersistentOpenidToken const& current) {
-            return current.token_hash == stale_hash;
-        });
-        if (stale != store.openid_tokens.end())
-        {
-            store.openid_tokens.erase(stale);
-        }
-    }
+    erase_openid_rows(store, std::move(doomed));
+    rows.push_back(token);
+    store.openid_hash_index.note_appended(rows.size(), token.token_hash);
+    store.openid_user_index.note_appended(rows.size(), token.user_id);
     return true;
 }
 
 [[nodiscard]] auto revoke_openid_tokens_for_user(PersistentStore& store, std::string_view user_id) -> bool
 {
-    auto const held = [user_id](PersistentOpenidToken const& row) {
-        return row.user_id == user_id;
-    };
+    sync_openid_indexes(store);
+    auto const group = std::string{user_id};
+    auto positions = positions_in_group(store.openid_user_index, store.openid_tokens, group, openid_user_of,
+                                        store.openid_rows_examined);
     // Rows are mirrored into memory only after they were persisted, so no held row means no stored row.
-    if (!std::ranges::any_of(store.openid_tokens, held))
+    if (positions.empty())
     {
         return true;
     }
@@ -7976,7 +9437,7 @@ auto rebuild_notification_index(PersistentStore& store) -> void
     {
         return false;
     }
-    std::erase_if(store.openid_tokens, held);
+    erase_openid_rows(store, std::move(positions));
     return true;
 }
 

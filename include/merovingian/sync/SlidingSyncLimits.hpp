@@ -25,6 +25,14 @@ struct SlidingSyncLimits final
     std::uint32_t lists{32U};
     std::uint32_t sort_keys{3U};
     std::uint32_t bump_event_types{64U};
+    // What a connection retains of its requests (ADR-0663): entries in a list's room_types and in its
+    // not_room_types, ranges in a list, bytes of a conn_id or list name, and bytes of lists kept per
+    // connection and across the connections of one device.
+    std::uint32_t room_types{16U};
+    std::uint32_t ranges{16U};
+    std::uint32_t name_bytes{255U};
+    std::uint32_t retained_bytes_per_connection{65'536U};
+    std::uint32_t retained_bytes_per_device{262'144U};
 };
 
 } // namespace merovingian::sync

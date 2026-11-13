@@ -380,7 +380,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # WHEN the job's matrix is read
         # THEN it builds on Fedora 44 and Fedora 45, each pinned by release, so the release
-        # CI tests is the one the package is for (ADR-0652).
+        # CI tests is the one the package is for (ADR-0742).
         self.assertIn("container: ${{ matrix.image }}", job)
         self.assertIn("image: fedora:44", job)
         self.assertIn("image: fedora:45", job)
@@ -630,7 +630,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # WHEN the Ubuntu package matrix is read
         # THEN it builds in each LTS image and the 26.10 interim release, each pinned by
-        # release (ADR-0652), one failure not cancelling the others.
+        # release (ADR-0742), one failure not cancelling the others.
         self.assertNotIn("ubuntu:rolling", job)
         for release, image in (("'24.04'", "ubuntu:24.04"), ("'26.04'", "ubuntu:26.04"), ("'26.10'", "ubuntu:26.10")):
             with self.subTest(release=release):
@@ -711,7 +711,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("secrets: inherit", calling)
 
         # AND it stages nothing of its own: packages.yml stages and signs for a v* tag as
-        # for main, so a tag ships exactly what `latest` ships (ADR-0652).
+        # for main, so a tag ships exactly what `latest` ships (ADR-0742).
         stage = workflow_job(packages, "stage-package-assets")
         self.assertIn("github.ref == 'refs/heads/main'", stage)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", stage)
@@ -727,7 +727,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", workflow_job(packages, "publish-latest"))
 
     def test_latest_and_a_tag_stage_exactly_the_supported_packages(self) -> None:
-        # GIVEN the owner's package list (ADR-0652), every package x86_64: RHEL 10, openSUSE
+        # GIVEN the owner's package list (ADR-0742), every package x86_64: RHEL 10, openSUSE
         # Leap 16 and Tumbleweed, Fedora 44 and 45, Ubuntu 24.04, 26.04 and 26.10, Debian
         # 13, static Linux, FreeBSD 15 (.pkg), OpenBSD and NetBSD.
         workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
@@ -763,12 +763,12 @@ class PackagesWorkflowTests(unittest.TestCase):
         # staging time and no two collide.
         self.assertEqual({path for _, path in downloads}, {"packages/"})
         self.assertNotIn("mv ", stage)
-        # AND no package is built on a moving tag, and Debian 12 is not packaged (ADR-0652).
+        # AND no package is built on a moving tag, and Debian 12 is not packaged (ADR-0742).
         for moving in ("ubuntu:rolling", "fedora:latest", "debian:bookworm", "debian:12"):
             self.assertNotIn(moving, workflow)
 
     def test_every_package_file_names_the_platform_it_installs_on(self) -> None:
-        # GIVEN every published package must show which platform it is for (ADR-0652).
+        # GIVEN every published package must show which platform it is for (ADR-0742).
         workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN each package job's naming is read
@@ -794,7 +794,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("release: '15'\n", workflow_job(workflow, "freebsd-pkg"))
 
     def test_every_package_is_built_with_the_hardened_profile(self) -> None:
-        # GIVEN latest and every tagged release ship hardened-profile packages (ADR-0652):
+        # GIVEN latest and every tagged release ship hardened-profile packages (ADR-0742):
         # the hardened profile is a release build with -Dhardening=true, as
         # scripts/build-linux.sh --profile hardened configures it.
         sources = [

@@ -328,6 +328,10 @@ namespace
         {
             return name + " must be a list";
         }
+        if (array->size() > max_filter_list_entries)
+        {
+            return name + " must hold at most " + std::to_string(max_filter_list_entries) + " entries";
+        }
         for (auto const& entry : *array)
         {
             auto const* text = as_string(entry);
@@ -439,6 +443,81 @@ namespace
     }
 
 } // namespace
+
+namespace
+{
+
+    // Names the first of `keys` in `object` that is a list over the cap.
+    [[nodiscard]] auto oversize_list(canonicaljson::Object const& object, std::string_view where)
+        -> std::optional<std::string>
+    {
+        for (auto const* key : {"types", "not_types", "senders", "not_senders", "rooms", "not_rooms", "event_fields"})
+        {
+            auto const* member = find_member(object, key);
+            auto const* array = member == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&member->storage());
+            if (array != nullptr && array->size() > max_filter_list_entries)
+            {
+                return std::string{where} + key + " must hold at most " + std::to_string(max_filter_list_entries) +
+                       " entries";
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Applies oversize_list to `parent[key]` when it is an object.
+    [[nodiscard]] auto oversize_list_in(canonicaljson::Object const& parent, std::string_view key,
+                                        std::string_view where) -> std::optional<std::string>
+    {
+        auto const* member = find_member(parent, key);
+        auto const* object = member == nullptr ? nullptr : as_object(*member);
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        return oversize_list(*object, std::string{where} + std::string{key} + ".");
+    }
+
+} // namespace
+
+auto filter_list_cap_problem(std::string_view filter_json) -> std::optional<std::string>
+{
+    auto const parsed = canonicaljson::parse_lossless(filter_json);
+    auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
+    if (root == nullptr)
+    {
+        return std::nullopt;
+    }
+    // The flat RoomEventFilter shape puts the lists at the top; a Filter has them one or two levels down.
+    if (auto problem = oversize_list(*root, {}); problem.has_value())
+    {
+        return problem;
+    }
+    for (auto const* key : {"presence", "account_data"})
+    {
+        if (auto problem = oversize_list_in(*root, key, {}); problem.has_value())
+        {
+            return problem;
+        }
+    }
+    auto const* room_member = find_member(*root, "room");
+    auto const* room = room_member == nullptr ? nullptr : as_object(*room_member);
+    if (room == nullptr)
+    {
+        return std::nullopt;
+    }
+    if (auto problem = oversize_list(*room, "room."); problem.has_value())
+    {
+        return problem;
+    }
+    for (auto const* key : {"timeline", "state", "ephemeral", "account_data"})
+    {
+        if (auto problem = oversize_list_in(*room, key, "room."); problem.has_value())
+        {
+            return problem;
+        }
+    }
+    return std::nullopt;
+}
 
 auto validate_filter_definition(std::string_view filter_json) -> std::optional<std::string>
 {

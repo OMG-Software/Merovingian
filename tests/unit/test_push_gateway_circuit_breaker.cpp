@@ -225,3 +225,38 @@ SCENARIO("only a pusher whose own pushkey the gateway rejects is rejected", "[pu
         }
     }
 }
+
+// C48 (ADR-0721)
+SCENARIO("an answer that is not prompt revokes a gateway's proof without counting as a failure", "[push][out3][c48]")
+{
+    GIVEN("a host that answered promptly and then failed twice")
+    {
+        auto breaker = GatewayCircuitBreaker{};
+        auto const now = std::chrono::steady_clock::now();
+        breaker.record("sygnal.example", true, now, policy);
+        REQUIRE(breaker.reachable_recently("sygnal.example", now + 1s, policy));
+        fail(breaker, "sygnal.example", now + 2s, 2);
+
+        WHEN("it then answers, but not promptly")
+        {
+            breaker.record_unproven_answer("sygnal.example");
+
+            THEN("it is not reachable, and its failures are forgotten so one more does not open the circuit")
+            {
+                CHECK_FALSE(breaker.reachable_recently("sygnal.example", now + 4s, policy));
+                fail(breaker, "sygnal.example", now + 5s, 1);
+                CHECK(breaker.allow("sygnal.example", now + 6s, policy));
+            }
+
+            AND_WHEN("it later answers promptly")
+            {
+                breaker.record("sygnal.example", true, now + 7s, policy);
+
+                THEN("it is reachable again")
+                {
+                    CHECK(breaker.reachable_recently("sygnal.example", now + 8s, policy));
+                }
+            }
+        }
+    }
+}

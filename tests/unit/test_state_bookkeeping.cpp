@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Unit tests for ADR-0064 phase B1: state-before/state-after computation,
+// Unit tests for ADR-0064 phase B1: state-before/state-after computation (and ADR-0694: the state before is
+// resolved and stored once per set of prev groups),
 // delta-state-group recording, and current-state-as-cache-of-resolution,
 // against an in-memory PersistentStore (PersistentStoreBackend::memory —
 // commit_persistent_transaction is a trivial success for this backend).
@@ -1281,6 +1282,212 @@ SCENARIO("The state indexes stay right when a removal moves another room's row",
                     ++seen;
                 });
                 CHECK(seen == store.state.size() - 1U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Records `event_id` as compute_state_before and record_event_state do on receipt, passing the state before to the
+// overload that keeps it as a group (ADR-0694). Returns the state before.
+auto receive_event(PersistentStore& store, std::string const& event_id, std::string const& event_type,
+                   std::optional<std::string> const& state_key, std::string const& sender, std::int64_t ts,
+                   std::vector<std::string> const& auth_ids, std::string const& content_json,
+                   std::vector<std::string> const& prev, std::uint64_t depth,
+                   merovingian::rooms::RoomVersionPolicy const& policy, bool rejected)
+    -> std::vector<PersistentStateGroupStateEntry>
+{
+    auto event = PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = room_id;
+    event.sender_user_id = sender;
+    event.json = make_event_json(event_type, state_key.value_or(""), event_id, sender, ts, auth_ids, content_json);
+    event.depth = depth;
+    event.prev_event_ids = prev;
+    store.events.push_back(event);
+
+    auto const state_before = compute_state_before(store, room_id, policy, prev);
+    REQUIRE(state_before.ok);
+    auto const state_after =
+        rejected ? state_before.state : compute_state_after(state_before.state, event_id, event_type, state_key);
+    REQUIRE(record_event_state(store, room_id, event_id, prev, state_before, state_after, false).has_value());
+    return state_before.state;
+}
+
+[[nodiscard]] auto names_key(std::vector<PersistentStateGroupStateEntry> const& state, std::string const& event_type,
+                             std::string const& event_id) -> bool
+{
+    return std::ranges::any_of(state, [&](PersistentStateGroupStateEntry const& entry) {
+        return entry.event_type == event_type && entry.event_id == event_id;
+    });
+}
+
+// The same (type, state_key) -> event_id map, whatever order the entries come in.
+[[nodiscard]] auto same_state(std::vector<PersistentStateGroupStateEntry> left,
+                              std::vector<PersistentStateGroupStateEntry> right) -> bool
+{
+    auto const by_key = [](PersistentStateGroupStateEntry const& entry) {
+        return std::tie(entry.event_type, entry.state_key, entry.event_id);
+    };
+    std::ranges::sort(left, {}, by_key);
+    std::ranges::sort(right, {}, by_key);
+    return std::ranges::equal(left, right, {}, by_key, by_key);
+}
+
+constexpr auto filler_keys = std::size_t{200U};
+constexpr auto messages = std::size_t{20U};
+
+} // namespace
+
+SCENARIO("Events naming the same prev_events resolve and store their state before once",
+         "[pdu_ingestion][state_groups][state_before_reuse]")
+{
+    GIVEN("a room with many state keys, forked so that resolving the forks drops a key one fork holds")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$bob_join", "m.room.member", std::string{"@bob:example.org"}, "@bob:example.org", 40,
+                          {"$create", "$pl0", "$join_rules"}, R"({"membership":"join"})", {"$alice_join"}, 4U, *policy);
+        auto last = std::string{"$bob_join"};
+        for (std::size_t index = 0U; index < filler_keys; ++index)
+        {
+            auto const id = "$fill_" + std::to_string(index);
+            ingest_test_event(store, id, "x.fill", std::to_string(index), "@alice:example.org",
+                              100 + static_cast<std::int64_t>(index), {"$create", "$pl0", "$alice_join"}, R"({"v":1})",
+                              {last}, 5U + index, *policy);
+            last = id;
+        }
+        auto const depth = 5U + filler_keys;
+        // Fork X: Bob (power 0, state_default 0) sets x.k. Fork Y: Alice raises state_default to 100, so resolving
+        // the two applies Y's power levels first and then refuses Bob's key.
+        ingest_test_event(store, "$x", "x.k", std::string{}, "@bob:example.org", 5000, {"$create", "$pl0", "$bob_join"},
+                          R"({"v":"x"})", {last}, depth, *policy);
+        ingest_test_event(
+            store, "$pl1", "m.room.power_levels", std::string{}, "@alice:example.org", 5001,
+            {"$create", "$pl0", "$alice_join"},
+            R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":100,"users_default":0,"users":{"@alice:example.org":100}})",
+            {last}, depth, *policy);
+
+        WHEN("Bob sends many messages naming both forks, in either order, rejected or not")
+        {
+            auto const rows_before = store.state_group_state.size();
+            auto first = receive_event(store, "$msg_0", "m.room.message", std::nullopt, "@bob:example.org", 6000,
+                                       {"$create", "$pl1", "$bob_join"}, R"({"body":"0"})", {"$x", "$pl1"}, depth + 1U,
+                                       *policy, false);
+            auto const parsed_after_first = store.state_events_parsed.value();
+            auto const rows_after_first = store.state_group_state.size();
+            auto every_state_before_is_the_resolution = true;
+            for (std::size_t index = 1U; index < messages; ++index)
+            {
+                auto const prev = index % 2U == 0U ? std::vector<std::string>{"$x", "$pl1"}
+                                                   : std::vector<std::string>{"$pl1", "$x", "$pl1"};
+                auto const before = receive_event(
+                    store, "$msg_" + std::to_string(index), "m.room.message", std::nullopt, "@bob:example.org",
+                    6000 + static_cast<std::int64_t>(index), {"$create", "$pl1", "$bob_join"}, R"({"body":"n"})", prev,
+                    depth + 1U, *policy, index % 3U == 0U);
+                every_state_before_is_the_resolution =
+                    every_state_before_is_the_resolution && same_state(before, first);
+            }
+
+            THEN("each state before is the spec resolution, and only the first event resolved or stored anything")
+            {
+                REQUIRE_FALSE(names_key(first, "x.k", "$x"));
+                REQUIRE(names_key(first, "m.room.power_levels", "$pl1"));
+                REQUIRE(first.size() == filler_keys + 5U);
+                REQUIRE(every_state_before_is_the_resolution);
+                // The resolution equals fork Y's state, so its group is reused: no snapshot of the room.
+                REQUIRE(rows_after_first == rows_before);
+                REQUIRE(store.state_group_state.size() == rows_before);
+                REQUIRE(store.state_events_parsed.value() == parsed_after_first);
+                REQUIRE(store.state_before_memo.size() == 1U);
+            }
+        }
+
+        WHEN("Alice sends a state event naming both forks after a message did")
+        {
+            std::ignore = receive_event(store, "$msg", "m.room.message", std::nullopt, "@bob:example.org", 6000,
+                                        {"$create", "$pl1", "$bob_join"}, R"({"body":"m"})", {"$x", "$pl1"}, depth + 1U,
+                                        *policy, false);
+            auto const rows_before = store.state_group_state.size();
+            std::ignore = receive_event(store, "$topic", "m.room.topic", std::string{}, "@alice:example.org", 6001,
+                                        {"$create", "$pl1", "$alice_join"}, R"({"topic":"t"})", {"$pl1", "$x"},
+                                        depth + 1U, *policy, false);
+
+            THEN("its after-state adds the one row it sets")
+            {
+                REQUIRE(store.state_group_state.size() == rows_before + 1U);
+            }
+        }
+
+        WHEN("an event the forks name changes, and the room is forgotten")
+        {
+            std::ignore = receive_event(store, "$msg_a", "m.room.message", std::nullopt, "@bob:example.org", 6000,
+                                        {"$create", "$pl1", "$bob_join"}, R"({"body":"a"})", {"$x", "$pl1"}, depth + 1U,
+                                        *policy, false);
+            store.state_before_memo.forget_room(room_id);
+            auto const parsed_before = store.state_events_parsed.value();
+            auto const before = receive_event(store, "$msg_b", "m.room.message", std::nullopt, "@bob:example.org", 6001,
+                                              {"$create", "$pl1", "$bob_join"}, R"({"body":"b"})", {"$x", "$pl1"},
+                                              depth + 1U, *policy, false);
+
+            THEN("the next event resolves again, to the same state")
+            {
+                REQUIRE(store.state_events_parsed.value() > parsed_before);
+                REQUIRE_FALSE(names_key(before, "x.k", "$x"));
+                REQUIRE(names_key(before, "m.room.power_levels", "$pl1"));
+            }
+        }
+    }
+}
+
+SCENARIO("The state-before memo holds at most its cap of entries, the oldest dropped first",
+         "[state_groups][state_before_reuse]")
+{
+    GIVEN("a memo filled to its cap")
+    {
+        auto memo = merovingian::database::StateBeforeMemo{};
+        auto const cap = merovingian::database::StateBeforeMemo::max_entries;
+        for (std::size_t index = 0U; index < cap; ++index)
+        {
+            memo.remember(room_id, "10", {"sg:a", "sg:" + std::to_string(index)}, "sb:" + std::to_string(index));
+        }
+
+        WHEN("it is read at the cap")
+        {
+            THEN("every entry is served")
+            {
+                REQUIRE(memo.size() == cap);
+                REQUIRE(memo.find(room_id, "10", {"sg:a", "sg:0"}) != nullptr);
+                REQUIRE(*memo.find(room_id, "10", {"sg:a", "sg:" + std::to_string(cap - 1U)}) ==
+                        "sb:" + std::to_string(cap - 1U));
+                REQUIRE(memo.find(room_id, "11", {"sg:a", "sg:0"}) == nullptr);
+            }
+        }
+
+        WHEN("one more entry is remembered")
+        {
+            memo.remember(room_id, "10", {"sg:a", "sg:over"}, "sb:over");
+
+            THEN("the oldest is dropped and the newest kept")
+            {
+                REQUIRE(memo.size() == cap);
+                REQUIRE(memo.find(room_id, "10", {"sg:a", "sg:0"}) == nullptr);
+                REQUIRE(memo.find(room_id, "10", {"sg:a", "sg:1"}) != nullptr);
+                REQUIRE(*memo.find(room_id, "10", {"sg:a", "sg:over"}) == "sb:over");
+            }
+        }
+
+        WHEN("the room is forgotten")
+        {
+            memo.forget_room(room_id);
+
+            THEN("nothing is left")
+            {
+                REQUIRE(memo.size() == 0U);
             }
         }
     }

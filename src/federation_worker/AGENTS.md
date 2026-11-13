@@ -13,15 +13,15 @@ because it is the process most exposed to hostile input, holds as little trust a
 
 | File | Responsibility |
 |---|---|
-| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC, IPC-key, and (when present) db-uri fds, applies worker hardening, runs the event loop |
-| `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
+| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC and IPC-key fds, applies worker hardening, runs the event loop |
+| `ParsedWorkerArgs.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` (optional, default 0); anything else, the retired `--db-uri-fd` included, is refused (ADR-0736) |
 | `IpcKeyFd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
-| `DbUriFd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
 | `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `StoreReadGuard.cpp` | `StoreReadGuard`: the worker's reader-writer lock over its store (rule 6) |
 | `RoomReloadCoalescer.cpp` | `RoomReloadCoalescer`: merges a room's `room_sync` notifications into a bounded number of reloads (rule 6, ADR-0623) |
 | `WorkerRelayFrame.cpp` | `worker_relay_frame` / `relay_to_main`: the claim and key/profile query relay frames and their send, bound to the request being served (rule 12) |
-| `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
+| `WorkerDatabaseConfig.cpp` | `clear_database_location`: switches the worker's config copy to `database.backend=memory` and empties every database location (rule 2, ADR-0733) |
+| `WorkerEventLoop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, fills an in-memory store from main and starts a `HomeserverRuntime` on it with `TableLoadProfile::federation_worker`, reloads rooms and refreshes keys through main, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `WorkerEventLoop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
 one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
@@ -42,29 +42,32 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    then clears `security.secrets.master_key_file` on its own config copy
    (`federation_worker::clear_master_key_file`) before starting the runtime, so no later code
    path — reached today or added in the future — can open that file from inside the worker.
-2. **The worker never connects to a PostgreSQL database with main's own login (ADR-0062
-   part 2).** A separate, least-privilege role's connection URI (`federation.worker.
-   database_uri_file`, provisioned by `packaging/postgresql/provision-federation-worker-role.sql`)
-   is delivered the same way as the IPC auth key — a third inherited pipe fd (`--db-uri-fd`,
-   read by `federation_worker::read_worker_database_uri` in `DbUriFd.cpp`) — never a file the
-   worker opens. `federation_worker::apply_worker_database_uri` clears the worker's config
-   copy's `database.uri_file`/`runtime_role`/`migration_role` at the same time, so the worker's
-   restricted login connects directly with its own grants and never attempts a `SET ROLE` onto
-   roles it was never made a member of. Independently, `RuntimeStartOptions::
-   database_load_profile` is always set to `database::TableLoadProfile::federation_worker` in
-   `WorkerEventLoop::run()`: the worker never pulls `server_signing_keys` and the other
-   credential-bearing tables `database::table_load_profile_includes` excludes into its own
-   process memory, regardless of which credential it authenticated with. See
-   `docs/database-persistence.md`, "Federation worker least-privilege role". `database.
-   backend=sqlite` offers no role to separate (a single shared file) — the worker keeps
-   opening the same file there; the load profile is that backend's only protection.
+2. **The worker opens no database, on either backend (C44, [ADR-0733](../../docs/adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md)).**
+   A SHARED lock the worker held on main's SQLite file made every write in main wait its busy timeout and fail, and
+   its PostgreSQL login could exhaust connections, hold main's migration advisory lock and pin the xmin horizon.
+   `main.cpp` switches the worker's configuration copy to `database.backend=memory` and clears every database location
+   (`federation_worker::clear_database_location`, `WorkerDatabaseConfig.cpp`) before it builds the Landlock rules, and
+   `WorkerEventLoop::run()` clears its own copy again before it starts the runtime. The store is filled from main
+   instead: `run()` starts the channel before the runtime, with the request handler parked behind a `DispatchGate`
+   until the runtime exists, and `RuntimeStartOptions::fill_store` asks main for the room list (`room_list_request`)
+   and then each room (`room_snapshot_request`, page by page through `ipc::RoomSnapshotAssembler`), one room at a
+   time, before hydration. A room list main refuses stops the worker (the supervisor restarts it); a room main
+   cannot send is logged and left out until its next `room_sync`. Main answers only under a permit it issued
+   ([ADR-0735](../../docs/adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)).
+   Never give the worker a database path, URI, descriptor or Landlock grant again, and never add a worker read that
+   does not come through main. `RuntimeStartOptions::database_load_profile` stays
+   `database::TableLoadProfile::federation_worker`: it switches on the key read-through below and skips main's
+   start-up work. Main hands the worker no database credential: the PostgreSQL worker login, its two
+   configuration keys and `--db-uri-fd` are retired, the keys refused at parse
+   ([ADR-0736](../../docs/adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md)).
 3. **The worker restricts its own filesystem access with Linux Landlock (ADR-0062 part 3),
    applied before the worker seccomp filter and before anything below.** `main.cpp` calls
    `platform::apply_worker_landlock()` with the rules `platform::build_worker_landlock_rules()`
-   derives from the worker's own config copy — the SQLite database directory (read-write,
-   required, when `database.backend=sqlite`) plus a fixed set of best-effort OS-integration paths
-   (CA trust store, resolver configuration, NSS/dynamic-linker library directories, timezone
-   data). The master key file, both database URI files, and TLS private keys are never granted.
+   returns, none of which comes from the database keys (rule 2), whatever the config names: a fixed set of
+   best-effort OS-integration paths (CA trust store, resolver configuration, NSS/dynamic-linker
+   library directories, timezone data), and never the database directory. The secret check runs
+   against the operator's own configuration: the master key file, the database URI file, and TLS
+   private keys are never granted.
    Landlock's three syscalls are not on the worker seccomp allowlist below, so this must run
    first. On a kernel without Landlock the worker refuses to start unless
    `federation.worker.allow_without_landlock=true`, which logs CRITICAL on every start; any other
@@ -78,14 +81,16 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    `WorkerEventLoop.cpp`. `membership_template_provider` relays `make_join` (only) as
    `membership_template_ingest`: a restricted room's allow conditions name rooms another shard
    owns (R04, ADR-0184).
-   The one table the worker re-reads on demand is `server_signing_keys`, and only for the public
-   key of the server it is verifying: its resolver is built with `federation::KeyMirrorRefresh::on_miss`
-   (`HomeserverRuntime`'s `LocalDatabase::remote_signing_keys_read_through`, set from the
-   `federation_worker` load profile), so a key main verified and cached after the worker started is
-   read from the database instead of being fetched again in front of the first PDU main already
-   authenticated. `database::refresh_remote_signing_keys` selects `server_name, key_id, public_key,
-   valid_until_ts` and never `secret_key`; do not widen that query and do not give main's resolver
-   the same flag.
+   The one table the worker refreshes on demand is `server_signing_keys`, and only for the public
+   key of the server it is verifying: its `cached_pdu_key_lookup` and its resolver (built with
+   `federation::KeyMirrorRefresh::on_miss`) both refresh on a miss (`HomeserverRuntime`'s
+   `LocalDatabase::remote_signing_keys_read_through`, set from the `federation_worker` load profile),
+   so a key main verified and cached is asked of main (`server_keys_request`, through `PersistentStore::remote_signing_key_source`) instead
+   of being fetched again in front of the first PDU main already authenticated. Main answers from its
+   in-memory table, public columns only, never a row that holds a secret, at most 256 rows
+   (`database::public_signing_keys_of_server`); `database::refresh_remote_signing_keys` takes only the
+   named server's rows without a secret from the answer. Do not widen either side and do not give main's
+   resolver the same flag.
 5. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
    serves endpoints answerable from the snapshot; `relay_pool` (`federation.worker.relay_threads`)
    serves endpoints that block on an IPC round trip or outbound HTTP.
@@ -94,7 +99,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 6. **`room_sync` notifications run on `reload_pool`, never inline on the IPC dispatch thread, go through the
    `RoomReloadCoalescer` (ADR-0623), and reload through the `StoreReadGuard` (F-27, ADR-0360).** A
    notification for a room already scheduled costs nothing; the coalescer's header states the invariant a change must
-   keep (a reload that starts after a notification was recorded sees its change). Hold no lock across a round. The reload reads the database with no lock and takes
+   keep (a reload that starts after a notification was recorded sees its change). Hold no lock across a round. The reload
+   (`StoreReadGuard::reload_room_from`) asks main for the room at the round's generation, with no lock held, and takes
    the guard's exclusive lock only to swap the room's rows in memory; every provider that reads the store
    (ACL, room version, state, state_ids, event_auth, get_missing_events, backfill, timestamp_to_event,
    hierarchy, the local make_leave/make_knock template) is wrapped by `wrap_store_readers` and holds the
@@ -121,7 +127,7 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
     client. Do not move another call onto the tunnel here, and do not add a worker-to-main frame whose content main
     would act on without a signature check. The reply is validated in `WorkerPool::send_outbound_request`.
 10. **The worker's ACL and policy view is advisory (F-21, F-24, ADR-0358, ADR-0359).** It holds no
-   policy rules on PostgreSQL and a start-up snapshot on SQLite, and learns of a room only when it owns
+   policy rules on either backend (ADR-0733), and learns of a room only when it owns
    its shard. Main judges the origin's rule and the room's ACL again on everything relayed, and the
    worker does not run the policy-server hook: the proxy asked it once before forwarding.
 
@@ -141,7 +147,9 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 ## Hardening
 
-`main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure). No thread may exist
+`main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure), then leaves main's session with
+`setsid()` when the supervisor's `POSIX_SPAWN_SETSID` has not already done so, and exits 1 if it cannot: the worker
+never holds the terminal of the shell that started the server, and its stdin is `/dev/null` (ADR-0731). No thread may exist
 before the two calls below (ISO-1, [ADR-0082](../../docs/adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):
 the logger writes synchronously until `main.cpp` calls `SingleLog::instance().start_writers()`, which it
 does only after both, so the logger's writer threads inherit the Landlock ruleset and the seccomp filter.
@@ -171,11 +179,11 @@ worker under the filter and is the regression test for it.
 
 ## Testing
 
-- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` and `--db-uri-fd` validation
+- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` validation and the refusal of
+  the retired `--db-uri-fd` (tag `[args][c44]`)
 - `tests/unit/test_federation_worker_ipc_key_fd.cpp` — `read_ipc_auth_key` / `clear_master_key_file` (tag `[worker_key_fd]`)
-- `tests/unit/test_worker_db_uri.cpp` — config validation matrix, `--db-uri-fd` argv parsing, `read_worker_database_uri`,
-  `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
-  (tag `[worker_db_uri]`)
+- `tests/unit/test_worker_table_load_profile.cpp` — `database::table_load_profile_includes`, the classification of
+  every migration table, and the key pipe's empty-material refusal (tag `[worker_table_profile]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
 - `tests/unit/test_worker_relay_frame.cpp` — `worker_relay_frame` and `relay_to_main` (tag `[relay-frame]`)
 - `tests/unit/test_worker_hardening_threads.cpp` — forked real-kernel proof (tag `[worker_hardening]`) that a
@@ -184,12 +192,20 @@ worker under the filter and is the regression test for it.
   without seccomp or Landlock
 - `tests/unit/test_worker_landlock.cpp` — `apply_worker_landlock` fail-closed paths with injected
   `LandlockHardeningOps`, `build_worker_landlock_rules` allowlist content, ABI rights downgrade,
-  config parsing/reload classification, and a forked real-kernel enforcement scenario (tag
-  `[worker_landlock]`)
-- `tests/integration/test_federation_worker_flow.cpp` — event loop and IPC relay behaviour
-- `tests/integration/test_postgresql_persistence_flow.cpp` — the `federation_worker` load-profile scenario against a
-  live PostgreSQL role lacking `SELECT` on `server_signing_keys` (gated by
-  `MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE`; skipped without a live PostgreSQL test environment)
+  config parsing/reload classification, no database grant on either backend (tag `[c44][landlock-no-database]`),
+  and a forked real-kernel enforcement scenario (tag `[worker_landlock]`)
+- `tests/unit/test_worker_database_config.cpp` — `clear_database_location` leaves no database location on either
+  backend (tag `[c44][worker-database-config]`), and the retired keys are refused at parse, by name
+  (tag `[c44][retired-worker-database-keys]`)
+- `tests/unit/test_sqlite_security_policy.cpp` — a landlocked child cannot open main's SQLite file for reading or
+  writing (tag `[iso4_landlock][c44]`, real kernel)
+- `tests/unit/test_store_read_guard.cpp` — `StoreReadGuard`, including `reload_room_from` holding no store lock
+  across main's read (tag `[c44][reload-from]`)
+- `tests/unit/test_worker_room_snapshot_fill.cpp` — filling a store from main's snapshots and refreshing the key
+  mirror from main's answer (tags `[c44][snapshot-fill]`, `[c44][key-source]`)
+- `tests/integration/test_federation_worker_flow.cpp` — event loop and IPC relay behaviour; a real worker on a
+  SQLite server opens no database and, stopped with SIGSTOP, cannot block main's writes (tag
+  `[c44][worker-no-database]`)
 
 ## Key docs
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The analyses take runners first, then the build and test jobs, then the packages (ADR-0580, ADR-0653).
+"""The analyses take runners first, then the build and test jobs, then the packages (ADR-0580, ADR-0743).
 
 GitHub Actions has no job priority. Every workflow a push triggers creates its jobs at once, and the account runs at most
 20 at a time; the rest wait in a queue. A job with `needs:` does not join that queue until what it needs has finished.
@@ -17,7 +17,7 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 # Hosted runners the account may use at once (GitHub Free for organisations).
 RUNNER_CAP = 20
 # Each gated workflow's gate. The build and test workflows join the queue right after the analyses; the package
-# workflow waits longer, so its jobs join after the build and test jobs (ADR-0653).
+# workflow waits longer, so its jobs join after the build and test jobs (ADR-0743).
 BUILD_AND_TEST_GATE = "queue-after-analyses"
 PACKAGE_GATE = "queue-after-build-and-test"
 GATES = {

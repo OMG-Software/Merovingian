@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/push/PushEvaluationBudget.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -23,6 +25,9 @@ struct PushBadgeBudget final
 {
     std::uint64_t rows_left{push_badge_event_row_budget};
     std::uint32_t calls_left{push_badge_calls_per_event};
+    // The glob steps every classification of the event's badges shares (C15, ADR-0722): the row budget bounds rows, and
+    // each row costs a rule evaluation, so the rule work needs a bound of its own.
+    push::PushEvaluationBudget glob{};
 };
 
 // Where in a recipient list an event starts drawing on its PushBadgeBudget: its stream ordering modulo the

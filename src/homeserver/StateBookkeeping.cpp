@@ -3,21 +3,22 @@
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/database/ResolvedStateMemo.hpp"
 #include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateKey.hpp"
-#include "merovingian/events/StateResolutionRequest.hpp"
-#include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateResolution.hpp"
+#include "merovingian/events/StateResolutionRequest.hpp"
 #include "merovingian/homeserver/CurrentStateRecompute.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
 #include "merovingian/homeserver/EventBookkeeping.hpp"
 #include "merovingian/homeserver/NewEventBasis.hpp"
+#include "merovingian/homeserver/RoomPowerJudge.hpp"
 #include "merovingian/homeserver/StateBeforeResult.hpp"
 #include "merovingian/homeserver/StoredWithBookkeeping.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -46,6 +47,7 @@ auto state_resolution_limits(config::FederationStateResolutionConfig const& conf
     limits.max_auth_chain_walk_events = static_cast<std::size_t>(config.max_auth_chain_walk_events);
     limits.max_total_state_events = static_cast<std::size_t>(config.max_total_state_events);
     limits.max_state_tips_per_server = static_cast<std::size_t>(config.max_state_tips_per_server);
+    limits.max_unprivileged_state_tips = static_cast<std::size_t>(config.max_unprivileged_state_tips);
     return limits;
 }
 
@@ -161,6 +163,10 @@ namespace
         return entries;
     }
 
+    // Defined below, with the extremity memo it was first written for.
+    [[nodiscard]] auto resolution_context(rooms::RoomVersionPolicy const& policy,
+                                          events::StateResolutionLimits const& limits) -> std::string;
+
     [[nodiscard]] auto add_state_group_budget(std::size_t state_size, events::StateResolutionLimits const& limits,
                                               std::size_t& total_state_events) -> bool
     {
@@ -245,10 +251,10 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         return {true, std::move(*full_state)};
     }
 
-    auto parsed = ParsedEvents{};
-    auto const lookup = parse_once(make_store_event_lookup(store), parsed);
-    auto groups = std::vector<events::StateGroup>{};
-    groups.reserve(prev_event_ids.size());
+    // Each prev_event's group, read once however many prev_events name it. The budget is still charged once per
+    // prev_event, as resolving every copy was, so what is refused does not change (ADR-0694).
+    auto full_states = std::unordered_map<std::string, std::vector<database::PersistentStateGroupStateEntry>>{};
+    auto distinct_group_ids = std::vector<std::string>{};
     for (auto const& prev_event_id : prev_event_ids)
     {
         auto const group_id = database::find_event_state_group(store, prev_event_id);
@@ -256,21 +262,56 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         {
             return {false, {}, "prev_event " + prev_event_id + " has no recorded state"};
         }
-        auto full_state = database::read_state_group_full_state(store, *group_id);
-        if (!full_state.has_value())
+        auto held = full_states.find(*group_id);
+        if (held == full_states.end())
         {
-            return {false, {}, "state group " + *group_id + " could not be read"};
+            auto full_state = database::read_state_group_full_state(store, *group_id);
+            if (!full_state.has_value())
+            {
+                return {false, {}, "state group " + *group_id + " could not be read"};
+            }
+            held = full_states.emplace(*group_id, std::move(*full_state)).first;
+            distinct_group_ids.push_back(*group_id);
         }
-        if (!add_state_group_budget(full_state->size(), limits, total_state_events))
+        if (!add_state_group_budget(held->second.size(), limits, total_state_events))
         {
             return {false, {}, "state groups exceed the state-resolution budget"};
         }
-        auto refs = to_state_event_references(*full_state, lookup);
+    }
+    std::ranges::sort(distinct_group_ids);
+
+    // Every prev_event names one group: resolving copies of one state set gives that set back (nothing conflicts and
+    // the auth difference is empty), so it is the state before, as with one prev_event.
+    if (distinct_group_ids.size() == 1U)
+    {
+        auto only = std::move(full_states.begin()->second);
+        return {true, std::move(only), {}, distinct_group_ids.front()};
+    }
+
+    // An earlier event named exactly these groups, and the group it stored its state before in holds what resolving
+    // them gives: groups are immutable, and anything that changes an event they name forgets the room (ADR-0694).
+    auto context = resolution_context(policy, limits);
+    if (auto const* remembered = store.state_before_memo.find(room_id, context, distinct_group_ids);
+        remembered != nullptr)
+    {
+        if (auto state = database::read_state_group_full_state(store, *remembered); state.has_value())
+        {
+            return {true, std::move(*state), {}, *remembered};
+        }
+    }
+
+    auto parsed = ParsedEvents{};
+    auto const lookup = parse_once(make_store_event_lookup(store), parsed);
+    auto groups = std::vector<events::StateGroup>{};
+    groups.reserve(distinct_group_ids.size());
+    for (auto const& group_id : distinct_group_ids)
+    {
+        auto refs = to_state_event_references(full_states.at(group_id), lookup);
         if (!refs.has_value())
         {
-            return {false, {}, "state group " + *group_id + " names an event missing from the store"};
+            return {false, {}, "state group " + group_id + " names an event missing from the store"};
         }
-        groups.push_back(events::StateGroup{*group_id, std::move(*refs)});
+        groups.push_back(events::StateGroup{group_id, std::move(*refs)});
     }
 
     auto request = events::StateResolutionRequest{};
@@ -285,7 +326,12 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
     {
         return {false, {}, "state resolution failed: " + result.reason};
     }
-    return {true, to_state_group_entries(result.resolved_state), {}};
+    return {true,
+            to_state_group_entries(result.resolved_state),
+            {},
+            std::nullopt,
+            std::move(distinct_group_ids),
+            std::move(context)};
 }
 
 auto compute_state_after(std::vector<database::PersistentStateGroupStateEntry> const& state_before,
@@ -348,6 +394,64 @@ auto record_event_state(database::PersistentStore& store, std::string_view room_
     // chain parent, not re-validating.
     auto const parent = prev_event_ids.empty() ? std::optional<std::string>{}
                                                : database::find_event_state_group(store, prev_event_ids.front());
+    return record_event_state_with_parent(store, room_id, event_id, prev_event_ids, parent, state_after, accepted);
+}
+
+namespace
+{
+
+    // The delta parent for a freshly resolved state before: the first resolved group that holds no key the resolution
+    // dropped, since a delta cannot record a deletion and a dropped key would force a full snapshot; else the first
+    // resolved group. Each group is read once.
+    [[nodiscard]] auto state_before_parent(database::PersistentStore const& store, StateBeforeResult const& before)
+        -> std::optional<std::string>
+    {
+        auto keys = std::unordered_set<std::string>{};
+        keys.reserve(before.state.size());
+        for (auto const& entry : before.state)
+        {
+            keys.insert(entry.event_type + '\0' + entry.state_key);
+        }
+        for (auto const& group_id : before.resolved_group_ids)
+        {
+            auto const full_state = database::read_state_group_full_state(store, group_id);
+            if (full_state.has_value() &&
+                std::ranges::all_of(*full_state, [&keys](database::PersistentStateGroupStateEntry const& entry) {
+                    return keys.contains(entry.event_type + '\0' + entry.state_key);
+                }))
+            {
+                return group_id;
+            }
+        }
+        return before.resolved_group_ids.empty() ? std::optional<std::string>{}
+                                                 : std::optional<std::string>{before.resolved_group_ids.front()};
+    }
+
+} // namespace
+
+auto record_event_state(database::PersistentStore& store, std::string_view room_id, std::string_view event_id,
+                        std::vector<std::string> const& prev_event_ids, StateBeforeResult const& state_before,
+                        std::vector<database::PersistentStateGroupStateEntry> const& state_after, bool accepted)
+    -> std::optional<std::string>
+{
+    auto parent = state_before.state_group_id;
+    if (!parent.has_value() && !state_before.resolved_group_ids.empty())
+    {
+        // A fresh resolution: keep its result as a group of its own, once, and remember it for the groups resolved,
+        // so the next event naming them reads it rather than resolving and storing it again.
+        parent = database::create_or_reuse_state_group(store, room_id, "sb:" + std::string{event_id},
+                                                       state_before_parent(store, state_before), state_before.state);
+        if (!parent.has_value())
+        {
+            return std::nullopt;
+        }
+        store.state_before_memo.remember(room_id, state_before.resolution_context, state_before.resolved_group_ids,
+                                         *parent);
+    }
+    if (!parent.has_value())
+    {
+        return record_event_state(store, room_id, event_id, prev_event_ids, state_after, accepted);
+    }
     return record_event_state_with_parent(store, room_id, event_id, prev_event_ids, parent, state_after, accepted);
 }
 
@@ -762,6 +866,39 @@ auto forward_extremities_stay_bounded(database::PersistentStore const& store, st
            store.forward_extremities.count_for_room(room_id) < limits.max_state_groups;
 }
 
+namespace
+{
+
+    // The room's tips whose sender holds no power by current state; a tip whose event is not stored counts as one.
+    // Each distinct sender is judged once.
+    [[nodiscard]] auto unprivileged_tip_count(database::PersistentStore const& store, std::string_view room_id,
+                                              RoomPowerJudge const& judge) -> std::size_t
+    {
+        auto holds_power = std::unordered_map<std::string, bool>{};
+        auto count = std::size_t{0U};
+        for (auto const& tip : store.forward_extremities.tips_of_room(room_id))
+        {
+            auto const event = store.events.find(tip);
+            if (event == store.events.end())
+            {
+                ++count;
+                continue;
+            }
+            auto known = holds_power.find(event->sender_user_id);
+            if (known == holds_power.end())
+            {
+                known = holds_power.emplace(event->sender_user_id, judge.holds_room_power(event->sender_user_id)).first;
+            }
+            if (!known->second)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+} // namespace
+
 auto event_may_become_forward_extremity(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view sender_user_id, std::vector<std::string> const& prev_event_ids,
                                         bool is_state_event, events::StateResolutionLimits const& limits) -> bool
@@ -777,9 +914,22 @@ auto event_may_become_forward_extremity(database::PersistentStore const& store, 
     {
         return false;
     }
+    // Two caps. Each server's own: only its own events fill it, so it never keeps out another server's ban or demotion
+    // (ADR-0602). And one for the room's tips from senders without power, whatever their servers, since one operator
+    // runs as many server names as it likes: a sender who may ban or change the power levels is exempt from it, so
+    // what others fill never refuses a moderator (ADR-0695).
     if (tips.count_for_sender_server(room_id, sender_user_id) < limits.max_state_tips_per_server)
     {
-        return true;
+        if (tips.count_for_room(room_id) < limits.max_unprivileged_state_tips)
+        {
+            return true; // Fewer tips than the joint cap, whoever holds them: nothing to judge.
+        }
+        auto const judge = RoomPowerJudge{store, room_id};
+        if (judge.holds_room_power(sender_user_id) ||
+            unprivileged_tip_count(store, room_id, judge) < limits.max_unprivileged_state_tips)
+        {
+            return true;
+        }
     }
     if (is_state_event || prev_event_ids.size() != 1U)
     {

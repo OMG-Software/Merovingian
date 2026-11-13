@@ -27,6 +27,9 @@ public:
     // Records the outcome of a request to `host`. A success forgets the host.
     auto record(std::string_view host, bool success, std::chrono::steady_clock::time_point now,
                 GatewayCircuitBreakerPolicy const& policy) -> void;
+    // An answer that was not slow enough to count against `host` and not prompt enough to prove it (C48, ADR-0721): the
+    // host's failures are forgotten, as for a success, but it stops being reachable_recently until a prompt answer.
+    auto record_unproven_answer(std::string_view host) -> void;
     [[nodiscard]] auto tracked_hosts() const -> std::size_t;
     // ADR-0634: whether `host` answered promptly (`record(host, true, ...)`) within `policy.reachable_ttl` and has
     // not failed or answered slowly since. A host this server has never reached is not reachable: its deliveries

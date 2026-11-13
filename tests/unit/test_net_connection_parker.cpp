@@ -540,3 +540,53 @@ SCENARIO("The connection parker accepts connections from many threads at once", 
         parker.request_stop();
     }
 }
+
+SCENARIO("The connection parker closes a readable connection that waits too long for its client's share",
+         "[net][http-1][security]")
+{
+    GIVEN("a parker with one active slot per client and a 300 ms limit on waiting while readable")
+    {
+        auto collector = Collector{};
+        auto parker = ConnectionParker{
+            {4U, 1U, 300ms},
+            [&](ConnectionParker::Dispatched dispatched) {
+                collector.add(std::move(dispatched));
+             }
+        };
+        REQUIRE(parker.start());
+
+        WHEN("one client has two readable connections and the first is never released")
+        {
+            auto first = make_pair();
+            auto second = make_pair();
+            // Input buffered above the socket makes a connection ready without bytes left unread at close.
+            REQUIRE(park_pair(parker, first, "client-a", true));
+            REQUIRE(collector.wait_for_count(1U, 2000ms));
+            REQUIRE(park_pair(parker, second, "client-a", true));
+            auto const closed = peer_sees_close(second.peer, 3000ms);
+
+            THEN("the connection waiting over the share is closed, and the dispatched one is untouched")
+            {
+                REQUIRE(closed);
+                REQUIRE(parker.parked() == 0U);
+                REQUIRE(collector.count() == 1U);
+                REQUIRE(parker.active("client-a") == 1U);
+            }
+        }
+
+        WHEN("a connection is readable and a share is free")
+        {
+            auto pair = make_pair();
+            make_readable(pair.peer);
+            REQUIRE(park_pair(parker, pair, "client-b"));
+
+            THEN("it is dispatched, not closed, well inside the limit")
+            {
+                REQUIRE(collector.wait_for_count(1U, 2000ms));
+                REQUIRE(parker.active("client-b") == 1U);
+            }
+        }
+        collector.clear();
+        parker.request_stop();
+    }
+}

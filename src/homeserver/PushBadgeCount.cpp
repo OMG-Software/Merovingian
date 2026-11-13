@@ -82,6 +82,13 @@ namespace
 auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
                       std::uint64_t row_budget) -> PushBadgeCount
 {
+    auto glob = push::PushEvaluationBudget{};
+    return count_push_badge(runtime, user_id, ruleset, row_budget, glob);
+}
+
+auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id, push::PushRuleset const& ruleset,
+                      std::uint64_t row_budget, push::PushEvaluationBudget& glob) -> PushBadgeCount
+{
     auto const& store = runtime.database.persistent_store;
     auto result = PushBadgeCount{};
 
@@ -96,26 +103,29 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         }
     });
     ++result.table_walks;
-    for (auto const& receipt : store.receipts)
+    for (auto& [room_id, room] : rooms)
     {
-        auto const room = rooms.find(receipt.room_id);
-        if (receipt.user_id != user_id || room == rooms.end() ||
-            (receipt.receipt_type != "m.read" && receipt.receipt_type != "m.read.private"))
+        // This user's rows in this room, through the receipt index (ADR-0737), never the whole table.
+        for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user_id))
         {
-            continue;
+            if (receipt->receipt_type != "m.read" && receipt->receipt_type != "m.read.private")
+            {
+                continue;
+            }
+            auto const event = store.events.find_in_room(receipt->room_id, receipt->event_id);
+            if (event == store.events.end())
+            {
+                continue;
+            }
+            auto& position =
+                receipt->thread_id.empty() ? room.markers.unthreaded : room.markers.threads[receipt->thread_id];
+            position = std::max(position, event->stream_ordering);
         }
-        auto const event = store.events.find_in_room(receipt.room_id, receipt.event_id);
-        if (event == store.events.end())
-        {
-            continue;
-        }
-        auto& markers = room->second.markers;
-        auto& position = receipt.thread_id.empty() ? markers.unthreaded : markers.threads[receipt.thread_id];
-        position = std::max(position, event->stream_ordering);
     }
     ++result.table_walks;
 
     auto classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
+    classifier.use_evaluation_budget(glob);
     auto unsettled = rooms.size();
     auto const settle = [&unsettled](BadgeRoom& room) {
         if (!room.settled)
@@ -202,8 +212,19 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         }
         auto const parsed = canonicaljson::parse_lossless(row.json);
         auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (parsed.error != canonicaljson::ParseError::none || object == nullptr ||
-            !classifier.classify(row.room_id, parsed.value).notify)
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        {
+            continue;
+        }
+        auto const outcome = classifier.classify(row.room_id, parsed.value);
+        if (classifier.evaluation_budget_exhausted())
+        {
+            // C15: the rule work for this event is spent. This row's outcome is not trusted (a glob that could not be
+            // afforded did not match), so it is not counted, and the walk ends here with a lower bound.
+            result.capped = true;
+            break;
+        }
+        if (!outcome.notify)
         {
             continue;
         }
@@ -263,8 +284,8 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
         return std::nullopt;
     }
     --budget.calls_left;
-    auto const result =
-        count_push_badge(runtime, user_id, ruleset, std::min<std::uint64_t>(budget.rows_left, push_badge_row_budget));
+    auto const result = count_push_badge(runtime, user_id, ruleset,
+                                         std::min<std::uint64_t>(budget.rows_left, push_badge_row_budget), budget.glob);
     budget.rows_left -= std::min(budget.rows_left, result.rows_visited);
     return result;
 }

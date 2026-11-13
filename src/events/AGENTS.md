@@ -12,6 +12,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | `EventSigner.cpp` | Compute content hash, reference hash, and apply Ed25519 signature |
 | `Authorization.cpp` | Authorization rules — room-version-aware; called before persisting any PDU |
 | `StateResolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
+| `IndexedAuthEvent.cpp` | One auth event read once into an index (members, decoded power levels, hashed and sorted level maps) that the auth rules look fields up in (ADR-0693) |
 | `Redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
 | `UnsignedData.cpp` | `without_unsigned` / `without_unsigned_json`: a received PDU without its top-level `unsigned`, which every ingestion path stores it through (ADR-0402) |
 | `MemberJoinSender.cpp` | `join_names_another_user`: one user claiming to join another, refused at receipt and never in the auth rules (ADR-0612) |
@@ -57,6 +58,13 @@ The signing payload removes what redaction removes, then `signatures` and `unsig
 Authorization must be checked:
 1. Before persisting any locally-created event
 2. Before accepting any inbound PDU from federation
+
+The rules themselves live in `authorize_event_against_auth_indexes`, which reads
+auth events through `IndexedAuthEvent` indexes; `authorize_event_against_auth_events`
+indexes an `AuthEventMap` and calls it. Never add a rule that walks an auth
+event's JSON per judged event: look the field up in the index, and add it to
+`IndexedAuthEvent` if it is not there, so a resolution reads each auth event once
+(ADR-0693).
 
 ## State resolution
 

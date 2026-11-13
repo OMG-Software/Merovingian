@@ -19,6 +19,7 @@
 #include "merovingian/homeserver/LoginTokenStore.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
+#include "merovingian/homeserver/SafetyReportIndex.hpp"
 #include "merovingian/homeserver/UiaSession.hpp"
 #include "merovingian/http/ConnectionLimiter.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
@@ -34,6 +35,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -56,6 +58,9 @@ struct ClientServerRuntime final
     ClientApiLimits limits{};
     std::vector<ClientDevice> devices{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
+    // When reset mail went to each address in the last day (C17, ADR-0685): only addresses that were mailed, so bounded
+    // by the accounts with an email address times password_reset_address_daily_cap. Guarded by homeserver.mutex.
+    std::unordered_map<std::string, std::vector<std::uint64_t>> password_reset_mail_times{};
     // Outstanding UIAA challenges. Bounded and TTL-pruned in
     // issue_uia_session(); in-memory only, because a UIAA session carries no
     // authority of its own (the credential travels in the auth block) and must
@@ -64,6 +69,9 @@ struct ClientServerRuntime final
     // The login tokens POST /login/get_token has minted and nobody has redeemed (CS8, ADR-0548). In memory only,
     // bounded, and guarded by homeserver.mutex like the UIA sessions above.
     LoginTokenStore login_tokens{};
+    // Which reports the reporting routes have accepted, so a repeat or a flood costs no read of audit_log (C26,
+    // ADR-0686).
+    SafetyReportIndex safety_reports{};
     // CORS policy snapshot. Copied from `config.server().cors` at
     // `start_client_server()` time. CORS is not hot-reloadable: a config
     // change requires a server restart.

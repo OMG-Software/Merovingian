@@ -88,10 +88,12 @@
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
+#include "merovingian/homeserver/MakeJoinRaceState.hpp"
 #include "merovingian/homeserver/NewEventBasis.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OutboundCallResult.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/PendingStreamOrdering.hpp"
 #include "merovingian/homeserver/PersistOutcome.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PushBadgeCount.hpp"
@@ -153,6 +155,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <future>
@@ -769,15 +772,14 @@ namespace
 
         // The public keys come from the m.room.third_party_invite state event whose state key is
         // the signed token, never from the signed object itself.
-        auto const tpi_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
-            return s.room_id == room_id && s.event_type == "m.room.third_party_invite" && s.state_key == *token;
-        });
-        if (tpi_state == store.state.end())
+        auto const tpi_event_id =
+            database::find_current_state_event_id(store, room_id, "m.room.third_party_invite", *token);
+        if (!tpi_event_id.has_value())
         {
             return false;
         }
 
-        auto const tpi_event = find_event_json(store, tpi_state->event_id);
+        auto const tpi_event = find_event_json(store, *tpi_event_id);
         auto const* tpi_obj = std::get_if<canonicaljson::Object>(&tpi_event.storage());
         if (tpi_obj == nullptr)
         {
@@ -1185,20 +1187,15 @@ namespace
             }
         };
         auto pending_used = false;
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state) {
             if (pending_invite_json.has_value() && state.event_type == "m.room.member" && state.state_key == invitee)
             {
                 strip(std::string{*pending_invite_json});
                 pending_used = true;
-                continue;
+                return;
             }
             strip(event_json_for_id(store, state.event_id));
-        }
+        });
         if (pending_invite_json.has_value() && !pending_used)
         {
             strip(std::string{*pending_invite_json});
@@ -1343,14 +1340,12 @@ namespace
     [[nodiscard]] auto room_created_here(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
     {
         auto const& store = runtime.database.persistent_store;
-        auto const create = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& entry) {
-            return entry.room_id == room_id && entry.event_type == "m.room.create" && entry.state_key.empty();
-        });
-        if (create == store.state.end())
+        auto const create_event_id = database::find_current_state_event_id(store, room_id, "m.room.create", "");
+        if (!create_event_id.has_value())
         {
             return false;
         }
-        auto const event = store.events.find_in_room(room_id, create->event_id);
+        auto const event = store.events.find_in_room(room_id, *create_event_id);
         return event != store.events.end() &&
                auth::identifier_server_name(event->sender_user_id) == runtime.config.server().server_name;
     }
@@ -1367,10 +1362,10 @@ namespace
     [[nodiscard]] auto membership_state_entry(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view user_id) -> std::optional<database::PersistentStateEvent>
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
-        });
-        return state == store.state.end() ? std::nullopt : std::optional<database::PersistentStateEvent>{*state};
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        return event_id.has_value() ? std::optional<database::PersistentStateEvent>{database::PersistentStateEvent{
+                                          std::string{room_id}, "m.room.member", std::string{user_id}, *event_id}}
+                                    : std::nullopt;
     }
 
     [[nodiscard]] auto store_or_update_membership(database::PersistentStore& store, std::string_view room_id,
@@ -1849,12 +1844,9 @@ namespace
     [[nodiscard]] auto current_membership_of(database::PersistentStore const& store, std::string_view room_id,
                                              std::string_view user_id) -> std::string
     {
-        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        return state_it == store.state.end()
-                   ? std::string{}
-                   : std::string{events::extract_content_membership(find_event_json(store, state_it->event_id))};
+        auto const event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        return event_id.has_value() ? std::string{events::extract_content_membership(find_event_json(store, *event_id))}
+                                    : std::string{};
     }
 
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
@@ -1862,48 +1854,50 @@ namespace
                                             std::string_view event_type, canonicaljson::Value const& event)
         -> events::AuthEventMap
     {
+        // One state index lookup per key the auth rules read (ADR-0344): the cost of authorising a composed event
+        // is bounded by the keys it names, never by the state of every room on the server.
         auto result = events::AuthEventMap{};
-        auto const invite_token = third_party_invite_token(event);
-        auto const authorising_user = join_authorising_user_of(event);
-        for (auto const& state : store.state)
+        auto const current = [&](std::string_view type, std::string_view state_key) -> std::optional<std::string> {
+            return database::find_current_state_event_id(store, room_id, type, state_key);
+        };
+        // Auth events selection: a join carrying join_authorised_via_users_server also names that user's
+        // current m.room.member event (R04).
+        if (auto const authorising_user = join_authorising_user_of(event); !authorising_user.empty())
         {
-            if (state.room_id != room_id)
+            if (auto const id = current("m.room.member", authorising_user); id.has_value())
             {
-                continue;
+                result.authorising_user_member = find_event_json(store, *id);
             }
-            // Auth events selection: a join carrying
-            // join_authorised_via_users_server also names that user's current
-            // m.room.member event (R04).
-            if (state.event_type == "m.room.member" && !authorising_user.empty() && state.state_key == authorising_user)
+        }
+        if (auto const id = current("m.room.create", ""); id.has_value())
+        {
+            result.create = find_event_json(store, *id);
+            result.create_event_id = *id;
+        }
+        if (auto const id = current("m.room.power_levels", ""); id.has_value())
+        {
+            result.power_levels = find_event_json(store, *id);
+        }
+        if (auto const id = current("m.room.join_rules", ""); id.has_value())
+        {
+            result.join_rules = find_event_json(store, *id);
+        }
+        if (auto const id = current("m.room.member", sender); id.has_value())
+        {
+            result.sender_member = find_event_json(store, *id);
+        }
+        if (event_type == "m.room.member")
+        {
+            if (auto const id = current("m.room.member", target_state_key); id.has_value())
             {
-                result.authorising_user_member = find_event_json(store, state.event_id);
+                result.target_member = find_event_json(store, *id);
             }
-            if (state.event_type == "m.room.create" && state.state_key.empty())
+        }
+        if (auto const invite_token = third_party_invite_token(event); !invite_token.empty())
+        {
+            if (auto const id = current("m.room.third_party_invite", invite_token); id.has_value())
             {
-                result.create = find_event_json(store, state.event_id);
-                result.create_event_id = state.event_id;
-            }
-            if (state.event_type == "m.room.power_levels" && state.state_key.empty())
-            {
-                result.power_levels = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.join_rules" && state.state_key.empty())
-            {
-                result.join_rules = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.member" && state.state_key == sender)
-            {
-                result.sender_member = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.member" && event_type == "m.room.member" &&
-                state.state_key == target_state_key)
-            {
-                result.target_member = find_event_json(store, state.event_id);
-            }
-            if (state.event_type == "m.room.third_party_invite" && !invite_token.empty() &&
-                state.state_key == invite_token)
-            {
-                result.third_party_invite = find_event_json(store, state.event_id);
+                result.third_party_invite = find_event_json(store, *id);
             }
         }
         return result;
@@ -2045,33 +2039,22 @@ namespace
                         return ComposeResult{std::nullopt, ComposeFailure::rejected};
                     }
                 }
-                for (auto const& state : runtime.database.persistent_store.state)
+                if (auto const authoriser_member = database::find_current_state_event_id(
+                        runtime.database.persistent_store, room_id, "m.room.member", authorising_user);
+                    authoriser_member.has_value() &&
+                    std::ranges::find(auth_events, *authoriser_member) == auth_events.end())
                 {
-                    if (state.room_id == room_id && state.event_type == "m.room.member" &&
-                        state.state_key == authorising_user)
-                    {
-                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
-                        {
-                            auth_events.push_back(state.event_id);
-                        }
-                        break;
-                    }
+                    auth_events.push_back(*authoriser_member);
                 }
             }
             auto const invite_token = third_party_invite_token(canonicaljson::Value{*input});
             if (!invite_token.empty())
             {
-                for (auto const& state : runtime.database.persistent_store.state)
+                if (auto const invite_event = database::find_current_state_event_id(
+                        runtime.database.persistent_store, room_id, "m.room.third_party_invite", invite_token);
+                    invite_event.has_value() && std::ranges::find(auth_events, *invite_event) == auth_events.end())
                 {
-                    if (state.room_id == room_id && state.event_type == "m.room.third_party_invite" &&
-                        state.state_key == invite_token)
-                    {
-                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
-                        {
-                            auth_events.push_back(state.event_id);
-                        }
-                        break;
-                    }
+                    auth_events.push_back(*invite_event);
                 }
             }
         }
@@ -2782,6 +2765,10 @@ namespace
                                                 rooms::RoomVersionPolicy const& policy) -> canonicaljson::Array
     {
         auto kept = canonicaljson::Array{};
+        // The position in `kept` of each (type, state_key) already there: a later entry for the same state replaces
+        // it, as the later state event would, so a record holds one entry per state however many were sent (C31).
+        auto position_of = std::map<std::pair<std::string, std::string>, std::size_t>{};
+        auto considered = std::size_t{0U};
         auto create_seen = false;
         for (auto const& entry : entries)
         {
@@ -2807,13 +2794,22 @@ namespace
                 continue;
             }
             create_seen = create_seen || *type == "m.room.create";
-            kept.push_back(entry);
+            ++considered;
+            auto const [slot, inserted] = position_of.try_emplace({*type, *state_key}, kept.size());
+            if (inserted)
+            {
+                kept.push_back(entry);
+            }
+            else
+            {
+                kept[slot->second] = entry;
+            }
         }
-        if (kept.size() > federation::max_invite_room_state_entries || (policy.create_event_is_room_id && !create_seen))
+        if (considered > federation::max_invite_room_state_entries || (policy.create_event_is_room_id && !create_seen))
         {
             log_diagnostic("room.knock.state_list_dropped",
                            {
-                               {"entries", std::to_string(kept.size()),                        false},
+                               {"entries", std::to_string(considered),                         false},
                                {"reason",  "over the entry limit or missing the create event", false}
             },
                            observability::LogEventSeverity::warning);
@@ -3147,7 +3143,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::optional<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -3349,7 +3345,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::vector<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -3428,7 +3424,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     -> std::optional<database::PersistentServerSigningKey>
 {
     auto const& server_name = runtime.config.server().server_name;
-    auto const all_keys = database::snapshot_server_signing_keys(runtime.database.persistent_store);
+    auto const all_keys = database::snapshot_server_signing_keys_of(runtime.database.persistent_store, server_name);
 
     // Select the usable non-legacy key with the greatest valid_until_ts, mirroring
     // the choice made by ensure_runtime_server_signing_key but without touching the
@@ -3500,7 +3496,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
 
     auto old_verify_keys_obj = canonicaljson::Object{};
-    for (auto const& old_key : database::snapshot_server_signing_keys(runtime.database.persistent_store))
+    for (auto const& old_key :
+         database::snapshot_server_signing_keys_of(runtime.database.persistent_store, preferred->server_name))
     {
         if (old_key.server_name != preferred->server_name || active_ids.contains(old_key.key_id) ||
             old_key.public_key.empty())
@@ -4420,14 +4417,12 @@ auto stripped_state_pdus(database::PersistentStore const& store, std::string_vie
     auto entries = std::vector<std::string>{};
     for (auto const type : types)
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == type && current.state_key.empty();
-        });
-        if (state == store.state.end())
+        auto const state_event_id = database::find_current_state_event_id(store, room_id, type, "");
+        if (!state_event_id.has_value())
         {
             continue;
         }
-        auto const event = store.events.find_in_room(room_id, state->event_id);
+        auto const event = store.events.find_in_room(room_id, *state_event_id);
         if (event == store.events.end())
         {
             continue;
@@ -5421,12 +5416,33 @@ namespace
         bool active_{false};
     };
 
+    // Tells the race state, on every way out of a worker, that the worker has ended: the last one releases the
+    // request's client-outbound slot (C33).
+    class MakeJoinWorkerExit final
+    {
+    public:
+        explicit MakeJoinWorkerExit(MakeJoinRaceState& state) noexcept
+            : state_{state}
+        {
+        }
+        MakeJoinWorkerExit(MakeJoinWorkerExit const&) = delete;
+        auto operator=(MakeJoinWorkerExit const&) -> MakeJoinWorkerExit& = delete;
+        ~MakeJoinWorkerExit()
+        {
+            state_.worker_finished();
+        }
+
+    private:
+        MakeJoinRaceState& state_;
+    };
+
     [[nodiscard]] auto perform_federated_join(
         HomeserverRuntime& runtime, std::string_view room_id, std::string const& user_id, std::string const& our_server,
         std::vector<std::string> candidates, std::vector<std::string> const& supported_versions,
         std::optional<database::PersistentServerSigningKey> const& signing_key, std::string_view key_id,
         core::SecretBuffer secret_key, std::optional<database::PersistentProfile> const& profile,
-        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room) -> FederatedJoinOutcome
+        FederatedJoinPurpose purpose = FederatedJoinPurpose::enter_room,
+        std::optional<http::InFlightBudget::Slot>* outbound_slot = nullptr) -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
@@ -5448,21 +5464,19 @@ namespace
         auto const per_call_timeout = runtime.federation.config.join_timeout_seconds > 0U
                                           ? runtime.federation.config.join_timeout_seconds
                                           : runtime.federation.config.remote_timeout_seconds;
-        struct MakeJoinRaceState
-        {
-            std::mutex mtx{};
-            std::condition_variable cv{};
-            std::optional<std::pair<std::string, std::string>> winner{}; // {server, body}
-            std::string last_error{};
-            // A candidate answered 403: a resident refused this user the room, which
-            // the client is told as 403 rather than as an upstream failure.
-            bool refused{false};
-            int remaining{0};
-        };
-        auto race_state = std::make_shared<MakeJoinRaceState>();
-        race_state->remaining = static_cast<int>(candidates.size());
-        // Semaphore caps the number of concurrent in-flight make_join HTTP calls.
-        auto race_sem = std::make_shared<core::PortableSemaphore>(static_cast<std::size_t>(parallelism));
+        // C33: at most `parallelism` worker threads for this join, each taking the next candidate when it has finished
+        // the last, never one thread per candidate. The request's client-outbound slot moves into the race state below,
+        // so the last worker to end releases it, not this request's return.
+        auto const worker_total =
+            MakeJoinRaceState::worker_count(static_cast<std::size_t>(parallelism), candidates.size());
+        auto race_state = std::make_shared<MakeJoinRaceState>(candidates, worker_total);
+        // C33: the whole race, and so every call a candidate makes, ends at the race deadline (when one is set).
+        auto const race_bounds = std::optional<BoundedOutboundLimits>{
+            runtime.federation.config.join_race_deadline_seconds > 0U
+                ? std::optional<BoundedOutboundLimits>{BoundedOutboundLimits{
+                      OutboundDeadline{runtime.federation.config.join_race_deadline_seconds},
+                      std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}}
+                : std::nullopt};
         // Owned copies so tasks moved into orphan_futures_ are self-contained
         // and do not dangle on stack variables in join_room.
         auto room_id_copy = std::string{room_id};
@@ -5471,62 +5485,40 @@ namespace
         auto key_id_copy = std::string{key_id};
         auto sv_copy = supported_versions;
         auto race_futures = std::vector<std::future<void>>{};
-        race_futures.reserve(candidates.size());
-        for (auto const& candidate : candidates)
+        race_futures.reserve(worker_total);
+        for (auto worker = std::size_t{0U}; worker < worker_total; ++worker)
         {
-            log_diagnostic("room.join.remote.make_join", {
-                                                             {"actor",         user_id_copy, false},
-                                                             {"room_id",       room_id_copy, false},
-                                                             {"remote_server", candidate,    false}
-            });
-            // Each racer needs its own owned copy of the signing key so orphan
+            // Each worker needs its own owned copy of the signing key so orphan
             // futures do not dangle on the parameter span.
             auto secret_key_copy = core::SecretBuffer{secret_key.bytes()};
             race_futures.push_back(
-                std::async(std::launch::async, [&runtime, race_state, race_sem, room_id_copy, user_id_copy,
-                                                our_server_copy, key_id_copy, secret_key = std::move(secret_key_copy),
-                                                sv_copy, per_call_timeout, cand = candidate]() mutable {
-                    // Acquire a concurrency slot before making the HTTP call.
-                    race_sem->acquire();
-                    auto const slot = core::SemaphorePermit{*race_sem};
-                    // Bail early if another task already won.
+                std::async(std::launch::async, [&runtime, race_state, room_id_copy, user_id_copy, our_server_copy,
+                                                key_id_copy, secret_key = std::move(secret_key_copy), sv_copy,
+                                                per_call_timeout, race_bounds]() {
+                    // Whatever ends this worker, the last one releases the request's slot.
+                    auto const exit = MakeJoinWorkerExit{*race_state};
+                    while (auto cand = race_state->next_candidate())
                     {
-                        auto lk = std::unique_lock{race_state->mtx};
-                        if (race_state->winner.has_value())
-                        {
-                            if (--race_state->remaining == 0)
-                            {
-                                lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the
-                                             // waiter does not immediately block on it.
-                                race_state->cv.notify_one();
-                            }
-                            return;
-                        }
-                    }
-                    auto tx =
-                        federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
-                                                                  our_server_copy, room_id_copy, user_id_copy, sv_copy);
-                    auto call =
-                        perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id_copy, tx, key_id_copy,
-                                              std::move(secret_key), "room.join.remote.make_join_failed",
-                                              per_call_timeout, membership_template_max_response_bytes, std::nullopt);
-                    auto lk = std::unique_lock{race_state->mtx};
-                    if (call.ok && !race_state->winner.has_value())
-                    {
-                        race_state->winner = {cand, std::move(call.body)};
-                    }
-                    else if (!call.ok && !race_state->winner.has_value())
-                    {
-                        race_state->last_error = std::move(call.body);
-                        race_state->refused = race_state->refused || call.remote_status == 403U;
-                    }
-                    if (--race_state->remaining == 0 || race_state->winner.has_value())
-                    {
-                        lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the waiter
-                                     // does not immediately block on it.
-                        race_state->cv.notify_one();
+                        log_diagnostic("room.join.remote.make_join", {
+                                                                         {"actor",         user_id_copy, false},
+                                                                         {"room_id",       room_id_copy, false},
+                                                                         {"remote_server", *cand,        false}
+                        });
+                        auto tx = federation::make_outbound_make_membership(federation::FederationEndpoint::make_join,
+                                                                            *cand, our_server_copy, room_id_copy,
+                                                                            user_id_copy, sv_copy);
+                        auto call = perform_outbound_call(runtime, OutboundAnswerTrust::unverified, room_id_copy, tx,
+                                                          key_id_copy, core::SecretBuffer{secret_key.bytes()},
+                                                          "room.join.remote.make_join_failed", per_call_timeout,
+                                                          membership_template_max_response_bytes, race_bounds);
+                        race_state->record_answer(*cand, call.ok, std::move(call.body), call.remote_status == 403U);
                     }
                 }));
+        }
+        if (outbound_slot != nullptr)
+        {
+            race_state->adopt_slot(std::move(*outbound_slot));
+            outbound_slot->reset();
         }
         // Block until first winner, all candidates exhausted, or the overall race
         // deadline elapses — whichever comes first. The deadline bounds the WHOLE
@@ -5550,6 +5542,8 @@ namespace
                 race_state->cv.wait(lk, predicate);
             }
         }
+        // C33: from here no candidate that has not made its call makes one.
+        race_state->cancel();
         // Park still-running losers in orphan_futures_; discard completed ones.
         {
             auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
@@ -5638,13 +5632,15 @@ namespace
         // and avatar URL are this server's to add, before the content hash and signature. Any the
         // template supplies are dropped first: add_member_profile leaves an unset local field out,
         // so a resident value would otherwise be signed as this user's profile.
+        // C18: and so is anything else it put in the content, so the content is rebuilt from an allow-list.
+        if (auto const refusal = restrict_membership_template_content(event_object, our_server, true); !refusal.empty())
+        {
+            return federated_join_failure("make_join template refused: " + refusal, 502U);
+        }
         if (auto const* template_content = object_member_as_object(event_object, "content");
             template_content != nullptr)
         {
             auto content = *template_content;
-            std::erase_if(content, [](canonicaljson::ObjectMember const& member) {
-                return member.key == "displayname" || member.key == "avatar_url";
-            });
             add_member_profile(content, profile);
             replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
         }
@@ -5969,10 +5965,8 @@ namespace
         {
             return false;
         }
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& row) {
-            return row.room_id == room_id && row.event_type == "m.room.member" && row.state_key == user_id;
-        });
-        if (state == store.state.end() || state->event_id != event_id)
+        auto const member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        if (!member_event_id.has_value() || *member_event_id != event_id)
         {
             return false;
         }
@@ -5992,7 +5986,9 @@ namespace
     // it released.
     [[nodiscard]] auto join_through_other_resident(HomeserverRuntime& runtime, RuntimeLock& guard,
                                                    std::string_view room_id, std::string const& user_id,
-                                                   std::vector<std::string> candidates) -> OperationResult
+                                                   std::vector<std::string> candidates,
+                                                   std::optional<http::InFlightBudget::Slot>* outbound_slot = nullptr)
+        -> OperationResult
     {
         auto const our_server = runtime.config.server().server_name;
         // The room's own version is the only one offered, so a template for any other is
@@ -6016,7 +6012,7 @@ namespace
             return perform_federated_join(runtime, room_id, user_id, our_server, std::move(candidates),
                                           std::vector<std::string>{*room_version}, signing_key, key_id,
                                           std::move(secret_key), joining_profile,
-                                          FederatedJoinPurpose::join_through_resident);
+                                          FederatedJoinPurpose::join_through_resident, outbound_slot);
         }();
         if (joined.failure.has_value())
         {
@@ -6285,7 +6281,7 @@ namespace
         // Read under the lock: the profile goes into the join event the released region signs.
         auto const joining_profile = database::find_profile(runtime.database.persistent_store, *user_id);
         // Releasing the mutex frees it, not this request's thread: the exchange holds a slot until it returns.
-        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+        auto outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
         if (!outbound_slot.has_value())
         {
             return client_outbound_limit_result(runtime);
@@ -6300,7 +6296,7 @@ namespace
             auto const released = RuntimeLockRelease{guard};
             return perform_federated_join(runtime, room_id, *user_id, our_server, std::move(candidates),
                                           supported_versions, signing_key, key_id, std::move(secret_key),
-                                          joining_profile);
+                                          joining_profile, FederatedJoinPurpose::enter_room, &outbound_slot);
         }();
         if (joined.failure.has_value())
         {
@@ -6353,6 +6349,14 @@ namespace
         // Persist auth chain events for auth-rule resolution. Signatures were
         // already verified inside perform_federated_join, with runtime.mutex
         // released.
+        auto auth_chain_rows = std::vector<database::PersistentEvent>{};
+        // Each ordering is reserved for the whole of the released commit below (ADR-0247): no sync position passes
+        // the oldest until its row is in memory. Destroyed with the lock held.
+        auto reserved_orderings = std::deque<PendingStreamOrdering>{};
+        // One block of orderings, one persisted watermark, for the whole chain: `allocate_stream_ordering` per event
+        // was one backend commit each. An ordering the filters leave unused is a gap, as a failed event leaves one.
+        auto const first_auth_ordering = allocate_stream_orderings(runtime.database, verified_auth_chain.size());
+        auto auth_orderings_used = std::uint64_t{0U};
         for (auto const& auth_entry : verified_auth_chain)
         {
             if (send_join_event_room_id(auth_entry, policy) != room_id)
@@ -6404,7 +6408,8 @@ namespace
                             auth_ids = json_string_array(*av);
                         }
                     }
-                    auto const stream_ordering = allocate_stream_ordering(runtime.database);
+                    auto const stream_ordering = first_auth_ordering + auth_orderings_used++;
+                    reserved_orderings.emplace_back(runtime.database, stream_ordering);
                     auto pe = database::PersistentEvent{};
                     pe.event_id = event_id;
                     pe.room_id = std::string{room_id};
@@ -6430,16 +6435,30 @@ namespace
                     // auth-only outliers). The room's current state comes
                     // from the `state` snapshot above.
                     pe.status = "outlier";
-                    if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
-                                                          std::nullopt) &&
-                        runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
-                            runtime.database.persistent_store.events.end())
-                    {
-                        return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
-                    }
+                    auth_chain_rows.push_back(std::move(pe));
                 }
             }
         }
+        // C03 (ADR-0714): every auth-chain event goes in one transaction, written with runtime.mutex released. The rows
+        // are prepared here, with the lock held, and applied here again; the commit reads no store state. The events
+        // write their own rows only (no current_state, no membership), and this room is not held: the outbound join
+        // lease defers its PDUs and refuses an overlapping join, and `exchange` is this user's claim.
+        auto auth_chain_batch =
+            database::prepare_outlier_events_batch(runtime.database.persistent_store, std::move(auth_chain_rows));
+        if (!auth_chain_batch.has_value())
+        {
+            return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
+        }
+        auto const auth_chain_committed = [&] {
+            auto const released = RuntimeLockRelease{guard};
+            return database::commit_prepared_outlier_batch(runtime.database.persistent_store, *auth_chain_batch);
+        }();
+        if (!auth_chain_committed)
+        {
+            return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
+        }
+        database::apply_prepared_outlier_batch(runtime.database.persistent_store, *auth_chain_batch);
+        reserved_orderings.clear();
         auto const room_known = std::ranges::any_of(runtime.database.persistent_store.rooms,
                                                     [&](database::PersistentRoom const& persistent_room) {
                                                         return persistent_room.room_id == room_id;
@@ -6556,19 +6575,30 @@ namespace
         }
         // GCOVR_EXCL_STOP
 
-        for (auto const& joined_member : joined_members)
+        // C03 (ADR-0714): the member rows of the whole answer in one transaction, not one INSERT commit each.
         {
-            if (joined_member == *user_id)
+            auto member_rows = std::vector<database::PersistentMembership>{};
+            member_rows.reserve(joined_members.size());
+            auto const first_member_ordering = allocate_stream_orderings(runtime.database, joined_members.size());
+            auto member_orderings_used = std::uint64_t{0U};
+            for (auto const& joined_member : joined_members)
             {
-                continue;
+                if (joined_member == *user_id)
+                {
+                    continue;
+                }
+                member_rows.push_back(
+                    {std::string{room_id}, joined_member, "join", first_member_ordering + member_orderings_used++});
             }
-            auto const joined_member_stream = allocate_stream_ordering(runtime.database);
-            auto const result = database::store_membership(
-                runtime.database.persistent_store, {std::string{room_id}, joined_member, "join", joined_member_stream});
-            if (result == database::MembershipStoreResult::already_exists)
+            if (!database::store_memberships_batch(runtime.database.persistent_store, std::move(member_rows)))
             {
-                std::ignore = database::update_membership(runtime.database.persistent_store, room_id, joined_member,
-                                                          "join", joined_member_stream);
+                log_diagnostic("room.join.failed",
+                               {
+                                   {"actor",   *user_id,                    false},
+                                   {"room_id", std::string{room_id},        false},
+                                   {"reason",  "member persistence failed", false}
+                },
+                               observability::LogEventSeverity::warning);
             }
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members)});
@@ -6753,13 +6783,13 @@ namespace
                             std::max(std::uint32_t{1U}, runtime.federation.config.join_max_candidates)));
                     if (!candidates.empty())
                     {
-                        auto const outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
+                        auto outbound_slot = admit_client_outbound_proxy(runtime, std::string{client_key});
                         if (!outbound_slot.has_value())
                         {
                             return client_outbound_limit_result(runtime);
                         }
-                        auto joined_elsewhere =
-                            join_through_other_resident(runtime, guard, room_id, *user_id, std::move(candidates));
+                        auto joined_elsewhere = join_through_other_resident(runtime, guard, room_id, *user_id,
+                                                                            std::move(candidates), &outbound_slot);
                         if (joined_elsewhere.ok)
                         {
                             return joined_elsewhere;
@@ -6912,13 +6942,11 @@ namespace
 
     if (membership_it == runtime.database.persistent_store.memberships.end())
     {
-        auto const state_it =
-            std::ranges::find_if(runtime.database.persistent_store.state, [&](database::PersistentStateEvent const& s) {
-                return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == *user_id;
-            });
-        if (state_it != runtime.database.persistent_store.state.end())
+        auto const member_event_id = database::find_current_state_event_id(runtime.database.persistent_store, room_id,
+                                                                           "m.room.member", *user_id);
+        if (member_event_id.has_value())
         {
-            auto const event_it = runtime.database.persistent_store.events.find(state_it->event_id);
+            auto const event_it = runtime.database.persistent_store.events.find(*member_event_id);
             if (event_it != runtime.database.persistent_store.events.end())
             {
                 auto const parsed = canonicaljson::parse_lossless(event_it->json);
@@ -7141,6 +7169,8 @@ namespace
                 }
                 auto event_object = validated.event;
                 claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
+                // C18: only the membership is kept of the resident's content.
+                std::ignore = restrict_membership_template_content(event_object, our_server, false);
                 // Held to the room version's event format before it is hashed and signed as the user's own (F-13).
                 if (auto const violation = membership_template_format_refusal(event_object, *policy);
                     !violation.empty())
@@ -8530,6 +8560,8 @@ namespace
         }
         auto event_object = validated.event;
         claim_membership_event_template(event_object, our_server, event_clock_now_ms(runtime));
+        // C18: only the membership is kept of the resident's content; the reason is the user's own.
+        std::ignore = restrict_membership_template_content(event_object, our_server, false);
         if (!reason.empty())
         {
             auto content = *object_member_as_object(event_object, "content");
@@ -10753,6 +10785,37 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});
+}
+
+auto restrict_membership_template_content(canonicaljson::Object& event, std::string_view our_server_name,
+                                          bool allow_join_authoriser) -> std::string
+{
+    auto const* const template_content = object_member_as_object(event, "content");
+    if (template_content == nullptr)
+    {
+        return {};
+    }
+    auto content = canonicaljson::Object{};
+    if (auto const* const membership = string_member(*template_content, "membership"); membership != nullptr)
+    {
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{*membership}));
+    }
+    if (allow_join_authoriser)
+    {
+        if (auto const* const authoriser = string_member(*template_content, "join_authorised_via_users_server");
+            authoriser != nullptr)
+        {
+            // The spec defines it as a user of the resident; one of ours would have this server vouch for itself.
+            if (auth::user_id_server_name(*authoriser) == our_server_name)
+            {
+                return "the template names a user of this server as the authorising user";
+            }
+            content.push_back(
+                canonicaljson::make_member("join_authorised_via_users_server", canonicaljson::Value{*authoriser}));
+        }
+    }
+    replace_or_add_member(event, "content", canonicaljson::Value{std::move(content)});
+    return {};
 }
 
 auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,

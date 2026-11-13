@@ -21,6 +21,10 @@ namespace merovingian::federation
 // key lookups behind them) one invite can cause.
 inline constexpr std::size_t max_invite_room_state_entries{16U};
 
+// The most bytes the entries of an invite's `invite_room_state` may take in all. Stripped state is a few kilobytes;
+// sixteen entries of the 65536-byte event limit were up to a megabyte stored per invite (C04, ADR-0707).
+inline constexpr std::size_t max_invite_room_state_bytes{65536U};
+
 // Server-Server API v1.19, PUT /v2/invite: `invite_room_state` "MUST contain the
 // `m.room.create` event for the room" and every entry must be "formatted
 // according to the room version" (a full PDU, not a stripped event). Servers

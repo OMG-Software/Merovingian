@@ -51,6 +51,10 @@ This capability note describes runtime-wired trust-and-safety behavior.
   ADR-0482): an unknown local user is 404, a user of another server is accepted,
   and one audit row (`trust_safety.account.accept_report`) is kept per reporter
   and reported user. The reason text is validated, not stored.
+- A report costs no read of `audit_log` (C26, ADR-0686): the routes judge a repeat and a reporter's share from the
+  in-memory `SafetyReportIndex`, filled at start-up from the report rows already stored. A reporter may file 20 reports
+  a minute (per user) and 100 distinct reports a day; a further one is `429 M_LIMIT_EXCEEDED`, a repeat is still
+  acknowledged. The listing below still reads the newest `max_safety_report_rows` rows.
 - Admin report listing through
   `GET /_matrix/client/v3/admin/safety/reports`.
 - Admin review actions through

@@ -4,7 +4,7 @@ name: release
 # exactly v<meson.build version>; check-tag refuses any other before a package
 # is built. The packages are the ones the rolling `latest` release ships: this
 # workflow calls packages.yml, whose own jobs build, stage and sign them for the
-# tag (ADR-0652). The hardened Linux and FreeBSD jobs here are release gates and
+# tag (ADR-0742). The hardened Linux and FreeBSD jobs here are release gates and
 # the source of the release evidence; their builds are not published.
 on:
   push:
@@ -61,7 +61,7 @@ jobs:
 
   # The full suite on a hardened Linux build, the release gates, and the
   # evidence the release notes carry. The build is not an asset: Linux ships as
-  # the distribution packages and the static tarball (ADR-0652).
+  # the distribution packages and the static tarball (ADR-0742).
   linux-release-evidence:
     name: Linux release gates and evidence
     needs: check-tag
@@ -140,7 +140,7 @@ jobs:
           retention-days: 30
 
   # As linux-release-evidence, on FreeBSD 15. The FreeBSD asset is the .pkg
-  # packages.yml builds, not a tarball (ADR-0652).
+  # packages.yml builds, not a tarball (ADR-0742).
   freebsd-release-evidence:
     name: FreeBSD release gates and evidence
     needs: check-tag
@@ -158,7 +158,7 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
-          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0742).
           release: '15'
           run: |
             set -e
@@ -178,7 +178,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # ADR-0650, ADR-0652: every package the tag ships, one per platform release,
+  # ADR-0650, ADR-0742: every package the tag ships, one per platform release,
   # built with the hardened profile, installed and booted by the same jobs as on
   # every pull request, then staged with the SBOM, licence summary and SHA256SUMS
   # and GPG-signed by packages.yml's own staging and signing jobs, as for `latest`.
@@ -276,8 +276,11 @@ jobs:
 
           Verification:
 
-          - SLSA provenance: `gh attestation verify <package> --repo OMG-Software/Merovingian`
-          - GPG signature: `gpg --verify <file>.asc <file>` (import the maintainer key from `docs/release-process.md`)
+          - GPG signature, the primary check: `gpg --verify <file>.asc <file>` (import the maintainer key from
+            `docs/release-process.md`)
+          - SLSA provenance: `gh attestation verify <package> --repo OMG-Software/Merovingian --signer-workflow OMG-Software/Merovingian/.github/workflows/packages.yml --source-ref refs/tags/v<version>`
+          - Keep both `--signer-workflow` and `--source-ref`: with `--repo` alone the check accepts an attestation
+            made on any branch of the repository
           - checksums: `sha256sum --check --ignore-missing SHA256SUMS`
 
           ## Complement

@@ -5,41 +5,45 @@
 
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/IpcAuthKey.hpp"
 #include "merovingian/crypto/MasterKey.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/SnapshotReaderPool.hpp"
 #include "merovingian/federation/EduDispositionResult.hpp"
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/InviteAcceptResult.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/federation/InviteRoomState.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/WorkerRelayKind.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
-#include "merovingian/federation/InviteRoomState.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/federation/WorkerRelayBinding.hpp"
+#include "merovingian/federation/WorkerRelayKind.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/WorkerIpcLimits.hpp"
-#include "merovingian/ipc/IpcChannel.hpp"
+#include "merovingian/homeserver/WorkerSnapshotService.hpp"
+#include "merovingian/homeserver/WorkerSnapshotSources.hpp"
 #include "merovingian/ipc/FederationIpcFrames.hpp"
+#include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 #include "merovingian/observability/SingleLog.hpp"
-#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
 
 #include <algorithm>
@@ -864,10 +868,12 @@ namespace
             return {};
         }
         auto const guard = RuntimeLock{runtime.mutex};
+        // One budget for the checks of the whole relayed frame (ADR-0653).
+        auto budget = federation::ServerAclBudget{};
         for (auto const server : servers)
         {
             if (!server.empty() &&
-                !federation::room_server_acl_allows(runtime.database.persistent_store, room_id, server))
+                !federation::room_server_acl_allows(runtime.database.persistent_store, room_id, server, budget))
             {
                 return "server is denied by room ACL";
             }
@@ -1405,18 +1411,6 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     return serialize_event_query_ingest_result(result);
 }
 
-namespace
-{
-
-    // ADR-0062: validate the opened file and read directly into locked memory.
-    // No stream buffer or transient plaintext string crosses the IPC boundary.
-    [[nodiscard]] auto read_worker_database_uri_file(std::string const& path) -> std::optional<core::SecretBuffer>
-    {
-        return platform::read_secure_secret_line(path, 4096U);
-    }
-
-} // namespace
-
 auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t request_id, std::string_view type) -> bool
 {
     // sign_request used to be answered by signing whatever the worker sent with
@@ -1441,11 +1435,46 @@ auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t req
     return true;
 }
 
+namespace
+{
+
+    // Where the workers' store comes from (ADR-0733): main's database, read through connections of their own that
+    // touch no row of main's live store and never runtime.mutex, each read's transaction closed before it returns.
+    // The readers are opened here, one per shard, while WorkerPool is built and so before main enters a sandbox that
+    // forbids opening a file or a socket (FreeBSD Capsicum): a read only leases one (ADR-0739). Keys come from main's
+    // memory under the store's own key mutex.
+    [[nodiscard]] auto make_snapshot_service(HomeserverRuntime& runtime, std::uint32_t shards)
+        -> std::unique_ptr<WorkerSnapshotService>
+    {
+        auto const& main_store = runtime.database.persistent_store;
+        // Shared by the two sources, which the service keeps for its life.
+        auto readers = std::make_shared<database::SnapshotReaderPool>(main_store, shards);
+        auto sources = WorkerSnapshotSources{};
+        sources.list_rooms = [readers]() {
+            return readers->room_ids();
+        };
+        sources.read_room = [readers](std::string_view room_id) {
+            return readers->room_snapshot(room_id);
+        };
+        sources.server_keys = [&main_store](std::string_view server_name, std::size_t max_rows) {
+            return database::public_signing_keys_of_server(main_store, server_name, max_rows);
+        };
+        sources.now = []() {
+            return std::chrono::steady_clock::now();
+        };
+        return std::make_unique<WorkerSnapshotService>(
+            std::move(sources), ipc::worker_store_page_budget(worker_ipc_frame_bytes(runtime.config)));
+    }
+
+} // namespace
+
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
     : cfg_{cfg}
     , runtime_{runtime}
     , handler_pool_{cfg_.relay_threads}
+    , snapshot_service_{make_snapshot_service(runtime, cfg.shards > 0U ? cfg.shards : 1U)}
+    , snapshot_pool_{cfg_.shards > 0U ? cfg_.shards : 1U}
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
 {
@@ -1471,40 +1500,6 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
     }
 
-    // ADR-0062 part 2 (finding N1): derive the worker's separate database
-    // connection URI ONCE, here, the same way the auth key above is derived
-    // once rather than per-supervisor. SQLite offers no role to separate --
-    // the worker keeps opening the same file there, so this section is
-    // skipped entirely and every supervisor below gets an empty
-    // worker_database_uri_material (no --db-uri-fd is ever passed).
-    auto worker_database_uri = std::optional<core::SecretBuffer>{};
-    if (runtime_.config.database().backend == config::DatabaseBackend::postgresql)
-    {
-        worker_database_uri = read_worker_database_uri_file(cfg_.database_uri_file);
-        if (worker_database_uri.has_value())
-        {
-            LOG_INFO("Federation worker: using a separate least-privilege database login "
-                     "(federation.worker.database_uri_file configured)");
-        }
-        else if (cfg_.allow_shared_database_credentials)
-        {
-            LOG_CRITICAL("Federation worker: federation.worker.database_uri_file is not set or unreadable; the worker "
-                         "will share main's PostgreSQL login credentials, including read access to "
-                         "server_signing_keys.secret_key (federation.worker.allow_shared_database_credentials=true). "
-                         "See ADR-0062 part 2.");
-        }
-        else
-        {
-            // config::validate() already rejects this combination before the
-            // server can start; this is the fail-closed backstop for any
-            // caller that constructs a WorkerPool without going through that
-            // validation path (e.g. an embedder or a future admin API).
-            throw std::runtime_error{
-                "federation.worker.database_uri_file is required when database.backend=postgresql and "
-                "security.federation.enabled=true, unless federation.worker.allow_shared_database_credentials=true"};
-        }
-    }
-
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
@@ -1516,11 +1511,8 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         auto key_material = core::SecretBuffer{
             std::span<std::uint8_t const>{derived_auth_key->bytes.data(), derived_auth_key->bytes.size()}
         };
-        auto db_uri_material =
-            worker_database_uri.has_value() ? core::SecretBuffer{worker_database_uri->bytes()} : core::SecretBuffer{};
-        auto supervisor =
-            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
-                                               std::move(key_material), max_frame_bytes, std::move(db_uri_material));
+        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
+                                                             i, std::move(key_material), max_frame_bytes);
         supervisor->set_max_in_flight(cfg_.ipc_max_in_flight_requests);
         supervisor->set_dispatch_queue_limits(cfg_.ipc_max_dispatch_queue_count, cfg_.ipc_max_dispatch_queue_bytes);
 
@@ -1681,6 +1673,19 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                         ch->send_response(id, overload_response_for(type));
                     }
                 }
+                else if (type == "room_list_request" || type == "room_snapshot_request" ||
+                         type == "server_keys_request")
+                {
+                    // The worker's store (ADR-0733): answered on the snapshot pool, under the channel's in-flight
+                    // cap, with no runtime.mutex. Permits are checked by the service before any read (ADR-0735).
+                    if (!submit_limited(snapshot_pool_, ch, [this, ch, id, type, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, snapshot_service_->answer(ch, type, json));
+                        }))
+                    {
+                        ch->send_response(id, ipc::serialize_worker_store_refusal(type, "overloaded"));
+                    }
+                }
                 else if (type == "room_sync_result")
                 {
                     // Fire-and-forget notification from the worker reporting the
@@ -1791,6 +1796,8 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
         return next;
     }();
 
+    // The permit is recorded before the notification is sent, so a worker that reloads at once finds it (ADR-0735).
+    snapshot_service_->permit_reload(ch, room_id, generation);
     if (!ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation)))
     {
         LOG_WARNING("Federation worker pool: room_sync notification could not be sent for room_id=" +
@@ -1819,6 +1826,7 @@ auto WorkerPool::stop() noexcept -> void
     // and keeps TSan-instrumented teardown paths from deadlocking around a
     // channel whose dispatch thread has already been joined.
     handler_pool_.request_stop();
+    snapshot_pool_.request_stop();
 
     for (auto& worker : workers_)
     {

@@ -6,14 +6,15 @@
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/RedactionView.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
 #include "merovingian/sync/BundledAggregations.hpp"
 #include "merovingian/sync/ThreadNotificationCounts.hpp"
 #include "merovingian/sync/TimelineExpansion.hpp"
+#include "merovingian/sync/TimelineWindow.hpp"
 #include "merovingian/sync/ViewerEventUnsigned.hpp"
 #include "merovingian/trust_safety/IgnoreList.hpp"
 
@@ -27,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -479,6 +481,9 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     auto const floor = std::ranges::upper_bound(rows, std::max(markers.unthreaded, *counted_after), {},
                                                 &database::PersistentEvent::stream_ordering);
     auto examined = std::size_t{0U};
+    // The JSON bytes this count may still parse (ADR-0655): sender-sized events are parsed in full and followed through
+    // up to three parents each, so the rows alone do not bound the work.
+    auto bytes_left = max_unread_bytes_parsed;
     for (auto row = rows.end(); row > floor && examined < max_unread_rows_examined;)
     {
         --row;
@@ -495,6 +500,11 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
         {
             continue;
         }
+        if (ev.json.size() > bytes_left)
+        {
+            break;
+        }
+        bytes_left -= ev.json.size();
         auto const parsed = canonicaljson::parse_lossless(ev.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
@@ -510,7 +520,7 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
         {
             continue;
         }
-        auto thread_id = event_thread_id(store, *root);
+        auto thread_id = event_thread_id(store, *root, &bytes_left);
         if (markers.covers(ev.stream_ordering, thread_id))
         {
             continue;
@@ -631,16 +641,23 @@ auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscripti
     return combined;
 }
 
-auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
+auto build_room_response(homeserver::HomeserverRuntime const& /*rt*/, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility,
                          UnreadEventClassifier& unread, TimelineExpansion expansion,
                          std::optional<std::uint64_t> room_last_sent_ordering,
-                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id)
-    -> SlidingSyncRoomResponse
+                         std::optional<std::uint64_t> timeline_upper_bound, std::string_view device_id,
+                         SlidingSyncRequestLookups* lookups) -> SlidingSyncRoomResponse
 {
+    // The request's lookups; a caller that serves one room builds nothing to share, so the room gets its own.
+    auto own_lookups = std::optional<SlidingSyncRequestLookups>{};
+    if (lookups == nullptr)
+    {
+        lookups = &own_lookups.emplace(store, user);
+    }
+
     auto resp = SlidingSyncRoomResponse{};
 
     resp.initial = is_initial;
@@ -654,32 +671,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     resp.avatar = state_content_string(store, room_id, "m.room.avatar", "url");
 
     // ── is_dm ───────────────────────────────────────────────────────────────
-    // Check m.direct global account-data.
-    if (auto const direct = database::find_account_data_content(store, user, std::string_view{}, "m.direct");
-        direct.has_value())
-    {
-        // Account data is never signed and may hold fractional numbers: general parser.
-        auto const parsed = canonicaljson::parse_json(*direct);
-        auto const* root = parsed.error == canonicaljson::ParseError::none ? as_object(parsed.value) : nullptr;
-        if (root != nullptr)
-        {
-            for (auto const& member : *root)
-            {
-                auto const* arr = std::get_if<canonicaljson::Array>(&member.value->storage());
-                if (arr == nullptr)
-                {
-                    continue;
-                }
-                for (auto const& item : *arr)
-                {
-                    if (auto const* s = as_string(item); s != nullptr && *s == room_id)
-                    {
-                        resp.is_dm = true;
-                    }
-                }
-            }
-        }
-    }
+    // The room is in the user's m.direct global account data, parsed once per request.
+    resp.is_dm = lookups->is_dm(room_id);
 
     // ── Counts ──────────────────────────────────────────────────────────────
     resp.joined_count = count_memberships(store, room_id, "join");
@@ -688,7 +681,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // position — "events the user hasn't read", not "events the client hasn't
     // synced".
     auto const unread_counts =
-        count_unread_by_thread(store, room_id, user, read_receipt_markers(rt, store, room_id, user), unread).total();
+        count_unread_by_thread(store, room_id, user, lookups->read_markers(room_id), unread).total();
     resp.notification_count = unread_counts.notification_count;
     resp.highlight_count = unread_counts.highlight_count;
 
@@ -717,72 +710,69 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // older than that are never built (ADR-0494). The kept window is the newest `limit` events that pass, as when
     // every event of the room was built and the oldest dropped.
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
-    for (auto const& ev : store.events.room_in_stream_order(room_id) | std::views::reverse)
-    {
-        if (timeline_events.size() > limit)
-        {
-            break;
-        }
-        // ADR-0064 phase B2: a rejected or soft-failed event is never
-        // relayed to clients (spec "Rejection", "Soft failure"). Room state
-        // (required_state, built separately from current_state) is
-        // untouched — a soft-failed *state* event that resolution later
-        // admits into current state is still delivered there.
-        if (ev.status == "rejected" || ev.status == "soft_failed")
-        {
-            continue;
-        }
-        if (timeline_upper_bound.has_value() && ev.stream_ordering > *timeline_upper_bound)
-        {
-            continue;
-        }
-        if (timeline_has_floor && ev.stream_ordering <= room_since_event_ordering)
-        {
-            // The walk is newest first and `room_in_stream_order` is ascending in stream_ordering, so every row that
-            // follows is at or below the floor too: an incremental build of a room with nothing new ends here.
-            break;
-        }
-        // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
-        // their timeline, however recently the room was synced.
-        if (!visibility.can_see(ev))
-        {
-            continue;
-        }
-        // Ignoring Users: non-state events from an ignored sender are
-        // withheld from the timeline; state events are still delivered so
-        // the room's visible state stays accurate — except the recipient's
-        // own room invite, which the spec says must never be sent from an
-        // ignored inviter even though it is itself a state event.
-        // The event is parsed only when its sender is ignored (ADR-0436).
-        if (ignored_senders.contains(ev.sender_user_id))
-        {
-            auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
-            if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
-                                                     ignore_classification.is_state_event,
-                                                     ignore_classification.is_new_room_invite_for_user))
+    // Read through sync::newest_timeline_window, which also stops after max_timeline_rows_skipped rows not taken
+    // (ADR-0616, ADR-0664): a room whose newest history the caller cannot see, or an ignored sender filled, is not
+    // walked to its first event under runtime.mutex. Rejected and soft-failed rows are never offered to `wanted`
+    // (ADR-0064 phase B2: they are never relayed; room state is built separately from current_state).
+    // An incremental window stops at the delta floor, and an initial or expanded one has none.
+    auto client_json_of = std::unordered_map<database::PersistentEvent const*, std::string>{};
+    auto const window = newest_timeline_window(
+        store, room_id, timeline_has_floor ? std::optional<std::uint64_t>{room_since_event_ordering} : std::nullopt,
+        timeline_upper_bound.value_or(std::numeric_limits<std::uint64_t>::max()), limit,
+        [&](database::PersistentEvent const& ev) {
+            // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
+            // their timeline, however recently the room was synced.
+            if (!visibility.can_see(ev))
             {
-                continue;
+                return false;
             }
-        }
-        if (auto client_json = client_event_json(store, ev, viewer_unsigned); !client_json.empty())
-        {
-            timeline_events.emplace_back(ev.stream_ordering, std::move(client_json));
-            timeline_rows.push_back(std::cref(ev));
-        }
+            // Ignoring Users: non-state events from an ignored sender are
+            // withheld from the timeline; state events are still delivered so
+            // the room's visible state stays accurate — except the recipient's
+            // own room invite, which the spec says must never be sent from an
+            // ignored inviter even though it is itself a state event.
+            // The event is parsed only when its sender is ignored (ADR-0436).
+            if (ignored_senders.contains(ev.sender_user_id))
+            {
+                auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
+                if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
+                                                         ignore_classification.is_state_event,
+                                                         ignore_classification.is_new_room_invite_for_user))
+                {
+                    return false;
+                }
+            }
+            auto client_json = client_event_json(store, ev, viewer_unsigned);
+            if (client_json.empty())
+            {
+                return false;
+            }
+            client_json_of.emplace(&ev, std::move(client_json));
+            return true;
+        });
+    for (auto const* ev : window.matched)
+    {
+        timeline_events.emplace_back(ev->stream_ordering, std::move(client_json_of.at(ev)));
+        timeline_rows.push_back(std::cref(*ev));
     }
 
-    std::ranges::reverse(timeline_events);
-    std::ranges::reverse(timeline_rows);
-    bool const timeline_limited = timeline_events.size() > limit;
+    bool const timeline_over_limit = timeline_events.size() > limit;
+    // A walk that ran out of budget may have left older events out, so the timeline is limited (ADR-0616).
+    bool const timeline_limited = timeline_over_limit || window.budget_ran_out;
     // MSC4186 §rooms[roomId] `prev_batch`: a /messages `from` that pages back to the
     // events before this timeline. /messages?dir=b returns events strictly older than
     // `from`, so it is the oldest returned event's ordering (as /v3/sync's prev_batch),
     // or, when nothing is returned, one past the newest event withheld.
     if (!timeline_events.empty())
     {
-        auto const oldest_kept = timeline_limited ? timeline_events.size() - limit : std::size_t{0U};
+        auto const oldest_kept = timeline_over_limit ? timeline_events.size() - limit : std::size_t{0U};
         resp.prev_batch = limit == 0U ? std::to_string(timeline_events.back().first + 1U)
                                       : std::to_string(timeline_events[oldest_kept].first);
+    }
+    else if (window.budget_ran_out && window.oldest_examined.has_value())
+    {
+        // Nothing taken before the budget ran out: page back from where the walk stopped.
+        resp.prev_batch = std::to_string(*window.oldest_examined);
     }
     if (timeline_limited)
     {
@@ -791,6 +781,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         // or that the client should paginate to fetch more events." Without it a
         // client takes the truncated timeline for the room's whole history.
         resp.limited = true;
+    }
+    if (timeline_over_limit)
+    {
         auto const drop_count = timeline_events.size() - limit;
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
@@ -917,10 +910,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     return resp;
 }
 
-auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+auto read_receipt_markers(homeserver::HomeserverRuntime const& /*rt*/, database::PersistentStore const& store,
                           std::string_view room_id, std::string_view user) -> ReadMarkers
 {
-    return read_markers_for(rt.database.persistent_store.receipts, store, room_id, user);
+    return read_markers_for(store, room_id, user);
 }
 
 } // namespace merovingian::sync

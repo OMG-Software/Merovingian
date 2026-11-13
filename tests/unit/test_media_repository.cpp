@@ -1851,3 +1851,50 @@ SCENARIO("An expired cache entry is dropped by the next admission instead of hol
         }
     }
 }
+
+// C42 (ADR-0689): the per-user byte quota is charged for a deduplicated upload too, so a user at their quota cannot
+// tell whether other users already hold the bytes they upload.
+SCENARIO("A user at their byte quota is refused alike for bytes held by others and bytes not held",
+         "[media][repository][security][c42]")
+{
+    GIVEN("a repository with a five byte quota per user, where alice holds a file and bob has filled his quota")
+    {
+        auto repository = test_repository();
+        repository.config.max_bytes_per_user = 5U;
+        REQUIRE(merovingian::media::upload_local_media(
+                    repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true})
+                    .ok);
+        REQUIRE(merovingian::media::upload_local_media(repository, "example.org",
+                                                       {"@bob:example.org", "text/plain", "text/plain", "abcde", true})
+                    .ok);
+
+        WHEN("bob uploads alice's bytes and then bytes nobody holds")
+        {
+            auto const held = merovingian::media::upload_local_media(
+                repository, "example.org", {"@bob:example.org", "text/plain", "text/plain", "12345", true});
+            auto const unheld = merovingian::media::upload_local_media(
+                repository, "example.org", {"@bob:example.org", "text/plain", "text/plain", "zzzzz", true});
+
+            THEN("both are refused with the same status and reason")
+            {
+                REQUIRE_FALSE(held.ok);
+                REQUIRE_FALSE(unheld.ok);
+                REQUIRE(held.status == 507U);
+                REQUIRE(held.status == unheld.status);
+                REQUIRE(held.reason == unheld.reason);
+            }
+        }
+
+        WHEN("a user under their quota uploads alice's bytes")
+        {
+            auto const carol = merovingian::media::upload_local_media(
+                repository, "example.org", {"@carol:example.org", "text/plain", "text/plain", "12345", true});
+
+            THEN("it deduplicates onto the held blob and is admitted")
+            {
+                REQUIRE(carol.ok);
+                REQUIRE(carol.deduplicated);
+            }
+        }
+    }
+}

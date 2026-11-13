@@ -7,6 +7,7 @@
 #include "merovingian/database/SchemaState.hpp"
 
 #include <cstdint>
+#include <functional>
 
 namespace merovingian::homeserver
 {
@@ -43,6 +44,11 @@ struct RuntimeStartOptions final
     // the worker's filesystem grants, and everything that consults the registry
     // runs in the main process.
     bool load_appservices{true};
+    // Set by the federation worker only (ADR-0733): the worker opens no database, so its in-memory store is filled
+    // from what main sends over the IPC channel. Called once with the freshly opened store, before the limits are
+    // set and before hydration, so the runtime hydrates from the filled rows exactly as it would from a database.
+    // Returning false leaves the database unopened and start_runtime refuses to start.
+    std::function<bool(database::PersistentStore&)> fill_store{};
 };
 
 } // namespace merovingian::homeserver

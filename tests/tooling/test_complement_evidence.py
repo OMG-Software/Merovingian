@@ -33,7 +33,7 @@ MAINTAINER_KEY = RUN_CONFIG["release"]["maintainer_key"]
 REPOSITORY = RUN_CONFIG["release"]["repository"]
 VERSION = "0.12.55"
 # The candidate as the rolling latest release names it, and the name the publisher
-# attaches it under, beside the tag's own -debian13.deb build (ADR-0652).
+# attaches it under, beside the tag's own -debian13.deb build (ADR-0742).
 PACKAGE_NAME = f"merovingian_{VERSION}_amd64-debian13.deb"
 ATTACHED_NAME = f"merovingian_{VERSION}_amd64-debian.deb"
 SERVER = b"\x7fELF the shipped server"
@@ -359,7 +359,7 @@ class PublisherTests(unittest.TestCase):
         self.assertIn(f"--repo {REPOSITORY}", upload[0])
         self.assertNotIn("--clobber", upload[0])
         # AND the tested package goes up as -debian.deb, never under the -debian13.deb
-        # name the release's own Debian 13 build already has (ADR-0652).
+        # name the release's own Debian 13 build already has (ADR-0742).
         self.assertNotIn(PACKAGE_NAME, upload[0])
 
     def test_a_package_not_named_as_latest_names_it_is_refused(self) -> None:

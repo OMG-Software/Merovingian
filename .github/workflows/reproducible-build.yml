@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ADR-0580, ADR-0653: a build and test job, so it joins the runner queue after the analyses, as ci.yml's do.
+  # ADR-0580, ADR-0743: a build and test job, so it joins the runner queue after the analyses, as ci.yml's do.
   # `!cancelled()`: it still runs if the gate fails, because a skipped required check counts as passed.
   queue-after-analyses:
     name: Queue after the analyses

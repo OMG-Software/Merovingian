@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/federation/Security.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/ServerAclDecision.hpp"
 #include "merovingian/federation/ServerAclEvaluation.hpp"
 #include "merovingian/federation/ServerAclEvent.hpp"
@@ -165,6 +166,13 @@ auto parse_server_acl(canonicaljson::Value const& content) -> ServerAclEvent
 
 auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl) -> ServerAclEvaluation
 {
+    auto budget = ServerAclBudget{server_acl_max_glob_steps};
+    return evaluate_server_acl(server_name, acl, budget);
+}
+
+auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl, ServerAclBudget& budget)
+    -> ServerAclEvaluation
+{
     auto const host = strip_server_port(server_name);
     if (host.empty())
     {
@@ -182,16 +190,24 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
                 "server name is an IP literal and allow_ip_literals is false"};
     }
 
-    auto steps_left = server_acl_max_glob_steps;
+    // One check never spends more than server_acl_max_glob_steps, and all the checks of a request together never more
+    // than their shared budget (ADR-0653).
+    auto const granted = std::min(server_acl_max_glob_steps, budget.steps_left);
+    auto steps_left = granted;
+    auto const spend = [&] {
+        budget.steps_left -= granted - steps_left;
+    };
     for (auto const& pattern : acl.deny)
     {
         auto const matched = server_acl_glob_match(pattern, host, steps_left);
         if (!matched.has_value())
         {
+            spend();
             return {ServerAclDecision::deny, "acl_budget", "the ACL check used up its step budget"};
         }
         if (*matched)
         {
+            spend();
             return {ServerAclDecision::deny, "deny", "server name matches deny list entry: " + pattern};
         }
     }
@@ -201,14 +217,17 @@ auto evaluate_server_acl(std::string_view server_name, ServerAclEvent const& acl
         auto const matched = server_acl_glob_match(pattern, host, steps_left);
         if (!matched.has_value())
         {
+            spend();
             return {ServerAclDecision::deny, "acl_budget", "the ACL check used up its step budget"};
         }
         if (*matched)
         {
+            spend();
             return {ServerAclDecision::allow, "allow", "server name matches allow list entry: " + pattern};
         }
     }
 
+    spend();
     return {ServerAclDecision::deny, "allow", "server name did not match any allow list entry"};
 }
 
@@ -229,6 +248,48 @@ namespace
         std::size_t json_hash{0U};
         SharedServerAcl acl{};
     };
+
+    // The answer to "may this server name use this room?" for one version of one ACL event (ADR-0653). It is a pure
+    // function of the event's JSON and the name, so it is kept under the same key the parse cache uses plus the
+    // lower-cased host. Only an answer that does not depend on how much of a request's budget was left is kept.
+    struct CachedServerAclAnswer final
+    {
+        bool allowed{false};
+    };
+
+    // Synchronised and bounded (ADR-0525): one mutex guards the map, and it is emptied when it reaches its cap.
+    class ServerAclAnswerCache final
+    {
+    public:
+        [[nodiscard]] auto find(std::string const& key) -> std::optional<bool>
+        {
+            auto const lock = std::scoped_lock{m_mutex};
+            auto const entry = m_entries.find(key);
+            if (entry == m_entries.end())
+            {
+                return std::nullopt;
+            }
+            return entry->second.allowed;
+        }
+
+        auto remember(std::string key, bool allowed) -> void
+        {
+            auto const lock = std::scoped_lock{m_mutex};
+            if (m_entries.size() >= max_entries && !m_entries.contains(key))
+            {
+                m_entries.clear();
+            }
+            m_entries.insert_or_assign(std::move(key), CachedServerAclAnswer{allowed});
+        }
+
+        static constexpr auto max_entries = std::size_t{4096U};
+
+    private:
+        std::mutex m_mutex{};
+        std::unordered_map<std::string, CachedServerAclAnswer> m_entries{};
+    };
+
+    ServerAclAnswerCache server_acl_answer_cache{};
 
     // Synchronised and bounded (ADR-0525): one mutex guards the map, and it is emptied when it reaches its cap.
     class ServerAclCache final
@@ -268,8 +329,10 @@ namespace
     ServerAclCache server_acl_cache{};
 
     // The room's current ACL, parsed once per ACL event, or null when the room has none (or it cannot be read).
-    [[nodiscard]] auto current_server_acl(database::PersistentStore const& store, std::string_view room_id)
-        -> SharedServerAcl
+    // `version_key`, when given, gets the ACL event's ID with the size and hash of its JSON: the identity of this
+    // version of the ACL, for the answer cache.
+    [[nodiscard]] auto current_server_acl(database::PersistentStore const& store, std::string_view room_id,
+                                          std::string* version_key = nullptr) -> SharedServerAcl
     {
         // The state index (ADR-0344): the ACL is read for every PDU and every room-scoped request, and main
         // reads it under runtime.mutex, so it must not cost a scan of the server's whole state.
@@ -286,6 +349,10 @@ namespace
         }
         auto const json_size = event->json.size();
         auto const json_hash = std::hash<std::string_view>{}(event->json);
+        if (version_key != nullptr)
+        {
+            *version_key = *acl_event_id + '#' + std::to_string(json_size) + '#' + std::to_string(json_hash);
+        }
         if (auto cached = server_acl_cache.find(*acl_event_id, json_size, json_hash); cached != nullptr)
         {
             return cached;
@@ -334,6 +401,37 @@ auto room_server_acl_allows(database::PersistentStore const& store, std::string_
         return true;
     }
     return evaluate_server_acl(server_name, *acl).decision == ServerAclDecision::allow;
+}
+
+auto room_server_acl_allows(database::PersistentStore const& store, std::string_view room_id,
+                            std::string_view server_name, ServerAclBudget& budget) -> bool
+{
+    auto version_key = std::string{};
+    auto const acl = current_server_acl(store, room_id, &version_key);
+    if (acl == nullptr)
+    {
+        return true;
+    }
+    // The port is ignored and the match is case-insensitive, so the answer is kept for the lower-cased host.
+    auto host = strip_server_port(server_name);
+    std::ranges::transform(host, host.begin(), [](char character) noexcept {
+        return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a') : character;
+    });
+    auto const key = version_key + '\0' + host;
+    if (auto const known = server_acl_answer_cache.find(key); known.has_value())
+    {
+        return *known;
+    }
+    // An answer that ran out of a request's budget before the check's own limit says nothing about the ACL, so it is
+    // not kept; one that reached the check's own limit does, and so does every answer that finished.
+    auto const request_limited = budget.steps_left < server_acl_max_glob_steps;
+    auto const evaluation = evaluate_server_acl(server_name, *acl, budget);
+    auto const allowed = evaluation.decision == ServerAclDecision::allow;
+    if (evaluation.rule != "acl_budget" || !request_limited)
+    {
+        server_acl_answer_cache.remember(key, allowed);
+    }
+    return allowed;
 }
 
 } // namespace merovingian::federation

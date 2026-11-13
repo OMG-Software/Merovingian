@@ -44,6 +44,15 @@ sed "s|^security.secrets.master_key_file=.*|security.secrets.master_key_file=${m
   "${example_config}" > "${keyed_example_config}"
 "${server}" --dry-run --config "${keyed_example_config}" >/dev/null
 
+# The BSD example is validated the same way, with its configuration-directory
+# placeholder filled in as the FreeBSD package fills it (ADR-0738).
+bsd_example_config="config/merovingian.conf.bsd.example"
+keyed_bsd_example_config="${workdir}/merovingian.conf.bsd.example"
+sed -e 's|@SYSCONFDIR@|/usr/local/etc|g' \
+  -e "s|^security.secrets.master_key_file=.*|security.secrets.master_key_file=${master_key}|" \
+  "${bsd_example_config}" > "${keyed_bsd_example_config}"
+"${server}" --dry-run --config "${keyed_bsd_example_config}" >/dev/null
+
 printf '%s\n' \
   'server.public_baseurl=http://matrix.example.org' \
   'listeners.client.bind=0.0.0.0:8008' \

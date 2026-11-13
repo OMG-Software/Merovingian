@@ -191,7 +191,7 @@ class SecurityWorkflowTests(unittest.TestCase):
         packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
         # WHEN either stages the assets it publishes (ADR-0598). A tag's assets are
-        # staged by packages.yml, which release.yml calls (ADR-0652).
+        # staged by packages.yml, which release.yml calls (ADR-0742).
         # THEN the SPDX and CycloneDX SBOM are generated into those assets before they
         # go to the GPG signing workflow, and no separate SBOM workflow remains to wait
         # on a release event that a GITHUB_TOKEN-made release never sends.

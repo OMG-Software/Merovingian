@@ -15,7 +15,7 @@ on:
 
 jobs:
 
-  # ADR-0580, ADR-0653: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
+  # ADR-0580, ADR-0743: every job below that needs nothing else waits for this one, so the jobs a pull request starts at
   # once fit in the account's 20 runners and sonarcloud and CodeQL get one straight away. The jobs that wait use
   # `if: ${{ !cancelled() }}`: they still run if this fails, because a skipped required check counts as passed.
   queue-after-analyses:
@@ -33,7 +33,7 @@ jobs:
   # cannot drop a release unnoticed (ADR-0650). The 26.04 leg keeps the check
   # name the main ruleset requires; the interim release runs in a container
   # below. Ubuntu 24.04 is packaged (packages.yml) but not built and tested
-  # here: the build-and-test and packaging release lists differ (ADR-0652).
+  # here: the build-and-test and packaging release lists differ (ADR-0742).
   ubuntu-build-and-test:
     needs: queue-after-analyses
     if: ${{ !cancelled() }}
@@ -139,7 +139,7 @@ jobs:
   # GitHub has runner images for LTS releases only, so the interim release
   # builds in a container on the default runner, as Debian does below. The
   # image is pinned by release, never `ubuntu:rolling`, so the release CI tests
-  # is the one packages.yml ships (ADR-0652); move it when the next interim
+  # is the one packages.yml ships (ADR-0742); move it when the next interim
   # release replaces this one.
   ubuntu-interim-build-and-test:
     needs: queue-after-analyses
@@ -699,7 +699,7 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           usesh: true
-          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0652).
+          # The newest FreeBSD 15.x on x86_64, the action's default architecture (ADR-0742).
           release: '15'
           run: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo

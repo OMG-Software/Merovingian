@@ -75,6 +75,9 @@ public:
     bool first_request{true};
     // Held while the connection is parked (see ParkingReservation).
     std::optional<ParkingReservation> parked_reservation{};
+    // C01: the same parking, counted against its client key, so a few keys
+    // cannot fill the process-wide budgets. Empty for a trusted proxy.
+    std::optional<http::ConnectionLimiter::Slot> parked_key_slot{};
 };
 
 [[nodiscard]] inline auto http_connection(ConnectionOwner const& owner) -> HttpConnection&

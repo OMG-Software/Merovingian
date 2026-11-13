@@ -19,6 +19,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -30,6 +31,8 @@
 #include <string_view>
 #include <thread>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -1129,6 +1132,97 @@ SCENARIO("A slow success grows the destination's backoff", "[f20][federation][di
             THEN("the backoff grows")
             {
                 REQUIRE(stored_destination(store, healthy_peer).consecutive_failures == 4U);
+            }
+        }
+    }
+}
+
+// C20 (ADR-0720): a destination that answers 200 every time, but slowly, never failed, so ADR-0354 and ADR-0621 left
+// it free to hold the whole queue and every delivery thread.
+SCENARIO("Destinations that deliver slowly cannot take the queue or the threads from the others",
+         "[c20][federation][dispatch-worker]")
+{
+    GIVEN("three destinations that answer 200 after 3 s of a 10 s limit, and one that answers at once")
+    {
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const answer = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"pdus":{}})");
+        // The mock peer serves exactly four connections (three slow deliveries and one fast), joined on scope exit.
+        auto const responses = std::vector<std::pair<std::string, std::string>>(4U, {std::string{}, answer});
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls_context.context, responses);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        auto client = merovingian::http::OutboundClient{};
+        auto fake_now = std::atomic<std::uint64_t>{1000U};
+        auto attempted = std::vector<std::string>{};
+        auto resolver = merovingian::federation::DispatchResolver{
+            [&, port](std::string_view server_name) -> std::optional<merovingian::federation::ServerDiscoveryResult> {
+                attempted.emplace_back(server_name);
+                if (server_name.starts_with("slow"))
+                {
+                    fake_now.fetch_add(3000U);
+                }
+                auto discovery = merovingian::federation::ServerDiscoveryResult{};
+                discovery.server_name = std::string{server_name};
+                discovery.resolved_host = "localhost";
+                discovery.tls_server_name = "localhost";
+                discovery.resolved_port = port;
+                discovery.pinned_addresses = {"127.0.0.1"};
+                discovery.discovery_allowed = true;
+                return discovery;
+            }};
+        auto now_ms = merovingian::federation::DispatchClock{[&fake_now] {
+            return fake_now.load();
+        }};
+        auto config = worker_config();
+        config.trusted_ca_pem = certificate.certificate_pem;
+        config.max_queue_depth = 16U;
+        config.max_pending_per_destination = 4U;
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
+        auto const slow_names =
+            std::array<std::string_view, 3U>{"slow1.example.org", "slow2.example.org", "slow3.example.org"};
+        for (auto const name : slow_names)
+        {
+            REQUIRE(worker.enqueue(transaction_named(std::string{name} + "-a", name)));
+            REQUIRE(worker.enqueue(transaction_named(std::string{name} + "-b", name)));
+        }
+
+        WHEN("each slow destination has delivered once, and then they queue up to the slow destinations' share")
+        {
+            for (auto index = 0; index < 3; ++index)
+            {
+                REQUIRE(worker.run_once());
+            }
+            auto const first_round = attempted;
+            // The slow destinations hold 3 rows; the share is half the queue, 8.
+            REQUIRE(worker.enqueue(transaction_named("slow1-c", slow_names[0])));
+            REQUIRE(worker.enqueue(transaction_named("slow1-d", slow_names[0])));
+            REQUIRE(worker.enqueue(transaction_named("slow1-e", slow_names[0])));
+            REQUIRE(worker.enqueue(transaction_named("slow2-c", slow_names[1])));
+            REQUIRE(worker.enqueue(transaction_named("slow3-c", slow_names[2])));
+            auto const another_slow_admitted = worker.enqueue(transaction_named("slow2-d", slow_names[1]));
+            auto const fast_admitted = worker.enqueue(transaction_named("fast-a", "fast.example.org"));
+            REQUIRE(worker.run_once());
+
+            THEN("the first round went to each destination in turn, the slow share is enforced, and the fast one goes "
+                 "first")
+            {
+                REQUIRE(first_round ==
+                        std::vector<std::string>{"slow1.example.org", "slow2.example.org", "slow3.example.org"});
+                REQUIRE_FALSE(another_slow_admitted);
+                REQUIRE(fast_admitted);
+                REQUIRE(attempted.size() == 4U);
+                REQUIRE(attempted.back() == "fast.example.org");
+                REQUIRE(worker.summary().delivered == 4U);
             }
         }
     }

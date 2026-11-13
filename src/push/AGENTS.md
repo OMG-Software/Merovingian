@@ -61,7 +61,7 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
    recipient batch starts: a quarter of `max_in_flight_deliveries` is kept for batches whose gateway hosts have all
    answered promptly within the hour (`GatewayCircuitBreaker::reachable_recently`), and one host carries at most an eighth
    of the budget; a refusal is a drop, with its reason in the `scope` of `push.delivery.dropped`. The delivery caps and the
-   breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them.
+   breaker are applied in `RoomService.cpp`; any change to how push is invoked must preserve them. Only an answer within an eighth of the total timeout proves a host (`GatewayCircuitOutcome::reachable`); a slower answer within half is `unproven_answer`, which revokes the proof without counting as a failure, and past the unreserved share a host carries at most a quarter of the per-host cap (ADR-0721).
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.
 11. **Glob matching stays linear and never uses `std::regex`** (ADR-0175). Evaluation runs per
@@ -72,13 +72,15 @@ concurrency caps are in `homeserver/RoomService.cpp`; every attempt and the retr
 11a. **Every `content.body` match draws from one budget per evaluation and searches a bounded prefix** (ADR-0343).
     `evaluate_push_rules` gives all of a recipient's body globs `max_push_glob_steps_per_evaluation` steps together
     and searches the first `max_push_glob_body_bytes`; a glob that runs out does not match and the result carries
-    `glob_budget_exhausted`. A new matcher over a sender-chosen value takes steps from the same `GlobBudget`.
+    `glob_budget_exhausted`. A new matcher over a sender-chosen value takes steps from the same `GlobBudget`. Evaluations that run many times for one request (the push badge of an event) lend one `PushEvaluationBudget` to all of them through the `evaluate_push_rules` overload that takes it (ADR-0722).
     `PushRuleUnreadClassifier` is bounded by calling the same function.
     Every other `event_match` key draws from the same budget (ADR-0607): a pattern with a wildcard does
     not match a value over `max_push_glob_key_value_bytes` (4096), a deliberate departure from the spec's
     whole-value match, since the whole value cannot be judged on a prefix; `event_property_contains`
     charges its array length; a wildcard-free pattern and `event_property_is` are never charged or refused, so the
     default rules still run when the budget is spent. Values are views, never copied before a bound.
+    Resolving a key path charges the members it scans past 64 per object (C25, ADR-0723), so a very wide event stops
+    matching conditions on its keys once the budget is spent while ordinary events are unaffected.
 12. **A user's rules are bounded before they are stored, and again when they are read**
     (ADR-0204). `UserPushRules` refuses a rule past `server.client_api.max_push_rules_per_user`
     and any rule over the per-rule bounds in `UserPushRules.hpp` (ID, pattern and string

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // ForwardExtremityTable: a room's tips, counted by the server of each tip's sender, and the rule that decides
-// whether an accepted event may become one (ADR-0602, refining ADR-0374).
+// whether an accepted event may become one (ADR-0602, refining ADR-0374), and the joint cap on the tips of senders
+// without power, from which a power holder is exempt (C21, ADR-0695).
 
 #include "merovingian/config/FederationStateResolutionConfig.hpp"
 #include "merovingian/database/ForwardExtremityTable.hpp"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -227,6 +229,200 @@ SCENARIO("An accepted event is refused tip status only past its own server's cap
         THEN("a state event from a server under its cap is still allowed (ADR-0374)")
         {
             REQUIRE(event_may_become_forward_extremity(store, room, honest, {"$old"}, true, limits));
+        }
+    }
+}
+
+namespace
+{
+
+auto const moderator = std::string{"@mod:honest.example.org"};
+auto const banner = std::string{"@banner:honest.example.org"};
+auto const member = std::string{"@carol:honest.example.org"};
+
+[[nodiscard]] auto limits_with_caps(std::uint32_t per_server, std::uint32_t unprivileged)
+    -> merovingian::events::StateResolutionLimits
+{
+    auto config = merovingian::config::FederationStateResolutionConfig{};
+    config.max_state_tips_per_server = per_server;
+    config.max_unprivileged_state_tips = unprivileged;
+    return merovingian::homeserver::state_resolution_limits(config);
+}
+
+auto add_room_state_event(PersistentStore& store, std::string const& event_id, std::string const& event_type,
+                          std::string const& content) -> void
+{
+    auto event = merovingian::database::PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = room;
+    event.sender_user_id = moderator;
+    event.json = R"({"type":")" + event_type + R"(","state_key":"","sender":")" + moderator + R"(","room_id":")" +
+                 room + R"(","content":)" + content + "}";
+    store.events.push_back(std::move(event));
+    store.state.push_back({room, event_type, "", event_id});
+}
+
+// A version 10 room where the moderator may change the power levels (100), the banner may only ban (50), and
+// everyone else holds the default 0.
+auto add_moderated_room(PersistentStore& store) -> void
+{
+    add_room_state_event(store, "$create", "m.room.create",
+                         R"({"room_version":"10","creator":")" + moderator + R"("})");
+    add_room_state_event(store, "$power", "m.room.power_levels",
+                         R"({"users":{")" + moderator + R"(":100,")" + banner +
+                             R"(":50},"ban":50,"state_default":50,"events":{"m.room.power_levels":100}})");
+}
+
+// One tip of `room`, sent by `sender`, whose event the store holds.
+auto add_sent_tip(PersistentStore& store, std::string const& event_id, std::string const& sender) -> void
+{
+    auto event = merovingian::database::PersistentEvent{};
+    event.event_id = event_id;
+    event.room_id = room;
+    event.sender_user_id = sender;
+    store.events.push_back(std::move(event));
+    REQUIRE(store.forward_extremities.insert({room, event_id}, sender));
+    store.event_state_groups.assign(event_id, "sg:" + event_id);
+}
+
+// One tip from each of `count` server names one operator runs, each well under the per-server cap.
+auto add_tips_from_many_servers(PersistentStore& store, int count) -> void
+{
+    for (auto index = 0; index < count; ++index)
+    {
+        auto const name = std::to_string(index);
+        add_sent_tip(store, "$s" + name, "@m:h" + name + ".hostile.example.org");
+    }
+}
+
+} // namespace
+
+SCENARIO("Senders without power share one cap on a room's tips, however many server names they run",
+         "[pdu_ingestion][state_groups][tip_cap][unprivileged_tip_cap][boundary]")
+{
+    auto const limits = limits_with_caps(2U, 4U);
+    auto const fresh_server_sender = std::string{"@m:h99.hostile.example.org"};
+
+    GIVEN("a moderated room whose tips come one each from three server names, one fewer than the joint cap")
+    {
+        auto store = PersistentStore{};
+        add_moderated_room(store);
+        add_tips_from_many_servers(store, 3);
+
+        WHEN("a sender without power from yet another server name sends a state event citing no tip")
+        {
+            auto const allowed =
+                event_may_become_forward_extremity(store, room, fresh_server_sender, {"$old"}, true, limits);
+
+            THEN("it becomes a tip: at the cap it is served")
+            {
+                REQUIRE(allowed);
+            }
+        }
+    }
+
+    GIVEN("a moderated room whose tips come one each from four server names, exactly the joint cap")
+    {
+        auto store = PersistentStore{};
+        add_moderated_room(store);
+        add_tips_from_many_servers(store, 4);
+
+        WHEN("senders try to add tips")
+        {
+            auto const fresh_server =
+                event_may_become_forward_extremity(store, room, fresh_server_sender, {"$old"}, true, limits);
+            auto const honest_member = event_may_become_forward_extremity(store, room, member, {"$old"}, true, limits);
+            auto const citing_tip =
+                event_may_become_forward_extremity(store, room, fresh_server_sender, {"$old", "$s0"}, true, limits);
+            auto const from_moderator =
+                event_may_become_forward_extremity(store, room, moderator, {"$old"}, true, limits);
+            auto const from_banner = event_may_become_forward_extremity(store, room, banner, {"$old"}, true, limits);
+
+            THEN("a further sender without power is refused, whichever server it names")
+            {
+                REQUIRE_FALSE(fresh_server);
+                REQUIRE_FALSE(honest_member);
+            }
+
+            THEN("an event citing a current tip replaces it and is still served")
+            {
+                REQUIRE(citing_tip);
+            }
+
+            THEN("a moderator's tip is never refused, nor one from a sender who may only ban")
+            {
+                REQUIRE(from_moderator);
+                REQUIRE(from_banner);
+            }
+        }
+    }
+
+    GIVEN("a moderated room where senders without power fill the joint cap and the moderators' server holds one tip")
+    {
+        auto store = PersistentStore{};
+        add_moderated_room(store);
+        add_tips_from_many_servers(store, 4);
+        add_sent_tip(store, "$m0", moderator);
+        REQUIRE(store.forward_extremities.count_for_sender_server(room, moderator) == 1U);
+
+        WHEN("the moderator, the banner and an unprivileged user of the same server send state events citing no tip")
+        {
+            auto const from_moderator =
+                event_may_become_forward_extremity(store, room, moderator, {"$old"}, true, limits);
+            auto const from_banner = event_may_become_forward_extremity(store, room, banner, {"$old"}, true, limits);
+            auto const from_member = event_may_become_forward_extremity(store, room, member, {"$old"}, true, limits);
+
+            THEN("the power holders are admitted past the joint cap and the member is not")
+            {
+                REQUIRE(from_moderator);
+                REQUIRE(from_banner);
+                REQUIRE_FALSE(from_member);
+            }
+        }
+
+        WHEN("the moderators' own server then holds its own cap")
+        {
+            add_sent_tip(store, "$m1", banner);
+            auto const from_moderator =
+                event_may_become_forward_extremity(store, room, moderator, {"$old"}, true, limits);
+
+            THEN("its own tips, which no other server can add, refuse it as for any server (ADR-0602)")
+            {
+                REQUIRE_FALSE(from_moderator);
+            }
+        }
+    }
+
+    GIVEN("a moderated room holding more tips than the joint cap, of which only three are from senders without power")
+    {
+        auto store = PersistentStore{};
+        add_moderated_room(store);
+        add_tips_from_many_servers(store, 3);
+        add_sent_tip(store, "$m0", moderator);
+        add_sent_tip(store, "$m1", banner);
+        REQUIRE(store.forward_extremities.count_for_room(room) == 5U);
+
+        WHEN("a sender without power from another server name sends a state event citing no tip")
+        {
+            auto const allowed =
+                event_may_become_forward_extremity(store, room, fresh_server_sender, {"$old"}, true, limits);
+
+            THEN("it is served: a power holder's tips are not charged to the joint cap")
+            {
+                REQUIRE(allowed);
+            }
+        }
+
+        WHEN("one more tip arrives whose event the store does not hold")
+        {
+            REQUIRE(store.forward_extremities.insert({room, "$unknown"}, "@m:h50.hostile.example.org"));
+            auto const allowed =
+                event_may_become_forward_extremity(store, room, fresh_server_sender, {"$old"}, true, limits);
+
+            THEN("that tip counts as one without power and the joint cap is reached")
+            {
+                REQUIRE_FALSE(allowed);
+            }
         }
     }
 }

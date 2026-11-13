@@ -5,19 +5,21 @@
 // genuinely decoded, resampled, and re-encoded — not passed through unchanged.
 
 #include "merovingian/core/FileDescriptor.hpp"
+#include "merovingian/media/DecoderHardening.hpp"
 #include "merovingian/media/ThumbnailMethod.hpp"
 #include "merovingian/media/ThumbnailRequest.hpp"
 #include "merovingian/media/ThumbnailResult.hpp"
 #include "merovingian/media/ThumbnailWorkerResponse.hpp"
 #include "merovingian/media/ThumbnailWorkerStatus.hpp"
-#include "merovingian/media/ThumbnailerConfig.hpp"
-#include "merovingian/media/DecoderHardening.hpp"
 #include "merovingian/media/Thumbnailer.hpp"
+#include "merovingian/media/ThumbnailerConfig.hpp"
+#include "merovingian/platform/SeccompHardening.hpp"
 #include "support/TempDirectory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
@@ -396,6 +398,81 @@ SCENARIO("the sandboxed worker reports the image libraries it runs",
         }
     }
 }
+
+#if defined(__linux__) && !defined(__SANITIZE_THREAD__)
+// ADR-0731: main forks the decoder after it has installed its own seccomp filter, so whatever the forked child does
+// before exec must be on main's allowlist. A setsid() there (to drop the controlling terminal) is not, and killed every
+// decode with SIGSYS while the tests above, which run without main's filter, still passed. This scenario forks a
+// process that installs main's real profile, as the server does at start-up, and asks it for a thumbnail.
+namespace
+{
+// The worker built for an AddressSanitizer run starts the ASan runtime after exec, under main's inherited filter, and
+// that runtime needs calls a production worker never makes (DecoderHardening.cpp leaves the decoder's own filter off
+// in sanitizer builds for the same reason).
+#if defined(__SANITIZE_ADDRESS__)
+constexpr auto address_sanitizer_active = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr auto address_sanitizer_active = true;
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+} // namespace
+
+SCENARIO("a thumbnail is produced by a process confined by main's seccomp profile",
+         "[media][thumbnail][integration][seccomp][worker_session]")
+{
+    if (address_sanitizer_active)
+    {
+        SKIP("AddressSanitizer's runtime in the exec'd worker needs calls main's seccomp profile does not admit");
+    }
+    if (worker_refuses_thumbnail_without_sandbox(MEROVINGIAN_TEST_THUMBNAIL_WORKER))
+    {
+        return;
+    }
+
+    GIVEN("a child process that has installed main's seccomp filter, which kills on any call it does not admit")
+    {
+        WHEN("the child asks the built thumbnail worker for a 4x4 thumbnail of an 8x8 PNG")
+        {
+            auto const pid = ::fork();
+            REQUIRE(pid >= 0);
+            if (pid == 0)
+            {
+                // No Catch2 in the child: report by exit status only.
+                if (!merovingian::platform::apply_seccomp_filter())
+                {
+                    ::_exit(20);
+                }
+                auto config = merovingian::media::ThumbnailerConfig{};
+                config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
+                config.timeout_seconds = 60U;
+                auto request = merovingian::media::ThumbnailRequest{};
+                request.source_bytes = sample_png();
+                request.source_content_type = "image/png";
+                request.width = 4U;
+                request.height = 4U;
+                request.method = merovingian::media::ThumbnailMethod::scale;
+                auto const result = merovingian::media::generate_thumbnail(config, request);
+                ::_exit(result.ok && result.width == 4U && result.height == 4U ? 0 : 21);
+            }
+            auto status = int{};
+            REQUIRE(::waitpid(pid, &status, 0) == pid);
+
+            THEN("the child exits normally having received the thumbnail")
+            {
+                INFO("signalled=" << WIFSIGNALED(status) << " signal=" << (WIFSIGNALED(status) ? WTERMSIG(status) : 0)
+                                  << " exit=" << (WIFEXITED(status) ? WEXITSTATUS(status) : -1));
+                REQUIRE(WIFEXITED(status));
+                REQUIRE(WEXITSTATUS(status) == 0);
+            }
+        }
+    }
+}
+#endif
 
 #endif // MEROVINGIAN_TEST_THUMBNAIL_WORKER
 

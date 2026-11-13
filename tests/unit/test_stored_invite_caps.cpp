@@ -406,3 +406,186 @@ SCENARIO("an invite is found without reading the table", "[database][invite][sec
         }
     }
 }
+
+SCENARIO("one sending server's remote invites are bounded in bytes across every local user",
+         "[database][invite][security][c04]")
+{
+    GIVEN("a server holding 60 of 100 bytes across two users")
+    {
+        auto store = capped_store();
+        store.max_remote_invite_bytes_per_origin = 100U;
+        store.max_remote_invite_bytes_total = 0U;
+        store.max_remote_invite_bytes_per_user = 0U;
+        REQUIRE(store_invite(store, invite_from("@a:o.example", room_number(1U), 30U, "@u1:home.example")));
+        REQUIRE(store_invite(store, invite_from("@a:o.example", room_number(2U), 30U, "@u2:home.example")));
+
+        WHEN("it sends exactly the remaining 40 bytes to a third user")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:o.example", room_number(3U), 40U, "@u3:home.example"));
+
+            THEN("it is stored: the limit itself is allowed")
+            {
+                REQUIRE(stored);
+            }
+        }
+
+        WHEN("it sends one byte more than remains, to a user it has not invited before")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:o.example", room_number(3U), 41U, "@u3:home.example"));
+
+            THEN("it is refused and nothing is written")
+            {
+                REQUIRE_FALSE(stored);
+                REQUIRE(store.invites.size() == 2U);
+            }
+        }
+
+        WHEN("another server sends the same bytes")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:p.example", room_number(3U), 41U, "@u3:home.example"));
+
+            THEN("it is stored: the bound is per sending server")
+            {
+                REQUIRE(stored);
+            }
+        }
+
+        WHEN("it re-sends an invite it already holds, larger but within the limit")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:o.example", room_number(1U), 70U, "@u1:home.example"));
+
+            THEN("the record it replaces is not counted twice")
+            {
+                REQUIRE(stored);
+            }
+        }
+
+        WHEN("one of its invites is rejected by the user and it sends the freed bytes again")
+        {
+            REQUIRE(db::delete_invite(store, room_number(1U), "@u1:home.example"));
+            auto const stored =
+                store_invite(store, invite_from("@a:o.example", room_number(3U), 70U, "@u3:home.example"));
+
+            THEN("the freed bytes are available again")
+            {
+                REQUIRE(stored);
+            }
+        }
+    }
+}
+
+SCENARIO("all remote invites together are bounded in bytes whatever the number of users",
+         "[database][invite][security][c04]")
+{
+    GIVEN("two servers together holding 100 of 150 bytes")
+    {
+        auto store = capped_store();
+        store.max_remote_invite_bytes_per_origin = 0U;
+        store.max_remote_invite_bytes_total = 150U;
+        store.max_remote_invite_bytes_per_user = 0U;
+        REQUIRE(store_invite(store, invite_from("@a:o.example", room_number(1U), 50U, "@u1:home.example")));
+        REQUIRE(store_invite(store, invite_from("@a:p.example", room_number(2U), 50U, "@u2:home.example")));
+
+        WHEN("a third server sends 50 bytes")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:q.example", room_number(3U), 50U, "@u3:home.example"));
+
+            THEN("it is stored: the total limit itself is allowed")
+            {
+                REQUIRE(stored);
+            }
+        }
+
+        WHEN("a third server sends 51 bytes")
+        {
+            auto const stored =
+                store_invite(store, invite_from("@a:q.example", room_number(3U), 51U, "@u3:home.example"));
+
+            THEN("it is refused")
+            {
+                REQUIRE_FALSE(stored);
+            }
+        }
+
+        WHEN("the rows are reloaded without the ledger, as after a restart, and a third server sends 51 bytes")
+        {
+            auto reloaded = db::PersistentStore{};
+            reloaded.local_server_name = store.local_server_name;
+            reloaded.max_remote_invite_bytes_per_origin = 0U;
+            reloaded.max_remote_invite_bytes_total = 150U;
+            reloaded.max_remote_invite_bytes_per_user = 0U;
+            reloaded.invites = store.invites;
+            auto const refused = db::invite_is_over_store_caps(
+                reloaded, invite_from("@a:q.example", room_number(3U), 51U, "@u3:home.example"));
+            auto const allowed = db::invite_is_over_store_caps(
+                reloaded, invite_from("@a:q.example", room_number(3U), 50U, "@u3:home.example"));
+
+            THEN("the check adds the rows up and gives the same answer")
+            {
+                REQUIRE(refused);
+                REQUIRE_FALSE(allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("a user's knock records are bounded in bytes", "[database][invite][knock][security][c31]")
+{
+    GIVEN("a user holding 60 of 100 knock bytes")
+    {
+        auto store = capped_store();
+        store.max_remote_knocks_per_user = 100U;
+        store.max_remote_knock_bytes_per_user = 100U;
+        auto const knock = [](std::string const& room, std::size_t bytes) {
+            auto record = invite_from(victim, room, bytes);
+            record.resident_server = "remote.example";
+            return record;
+        };
+        auto const store_knock = [&](std::string const& room, std::size_t bytes) {
+            return db::store_membership_projection(store, room, {std::string{victim}, "knock", 1U, knock(room, bytes)});
+        };
+        REQUIRE(store_knock(room_number(1U), 60U));
+
+        WHEN("the user knocks with exactly the remaining 40 bytes")
+        {
+            THEN("it is stored: the limit itself is allowed")
+            {
+                REQUIRE(store_knock(room_number(2U), 40U));
+            }
+        }
+
+        WHEN("the user knocks with one byte more")
+        {
+            auto const stored = store_knock(room_number(2U), 41U);
+
+            THEN("it is refused and nothing is written")
+            {
+                REQUIRE_FALSE(stored);
+                REQUIRE(store.invites.size() == 1U);
+            }
+        }
+
+        WHEN("the first knock is re-recorded larger but within the limit")
+        {
+            THEN("the record it replaces is not counted twice")
+            {
+                REQUIRE(store_knock(room_number(1U), 100U));
+            }
+        }
+
+        WHEN("the first knock is withdrawn and the freed bytes are used")
+        {
+            REQUIRE(db::delete_invite(store, room_number(1U), victim));
+
+            THEN("the bytes are available again")
+            {
+                REQUIRE(store_knock(room_number(2U), 100U));
+            }
+        }
+    }
+}

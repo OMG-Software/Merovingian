@@ -6,6 +6,7 @@
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
+#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
@@ -72,6 +73,7 @@
 #include "merovingian/database/PersistentToDeviceMessage.hpp"
 #include "merovingian/database/PersistentUser.hpp"
 #include "merovingian/database/PreparedCurrentState.hpp"
+#include "merovingian/database/PreparedOutlierBatch.hpp"
 #include "merovingian/database/PreparedStateGroup.hpp"
 #include "merovingian/database/PreparedStateUpdate.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
@@ -82,6 +84,7 @@
 #include "merovingian/database/RowGroupIndex.hpp"
 #include "merovingian/database/RowKeyIndex.hpp"
 #include "merovingian/database/SchemaState.hpp"
+#include "merovingian/database/StateBeforeMemo.hpp"
 #include "merovingian/database/StateGroupEntryTable.hpp"
 #include "merovingian/database/StateGroupTable.hpp"
 #include "merovingian/database/TableLoadProfile.hpp"
@@ -97,6 +100,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -160,11 +164,9 @@ namespace merovingian::database
 //                       1857-1871, federation/RemoteKeyCache.cpp. Column-
 //                       restricted: the worker load path (see
 //                       PostgresqlStore.cpp load_persistent_rows) never
-//                       selects the secret_key column, and
-//                       provision-federation-worker-role.sql grants SELECT
-//                       on exactly the other four columns — so this entry
-//                       never exposes this server's own signing secret even
-//                       though the table name is shared with it.
+//                       selects the secret_key column — so this entry never
+//                       exposes this server's own signing secret even though
+//                       the table name is shared with it.
 //
 //   state_groups        federation /state and /state_ids answer from the state
 //                       group recorded for the event (ADR-0363), and
@@ -182,10 +184,12 @@ namespace merovingian::database
 // login_tokens/openid_tokens/account_threepids and every other credential or
 // per-user table — is either relayed to main over IPC when the worker
 // genuinely needs it, or never read by the worker at all. See
-// docs/database-persistence.md, "Federation worker least-privilege role",
+// docs/database-persistence.md, "Federation worker database access",
 // for the full classification of every table migrations/*.sql creates
 // (cross-checked against this array by
-// tests/unit/test_worker_db_uri.cpp).
+// tests/unit/test_worker_table_load_profile.cpp). Since ADR-0733 the worker
+// opens no database and main sends it its rooms and keys, so this list bounds
+// what a federation_worker-profile store hydrates, not a worker's own reads.
 inline constexpr std::array<std::string_view, 13> federation_worker_table_allowlist{
     "rooms",
     "membership",
@@ -206,7 +210,7 @@ inline constexpr std::array<std::string_view, 13> federation_worker_table_allowl
 // `federation_worker` allows only federation_worker_table_allowlist; a
 // table absent from it is never hydrated by the worker regardless of
 // backend. Pure and header-testable: exercised directly by
-// tests/unit/test_worker_db_uri.cpp without a database connection.
+// tests/unit/test_worker_table_load_profile.cpp without a database connection.
 [[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
     -> bool
 {
@@ -294,6 +298,23 @@ struct PersistentStore final
     CredentialTable<PersistentAccessToken> access_tokens{};
     CredentialTable<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
+    // Test seam: called with the statement count just before each non-empty backend transaction is written, on the
+    // committing thread, so a test can observe whether the caller holds its lock then (C03, ADR-0714). Never set in
+    // production.
+    std::function<void(std::size_t)> test_before_backend_commit{};
+    // Positions in `server_signing_keys` of each server's rows (C27, ADR-0713), so choosing this server's own signing
+    // key does not copy or walk the rows of every remote server that was ever cached. Guarded by
+    // `server_signing_keys_mutex`; rows are only appended, so it is kept by the two writers below and trusted only
+    // while `in_step` the row count, otherwise a reader scans.
+    RowGroupIndex server_signing_key_index{};
+    // Rows of `server_signing_keys` a per-server reader visited (public_signing_keys_of_server), so a test shows the
+    // cost of a worker's key lookup is the asked server's rows, not every cached key.
+    ExaminedRows server_signing_key_rows_examined{};
+    // Where refresh_remote_signing_keys reads one server's public key rows when set (ADR-0733): the federation worker
+    // opens no database and sets this to ask main over its IPC channel. nullopt is a failed read. Unset everywhere
+    // else, where the backing database is read.
+    std::function<std::optional<std::vector<PersistentServerSigningKey>>(std::string_view server_name)>
+        remote_signing_key_source{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
     // Position in `federation_transactions` of each transaction ID (ADR-0441). Kept by
@@ -321,7 +342,20 @@ struct PersistentStore final
     std::uint64_t max_remote_invite_bytes_per_user{33554432U};
     std::uint32_t max_remote_invites_per_origin{16384U};
     std::uint32_t max_remote_knocks_per_user{128U};
+    // The bytes of one user's knock records (the knock event and the resident's stored room state). Every /sync of the
+    // user reads them all, so this bounds that work too (C31, ADR-0708). Zero disables the bound.
+    std::uint64_t max_remote_knock_bytes_per_user{2097152U};
     std::uint32_t remote_invite_origin_share_divisor{8U};
+    // The bytes one sending server may have stored across all local users, and the bytes all remote invites may
+    // take together, whatever the number of local users (C04, ADR-0707). Zero disables a bound.
+    std::uint64_t max_remote_invite_bytes_per_origin{67108864U};
+    std::uint64_t max_remote_invite_bytes_total{268435456U};
+    // The bytes the remote invite records hold, per sending server and in all, kept by the writers of `invites`
+    // beside the three indexes and rebuilt by `rebuild_invite_indexes`. Trusted only while `invite_bytes_rows`
+    // equals `invites.size()`; a check that finds it out of step adds the rows up instead.
+    std::unordered_map<std::string, std::uint64_t> invite_origin_bytes{};
+    std::uint64_t remote_invite_bytes_total{0U};
+    std::size_t invite_bytes_rows{0U};
     // Positions in `memberships` of each room's rows (ADR-0437), so a reader of one room's members does not scan
     // every room's. Maintained by every writer in PersistentStore.cpp and rebuilt after hydration and
     // `reload_room`; only trusted while `membership_indexed_rows == memberships.size()` and each position it
@@ -351,6 +385,10 @@ struct PersistentStore final
     std::unordered_map<std::string, std::size_t> state_position_index{};
     std::unordered_map<std::string, std::vector<std::size_t>> state_room_index{};
     std::size_t state_indexed_rows{0U};
+    // Rows of `state` that `find_current_state_event_id` and `for_each_room_state_row` looked at: one per
+    // index hit or visited row, every row of a fallback scan. A test proves a reader's cost by it, not by time
+    // (ADR-0654).
+    ExaminedRows state_rows_examined{};
     std::vector<PersistentStateTransition> state_transitions{};
     // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
     // and mapping to the vector offset. Rebuilt after hydration and updated on every insert so
@@ -392,11 +430,22 @@ struct PersistentStore final
     // fall back to a scan until the next rebuild (key_signatures_for_target).
     std::unordered_map<std::string, std::vector<std::size_t>> key_signature_target_index{};
     std::size_t key_signature_indexed_rows{0U};
+    // Run-3 C14 (ADR-0672): the signature rows by (signer, target user, target key), by signer, and by (target user,
+    // target key). The same trust rule as the target index: used only while built for exactly the vector's row count;
+    // store_key_signature(s) heals a stale one first and rebuild_key_signature_index rebuilds all four. Rows are
+    // never erased, so each is a plain append or an in-place update.
+    RowKeyIndex key_signature_key_index{};
+    RowGroupIndex key_signature_signer_index{};
+    RowGroupIndex key_signature_target_key_index{};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
     // version) and the versions of each user. Same trust rule as above. A deleted session or version erases by
     // moving the last row into the gap, so `key_backup_sessions` has no meaningful order.
+    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions` and
+    // rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds it
+    // stale recomputes from the rows without storing the result.
+    std::unordered_map<std::string, KeyBackupDigest> key_backup_digests{};
     RowKeyIndex key_backup_session_index{};
     RowGroupIndex key_backup_version_session_index{};
     RowGroupIndex key_backup_user_version_index{};
@@ -442,6 +491,20 @@ struct PersistentStore final
     // Read receipts, local and federated. Write through store_receipt and
     // remove_receipt so the database row and this mirror stay in step.
     std::vector<PersistentReceipt> receipts{};
+    // Positions in `receipts` of each room's rows and of each (room, user)'s rows (ADR-0737), trusted as the other row
+    // indexes are (ADR-0603). Read through receipts_in_room and receipts_of_user_in_room, never by looping `receipts`;
+    // maintained by store_receipt and remove_receipt, rebuilt after hydration. `receipt_rows_examined` counts the
+    // rows those readers looked at.
+    RowGroupIndex receipt_room_index{};
+    RowGroupIndex receipt_user_room_index{};
+    ExaminedRows receipt_rows_examined{};
+    // The remote users' rows ordered by stream position, as (stream_id, the row's (room, user) group), so the oldest
+    // remote row is the first entry (ADR-0652). "Remote" is a user on a server other than `local_server_name`.
+    // Trusted only while `receipt_remote_indexed_rows == receipts.size()` and it was built for the current
+    // `local_server_name`; a writer rebuilds it when it is not.
+    std::set<std::pair<std::uint64_t, std::string>> receipt_remote_by_stream{};
+    std::size_t receipt_remote_indexed_rows{0U};
+    std::string receipt_remote_indexed_server{};
     // An erase moves the last row into the gap, so the vector has no meaningful order (ADR-0618).
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     // Positions in `to_device_messages` of each (user, device) queue and of each user's rows (ADR-0618), trusted as
@@ -449,8 +512,22 @@ struct PersistentStore final
     RowGroupIndex to_device_recipient_index{};
     RowGroupIndex to_device_user_index{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
+    // Positions in `device_list_changes` of each observer's rows (ADR-0659), trusted as the other row indexes are
+    // (ADR-0603). Read through for_each_observer_device_list_change, never by looping the vector; maintained by
+    // record_device_list_changes, rebuilt after hydration. A replaced pair's row is erased by moving the last row into
+    // its place, so the vector has no order.
+    RowGroupIndex device_list_observer_index{};
+    ExaminedRows device_list_rows_examined{};
     std::vector<PersistentPresence> presence_states{};
+    // Position in `presence_states` of each user's row (ADR-0659), same trust rule. Rows are only appended or edited in
+    // place, never erased. Read a row through find_presence_state.
+    RowKeyIndex presence_user_index{};
+    ExaminedRows presence_rows_examined{};
     std::vector<PersistentFilter> filters{};
+    // Positions in `filters` of each user's rows (ADR-0659), same trust rule. Read through for_each_user_filter and
+    // find_filter; filters are only appended or replaced in place.
+    RowGroupIndex filter_user_index{};
+    ExaminedRows filter_rows_examined{};
     std::vector<PersistentProfile> profiles{};
     std::vector<PersistentThreePidBinding> account_threepids{};
     // A table class (ADR-0581): look up with find/aliases_of_room/count_for_creator, never by looping the rows.
@@ -478,6 +555,15 @@ struct PersistentStore final
     std::size_t notification_indexed_rows{0U};
     ExaminedRows notification_rows_examined{};
     std::vector<PersistentOpenidToken> openid_tokens{};
+    // Positions in `openid_tokens` by token hash and by user (ADR-0681). Same trust rule as `user_index`: used only
+    // while built for exactly the vector's row count; the writers below keep both in step, and a load rebuilds them
+    // through `rebuild_openid_token_indexes`. Rows leave by moving the last row into the gap.
+    RowKeyIndex openid_hash_index{};
+    RowGroupIndex openid_user_index{};
+    ExaminedRows openid_rows_examined{};
+    // Calls of load_audit_events_by_type_prefix: a test reads the difference to prove a request path never reads the
+    // audit log (C26).
+    ExaminedRows audit_type_queries{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
@@ -503,6 +589,9 @@ struct PersistentStore final
     ForwardExtremityTable forward_extremities{};
     // The last resolution of each room's forward extremities (ADR-0600). In memory only.
     ResolvedStateMemo resolved_state_memo{};
+    // The group holding the state before an event, by its distinct prev groups (ADR-0694). Forgotten with
+    // `resolved_state_memo`, for the same reasons.
+    StateBeforeMemo state_before_memo{};
     // How many times each room's current state, or the status or JSON of one of its events, has changed
     // (`room_state_revision`, ADR-0624). In memory only.
     std::unordered_map<std::string, std::uint64_t> room_state_revisions{};
@@ -715,13 +804,21 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // Callers that iterate the keys use this rather than the vector itself.
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
     -> std::vector<PersistentServerSigningKey>;
+// A copy of the rows of one server only, taken under server_signing_keys_mutex: the work is that server's rows, not
+// every cached remote key (C27, ADR-0713). A caller that wants this server's own keys, or one remote server's, uses
+// this.
+[[nodiscard]] auto snapshot_server_signing_keys_of(PersistentStore const& store, std::string_view server_name)
+    -> std::vector<PersistentServerSigningKey>;
 // Re-reads `server_name`'s signing-key rows from the backing database into this
 // store's in-memory mirror, public columns only: `secret_key` is never selected,
 // so a federation worker (whose mirror is otherwise a snapshot taken when it
 // started) can see a key main verified and cached since, without ever reading
 // this server's signing secret. A row already held with a secret is left as it
-// is. A successful no-op for an in-memory store. Returns false only on a
-// connection or query failure, which leaves the mirror unchanged.
+// is. When the store has a `remote_signing_key_source` (the federation worker,
+// ADR-0733), that is asked instead of a database, and only the named server's
+// rows without a secret are taken from its answer. Otherwise a successful no-op
+// for an in-memory store. Returns false only on a connection, query or source
+// failure, which leaves the mirror unchanged.
 [[nodiscard]] auto refresh_remote_signing_keys(PersistentStore& store, std::string_view server_name) -> bool;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;
@@ -773,7 +870,38 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto load_room_snapshot(PersistentStore const& store, std::string_view room_id)
     -> std::optional<RoomReloadSnapshot>;
 auto apply_room_snapshot(PersistentStore& store, RoomReloadSnapshot snapshot) -> void;
+// Builds a store from room snapshots (ADR-0733): the federation worker's start-up fill, before its runtime hydrates.
+// No snapshot's room may already be in `store`. Each table is inserted once and each index rebuilt once, so the cost
+// is the rows, where apply_room_snapshot per room would cost rooms times rows. Returns the number of rooms added.
+auto fill_store_from_room_snapshots(PersistentStore& store, std::vector<RoomReloadSnapshot> snapshots) -> std::size_t;
+// The ID of every room the database holds, sorted, from one read on a connection of its own (ADR-0733): what main
+// lists for a federation worker's start-up fill. nullopt for a store with no database and on a connection or query
+// failure.
+[[nodiscard]] auto load_room_ids(PersistentStore const& store) -> std::optional<std::vector<std::string>>;
+// Main's answer to a federation worker's key lookup (ADR-0733): `server_name`'s rows as this store holds them, at most
+// `max_rows`, public columns only, skipping any row that holds a secret (this server's own keys). Reads memory under
+// server_signing_keys_mutex, never the database.
+[[nodiscard]] auto public_signing_keys_of_server(PersistentStore const& store, std::string_view server_name,
+                                                 std::size_t max_rows) -> std::vector<PersistentServerSigningKey>;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
+// Stores every event of `events` as one outlier row (no state, no membership) in ONE backend transaction, then applies
+// them in memory (C03, ADR-0714). An event this store already holds in the same room is left as it is; one held in
+// another room, or a refused write, fails the whole batch and changes nothing. The work for the commit is one
+// transaction however many events there are, where `store_event_with_state` per event was one commit each.
+[[nodiscard]] auto store_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events) -> bool;
+// The three steps of `store_outlier_events_batch`, for a caller that commits with its lock released (C03, ADR-0714).
+// `prepare_outlier_events_batch` reads the store (an event held in another room refuses the whole batch) and is called
+// with the owner's lock held; nullopt is a refusal that changed nothing. `commit_prepared_outlier_batch` writes the one
+// backend transaction and reads no store state, so the caller may release its lock around it.
+// `apply_prepared_outlier_batch` puts the rows in memory with the lock held again, skipping an event the store has
+// meanwhile come to hold.
+[[nodiscard]] auto prepare_outlier_events_batch(PersistentStore& store, std::vector<PersistentEvent> events)
+    -> std::optional<PreparedOutlierBatch>;
+[[nodiscard]] auto commit_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> bool;
+auto apply_prepared_outlier_batch(PersistentStore& store, PreparedOutlierBatch const& batch) -> void;
+// Sets each of `rows` (a `join` membership with its stream ordering) in ONE backend transaction: an INSERT for a row
+// the store does not hold, an UPDATE for one it does. All or nothing, with the in-memory rows changed after the commit.
+[[nodiscard]] auto store_memberships_batch(PersistentStore& store, std::vector<PersistentMembership> rows) -> bool;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
 [[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)
@@ -1084,6 +1212,10 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // Calls `visit` with each of the user's device rows; stops when it returns false.
 auto for_each_user_device(PersistentStore const& store, std::string_view user_id,
                           std::function<bool(PersistentDevice const&)> const& visit) -> void;
+// True when the user holds a device with this ID. Costs the user's own device rows (at most the per-user device
+// cap) through `device_user_index`, never the whole `devices` table (run-3 C02).
+[[nodiscard]] auto has_user_device(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> bool;
 // Calls `visit` with each of the user's cross-signing key rows; stops when it returns false.
 auto for_each_user_cross_signing_key(PersistentStore const& store, std::string_view user_id,
                                      std::function<bool(PersistentCrossSigningKey const&)> const& visit) -> void;
@@ -1113,6 +1245,11 @@ auto rebuild_key_indexes(PersistentStore& store) -> void;
 [[nodiscard]] auto find_key_backup_session(PersistentStore const& store, std::string_view user_id,
                                            std::string_view version, std::string_view room_id,
                                            std::string_view session_id) -> PersistentKeyBackupSession const*;
+// The bytes that stand for the content of a backup version: the digest of its sessions (run-3 C22, ADR-0673). Equal for
+// equal content and different once a session is added, replaced or removed, so the etag derived from it changes exactly
+// when the backup does. Constant time while the stored digest is in step, otherwise a pass over the version's rows.
+[[nodiscard]] auto key_backup_content_digest(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view version) -> std::string;
 // Calls `visit` with each session of the backup. The order is not meaningful.
 auto for_each_key_backup_session(PersistentStore const& store, std::string_view user_id, std::string_view version,
                                  std::function<void(PersistentKeyBackupSession const&)> const& visit) -> void;
@@ -1122,6 +1259,19 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
 [[nodiscard]] auto store_cross_signing_keys(PersistentStore& store, std::vector<PersistentCrossSigningKey> keys)
     -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
+// Stores every signature in one transaction (one commit, whatever the count): all are written or, when the write
+// fails, none is. A row with an empty target key or an empty payload is refused and the rest are still written; the
+// result is false when any row was refused. An empty list succeeds and writes nothing. Run-3 C14 (ADR-0672).
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures)
+    -> bool;
+// Calls `visit` with the (target user, target key) of each signature `signer_user_id` holds; stops when it returns
+// false. Reads the signer's rows only, counted in `key_rows_examined`.
+auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,
+                                   std::function<bool(PersistentKeySignature const&)> const& visit) -> void;
+// Every signature of one key of a user, in storage order, through the (target user, target key) index.
+[[nodiscard]] auto key_signatures_for_target_key(PersistentStore const& store, std::string_view target_user_id,
+                                                 std::string_view target_key_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>;
 // Every uploaded signature whose target is `target_user_id`, in storage order.
 // Backed by the target index (CSAZ-10); falls back to a scan only when the
 // index is out of step with the rows. References are valid until the next
@@ -1226,6 +1376,15 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
+// A policy rule change, the administrator's `admin_actions` row and its `audit_log` row in ONE transaction (C49,
+// ADR-0687): the rule is in force exactly when both rows exist. `audit` is bounded and stamped here and joins the
+// in-memory window only after the commit. False, with nothing changed, when the rule is invalid (removal: unknown) or
+// the write fails.
+[[nodiscard]] auto commit_policy_rule_with_audit(PersistentStore& store, PersistentPolicyRule rule,
+                                                 PersistentAdminAction action, PersistentAuditEvent audit) -> bool;
+[[nodiscard]] auto commit_policy_rule_removal_with_audit(PersistentStore& store, std::string_view rule_id,
+                                                         PersistentAdminAction action, PersistentAuditEvent audit)
+    -> bool;
 // Security audit run-2 F-12 (ADR-0339): the most bytes of content one account-data row may hold.
 // store_account_data and both capped forms refuse a row over it, so rows the server writes itself
 // (m.tag) are bounded by the same limit as a client's PUT. Every /sync parses each row into a DOM
@@ -1272,6 +1431,21 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // Removes the receipt with `receipt`'s key. False if there was none or the
 // delete could not be committed.
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool;
+// Stores every receipt of `receipts` (an inbound m.receipt EDU's accepted rows) in ONE transaction, each at its own
+// newly allocated sync stream position, with the per-(user, room) threaded-row cap of store_receipt applied in order.
+// When `max_rows` is not zero and the table would hold more, the oldest rows of remote users that the batch does not
+// touch are deleted in the same transaction (a local user's rows never are). All or nothing: false on a backend
+// failure or an invalid row, with the mirror unchanged (ADR-0652).
+[[nodiscard]] auto store_receipts(PersistentStore& store, std::vector<PersistentReceipt> receipts,
+                                  std::size_t max_rows = 0U) -> bool;
+// Whether a row with `key`'s (room, type, user, thread) identity is stored, through the receipt index.
+[[nodiscard]] auto has_receipt(PersistentStore const& store, PersistentReceipt const& key) -> bool;
+// The receipt rows of one room, or of one user in one room, read through the receipt indexes (ADR-0737), in no
+// particular order. The pointers are valid until the next receipt write.
+[[nodiscard]] auto receipts_in_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentReceipt const*>;
+[[nodiscard]] auto receipts_of_user_in_room(PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> std::vector<PersistentReceipt const*>;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
 // Queues every message, with the per-recipient age and count evictions of
 // `enqueue_to_device_message`, in ONE backend transaction: either all of them
@@ -1323,6 +1497,18 @@ auto for_each_user_account_data(PersistentStore const& store, std::string_view u
 // batch succeeds without touching the sync stream.
 [[nodiscard]] auto record_device_list_changes(PersistentStore& store, std::vector<PersistentDeviceListChange> changes)
     -> bool;
+// Calls `visit` with every device-list change row `observer` holds, in no particular order, through the observer
+// index while it is in step (ADR-0659), otherwise by a scan. Adds the rows it looked at to
+// `store.device_list_rows_examined`. `visit` must not change the store.
+auto for_each_observer_device_list_change(PersistentStore const& store, std::string_view observer,
+                                          std::function<void(PersistentDeviceListChange const&)> const& visit) -> void;
+// Calls `visit` with every filter `user_id` stores, in storage order, through the user index (ADR-0659). Adds the rows
+// it looked at to `store.filter_rows_examined`. `visit` must not change the store.
+auto for_each_user_filter(PersistentStore const& store, std::string_view user_id,
+                          std::function<void(PersistentFilter const&)> const& visit) -> void;
+// The presence row of `user_id`, or nullptr, through the user index (ADR-0659).
+[[nodiscard]] auto find_presence_state(PersistentStore const& store, std::string_view user_id)
+    -> PersistentPresence const*;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
@@ -1411,13 +1597,20 @@ auto forget_credentials(PersistentStore& store, UnusableCredentials const& delet
     -> bool;
 // Drops the in-memory window's rows older than the cutoff and returns how many.
 auto forget_audit_events_older_than(PersistentStore& store, std::uint64_t cutoff_ms) -> std::size_t;
+// The most live OpenID tokens one user holds (ADR-0682). Minting one past it evicts the user's oldest.
+inline constexpr auto max_openid_tokens_per_user = std::size_t{32U};
+// Rebuilds the indexes over `openid_tokens` after rows were loaded or the vector was edited directly.
+auto rebuild_openid_token_indexes(PersistentStore& store) -> void;
+// The row whose stored hash equals `token_hash`, or nullptr. One index lookup while the indexes are in step,
+// whatever the row count (ADR-0681). The caller confirms the match with a constant-time comparison.
+[[nodiscard]] auto find_openid_token(PersistentStore const& store, std::string const& token_hash)
+    -> PersistentOpenidToken const*;
 // Insert an OpenID token row. Persists it, mirrors it into the in-memory
-// vector, and then prunes every already-expired row (across all users) so
-// `openid_tokens` cannot grow without bound -- the time-based analogue of
-// store_notification's per-user count cap, appropriate here because an
-// OpenID token's natural retention bound is its own short expiry rather
-// than a row count. Returns false on an empty user_id/token_hash or a
-// backend write failure.
+// vector, and in the same transaction drops every already-expired row (across
+// all users, with one statement however many there are) and the user's oldest
+// live rows beyond `max_openid_tokens_per_user`, so `openid_tokens` is bounded
+// by the cap per user rather than by what a user mints in an hour. Returns
+// false on an empty user_id/token_hash or a backend write failure.
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
 // Deletes every OpenID token row of `user_id`, from the backend and from the in-memory
 // vector. Returns true when no row of the user remains (including when there never was
@@ -1608,6 +1801,12 @@ namespace detail
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // Backend half of load_room_ids: every room ID, sorted, from one statement on a connection of its own.
+    [[nodiscard]] auto load_room_ids_from_backend(PersistentStore const& store)
+        -> std::optional<std::vector<std::string>>;
+    [[nodiscard]] auto load_room_ids_from_sqlite(std::string const& path) -> std::optional<std::vector<std::string>>;
+    [[nodiscard]] auto load_room_ids_from_postgresql(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<std::vector<std::string>>;
     // Backend half of refresh_remote_signing_keys: `server_name`'s rows from
     // server_signing_keys, selecting server_name, key_id, public_key,
     // valid_until_ts and expired_ts only (never secret_key, so each row's secret_key is

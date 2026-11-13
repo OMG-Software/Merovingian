@@ -217,7 +217,7 @@ Every one of these cost real time here.
 
 None. Items 1 to 11 and the pre-existing listener flake were finished on this
 branch on 2026-09-27 and 2026-09-28; each is described, with its tests, in the
-`CHANGELOG.md` 0.12.13 section, so their write-ups were removed from this
+`CHANGELOG-pre-release.md` 0.12.13 section, so their write-ups were removed from this
 file. D3 stays deferred (see `docs/todos/capability-gaps.md`).
 
 The findings made while doing them were then fixed on this branch too

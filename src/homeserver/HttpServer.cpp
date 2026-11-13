@@ -5,45 +5,46 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
-#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/PersistentStore.hpp"
-#include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/ConnectionAdmission.hpp"
 #include "merovingian/homeserver/ConnectionContext.hpp"
-#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
+#include "merovingian/homeserver/FederationProxy.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 #include "merovingian/homeserver/HttpConnection.hpp"
-#include "merovingian/homeserver/HttpServerInternal.hpp"
-#include "merovingian/homeserver/ParkingReservation.hpp"
-#include "merovingian/homeserver/RoundOutcome.hpp"
+#include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
 #include "merovingian/homeserver/HttpServeTuning.hpp"
+#include "merovingian/homeserver/HttpServerInternal.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/MediaFetchAdmissionCaps.hpp"
+#include "merovingian/homeserver/ParkingReservation.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchMode.hpp"
+#include "merovingian/homeserver/RoundOutcome.hpp"
+#include "merovingian/homeserver/StreamedBody.hpp"
 #include "merovingian/homeserver/StreamedBodyResult.hpp"
 #include "merovingian/homeserver/SyncAdmissionCaps.hpp"
+#include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/homeserver/TlsConnection.hpp"
 #include "merovingian/homeserver/TlsServerContext.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
-#include "merovingian/homeserver/StreamedBody.hpp"
-#include "merovingian/homeserver/Tls.hpp"
+#include "merovingian/http/ClientAddress.hpp"
 #include "merovingian/http/ConnectionLimiter.hpp"
 #include "merovingian/http/ConnectionPreference.hpp"
 #include "merovingian/http/HttpVersion.hpp"
+#include "merovingian/http/KeepAlive.hpp"
 #include "merovingian/http/KeepAlivePolicy.hpp"
+#include "merovingian/http/Request.hpp"
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/http/RequestHead.hpp"
 #include "merovingian/http/RequestLimits.hpp"
-#include "merovingian/http/ClientAddress.hpp"
-#include "merovingian/http/KeepAlive.hpp"
-#include "merovingian/http/Request.hpp"
 #include "merovingian/net/ConnectionParker.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/sync/ParkedPoll.hpp"
 #include "merovingian/sync/ParkedPollLimits.hpp"
 #include "merovingian/sync/WakeReason.hpp"
@@ -1129,7 +1130,7 @@ namespace
         // Fast path: the key-server endpoint is served from a lock-free atomic
         // cache so concurrent federation makes-join cannot delay it.
         if (mode == HttpDispatchMode::federation && request.method == "GET" &&
-            request.target == "/_matrix/key/v2/server")
+            is_federation_key_server_endpoint(request.target))
         {
             auto& cache = runtime.homeserver.database.key_server_cache;
             if (cache)
@@ -1302,8 +1303,7 @@ namespace
             });
             return http::ConnectionPreference::close;
         }
-        auto reservation = ctx.dispatcher->try_reserve_keep_alive(policy.max_connections);
-        if (!reservation.has_value())
+        if (!ctx.dispatcher->reserve_keep_alive(connection, policy.max_connections))
         {
             log_diagnostic("connection.keep_alive_cap_reached",
                            {
@@ -1311,7 +1311,6 @@ namespace
             });
             return http::ConnectionPreference::close;
         }
-        connection.parked_reservation = std::move(reservation);
         return http::ConnectionPreference::keep_alive;
     }
 

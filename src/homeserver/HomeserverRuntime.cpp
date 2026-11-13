@@ -849,7 +849,8 @@ auto hydrate_local_database(LocalDatabase& database, database::TableLoadProfile 
 }
 
 auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
-                              database::TableLoadProfile profile) -> LocalDatabase
+                              database::TableLoadProfile profile,
+                              std::function<bool(database::PersistentStore&)> const& fill_store) -> LocalDatabase
 {
     auto database = LocalDatabase{};
     database.remote_signing_keys_read_through = profile == database::TableLoadProfile::federation_worker;
@@ -863,15 +864,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         opened = database::open_persistent_store(std::move(existing_state));
         break;
     case config::DatabaseBackend::postgresql: {
-        // ADR-0062 part 2: the federation worker never reads database.uri_file
-        // itself. When federation_worker::apply_worker_database_uri has set
-        // worker_conninfo_override on this process's own Config copy (from
-        // bytes handed over the inherited kWorkerDbUriFd pipe), that value
-        // takes priority over reading any file. Every other process leaves it
-        // empty, so this is a no-op there.
-        auto const conninfo = !config.database().worker_conninfo_override.empty()
-                                  ? config.database().worker_conninfo_override
-                                  : read_database_uri_file(config.database().uri_file);
+        auto const conninfo = read_database_uri_file(config.database().uri_file);
         opened = conninfo.empty()
                      ? database::PersistentStoreOpenResult{false, "PostgreSQL connection URI is missing or empty", {}}
                      : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,
@@ -883,6 +876,11 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         break;
     }
     if (!opened.ok)
+    {
+        return database;
+    }
+    // ADR-0733: the federation worker's store is in memory and filled from main before anything reads it.
+    if (fill_store && !fill_store(opened.store))
     {
         return database;
     }
@@ -1030,7 +1028,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     },
                    observability::LogEventSeverity::info);
 
-    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile);
+    runtime.database =
+        bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile, opts.fill_store);
     // The default ctor installed `audit_sink_scope` against the
     // empty `LocalDatabase{}` placeholder. Now that `database` holds
     // the real connection state, re-seat the scope so audit rows
@@ -1038,6 +1037,18 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // one the caller will see via NRVO in the returned
     // `RuntimeStartResult`).
     runtime.audit_sink_scope->reset(runtime.database);
+    // ADR-0733: a federation worker's store is filled from main. When main does not answer (it is stopping, or it
+    // refused the request), say so: the schema message below would send an operator looking at a database the worker
+    // never opens.
+    if (opts.fill_store && !runtime.database.opened)
+    {
+        log_diagnostic("start.rejected",
+                       {
+                           {"opened", "false",                                   false},
+                           {"reason", "the store could not be filled from main", false}
+        });
+        return {false, "the store could not be filled from main", {}};
+    }
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||

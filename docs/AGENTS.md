@@ -8,7 +8,7 @@ new documents.
 
 | Document | What to add/update |
 |---|---|
-| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `## X.Y.Z` section when the version changes; documentation-only changes can use the current version's documentation section without a bump. |
+| `../CHANGELOG.md` (repo root) | Describe what changed. Add a new `# Version X.Y.Z` entry when the version changes, with exactly the headings `## Features`, `## Security Fixes`, `## Bug fixes` and `## Release notes`: bullets of two lines at most, and one short release-notes paragraph ([changelog format](versioning.md#changelog-format), [ADR-0741](adr/0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)). Documentation-only changes add bullets to the current version's entry without a bump. Never add to `../CHANGELOG-pre-release.md`, the frozen record of the 0.x series ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)). |
 
 ## Update when the matching domain changes
 

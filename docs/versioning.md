@@ -43,10 +43,56 @@ kept it at 1.0.0 and moved the unpublished `v1.0.0` tag to it
 It is not a precedent.
 
 For a documentation-only branch, keep the current version and add the change
-notes to its `Documentation` section in `CHANGELOG.md`. Changes to coding
+notes as bullets in its `CHANGELOG.md` entry: new guidance under `Features`, a
+correction under `Bug fixes`. Changes to coding
 guidance and `AGENTS.md` files are documentation changes. If the branch later
 includes code, build, or packaging changes, apply the bump policy before
 committing those changes.
+
+## Changelog format
+
+`CHANGELOG.md` opens with a short note pointing at this section and at the frozen
+`CHANGELOG-pre-release.md`, then holds one entry per version, newest first. Every
+entry has exactly these headings, in this order, and no others
+([ADR-0741](adr/0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)):
+
+```markdown
+# Version x.y.z
+
+## Features
+
+* bullet point features list (max 2 lines per point)
+
+## Security Fixes
+
+* bullet point security fixes (max 2 lines per point)
+
+## Bug fixes
+
+* bullet point bug fixes (max 2 lines per point)
+
+## Release notes
+
+short paragraph about the release.
+```
+
+- **Bullets** start with `* `, wrap at 120 columns with a two-space indent, and
+  run to two lines at most. Say what changed for an operator or a client, not
+  how the code does it; the detail belongs in the ADR, so end the bullet with the
+  ADR or audit finding it rests on, for example `(C01, ADR-0719)`. Related fixes
+  may share a bullet when it still fits in two lines.
+- **Features** are new behaviour: a capability, a config key, a package or a
+  documented procedure. **Security Fixes** close a vulnerability or a
+  denial-of-service path, including an audit finding. **Bug fixes** are every
+  other correction, including a fix to a test or to CI.
+- **A section with nothing in it** says `* None.`, or one bullet naming where the
+  work shipped instead; a heading is never dropped.
+- **Release notes** is one short paragraph: what the release is, and anything an
+  operator must do or know before upgrading (a refused config key, a known
+  limitation). It holds no list and no subsections.
+- `tests/tooling/test_changelog_format.py` (`changelog-format-tooling`) enforces
+  the headings, their order, the bullet length and the line width, and checks
+  that the newest entry is the version `meson.build` declares.
 
 ## Canonical source of truth
 
@@ -77,7 +123,7 @@ than the others.
 | `scripts/build-netbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
 | `scripts/build-openbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
 | `scripts/build-static-linux.sh` | `VERSION="${MEROVINGIAN_VERSION:-X.Y.Z}"` |
-| `CHANGELOG.md` | New `## X.Y.Z` section at the top |
+| `CHANGELOG.md` | New `# Version X.Y.Z` entry at the top in the [changelog format](#changelog-format) (never in `CHANGELOG-pre-release.md`, ADR-0740) |
 
 ### Notes
 
@@ -89,8 +135,10 @@ than the others.
 - The RPM-family `%changelog` (the `rpm`, `rhel`, and `opensuse` specs) requires
   a new dated entry for every version — the `Version:` field alone is not
   sufficient for `rpmbuild` to accept the spec.
-- Historical version strings in `CHANGELOG.md` and every spec `%changelog` are
-  records, not live values; do not edit them when bumping.
+- Historical version strings in `CHANGELOG.md`, `CHANGELOG-pre-release.md` and every spec
+  `%changelog` are records, not live values; do not edit them when bumping.
+- `CHANGELOG.md` starts at 1.0.0. The 0.x entries are in `CHANGELOG-pre-release.md`, a frozen record that
+  nothing is added to ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 - `tests/tooling/test_packages_workflow.py` enforces that every file in the table
   above carries the current `meson.build` version. Run it (or `python build.py
   wsl`) after a bump to catch any location that was missed.

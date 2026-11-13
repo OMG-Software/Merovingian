@@ -52,9 +52,9 @@ inline constexpr int k_landlock_max_known_abi = 6;
 // READ_FILE, TRUNCATE) are kept. Directories keep `requested` unchanged.
 [[nodiscard]] auto landlock_access_for_inode(std::uint64_t requested, bool is_directory) noexcept -> std::uint64_t;
 
-// Builds the federation worker's path allowlist from its own config copy.
-// Paths the config carries (the SQLite database directory) are read from
-// `config`, never hard-coded; fixed OS-integration paths (CA trust store,
+// Builds the federation worker's path allowlist. No rule comes from the
+// database keys in `config`: the worker opens no database (ADR-0733), so the
+// SQLite directory is never granted. Fixed OS-integration paths (CA trust store,
 // resolver configuration, NSS/dynamic-linker library directories) are
 // best-effort (LandlockPathRule::required = false). See
 // docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md,

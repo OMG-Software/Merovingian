@@ -50,13 +50,15 @@ This module is security-critical. Changes here affect the server's attack surfac
 5. **`apply_worker_landlock` is Linux-only, worker-specific, and fail-closed like
    `apply_worker_hardening`.** It is called from `federation_worker::main()`
    before the worker seccomp filter (Landlock's syscalls are not on that
-   filter's allowlist) and before the event loop opens the database or
+   filter's allowlist) and before the event loop starts or
    handles any inbound request. Any failure other than "this kernel has no
    Landlock" (ENOSYS/EOPNOTSUPP/ABI < 1) is always fatal, even when
    `federation.worker.allow_without_landlock=true` — see ADR-0062 part 3.
    Add a path to the allowlist only in `build_worker_landlock_rules()`,
-   sourced from the worker's own config copy or a documented, best-effort
-   fixed system path — never hard-code a secret file path there.
+   as a documented, best-effort fixed system path — never hard-code a secret
+   file path there, and never derive a rule from the database keys: the
+   worker opens no database, and the rules grant no database directory even
+   when the config passed in still names one (ADR-0733, ADR-0736).
 
 6. **No thread may exist before Landlock and the seccomp filter are installed (ISO-1,
    [ADR-0082](../../docs/adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)).**
@@ -87,8 +89,13 @@ This module is security-critical. Changes here affect the server's attack surfac
    owner and `O_ASYNC` signals any process of the same uid when it is next ready, which is the one kill route a profile
    without `kill`/`tgkill` still leaves. `argument_check_block` kills `F_SETOWN`, `F_SETOWN_EX`, `F_SETSIG`, `F_SETFL`
    with `O_ASYNC`, `FIOASYNC`, `FIOSETOWN`, `SIOCSPGRP` and `TIOCSPGRP` in the worker profile, and gives the decoder an
-   allowlist of commands. A new command for the decoder is added there with a test in `test_seccomp_hardening.cpp` that
-   runs the real filter in a forked child. The decoder has no `newfstatat` or `statx` (ADR-0643): a filter cannot read
+   allowlist of commands. The worker profile also kills `TIOCSTI` and `TIOCLINUX`, which write into a terminal
+   (ADR-0731); never allow either in any profile, whatever the kernel's `legacy_tiocsti` setting. A new command for the
+   decoder is added there with a test in `test_seccomp_hardening.cpp` that runs the real filter in a forked child.
+   Main's profile admits `setsid` (ADR-0731): a spawned child runs under main's filter for its whole life (a filter
+   survives `fork` and `exec`, and the child's own filter only adds restrictions), so a call a child makes, before
+   `exec` or before its own filter, must be on main's list. Test a spawn path with main's filter installed, never only
+   without it. The decoder has no `newfstatat` or `statx` (ADR-0643): a filter cannot read
    a path, so only `fstat` is safe.
 
 ## Platform support

@@ -6,6 +6,7 @@
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/LibraryVersion.hpp"
 #include "merovingian/federation_worker/ParsedWorkerArgs.hpp"
+#include "merovingian/federation_worker/WorkerDatabaseConfig.hpp"
 #include "merovingian/homeserver/LibraryVersions.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/platform/LandlockHardening.hpp"
@@ -13,6 +14,7 @@
 #include "merovingian/platform/SignalHardening.hpp"
 
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -89,6 +91,19 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
+    // ADR-0731: the worker must not share the terminal of the shell that started the server. Main spawns it in a
+    // session of its own where the C library has POSIX_SPAWN_SETSID (the supervisor is built against the same
+    // <spawn.h>); elsewhere the worker leaves main's session here, before it reads anything a remote server sent. A new
+    // session has no controlling terminal. Only that fallback calls getsid: main's seccomp filter, which the worker
+    // still runs under here, does not admit it.
+#ifndef POSIX_SPAWN_SETSID
+    if (::getsid(0) != ::getpid() && ::setsid() < 0)
+    {
+        std::cerr << "merovingian-fed-worker: cannot start a session of its own: " << std::strerror(errno) << '\n';
+        return 1;
+    }
+#endif
+
     auto const args = merovingian::federation_worker::parse_worker_args(argc, argv);
     if (args.error.has_value())
     {
@@ -115,19 +130,6 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
-    // ADR-0062 part 2: validate the database-URI fd is open, when main
-    // passed one. Absent is a valid, expected outcome (SQLite backend, or
-    // the allow_shared_database_credentials opt-out) -- see
-    // federation_worker::ParsedWorkerArgs::db_uri_fd. Also consumed later,
-    // inside WorkerEventLoop::run() (federation_worker::read_worker_database_uri).
-    auto const raw_db_uri_fd = args.db_uri_fd.has_value() ? *args.db_uri_fd : -1;
-    if (args.db_uri_fd.has_value() && ::fcntl(raw_db_uri_fd, F_GETFD) < 0)
-    {
-        std::cerr << "merovingian-fed-worker: db-uri fd " << raw_db_uri_fd << " is not open: " << ::strerror(errno)
-                  << '\n';
-        return 1;
-    }
-
     auto const contents = read_file(*args.config_path);
     if (!contents.has_value())
     {
@@ -146,8 +148,7 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
-             " ipc_fd=" + std::to_string(raw_fd) + " ipc_key_fd=" + std::to_string(raw_key_fd) +
-             (args.db_uri_fd.has_value() ? " db_uri_fd=" + std::to_string(raw_db_uri_fd) : ""));
+             " ipc_fd=" + std::to_string(raw_fd) + " ipc_key_fd=" + std::to_string(raw_key_fd));
     // The worker is a separate executable and may load other copies of the libraries than the
     // server does, so it logs its own (0.12.45).
     for (auto const& library : merovingian::homeserver::linked_library_versions())
@@ -167,11 +168,11 @@ auto main(int argc, char const* const* argv) -> int
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
     auto ipc_key_fd = merovingian::core::FileDescriptor{raw_key_fd};
-    // Default-constructed (invalid) when main did not pass --db-uri-fd; see
-    // WorkerEventLoop::run().
-    auto db_uri_fd = args.db_uri_fd.has_value() ? merovingian::core::FileDescriptor{raw_db_uri_fd}
-                                                : merovingian::core::FileDescriptor{};
     auto const threads = parse_result.config.federation_worker().threads;
+    // ADR-0733: the worker opens no database; main sends it the rows it reads. Its copy of the configuration names no
+    // database from here on, so the Landlock rules below grant no database directory and the runtime opens none.
+    auto worker_config = parse_result.config;
+    merovingian::federation_worker::clear_database_location(worker_config);
 
     // ADR-0062 part 3: restrict the worker's own filesystem access with
     // Landlock before doing anything else that follows. Applied
@@ -186,12 +187,13 @@ auto main(int argc, char const* const* argv) -> int
     // seccomp allowlist never has to carry three syscalls it needs for one
     // startup step and never again.
     {
-        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(parse_result.config);
+        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(worker_config);
         // Fail closed if any rule would grant access to a configured secret
         // (e.g. a master key placed beside the SQLite database, whose
         // directory is granted read-write). Refused even with
         // allow_without_landlock: this is a secret-placement error.
         if (auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                // The secrets the operator configured, database URI files included, whatever the worker's copy says.
                 landlock_rules, merovingian::platform::worker_landlock_secret_paths(parse_result.config));
             exposure.has_value())
         {
@@ -253,8 +255,8 @@ auto main(int argc, char const* const* argv) -> int
         LOG_WARNING("Federation worker: log writer threads could not be started; logging stays synchronous");
     }
 
-    auto loop = merovingian::federation_worker::WorkerEventLoop{
-        std::move(ipc_fd), std::move(ipc_key_fd), std::move(db_uri_fd), parse_result.config, threads, args.shard_index};
+    auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), std::move(ipc_key_fd),
+                                                                std::move(worker_config), threads, args.shard_index};
     loop.run();
 
     return 0;

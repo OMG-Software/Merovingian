@@ -93,6 +93,10 @@ public:
     // the last session fills each hole, so insertion order is not kept (see the class comment).
     auto erase_device(std::string_view user_id, std::string_view device_id) -> std::size_t;
 
+    // Marks every session of the device revoked and returns how many it reached. Costs the device's sessions, not the
+    // table (run-3 C02); a device with none costs one lookup.
+    auto revoke_device(std::string_view user_id, std::string_view device_id) -> std::size_t;
+
     // How many sessions `erase_device` visited, in total, for tests that prove its cost (F-08).
     [[nodiscard]] auto rows_examined() const noexcept -> database::ExaminedRows const&
     {

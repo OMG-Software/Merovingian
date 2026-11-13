@@ -19,6 +19,7 @@ Spec authority:
 | `ParkedPollRegistry.cpp` | `ParkedPollRegistry`: parked long-polls (an opaque `ParkedPoll` each) indexed by user and by deadline, one thread that resumes woken and expired ones through a callback; mutex is a leaf; owned by `SyncNotifier` (ADR-0569) |
 | `TimelineWindow.cpp` | `newest_timeline_window`: a classic `/sync` room's timeline, read newest first through the room index, stopping when full and after `max_timeline_rows_skipped` rows not taken (ADR-0616) |
 | `SlidingSyncParser.cpp` | Parses MSC4186 request body (list operators, range, required_state, etc.) |
+| `SlidingSyncRequestLookups.cpp` | `SlidingSyncRequestLookups`: one per sliding sync request, learns the caller's joined rooms and invites (own membership rows), encryption and room type (state index), `m.direct`, favourites and read markers (the user's own receipt rows per room, through the receipt index, ADR-0737), and the `by_recency`/`by_name` keys per room (ADR-0666), each once; every list and `build_room_response` reads it (ADR-0665) |
 | `SlidingSyncRoomList.cpp` | Builds the ordered room list for a sliding sync response |
 | `SlidingSyncRoomBuilder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `SlidingSyncExtensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
@@ -79,6 +80,8 @@ MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the 
 uses `conn.last_event_ordering` as the since-baseline so repeated `timeout=0` polls return
 a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
+The connections are a `SlidingSyncConnectionTable` (map plus an index by `last_used`): change them only through `touch`, `erase` and `erase_idle`, so the idle sweep pops from the index front and never walks every user's connections (ADR-0663).
+
 ## Sliding sync timelines
 
 A room's `timeline` is the newest `timeline_limit` events the user may see, after its delta
@@ -120,7 +123,11 @@ request that names many:
 joined. `parse_sliding_sync_request` clamps `timeline_limit` to
 `sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions,
 `required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
-(the handler answers a violation 400 `M_INVALID_PARAM`).
+(the handler answers a violation 400 `M_INVALID_PARAM`). It also caps `room_types`/`not_room_types` (16 each), ranges (16) per list, a `conn_id` and list name (255 bytes) and the bytes of lists a request would make a connection keep (64 KiB; `sliding_sync_retained_bytes`); `sliding_sync_json` refuses a request that would take the device's connections past 256 KiB together, before creating its entry (ADR-0663). A new field a connection stores copies into `sliding_sync_retained_bytes`.
+
+A room's sliding sync timeline is read through `newest_timeline_window`, like `/sync`'s, so it stops after `max_timeline_rows_skipped` rows not taken and then is `limited` with a `prev_batch` where the walk stopped (ADR-0664). Never add a loop over `room_in_stream_order` that `continue`s on a visibility test.
+
+A list filter or sort key reads the request's `SlidingSyncRequestLookups`, never a scan of `store.memberships`, `store.state` or `store.receipts` per room (ADR-0665); a new filter adds a lookup there.
 
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
@@ -416,3 +423,52 @@ already goes through `can_see`, so a new one gets this for free; do not add a pa
 redaction has been applied to are stored in their redacted form, and the serializers add
 `unsigned.redacted_because` with `database::attach_redacted_because` (a new client-facing event serializer must
 call it, and `database::add_redaction_compat`).
+
+## Receipts are read through the store's receipt indexes (ADR-0737)
+
+Never loop `store.receipts` in a request: use `database::receipts_in_room` (ephemeral `m.receipt` events, the sliding
+sync receipts extension and its wake check) or `database::receipts_of_user_in_room` (`read_markers_for`, the push badge
+count). A threaded receipt (`thread_id` other than `main`) is accepted by the POST handler only for the thread root or
+an event that belongs to that thread (`receipt_event_is_in_thread`), and `store_receipt` caps a user's threaded rows in
+a room. A test proves cost with `receipt_rows_examined`, not time.
+
+## Classic sync reads per-room rows through the room indexes (ADR-0654)
+
+`sync_json` reads a room's state through `find_current_state_event_id` / `for_each_room_state_row`, its memberships
+through `for_each_room_membership_row` and its receipts through `receipts_in_room`; never loop `store.state`,
+`store.memberships` or `store.receipts` per room. Joined rooms that pass the room filter are counted in
+`processed_rooms` before any per-room work and the loop stops at `max_sync_rooms`. Tests prove cost with
+`state_rows_examined`, `membership_rows_examined` and `receipt_rows_examined`.
+
+## An unread count parses a bounded number of bytes (ADR-0655)
+
+`count_unread_by_thread` spends each classified event's JSON size, and `event_thread_id` each parent it parses, from
+`max_unread_bytes_parsed` (512 KiB); when the next event does not fit the count stops and is a lower bound, as at
+`max_unread_rows_examined`. Any new reader that parses sender-sized events per room takes a byte budget too. In
+`sync_json` the "nothing new" check for a room runs before its counts.
+
+## Room reads that skip rows a reader may not see take an examination budget (ADR-0656)
+
+`/context` (each side of the event) and `/initialSync` walk `room_in_stream_order` in place and count every row they look
+at, visible or not, against `max_messages_events_examined`, as `/messages` does; when it ends a walk early the `start`
+or `end` token is the last row examined. Never copy a room's events into a vector to step through them.
+
+## Every list of a sync filter is capped (ADR-0657)
+
+Each list (`types`, `not_types`, `senders`, `not_senders`, `rooms`, `not_rooms`, `event_fields`) holds at most
+`max_filter_list_entries` (100). `filter_list_cap_problem` finds an over-cap list in an uploaded, inline or stored filter;
+`GET /sync`, `/messages`, `/context` and the upload call it and answer 400 `M_INVALID_PARAM`. The lenient parsers do
+not refuse, and a new endpoint that matches a filter's lists against rows with a plain scan calls it too.
+
+
+## Which joined rooms a classic sync serves (ADR-0658)
+
+`select_sync_rooms` finds the candidate rooms from the user's own `join` membership rows (never by walking every room on
+the server), and an incremental sync drops a room that cannot have news (no event, typing change, account-data row or
+receipt above `since`) before it is charged to `max_sync_rooms`. Past the cap the most recently active rooms are served and
+a room with news beyond it is skipped, as it always was. A new source of room news must be added to the check, or a room
+whose only news it is would be dropped.
+
+The once-per-request reads of a sync (the device-list delta, the stored-filter summary, the presence events and the push-rule
+classifier's room sources) use the observer, user and presence indexes and the user's and rooms' membership rows (ADR-0659);
+never walk `device_list_changes`, `filters`, `presence_states`, `memberships` or `state` there.

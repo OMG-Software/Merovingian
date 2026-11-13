@@ -41,7 +41,7 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN the full suite runs on both, and a failure on one still reports the other.
         self.assertIn("image: ${{ matrix.image }}", job)
         # AND each is pinned by release, never fedora:latest, so the release CI tests is the
-        # one packages.yml ships (ADR-0652).
+        # one packages.yml ships (ADR-0742).
         self.assertRegex(job, r"image: \[\s*fedora:44,\s*fedora:45\s*\]")
         self.assertNotIn("fedora:latest", workflow)
         self.assertIn("fail-fast: false", job)
@@ -171,7 +171,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-linux.sh --builddir build-debian", workflow)
         self.assertIn("sh scripts/build-linux.sh --builddir build-rhel", workflow)
         self.assertIn("sh scripts/build-linux.sh --builddir build-ubuntu-interim --skip-job ubuntu-interim", workflow)
-        # AND the interim release is pinned and its check names the release (ADR-0652).
+        # AND the interim release is pinned and its check names the release (ADR-0742).
         self.assertNotIn("image: ubuntu:rolling", workflow)
         self.assertIn("    name: ubuntu-26.10-build-and-test\n", workflow)
         opensuse = workflow.split("\n  opensuse-build-and-test:")[1].split("\n  freebsd-build-and-test:")[0]
@@ -459,7 +459,7 @@ class CiWorkflowTests(unittest.TestCase):
             self.assertIn("fail-fast: false", job)
         # AND Ubuntu runs on each LTS runner image by its release, never on ubuntu-latest,
         # so a label migration cannot drop a release unnoticed (ADR-0650). 26.04 is the only
-        # LTS built and tested; 24.04 is packaged only (ADR-0652).
+        # LTS built and tested; 24.04 is packaged only (ADR-0742).
         self.assertIn("runs-on: ${{ matrix.runner }}", ubuntu)
         self.assertNotIn("ubuntu-latest", ubuntu)
         self.assertIn("- check: ubuntu-build-and-test\n            runner: ubuntu-26.04\n", ubuntu)
@@ -475,7 +475,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "${attempt}" = 3 ]; then', opensuse)
 
     def test_build_and_test_runs_on_exactly_the_supported_platforms(self) -> None:
-        # GIVEN the owner's build-and-test list (ADR-0652): RHEL 10, openSUSE Leap 16 and
+        # GIVEN the owner's build-and-test list (ADR-0742): RHEL 10, openSUSE Leap 16 and
         # Tumbleweed, Fedora 44 and 45, Ubuntu 26.04 and 26.10, Debian 13, FreeBSD 15,
         # OpenBSD and NetBSD.
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")

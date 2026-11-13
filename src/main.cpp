@@ -81,7 +81,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"1.0.0"};
+constexpr auto version = std::string_view{"1.0.1"};
 
 struct BootstrapConfigResult final
 {
@@ -269,25 +269,6 @@ struct BootstrapConfigResult final
     if (!database_validation.parsed.findings.empty())
     {
         return database_validation;
-    }
-
-    // ADR-0062 part 2: federation.worker.database_uri_file gets the same
-    // owner-only, TOCTOU-safe metadata check as database.uri_file above,
-    // when it names a file at all. allow_missing mirrors database.uri_file's
-    // own permissiveness here deliberately: the hard, fail-closed
-    // enforcement point for "this file must actually exist and be readable"
-    // is homeserver::WorkerPool::WorkerPool at real startup (it throws,
-    // aborting the server, unless allow_shared_database_credentials=true),
-    // not this --dry-run/--check-config-reachable metadata pass — the same
-    // two-layer split database.uri_file already has.
-    if (!config.federation_worker().database_uri_file.empty())
-    {
-        auto worker_database_validation = validate_existing_secret_file_metadata(
-            config.federation_worker().database_uri_file, "federation.worker.database_uri_file", true);
-        if (!worker_database_validation.parsed.findings.empty())
-        {
-            return worker_database_validation;
-        }
     }
 
     auto client_tls_validation = validate_existing_listener_tls_files(config.listeners().client, "listeners.client");
@@ -1277,7 +1258,8 @@ struct ListenerBinding final
     // Enter FreeBSD Capsicum capability mode now that all resources are open:
     // TCP listeners are bound, TLS certs are loaded, the federation worker is
     // spawned (posix_spawn uses a file path — it must run before cap_enter),
-    // and the SQLite WAL files are open. After cap_enter the global filesystem
+    // and the database connections are open, the readers main serves the
+    // workers' stores through included (ADR-0739). After cap_enter the global filesystem
     // namespace is forbidden; opening files by path will return ECAPMODE.
     //
     // Pre-open the thumbnail worker binary so the child can call fexecve(3)

@@ -281,3 +281,84 @@ SCENARIO("join_room advertises room versions 10 11 and 12 all of which have regi
         }
     }
 }
+
+SCENARIO("A resident's membership template is rebuilt from an allow-list before it is signed",
+         "[homeserver][federation][membership-template][c18]")
+{
+    auto const template_for = [](std::string const& membership, std::string const& extra) {
+        auto const body = std::string{R"({"room_version":"10","event":{"type":"m.room.member",)"} +
+                          R"("room_id":"!room:remote.example.org","sender":"@alice:local.example.org",)" +
+                          R"("state_key":"@alice:local.example.org","content":{"membership":")" + membership + "\"" +
+                          extra + "}}}";
+        return merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                    "@alice:local.example.org", body);
+    };
+    auto const content_of = [](merovingian::canonicaljson::Object const& event) {
+        auto const* value = member_of(event, "content");
+        REQUIRE(value != nullptr);
+        auto const* content = std::get_if<merovingian::canonicaljson::Object>(&value->storage());
+        REQUIRE(content != nullptr);
+        return *content;
+    };
+
+    GIVEN("a join template carrying a reason, a profile, an unknown key and a remote authorising user")
+    {
+        auto parsed = template_for(
+            "join",
+            R"(,"reason":"I agree","displayname":"Mallory","x":1,"join_authorised_via_users_server":"@r:remote.example.org")");
+        REQUIRE(parsed.ok);
+
+        WHEN("its content is restricted")
+        {
+            auto const refusal =
+                merovingian::homeserver::restrict_membership_template_content(parsed.event, "local.example.org", true);
+
+            THEN("only the membership and the authorising user remain")
+            {
+                REQUIRE(refusal.empty());
+                auto const content = content_of(parsed.event);
+                REQUIRE(content.size() == 2U);
+                REQUIRE(string_of(content, "membership") == "join");
+                REQUIRE(string_of(content, "join_authorised_via_users_server") == "@r:remote.example.org");
+            }
+        }
+    }
+
+    GIVEN("a join template naming a user of this server as the authorising user")
+    {
+        auto parsed = template_for("join", R"(,"join_authorised_via_users_server":"@bob:local.example.org")");
+        REQUIRE(parsed.ok);
+
+        WHEN("its content is restricted")
+        {
+            auto const refusal =
+                merovingian::homeserver::restrict_membership_template_content(parsed.event, "local.example.org", true);
+
+            THEN("the template is refused")
+            {
+                REQUIRE_FALSE(refusal.empty());
+            }
+        }
+    }
+
+    GIVEN("a leave-style template carrying a reason and an authorising user")
+    {
+        auto parsed =
+            template_for("join", R"(,"reason":"forged","join_authorised_via_users_server":"@r:remote.example.org")");
+        REQUIRE(parsed.ok);
+
+        WHEN("its content is restricted without the authoriser allowance")
+        {
+            auto const refusal =
+                merovingian::homeserver::restrict_membership_template_content(parsed.event, "local.example.org", false);
+
+            THEN("only the membership remains")
+            {
+                REQUIRE(refusal.empty());
+                auto const content = content_of(parsed.event);
+                REQUIRE(content.size() == 1U);
+                REQUIRE(string_of(content, "membership") == "join");
+            }
+        }
+    }
+}

@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 1.0.0.
+# Build for merovingian 1.0.1.
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
@@ -32,13 +32,20 @@ meson compile -C build-freebsd-pkg
 #    $PWD avoids subshell/symlink issues that $(pwd) can have inside the VM.
 meson install -C build-freebsd-pkg --destdir "${PWD}/${STAGING}" --skip-subprojects
 
-# 4. Install rc.d script and sample config (BSD install does not accept GNU -D)
+# 4. Install rc.d script and sample config (BSD install does not accept GNU -D).
+#    The sample is the BSD example with @SYSCONFDIR@ set to the --sysconfdir
+#    above, never the Linux example (ADR-0738).
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
 install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 mkdir -p "${STAGING}/usr/local/etc/merovingian"
-install -m 0644 config/merovingian.conf.example \
-    "${STAGING}/usr/local/etc/merovingian/merovingian.conf.sample"
+SAMPLE="${STAGING}/usr/local/etc/merovingian/merovingian.conf.sample"
+sed 's|@SYSCONFDIR@|/usr/local/etc|g' config/merovingian.conf.bsd.example > "${SAMPLE}"
+chmod 0644 "${SAMPLE}"
+if grep -q '@[A-Z_]*@' "${SAMPLE}"; then
+    echo "build-freebsd-pkg.sh: ${SAMPLE} still holds a placeholder" >&2
+    exit 1
+fi
 
 # 5. Confirm the staged tree looks right before packaging.
 echo "[debug] staged files under ${STAGING}/usr/local:"

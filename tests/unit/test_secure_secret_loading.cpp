@@ -157,7 +157,6 @@ SCENARIO("All text secret loaders use the descriptor-bound locked reader", "[pla
             {
                 for (auto const& entry : std::array{
                          std::pair{"src/homeserver/HomeserverRuntime.cpp", "auto read_database_uri_file("       },
-                         std::pair{"src/homeserver/WorkerPool.cpp",        "auto read_worker_database_uri_file("},
                          std::pair{"src/main.cpp",                         "auto read_bootstrap_admin_password("}
                 })
                 {

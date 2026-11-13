@@ -782,3 +782,36 @@ SCENARIO("GET /timestamp_to_event/{roomId} is routed to the shard that owns the 
         }
     }
 }
+
+SCENARIO("A space hierarchy request is answered by main, not by the shard 0 worker snapshot",
+         "[federation][routing][worker-bypass][c47]")
+{
+    GIVEN("a GET hierarchy request, with and without a query string")
+    {
+        auto const plain = make_request("/_matrix/federation/v1/hierarchy/%21space%3Aexample.org");
+        auto const suggested =
+            make_request("/_matrix/federation/v1/hierarchy/%21space%3Aexample.org?suggested_only=true");
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("main answers both, because the children may belong to any shard")
+            {
+                REQUIRE(federation_request_should_bypass_worker(plain));
+                REQUIRE(federation_request_should_bypass_worker(suggested));
+            }
+        }
+    }
+
+    GIVEN("a room-scoped read that one shard owns")
+    {
+        auto const state = make_request("/_matrix/federation/v1/state/%21room%3Aexample.org?event_id=%24e");
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("it still goes to the owning worker")
+            {
+                REQUIRE_FALSE(federation_request_should_bypass_worker(state));
+            }
+        }
+    }
+}

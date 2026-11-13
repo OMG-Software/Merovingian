@@ -378,7 +378,7 @@ beside them.
 GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request; queued
 jobs are not served in the order they joined, so the only lever is when a job joins the queue. Jobs join in three tiers
 ([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md),
-[ADR-0653](adr/0653-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`sonarcloud`, CodeQL, `tsan`, `asan-ubsan`, then coverage, fuzzing, clang-tidy,
+[ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`sonarcloud`, CodeQL, `tsan`, `asan-ubsan`, then coverage, fuzzing, clang-tidy,
 gitleaks, dependency review and triage) need nothing and join at once; every build and test job in `ci.yml`,
 `postgres-integration.yml` and `reproducible-build.yml` that needs no other job `needs:` that workflow's instant gate
 `queue-after-analyses`; and every package job in `packages.yml` `needs:` `queue-after-build-and-test`, which sleeps 60

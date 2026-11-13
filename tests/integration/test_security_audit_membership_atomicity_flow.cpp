@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -388,12 +389,20 @@ struct PgDurableMembership final
     return row == rows.end() ? std::nullopt : std::optional<std::string>{row->membership};
 }
 
-[[nodiscard]] auto postgresql_config(std::string const& uri) -> merovingian::config::Config
+// The runtime reads its database URI only from an owner-read-only file (ISO-7), written into `directory`.
+[[nodiscard]] auto postgresql_config(std::string const& uri, std::filesystem::path const& directory)
+    -> merovingian::config::Config
 {
+    auto const uri_file = directory / "database-uri";
+    {
+        auto output = std::ofstream{uri_file};
+        output << uri << '\n';
+    }
+    std::filesystem::permissions(uri_file, std::filesystem::perms::owner_read);
     auto config = sqlite_config({});
     auto database = merovingian::config::DatabaseConfig{};
     database.backend = merovingian::config::DatabaseBackend::postgresql;
-    database.worker_conninfo_override = uri;
+    database.uri_file = uri_file.string();
     return {config.server(),   config.listeners(),          std::move(database),
             config.security(), config.client_rate_limits(), config.log_modules()};
 }
@@ -661,7 +670,8 @@ SCENARIO("DB-4 on PostgreSQL the federation worker's load profile never writes m
         REQUIRE(merovingian::database::store_event_with_state(
             store, pg_member_event(ban_id, room_id, bob_user_id, "ban", 3U),
             merovingian::database::PersistentStateEvent{room_id, "m.room.member", std::string{bob_user_id}, ban_id}));
-        auto const config = postgresql_config(uri);
+        auto const fixture = MembershipSqliteFixture{};
+        auto const config = postgresql_config(uri, fixture.database_path().parent_path());
 
         WHEN("the store is opened with the federation worker's load profile")
         {

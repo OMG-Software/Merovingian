@@ -66,6 +66,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.federation.state_resolution.max_unprivileged_state_tips")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_unprivileged_state_tips))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.federation.state_resolution.max_events_per_state_group")
         {
             if (!parse_u32_value(value, security.federation.state_resolution.max_events_per_state_group))
@@ -2008,16 +2015,14 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
-        else if (key == "federation.worker.database_uri_file")
+        // ADR-0736: these gave the federation worker a database login of its own. The worker no longer opens a
+        // database (ADR-0733), so a configuration that still sets either is refused rather than half-honoured.
+        else if (key == "federation.worker.database_uri_file" ||
+                 key == "federation.worker.allow_shared_database_credentials")
         {
-            federation_worker.database_uri_file = std::string{value};
-        }
-        else if (key == "federation.worker.allow_shared_database_credentials")
-        {
-            if (!parse_bool_value(value, federation_worker.allow_shared_database_credentials))
-            {
-                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
-            }
+            add_parse_finding(findings, std::string{key},
+                              "retired in 1.0.1: the federation worker no longer opens a database; remove this line "
+                              "(ADR-0736)");
         }
         else if (key == "federation.worker.allow_without_landlock")
         {

@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 1.0.0.
+# Build for merovingian 1.0.1.
 #
 # The checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for
 # downstream porters.  This script generates a framework-free package so CI
@@ -11,7 +11,7 @@
 # a staged tree using tar, which produces a package that pkg_add can install.
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 
@@ -45,15 +45,22 @@ meson compile -C build-netbsd-pkg
 meson install -C build-netbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects
 
 # 2. rc.d example script (pkgsrc installs under share/examples/rc.d) with the
-#    pkgsrc @PREFIX@/@PKG_SYSCONFDIR@ placeholders substituted; sample config.
+#    pkgsrc @PREFIX@/@PKG_SYSCONFDIR@ placeholders substituted; sample config,
+#    which is the BSD example with @SYSCONFDIR@ set to the --sysconfdir above,
+#    never the Linux example (ADR-0738).
 install -d "${STAGE}${PREFIX}/share/examples/rc.d"
 sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@PKG_SYSCONFDIR@|${PREFIX}/etc|g" \
     packaging/netbsd/files/merovingian.sh \
     > "${STAGE}${PREFIX}/share/examples/rc.d/merovingian"
 chmod 0755 "${STAGE}${PREFIX}/share/examples/rc.d/merovingian"
 install -d "${STAGE}${PREFIX}/etc/merovingian"
-install -m 0644 config/merovingian.conf.example \
-    "${STAGE}${PREFIX}/etc/merovingian/merovingian.conf.sample"
+SAMPLE="${STAGE}${PREFIX}/etc/merovingian/merovingian.conf.sample"
+sed "s|@SYSCONFDIR@|${PREFIX}/etc|g" config/merovingian.conf.bsd.example > "${SAMPLE}"
+chmod 0644 "${SAMPLE}"
+if grep -q '@[A-Z_]*@' "${SAMPLE}"; then
+    echo "build-netbsd-pkg.sh: ${SAMPLE} still holds a placeholder" >&2
+    exit 1
+fi
 
 # 3. Package metadata (NetBSD pkg format).
 printf '%s\n' "Secure Matrix Protocol homeserver" > "+COMMENT"

@@ -753,15 +753,6 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "federation.worker.apply_hardening");
     }
-    if (current.federation_worker().database_uri_file != next.federation_worker().database_uri_file)
-    {
-        add_change(plan, "federation.worker.database_uri_file");
-    }
-    if (current.federation_worker().allow_shared_database_credentials !=
-        next.federation_worker().allow_shared_database_credentials)
-    {
-        add_change(plan, "federation.worker.allow_shared_database_credentials");
-    }
     if (current.federation_worker().allow_without_landlock != next.federation_worker().allow_without_landlock)
     {
         add_change(plan, "federation.worker.allow_without_landlock");
@@ -1049,6 +1040,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         next.security().federation.state_resolution.max_state_tips_per_server)
     {
         add_change(plan, "security.federation.state_resolution.max_state_tips_per_server");
+    }
+    if (current.security().federation.state_resolution.max_unprivileged_state_tips !=
+        next.security().federation.state_resolution.max_unprivileged_state_tips)
+    {
+        add_change(plan, "security.federation.state_resolution.max_unprivileged_state_tips");
     }
     if (current.security().federation.state_resolution.max_events_per_state_group !=
         next.security().federation.state_resolution.max_events_per_state_group)

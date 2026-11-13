@@ -12,9 +12,10 @@ namespace merovingian::database
 // not a denylist, so a worker connecting with a least-privilege PostgreSQL
 // role (granted SELECT on exactly those tables) can still start, and a
 // worker connecting with ANY role never holds unlisted material resident
-// regardless of backend. Only open_postgresql_persistent_store honours this
-// today — see docs/database-persistence.md, "Federation worker
-// least-privilege role", for why the SQLite loader was left unchanged.
+// regardless of backend. Since ADR-0733 the worker opens no database: its
+// store is in memory and filled from main, and `federation_worker` there only
+// turns on asking main for keys on a miss
+// (LocalDatabase::remote_signing_keys_read_through).
 enum class TableLoadProfile
 {
     full,

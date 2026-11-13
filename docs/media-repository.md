@@ -101,7 +101,7 @@ current in-process runtime path.
   uploads, the federation media download and every PostgreSQL download are still buffered: `substring()` of a
   compressed TOASTed `bytea` decompresses the whole value for each chunk.
 - Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
-  64 MiB, least recently used first out; empty or `0` disables it), keyed by the source
+  64 MiB, least recently used first out, from a recency index, and at most 16,384 entries (ADR-0690); empty or `0` disables it), keyed by the source
   record, size and method, with each axis past the decoder's largest (4096) keyed as
   4096, since the worker clamps it to that; a hit is served only after the record has
   been checked as servable, so moderation needs no cache invalidation. After a decode,
@@ -531,6 +531,10 @@ The local HTTP router preserves the media repository status code instead of flat
   included, from an owner-to-count map kept in step on insert, erase, removal and hydration, so the check is O(1)
   under the runtime lock. Removing a record frees the owner's slot, not the server-wide one; cached remote
   media is never counted.
+- The per-user byte quota (`max_size_per_user`) is charged for every upload, a deduplicated one included (C42, ADR-0689): a user at their
+  quota is refused alike whether or not another user already holds the bytes, so a refusal tells them nothing about what the
+  server stores. The server-wide byte limit still skips a file the server already holds, since that adds no bytes; a deduplicated
+  upload also skips the database write of a blob, a timing difference this does not remove.
 - `502` when the remote media fetch transport is not available (outbound client or
   discovery network not configured in the runtime).
 

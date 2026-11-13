@@ -127,11 +127,11 @@ SCENARIO("read_markers_for builds the user's read positions from their receipts"
             {"!room:example.org",  "m.read",         "@bob:example.org",   "$e3", 0U, 5U, {}     },
             {"!other:example.org", "m.read",         "@alice:example.org", "$e3", 0U, 6U, {}     },
         };
+        store.receipts = receipts;
 
         WHEN("alice's markers in the room are built")
         {
-            auto const markers =
-                merovingian::sync::read_markers_for(receipts, store, "!room:example.org", "@alice:example.org");
+            auto const markers = merovingian::sync::read_markers_for(store, "!room:example.org", "@alice:example.org");
 
             THEN("the unthreaded position is the further of her m.read and m.read.private receipts")
             {
@@ -149,8 +149,7 @@ SCENARIO("read_markers_for builds the user's read positions from their receipts"
 
         WHEN("a user with no receipts asks")
         {
-            auto const markers =
-                merovingian::sync::read_markers_for(receipts, store, "!room:example.org", "@carol:example.org");
+            auto const markers = merovingian::sync::read_markers_for(store, "!room:example.org", "@carol:example.org");
 
             THEN("nothing is covered")
             {
@@ -188,8 +187,7 @@ SCENARIO("read_markers_for counts the user's own non-state events as reading the
 
         WHEN("alice's markers are built with no receipts at all")
         {
-            auto const markers =
-                merovingian::sync::read_markers_for({}, store, "!room:example.org", "@alice:example.org");
+            auto const markers = merovingian::sync::read_markers_for(store, "!room:example.org", "@alice:example.org");
 
             THEN("her message reads the main timeline and her reply reads the thread, each up to itself")
             {
@@ -270,10 +268,11 @@ SCENARIO("Unread counts and read markers read only the room they are asked about
             // Names an event of another room: it marks nothing here.
             {room, "m.read", "@alice:example.org", "$b2", 0U, 2U, "$thread"},
         };
+        store.receipts = receipts;
 
         WHEN("alice's markers and unread counts in the room are built")
         {
-            auto const markers = merovingian::sync::read_markers_for(receipts, store, room, "@alice:example.org");
+            auto const markers = merovingian::sync::read_markers_for(store, room, "@alice:example.org");
             auto classifier = RecordingClassifier{};
             auto const counts =
                 merovingian::sync::count_unread_by_thread(store, room, "@alice:example.org", markers, classifier);
