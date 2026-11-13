@@ -116,7 +116,8 @@ high, all availability) and hardens two of the four findings that needed validat
 `federation.worker.database_uri_file` and `federation.worker.allow_shared_database_credentials` are now refused at
 start-up, so remove them from a PostgreSQL deployment first; the worker's database role can then be dropped
 (ADR-0736). The changelog now starts at 1.0.0 and uses the format in `docs/versioning.md` (ADR-0740, ADR-0741). A
-tag now ships exactly the `latest` package set (ADR-0742).
+tag now ships exactly the `latest` package set (ADR-0742). Like 1.0.0, 1.0.1 was tagged without a green Complement
+run (ADR-0744). The 1.0.0 GitHub release is withdrawn because it ships the vulnerabilities fixed here; upgrade to 1.0.1.
 
 # Version 1.0.0
 
