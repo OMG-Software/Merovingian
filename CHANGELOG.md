@@ -90,6 +90,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   sends in flight and leaves a session without a code.
 * The sync row-index tests prove a counter rose by comparing it, not by an unsigned difference compared to zero, which
   can only test inequality and would wrap if the counter fell.
+* The commit-window test waits out the server's background writes when it reads the database, and fails on a read
+  error instead of taking it for a missing row; under ASan a busy read made it report no topic at all.
 
 ## Release notes
 

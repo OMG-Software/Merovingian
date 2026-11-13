@@ -130,12 +130,18 @@ using merovingian::tests::string_member;
     return envelope;
 }
 
-// The room's m.room.topic row as the database holds it, read through a connection of the test's own.
+// The room's m.room.topic row as the database holds it, read through a connection of the test's own. The server keeps
+// writing in the background (an outbound transaction to the remote member's server, for one), and in rollback-journal
+// mode a reader that meets a writer's commit gets SQLITE_BUSY at once unless it waits: so this connection waits as the
+// server's own do (5 s), and a read that still fails fails the test rather than reading as "no row". It opens
+// read-write only so that it can roll back a hot journal itself instead of failing with SQLITE_READONLY_ROLLBACK
+// (ADR-0159); it writes nothing.
 [[nodiscard]] auto database_topic_row(std::string const& path, std::string const& room_id) -> std::string
 {
     sqlite3* raw = nullptr;
-    REQUIRE(sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
     auto const database = std::unique_ptr<sqlite3, merovingian::tests::SqliteCloser>{raw};
+    REQUIRE(sqlite3_busy_timeout(raw, 5000) == SQLITE_OK);
     sqlite3_stmt* statement = nullptr;
     REQUIRE(sqlite3_prepare_v2(raw,
                                "SELECT event_id FROM current_state WHERE room_id = ?1 AND event_type = 'm.room.topic' "
@@ -143,11 +149,14 @@ using merovingian::tests::string_member;
                                -1, &statement, nullptr) == SQLITE_OK);
     sqlite3_bind_text(statement, 1, room_id.c_str(), -1, nullptr);
     auto row = std::string{"<none>"};
-    if (sqlite3_step(statement) == SQLITE_ROW)
+    auto const stepped = sqlite3_step(statement);
+    if (stepped == SQLITE_ROW)
     {
         row = reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
     }
     sqlite3_finalize(statement);
+    INFO("sqlite3_step returned " << stepped);
+    REQUIRE((stepped == SQLITE_ROW || stepped == SQLITE_DONE));
     return row;
 }
 
