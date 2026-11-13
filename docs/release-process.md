@@ -189,7 +189,9 @@ before the tag is created. The one exception is 1.0.0: the owner waived this
 requirement for that release only, because it was tagged without a green run
 and the release-gate security audit was its gate instead
 ([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)). The
-waiver does not apply to any later release.
+owner waived it once more for 1.0.1, which fixes the vulnerabilities 1.0.0 ships
+([ADR-0744](adr/0744-the-complement-blocker-is-also-waived-for-1-0-1.md)). The
+waiver does not apply to 1.0.2 or any later release.
 
 After that, create and push the release tag. It must be exactly `v` followed
 by the version in `meson.build`, or the workflow refuses it:
@@ -211,8 +213,10 @@ artifact.
 
 ## Complement
 
-The 1.0.0 release was tagged without a Complement run and carries no Complement
-evidence ([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
+The 1.0.0 and 1.0.1 releases were tagged without a Complement run and carry no Complement
+evidence ([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md),
+[ADR-0744](adr/0744-the-complement-blocker-is-also-waived-for-1-0-1.md)). The 1.0.0 GitHub
+release was deleted because it ships the vulnerabilities 1.0.1 fixes; its `v1.0.0` tag stays.
 Every later release follows the steps below.
 
 The external Complement suite runs against the candidate's Debian 13 (trixie) package

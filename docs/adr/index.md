@@ -560,7 +560,7 @@
 * [0635 - An inbound federation origin is asked about once at a time, and its decision is kept for a short time](0635-an-inbound-federation-origin-is-asked-about-once-at-a-time-and-its-decision-is-kept-for-a-short-time.md)
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
-* [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
+* [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md) — Extended by ADR-0744: 1.0.1 is waived too
 * [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)
 * [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md) — Partly superseded by ADR-0742: every published file is attested by packages.yml
 * [0719 - One client key holds a sixteenth of the parked-connection budgets, and a readable connection waits a bounded time](0719-one-client-key-holds-a-sixteenth-of-the-parked-connection-budgets-and-a-readable-connection-waits-a-bounded-time.md)
@@ -641,3 +641,4 @@
 * [0757 - Hardened BSD builds link -pie, and the ELF gate reads elftoolchain readelf](0757-hardened-bsd-builds-link-pie-and-the-elf-gate-reads-elftoolchain-readelf.md)
 * [0758 - Every worker shard reloads every changed room, and main tracks each shard's copy](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)
 * [0759 - Main builds make_leave and make_knock templates while the worker's reload of the room is pending](0759-main-builds-make-leave-and-make-knock-templates-while-the-workers-reload-is-pending.md)
+* [0744 - The Complement blocker is also waived for 1.0.1](0744-the-complement-blocker-is-also-waived-for-1-0-1.md)
