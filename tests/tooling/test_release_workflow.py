@@ -402,7 +402,8 @@ REPOSITORY = "OMG-Software/Merovingian"
 RECIPE = re.compile(r"gh attestation verify (?P<arguments>[^`\n]+)")
 SIGNER = re.compile(r"--signer-workflow " + re.escape(REPOSITORY) + r"/\.github/workflows/packages\.yml(?:\s|$)")
 SOURCE_REF = re.compile(r"--source-ref (?P<ref>refs/(?:tags/v<version>|heads/main))(?:\s|$)")
-# Not scanned: history that records what was published then (ADRs, changelogs) and the vendored Matrix spec.
+# Not scanned: history that records what was published then (ADRs, changelogs), the vendored Matrix spec, and every
+# dot-directory but .github, where local checkouts keep other worktrees and review copies that CI never has.
 SKIPPED_DIRECTORIES = {".git", ".worktrees", "subprojects", "node_modules", "adr", "matrix-v1.19-spec"}
 
 
@@ -411,7 +412,8 @@ def recipe_texts() -> dict[Path, str]:
     texts = {}
     for directory, subdirectories, files in os.walk(REPO_ROOT):
         subdirectories[:] = [name for name in subdirectories
-                             if name not in SKIPPED_DIRECTORIES and not name.startswith("build")]
+                             if name not in SKIPPED_DIRECTORIES and not name.startswith("build")
+                             and (name == ".github" or not name.startswith("."))]
         for name in files:
             if not name.endswith((".md", ".yml", ".yaml")) or name.startswith("CHANGELOG"):
                 continue

@@ -1,6 +1,6 @@
 # Every published attestation check pins the signing workflow and the ref
 
-* Status: accepted
+* Status: accepted (the `release.yml` signer for a tagged tarball is superseded by [ADR-0742](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md): every published file, the static tarball included, is attested by `packages.yml`)
 * Date: 2026-11-12
 
 Technical Story: run-3 audit of the 1.0.0 release candidate, needs-validation finding NV-2,

@@ -107,6 +107,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   build looks in, not `/usr/local/libexec`; `release-process.md` lists what the tarball holds.
 * CI checks the signer and source ref for the tagged and rolling release instructions, and the join test checks that
   the client-outbound slot is released after the `make_join` worker finishes.
+* The attestation recipe check skips local dot-directories, such as other worktrees, which CI never has.
 
 ## Release notes
 
