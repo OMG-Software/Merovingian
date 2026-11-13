@@ -400,8 +400,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
 # and the ref, as scripts/run_complement.py does.
 REPOSITORY = "OMG-Software/Merovingian"
 RECIPE = re.compile(r"gh attestation verify (?P<arguments>[^`\n]+)")
-SIGNER = re.compile(r"--signer-workflow " + re.escape(REPOSITORY) + r"/\.github/workflows/(?P<workflow>release|packages)\.yml(?:\s|$)")
-SOURCE_REF = re.compile(r"--source-ref refs/(?:tags/v<version>|heads/main)(?:\s|$)")
+SIGNER = re.compile(r"--signer-workflow " + re.escape(REPOSITORY) + r"/\.github/workflows/packages\.yml(?:\s|$)")
+SOURCE_REF = re.compile(r"--source-ref (?P<ref>refs/(?:tags/v<version>|heads/main))(?:\s|$)")
 # Not scanned: history that records what was published then (ADRs, changelogs) and the vendored Matrix spec.
 SKIPPED_DIRECTORIES = {".git", ".worktrees", "subprojects", "node_modules", "adr", "matrix-v1.19-spec"}
 
@@ -425,17 +425,10 @@ def recipe_problems(arguments: str) -> list[str]:
     problems = []
     if f"--repo {REPOSITORY}" not in arguments:
         problems.append("names no --repo")
-    signer = SIGNER.search(arguments)
-    if signer is None:
-        problems.append("does not pin --signer-workflow to release.yml or packages.yml")
+    if SIGNER.search(arguments) is None:
+        problems.append("does not pin --signer-workflow to packages.yml")
     if SOURCE_REF.search(arguments) is None:
         problems.append("does not pin --source-ref to refs/tags/v<version> or refs/heads/main")
-    if signer is not None:
-        subject = arguments.split(" ", 1)[0]
-        if "tarball" in subject and signer.group("workflow") != "release":
-            problems.append("a release tarball is attested by release.yml")
-        if "package" in subject and signer.group("workflow") != "packages":
-            problems.append("a package is attested by packages.yml")
     return problems
 
 
@@ -448,26 +441,30 @@ class AttestationRecipeTests(unittest.TestCase):
         recipes = [(path, match.group("arguments").strip())
                    for path, text in texts.items() for match in RECIPE.finditer(text)]
 
-        # THEN each names the repository, the workflow that signs that kind of file, and a release ref.
+        # THEN each names the repository, the package workflow, and a release ref.
+        published_refs = set()
         for path, arguments in recipes:
-            with self.subTest(file=str(path.relative_to(REPO_ROOT)), recipe=arguments):
+            relative_path = path.relative_to(REPO_ROOT).as_posix()
+            with self.subTest(file=relative_path, recipe=arguments):
                 self.assertEqual(recipe_problems(arguments), [])
-        # AND the release notes and the release guide are among them, so the check is not vacuous.
-        files = {path.relative_to(REPO_ROOT).as_posix() for path, _ in recipes}
-        self.assertIn(".github/workflows/release.yml", files)
-        self.assertIn("docs/release-process.md", files)
-        self.assertGreaterEqual(len(recipes), 5)
+                published_refs.add((relative_path, SOURCE_REF.search(arguments).group("ref")))
+
+        # AND the release notes cover tags, and the release guide covers tags and latest.
+        required_refs = {
+            (".github/workflows/release.yml", "refs/tags/v<version>"),
+            ("docs/release-process.md", "refs/tags/v<version>"),
+            ("docs/release-process.md", "refs/heads/main"),
+        }
+        self.assertEqual(required_refs - published_refs, set(), "missing published recipes")
 
     def test_the_recipe_check_refuses_an_unpinned_or_mismatched_recipe(self) -> None:
         # GIVEN recipes that the published check must never take.
         unpinned = f"<tarball> --repo {REPOSITORY}"
-        no_ref = f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml"
-        wrong_signer = (f"<package-file> --repo {REPOSITORY} --signer-workflow "
+        no_ref = f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/packages.yml"
+        wrong_signer = (f"<tarball> --repo {REPOSITORY} --signer-workflow "
                         f"{REPOSITORY}/.github/workflows/release.yml --source-ref refs/tags/v<version>")
-        any_branch = (f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml "
-                      "--source-ref refs/heads/codex/x")
-        pinned = (f"<tarball> --repo {REPOSITORY} --signer-workflow {REPOSITORY}/.github/workflows/release.yml "
-                  "--source-ref refs/tags/v<version>")
+        any_branch = f"{no_ref} --source-ref refs/heads/codex/x"
+        pinned = f"{no_ref} --source-ref refs/tags/v<version>"
 
         # WHEN each is judged THEN only the pinned one passes.
         self.assertNotEqual(recipe_problems(unpinned), [])

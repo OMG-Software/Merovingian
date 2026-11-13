@@ -57,8 +57,9 @@ accepts an attestation from any workflow on any branch of the repository, and
 the package workflow attests what it builds on every branch it runs on, so a
 file built from unreviewed code would pass (ADR-0732). The GPG signature below
 is the primary check; the attestation is a second one, not a replacement.
-`release-workflow-tooling` fails if a recipe in the documentation or the release
-notes drops either flag.
+`release-workflow-tooling` requires a tagged recipe in the generated release
+notes and tagged and rolling recipes in this guide. It checks the package
+workflow and source ref in every published recipe.
 
 Every tagged release and every rolling `latest` build carries an SBOM, as
 `merovingian.spdx.json` (SPDX 2.3) and `merovingian.cdx.json` (CycloneDX 1.5),

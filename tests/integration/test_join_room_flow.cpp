@@ -87,6 +87,7 @@
 #include <array>
 #include <charconv>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -1111,11 +1112,22 @@ SCENARIO("A federated join or knock takes a client-outbound slot and gives it ba
                 merovingian::homeserver::handle_client_server_request(rt, {"POST", target, login.value, "{}"});
             server_thread.join();
 
-            THEN("the slot was held during the exchange and is free afterwards")
+            THEN("the slot was held during the exchange and is free after the workers finish")
             {
                 CAPTURE(route, response.response.body);
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(active_during_exchange == 1U);
+
+                // The join can return the refusal before the make_join worker exits (ADR-0725).
+                auto workers = std::vector<std::future<void>>{};
+                {
+                    auto const lock = std::lock_guard{runtime.orphan_futures_mutex_};
+                    workers.swap(runtime.orphan_futures_);
+                }
+                for (auto& worker : workers)
+                {
+                    worker.get();
+                }
                 REQUIRE(runtime.client_outbound_budget->active() == 0U);
             }
         }
