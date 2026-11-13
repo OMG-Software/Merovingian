@@ -1,6 +1,6 @@
 # Build an RPM for Fedora 44 and for fedora:latest
 
-* Status: accepted
+* Status: accepted (the `fedora:latest` image is superseded by `fedora:45` in [ADR-0742](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md))
 * Deciders: James Chapman
 * Date: 2026-11-03
 

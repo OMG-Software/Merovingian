@@ -9,6 +9,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * The BSD packages install `config/merovingian.conf.bsd.example`, a BSD edition of the example config: secret files
   under each package's own configuration directory and the SQLite path in `/var/db/merovingian` (ADR-0738).
+* CI builds and tests RHEL 10, openSUSE Leap 16 and Tumbleweed, Fedora 44 and 45, Ubuntu 26.04 and 26.10, Debian 13,
+  FreeBSD 15, OpenBSD and NetBSD, each image pinned by release, never `rolling` or `latest` (ADR-0742).
+* `latest` and every tag ship the same x86_64 packages, built by `packages.yml`, hardened and named for their platform
+  (`-debian13.deb`, `-freebsd15.pkg`, `.tumbleweed`, ...); Debian 12 is not packaged (ADR-0742).
+* CI joins the runner queue in three tiers: analyses, then build and test jobs, then package jobs (ADR-0743).
 
 ## Security Fixes
 
@@ -92,6 +97,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   can only test inequality and would wrap if the counter fell.
 * The commit-window test waits out the server's background writes when it reads the database, and fails on a read
   error instead of taking it for a missing row; under ASan a busy read made it report no topic at all.
+* The RPM specs build with `--buildtype=release`, as every other package does, and their comment escapes `%%meson`,
+  which RPM expands even on a comment line.
+* `SHA256SUMS` names each asset as published, not `packages/<file>`, so `sha256sum --check --ignore-missing` checks
+  the downloaded files instead of none.
+* The Complement publisher attaches the tested `-debian13.deb` as `-debian.deb`, beside the tag's own Debian build,
+  and refuses a package name without a Debian release number.
+* The static tarball's install steps put the federation worker in `/usr/libexec/merovingian`, the path the `/usr`-prefix
+  build looks in, not `/usr/local/libexec`; `release-process.md` lists what the tarball holds.
+* CI checks the signer and source ref for the tagged and rolling release instructions, and the join test checks that
+  the client-outbound slot is released after the `make_join` worker finishes.
+* The attestation recipe check skips local dot-directories, such as other worktrees, which CI never has.
 
 ## Release notes
 
@@ -99,7 +115,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 high, all availability) and hardens two of the four findings that needed validation. **Upgrade:**
 `federation.worker.database_uri_file` and `federation.worker.allow_shared_database_credentials` are now refused at
 start-up, so remove them from a PostgreSQL deployment first; the worker's database role can then be dropped
-(ADR-0736). The changelog now starts at 1.0.0 and uses the format in `docs/versioning.md` (ADR-0740, ADR-0741).
+(ADR-0736). The changelog now starts at 1.0.0 and uses the format in `docs/versioning.md` (ADR-0740, ADR-0741). A
+tag now ships exactly the `latest` package set (ADR-0742).
 
 # Version 1.0.0
 

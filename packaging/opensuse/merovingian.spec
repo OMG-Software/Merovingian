@@ -54,7 +54,10 @@ implementation, runtime hardening, and auditable dependency boundaries.
 %autosetup
 
 %build
+# The hardened profile, as every package and release build (ADR-0742):
+# %%meson passes --buildtype=plain, and the later --buildtype=release wins.
 %meson \
+    --buildtype=release \
     --wrap-mode=forcefallback \
     -Dhardening=true \
     -Dbuild_tests=false \

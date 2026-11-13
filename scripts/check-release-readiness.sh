@@ -80,29 +80,34 @@ if grep -q "Early Phase 1 bootstrap implementation" README.md; then
     fail "README status still describes the project as early Phase 1"
 fi
 
-# Signed release infrastructure: the release workflow must produce SLSA
-# provenance attestations and SHA-256 checksums for every published artifact.
-if ! grep -qF "attest-build-provenance" .github/workflows/release.yml; then
-    fail "release.yml does not reference actions/attest-build-provenance (SLSA provenance is not attached)"
+# Signed release infrastructure (ADR-0742): packages.yml builds, attests, checksums
+# and signs every published package, for the rolling `latest` release and, called
+# by release.yml, for every tag. release.yml must call it with the attestation
+# permission and the secrets its signing job needs.
+if ! grep -qF "uses: actions/attest-build-provenance" .github/workflows/packages.yml; then
+    fail "packages.yml does not use actions/attest-build-provenance (SLSA provenance is not attached)"
 fi
 
+if ! grep -qF "attestations: write" .github/workflows/packages.yml; then
+    fail "packages.yml is missing the 'attestations: write' permission required for SLSA attestation"
+fi
+
+if ! grep -qF "sha256sum -- * > SHA256SUMS" .github/workflows/packages.yml; then
+    fail "packages.yml does not write SHA256SUMS over the published packages"
+fi
+
+if ! grep -qF "uses: ./.github/workflows/packages.yml" .github/workflows/release.yml; then
+    fail "release.yml does not build its packages with packages.yml"
+fi
 if ! grep -qF "attestations: write" .github/workflows/release.yml; then
-    fail "release.yml job is missing 'attestations: write' permission required for SLSA attestation"
+    fail "release.yml does not grant packages.yml the 'attestations: write' permission"
+fi
+if ! grep -qF "secrets: inherit" .github/workflows/release.yml; then
+    fail "release.yml does not pass packages.yml the secrets its signing job needs"
 fi
 
-if ! grep -qF "sha256sum" .github/workflows/release.yml; then
-    fail "release.yml does not generate sha256sum checksums for Linux release artifacts"
-fi
-
-if ! grep -qF "sha256 -q" .github/workflows/release.yml; then
-    fail "release.yml does not generate sha256 checksums for FreeBSD release artifacts"
-fi
-
-# GPG release signatures: the release and rolling package workflows
-# must both call the reusable signing workflow.
-if ! grep -qF "./.github/workflows/sign-artifacts.yml" .github/workflows/release.yml; then
-    fail "release.yml does not call the GPG signing reusable workflow"
-fi
+# GPG release signatures: packages.yml, which stages both `latest` and every tag,
+# must call the reusable signing workflow.
 if ! grep -qF "./.github/workflows/sign-artifacts.yml" .github/workflows/packages.yml; then
     fail "packages.yml does not call the GPG signing reusable workflow"
 fi
@@ -122,14 +127,13 @@ if ! [ -s /tmp/merovingian.licenses.json ]; then
     fail "generated license summary is empty"
 fi
 
-# SBOM (ADR-0598): both publishing workflows attach it, and it must generate
-# from licenses.md and the wraps. A fixed commit and creation time keep this
-# check free of git, which the BSD release VMs may not have a history for.
-for workflow in release.yml packages.yml; do
-    if ! grep -qF "scripts/generate_sbom.py" ".github/workflows/${workflow}"; then
-        fail "${workflow} does not generate the SBOM with scripts/generate_sbom.py"
-    fi
-done
+# SBOM (ADR-0598): packages.yml attaches it to `latest` and to every tag
+# (ADR-0742), and it must generate from licenses.md and the wraps. A fixed commit
+# and creation time keep this check free of git, which the BSD release VMs may
+# not have a history for.
+if ! grep -qF "scripts/generate_sbom.py" .github/workflows/packages.yml; then
+    fail "packages.yml does not generate the SBOM with scripts/generate_sbom.py"
+fi
 sbom_dir=$(mktemp -d)
 trap 'rm -rf "$sbom_dir"' EXIT
 if ! SOURCE_DATE_EPOCH=0 python3 scripts/generate_sbom.py         --spdx "${sbom_dir}/merovingian.spdx.json"         --cyclonedx "${sbom_dir}/merovingian.cdx.json"         --commit 0000000000000000000000000000000000000000; then

@@ -379,10 +379,12 @@ class PackagesWorkflowTests(unittest.TestCase):
         job = workflow_job(workflow, "rpm")
 
         # WHEN the job's matrix is read
-        # THEN it builds on a pinned Fedora 44 and on whatever fedora:latest is now.
+        # THEN it builds on Fedora 44 and Fedora 45, each pinned by release, so the release
+        # CI tests is the one the package is for (ADR-0742).
         self.assertIn("container: ${{ matrix.image }}", job)
         self.assertIn("image: fedora:44", job)
-        self.assertIn("image: fedora:latest", job)
+        self.assertIn("image: fedora:45", job)
+        self.assertNotIn("fedora:latest", job)
 
         # AND one bad release does not cancel the other's build.
         self.assertIn("fail-fast: false", job)
@@ -393,7 +395,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # AND both reach the published assets, under distinct dist-tagged file names.
         stage = workflow_job(workflow, "stage-package-assets")
-        for artifact in ("rpm-package-fc44", "rpm-package-latest"):
+        for artifact in ("rpm-package-fc44", "rpm-package-fc45"):
             with self.subTest(artifact=artifact):
                 self.assertIn(f"artifact: {artifact}", job)
                 self.assertIn(f"name: {artifact}", stage)
@@ -627,9 +629,10 @@ class PackagesWorkflowTests(unittest.TestCase):
         job = workflow_job(workflow, "deb")
 
         # WHEN the Ubuntu package matrix is read
-        # THEN it builds in each LTS image and the current interim release, one failure
-        # not cancelling the others.
-        for release, image in (("'24.04'", "ubuntu:24.04"), ("'26.04'", "ubuntu:26.04"), ("rolling", "ubuntu:rolling")):
+        # THEN it builds in each LTS image and the 26.10 interim release, each pinned by
+        # release (ADR-0742), one failure not cancelling the others.
+        self.assertNotIn("ubuntu:rolling", job)
+        for release, image in (("'24.04'", "ubuntu:24.04"), ("'26.04'", "ubuntu:26.04"), ("'26.10'", "ubuntu:26.10")):
             with self.subTest(release=release):
                 self.assertIn(f"- release: {release}\n            image: {image}\n", job)
         self.assertIn("container: ${{ matrix.image }}", job)
@@ -656,7 +659,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # AND every release's package is staged for latest.
         stage = workflow_job(workflow, "stage-package-assets")
-        for release in ("24.04", "26.04", "rolling"):
+        for release in ("24.04", "26.04", "26.10"):
             with self.subTest(staged=release):
                 self.assertIn(f"name: ubuntu-deb-package-{release}\n", stage)
 
@@ -671,7 +674,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("name: OpenSUSE ${{ matrix.flavour }} RPM", job)
         self.assertIn("- flavour: Tumbleweed\n            image: opensuse/tumbleweed\n", job)
         self.assertIn("- flavour: Leap 16.0\n            image: opensuse/leap:16.0\n", job)
-        self.assertIn("dist: .opensuse\n", job)
+        self.assertIn("dist: .tumbleweed\n", job)
         self.assertIn("dist: .leap16\n", job)
         self.assertIn("MEROVINGIAN_RPM_DIST: ${{ matrix.dist }}", job)
         self.assertIn("key: ccache-opensuse-rpm-${{ matrix.artifact }}-${{ github.run_id }}", job)
@@ -688,7 +691,7 @@ class PackagesWorkflowTests(unittest.TestCase):
 
         # AND the build script takes the dist tag only in a form rpmbuild cannot misread.
         script = (REPO_ROOT / "scripts" / "build-opensuse-rpm.sh").read_text(encoding="utf-8")
-        self.assertIn('DIST="${MEROVINGIAN_RPM_DIST:-.opensuse}"', script)
+        self.assertIn('DIST="${MEROVINGIAN_RPM_DIST:-.tumbleweed}"', script)
         self.assertIn("*[!a-z0-9.]*)", script)
         self.assertIn('--define "dist ${DIST}"', script)
 
@@ -704,30 +707,118 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/packages.yml", calling)
         self.assertIn("needs: check-tag", calling)
 
-        # AND it stages every Ubuntu, Fedora, RHEL and OpenSUSE package with a checksum,
-        # but not the Debian trixie package, which the Complement step attaches under the
-        # same name and never replaces (ADR-0650).
-        stage = workflow_job(release, "stage-release-assets")
-        self.assertIn("- distro-packages", stage)
-        for artifact in (
-            "ubuntu-deb-package-24.04",
-            "ubuntu-deb-package-26.04",
-            "ubuntu-deb-package-rolling",
-            "rpm-package-fc44",
-            "rpm-package-latest",
-            "rhel-rpm-package",
-            "opensuse-rpm-package",
-            "opensuse-leap-rpm-package",
-        ):
-            with self.subTest(artifact=artifact):
-                self.assertIn(f"name: {artifact}\n", stage)
-        self.assertNotIn("name: debian-package", stage)
-        self.assertIn('sha256sum "$f" > "$f.sha256"', stage)
+        # AND it passes the secrets on, so packages.yml's signing job can sign for the tag.
+        self.assertIn("secrets: inherit", calling)
 
-        # AND staging, signing and publishing latest stay on pushes to main, so a tag
-        # never replaces the rolling release.
-        self.assertIn("github.ref == 'refs/heads/main'", workflow_job(packages, "stage-package-assets"))
+        # AND it stages nothing of its own: packages.yml stages and signs for a v* tag as
+        # for main, so a tag ships exactly what `latest` ships (ADR-0742).
+        stage = workflow_job(packages, "stage-package-assets")
+        self.assertIn("github.ref == 'refs/heads/main'", stage)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", stage)
+        self.assertNotIn("stage-release-assets", release)
+        self.assertNotIn("sign-release-assets", release)
+        publish = workflow_job(release, "publish-release")
+        self.assertIn("- distro-packages", publish)
+        self.assertIn("name: signed-packages\n", publish)
+        self.assertIn("release-assets/SHA256SUMS", publish)
+
+        # AND publishing latest stays on pushes to main, so a tag never replaces the
+        # rolling release.
         self.assertIn("github.ref == 'refs/heads/main'", workflow_job(packages, "publish-latest"))
+
+    def test_latest_and_a_tag_stage_exactly_the_supported_packages(self) -> None:
+        # GIVEN the owner's package list (ADR-0742), every package x86_64: RHEL 10, openSUSE
+        # Leap 16 and Tumbleweed, Fedora 44 and 45, Ubuntu 24.04, 26.04 and 26.10, Debian
+        # 13, static Linux, FreeBSD 15 (.pkg), OpenBSD and NetBSD.
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+        stage = workflow_job(workflow, "stage-package-assets")
+
+        # WHEN the artifacts staging downloads are read
+        downloads = re.findall(
+            r"uses: actions/download-artifact@v8\n        with:\n          name: ([A-Za-z0-9._-]+)\n          path: (.+)\n",
+            stage,
+        )
+        staged = {name for name, _ in downloads}
+
+        # THEN they are exactly one per supported platform release
+        self.assertEqual(
+            staged,
+            {
+                "rhel-rpm-package",
+                "opensuse-leap-rpm-package",
+                "opensuse-rpm-package",
+                "rpm-package-fc44",
+                "rpm-package-fc45",
+                "ubuntu-deb-package-24.04",
+                "ubuntu-deb-package-26.04",
+                "ubuntu-deb-package-26.10",
+                "debian-package",
+                "static-linux-fallback-package",
+                "freebsd-package",
+                "openbsd-package",
+                "netbsd-package",
+            },
+        )
+        # AND every one lands under its own platform-named file, so nothing is renamed at
+        # staging time and no two collide.
+        self.assertEqual({path for _, path in downloads}, {"packages/"})
+        self.assertNotIn("mv ", stage)
+        # AND no package is built on a moving tag, and Debian 12 is not packaged (ADR-0742).
+        for moving in ("ubuntu:rolling", "fedora:latest", "debian:bookworm", "debian:12"):
+            self.assertNotIn(moving, workflow)
+
+    def test_every_package_file_names_the_platform_it_installs_on(self) -> None:
+        # GIVEN every published package must show which platform it is for (ADR-0742).
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN each package job's naming is read
+        # THEN the .deb, .pkg and BSD .tgz jobs rename the file after the release they ran on,
+        renames = {
+            "deb": 'mv "$f" "${f%.deb}-ubuntu${VERSION_ID}.deb"',
+            "debian-pkg": 'mv "$f" "${f%.deb}-debian${VERSION_ID}.deb"',
+            "freebsd-pkg": 'mv "$f" "${f%.pkg}-freebsd${major}.pkg"',
+            "openbsd-pkg": 'mv "$f" "${f%.tgz}-openbsd${release}.tgz"',
+            "netbsd-pkg": 'mv "$f" "${f%.tgz}-netbsd${release}.tgz"',
+        }
+        for job_id, rename in renames.items():
+            with self.subTest(job=job_id):
+                job = workflow_job(workflow, job_id)
+                self.assertIn(rename, job)
+                # before the package is attested, so the attested name is the published one.
+                self.assertLess(job.index(rename), job.index("uses: actions/attest-build-provenance"))
+        self.assertIn('major="$(freebsd-version -u | cut -d. -f1)"', workflow_job(workflow, "freebsd-pkg"))
+        # AND every RPM carries a dist tag naming its release.
+        self.assertIn("dist: .tumbleweed\n", workflow_job(workflow, "opensuse-rpm"))
+        self.assertIn("dist: .leap16\n", workflow_job(workflow, "opensuse-rpm"))
+        # AND the FreeBSD package job builds on the 15.x line.
+        self.assertIn("release: '15'\n", workflow_job(workflow, "freebsd-pkg"))
+
+    def test_every_package_is_built_with_the_hardened_profile(self) -> None:
+        # GIVEN latest and every tagged release ship hardened-profile packages (ADR-0742):
+        # the hardened profile is a release build with -Dhardening=true, as
+        # scripts/build-linux.sh --profile hardened configures it.
+        sources = [
+            REPO_ROOT / "scripts" / name
+            for name in (
+                "build-deb.sh",
+                "build-static-linux.sh",
+                "build-freebsd-pkg.sh",
+                "build-openbsd-pkg.sh",
+                "build-netbsd-pkg.sh",
+            )
+        ] + [REPO_ROOT / "packaging" / name / "merovingian.spec" for name in ("rpm", "rhel", "opensuse")]
+
+        for source in sources:
+            with self.subTest(source=source.relative_to(REPO_ROOT).as_posix()):
+                # WHEN its Meson configuration is read
+                text = source.read_text(encoding="utf-8")
+                setup = text[text.index("%meson \\" if source.suffix == ".spec" else "meson setup") :]
+                setup = setup[: setup.index("\n\n")]
+
+                # THEN it is a release build with hardening on.
+                self.assertIn("--buildtype=release", setup)
+                self.assertIn("-Dhardening=true", setup)
+                self.assertNotIn("-Dhardening=false", text)
 
 
 if __name__ == "__main__":

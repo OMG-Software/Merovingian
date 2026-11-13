@@ -325,7 +325,7 @@
 * [0373 - A fallback event records the room's current state as its state before](0373-a-fallback-event-records-the-rooms-current-state-as-its-state-before.md) — Supersedes the state-before and consequence wording of ADR-0225
 * [0374 - Forward extremities are bounded for events that add no state](0374-forward-extremities-are-bounded-for-events-that-add-no-state.md)
 * [0375 - A refused recomputation of current state is a status, not a success](0375-a-refused-recomputation-of-current-state-is-a-status-not-a-success.md)
-* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)
+* [0376 - Build an RPM for Fedora 44 and for fedora:latest](0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md) — Partly superseded by ADR-0742: Fedora 45 replaces fedora:latest
 * [0377 - The server exits when its federation worker cannot start](0377-the-server-exits-when-its-federation-worker-cannot-start.md)
 * [0378 - Probe ELF hardening in memory, and keep NetBSD refused](0378-probe-elf-hardening-in-memory-and-keep-netbsd-refused.md)
 
@@ -500,7 +500,7 @@
 * [0569 - A long-poll with nothing to return parks in a registry and gives up its sync-pool thread](0569-a-long-poll-with-nothing-to-return-parks-in-a-registry-and-gives-up-its-sync-pool-thread.md)
 * [0570 - sync_max_in_flight bounds parked waits, not sync-pool threads](0570-sync-max-in-flight-bounds-parked-waits-not-pool-threads.md)
 * [0574 - Media downloads are streamed from the database in chunks](0574-media-downloads-are-streamed-from-the-database-in-chunks.md)
-* [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)
+* [0580 - The long CI jobs wait for a gate, so Sonar and CodeQL take runners first](0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md) — Extended by ADR-0743: package jobs wait behind a later gate
 * [0581 - Room aliases are indexed in a table class and capped per user and per room](0581-room-aliases-are-indexed-in-a-table-class-and-capped-per-user-and-per-room.md)
 * [0582 - A user holds at most 200 devices, a device name at most 256 bytes, and a device-list announcement is linear](0582-a-user-holds-at-most-200-devices-a-device-name-at-most-256-bytes-and-a-device-list-announcement-is-linear.md)
 * [0583 - An event builds only on events of its own room](0583-an-event-builds-only-on-events-of-its-own-room.md)
@@ -517,7 +517,7 @@
 * [0594 - Fallback keys are capped per device by algorithm count, not by an algorithm allow-list](0594-fallback-keys-are-capped-per-device-by-algorithm-count-not-by-an-algorithm-allow-list.md)
 * [0595 - Bind worker key-claim and key/profile query relays to the verified request by digest](0595-bind-worker-key-claim-and-query-relays-to-the-verified-request-by-digest.md)
 * [0596 - Every module file is named in PascalCase, including function-only headers](0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md)
-* [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
+* [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md) — Partly superseded by ADR-0742: a tag ships the `latest` package set, not its own tarball
 * [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)
 * [0599 - One resolution reads its auth graph once, with a bit per group, not a closure per event](0599-one-resolution-reads-its-auth-graph-once-with-a-bit-per-group-not-a-closure-per-event.md)
 * [0600 - A room remembers its last resolved state by its distinct state groups](0600-a-room-remembers-its-last-resolved-state-by-its-distinct-state-groups.md)
@@ -562,7 +562,7 @@
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
 * [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
 * [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)
-* [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md)
+* [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md) — Partly superseded by ADR-0742: every published file is attested by packages.yml
 * [0719 - One client key holds a sixteenth of the parked-connection budgets, and a readable connection waits a bounded time](0719-one-client-key-holds-a-sixteenth-of-the-parked-connection-budgets-and-a-readable-connection-waits-a-bounded-time.md)
 * [0720 - Destinations that deliver slowly hold a bounded share of the outbound queue and go after the others](0720-destinations-that-deliver-slowly-hold-a-bounded-share-of-the-outbound-queue-and-go-after-the-others.md)
 * [0721 - Only a prompt answer proves a push gateway, and the reserve limits each host to a quarter share](0721-only-a-prompt-answer-proves-a-push-gateway-and-the-reserve-limits-each-host-to-a-quarter-share.md)
@@ -624,3 +624,5 @@
 * [0739 - Main reads a worker's store through readers opened before the sandbox](0739-main-reads-a-workers-store-through-readers-opened-before-the-sandbox.md)
 * [0740 - The changelog starts at 1.0.0, and the pre-release entries are a frozen record](0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)
 * [0741 - Each changelog version has Features, Security Fixes, Bug fixes and Release notes](0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)
+* [0742 - Fixed build-and-test and package platform lists, and a tag ships what latest ships](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)
+* [0743 - Analyses, then build and test jobs, then packages take runners](0743-analyses-then-build-and-test-then-packages-take-runners.md)

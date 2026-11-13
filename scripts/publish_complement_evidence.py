@@ -5,8 +5,8 @@
 
     publish_complement_evidence.py --results complement-results-<v>.json \\
         --log complement-<v>.jsonl \\
-        --package merovingian_<v>_amd64-debian.deb \\
-        --package-signature merovingian_<v>_amd64-debian.deb.asc \\
+        --package merovingian_<v>_amd64-debian13.deb \\
+        --package-signature merovingian_<v>_amd64-debian13.deb.asc \\
         --tag v<v>
 
 Run by the maintainer after the release workflow has published the tag's
@@ -26,7 +26,9 @@ release. It refuses, before signing anything:
 It signs the results and the log with the maintainer key in
 tests/complement/run.toml (detached, ASCII-armoured), checks each signature
 verifies to that key, and uploads them with their signatures, the tested
-package and the package's own signature with `gh release upload`. A reader
+package and the package's own signature with `gh release upload`. The package
+goes up as merovingian_<v>_<arch>-debian.deb, because the release already has
+its own -debian13.deb build (ADR-0742); the bytes are the tested ones. A reader
 then has, from the release alone, the bytes that were tested and the record
 that says so. Existing release assets are never replaced (no --clobber).
 """
@@ -35,14 +37,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_CONFIG = REPO_ROOT / "tests" / "complement" / "run.toml"
+# The Debian package packages.yml publishes: merovingian_<version>_<arch>-debian<release>.deb.
+# The release number is required: a bare -debian.deb is the name this script attaches, never
+# one latest publishes (ADR-0742).
+TESTED_PACKAGE = re.compile(r"(merovingian_[0-9][0-9.]*_[a-z0-9]+)-debian[0-9]+\.deb")
 
 
 class Refused(Exception):
@@ -82,6 +91,7 @@ def publish(args: argparse.Namespace) -> None:
         raise Refused(f"{args.log.name} is not the log {args.results.name} records")
     if args.package.name != results["package"]["name"] or sha256_of(args.package) != results["package"]["sha256"]:
         raise Refused(f"{args.package.name} is not the package {args.results.name} records")
+    attached_name = attached_package_name(args.package.name)
     source_commit = (results.get("source") or {}).get("commit")
     if not source_commit:
         raise Refused(f"{args.results.name} names no source commit")
@@ -108,11 +118,28 @@ def publish(args: argparse.Namespace) -> None:
         if key not in signed_by(path, signature):
             raise Refused(f"the signature on {path.name} does not verify to the maintainer key {key}")
 
-    assets = [str(path) for pair in zip(signed, signatures) for path in pair]
-    assets += [str(args.package), str(args.package_signature)]
-    uploaded = run("gh", "release", "upload", tag, *assets, "--repo", repository)
+    # The release already carries its own Debian 13 package under the name the
+    # candidate has (-debian13.deb, ADR-0742), and nothing is ever replaced, so the
+    # tested bytes go up under the release-less -debian.deb name. A rename changes
+    # no byte: the results' SHA-256 and the maintainer signature still hold.
+    with tempfile.TemporaryDirectory() as staging:
+        attached = Path(staging) / attached_name
+        attached_signature = attached.with_name(attached.name + ".asc")
+        shutil.copyfile(args.package, attached)
+        shutil.copyfile(args.package_signature, attached_signature)
+        assets = [str(path) for pair in zip(signed, signatures) for path in pair]
+        assets += [str(attached), str(attached_signature)]
+        uploaded = run("gh", "release", "upload", tag, *assets, "--repo", repository)
     if uploaded.returncode != 0:
         raise Refused(f"gh release upload failed: {uploaded.stderr.strip()}")
+
+
+def attached_package_name(name: str) -> str:
+    """merovingian_<v>_<arch>-debian<release>.deb as the release attaches it: -debian.deb."""
+    match = TESTED_PACKAGE.fullmatch(name)
+    if match is None:
+        raise Refused(f"{name} is not a Debian package from the rolling latest release")
+    return f"{match.group(1)}-debian.deb"
 
 
 def main(argv: list[str]) -> int:

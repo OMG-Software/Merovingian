@@ -1,6 +1,6 @@
 # A release is any tag that names the meson.build version, and ships what Meson installs
 
-* Status: accepted
+* Status: accepted (the tarball of the tag's own build is superseded by [ADR-0742](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md): a tag ships the `latest` package set, and its only tarball is the static one)
 * Date: 2026-11-10
 
 ## Context and Problem Statement

@@ -190,20 +190,20 @@ class SecurityWorkflowTests(unittest.TestCase):
         release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         packages = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
 
-        # WHEN either stages the assets it publishes (ADR-0598).
-        # THEN each generates the SPDX and CycloneDX SBOM into those assets
-        # before they go to the GPG signing workflow, and no separate SBOM
-        # workflow remains to wait on a release event that a GITHUB_TOKEN-made
-        # release never sends.
-        for name, workflow, staged in (("release.yml", release, "release-assets/"),
-                                       ("packages.yml", packages, "packages/")):
-            with self.subTest(workflow=name):
-                generate = workflow.index("python scripts/generate_sbom.py")
-                self.assertIn(f"--spdx {staged}merovingian.spdx.json", workflow)
-                self.assertIn(f"--cyclonedx {staged}merovingian.cdx.json", workflow)
-                self.assertLess(generate, workflow.index("uses: ./.github/workflows/sign-artifacts.yml"))
+        # WHEN either stages the assets it publishes (ADR-0598). A tag's assets are
+        # staged by packages.yml, which release.yml calls (ADR-0742).
+        # THEN the SPDX and CycloneDX SBOM are generated into those assets before they
+        # go to the GPG signing workflow, and no separate SBOM workflow remains to wait
+        # on a release event that a GITHUB_TOKEN-made release never sends.
+        generate = packages.index("python scripts/generate_sbom.py")
+        self.assertIn("--spdx packages/merovingian.spdx.json", packages)
+        self.assertIn("--cyclonedx packages/merovingian.cdx.json", packages)
+        self.assertLess(generate, packages.index("uses: ./.github/workflows/sign-artifacts.yml"))
+        self.assertIn("uses: ./.github/workflows/packages.yml", release)
+        self.assertIn("name: signed-packages\n", release)
+        self.assertNotIn("generate_sbom.py", release)
         self.assertLess(packages.index("python scripts/generate_sbom.py"),
-                        packages.index("sha256sum packages/* > packages/SHA256SUMS"))
+                        packages.index("sha256sum -- * > SHA256SUMS"))
         self.assertFalse(SBOM_WORKFLOW.exists(), "sbom.yml publishes nothing a release keeps")
 
     def test_codeql_filters_catch2_false_positives_before_upload(self) -> None:

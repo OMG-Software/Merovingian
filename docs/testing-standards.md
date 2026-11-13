@@ -376,14 +376,19 @@ beside them.
 ## CI job order
 
 GitHub Actions has no job priority, and the organisation runs at most 20 jobs at once across every pull request; queued
-jobs are not served in the order they joined. Every job in `ci.yml` and `packages.yml` that needs no other job `needs:`
-the gate job `queue-after-analyses` and carries `if: ${{ !cancelled() }}`, so a pull request starts few enough jobs at
-once that, when no other pull request's CI holds the runners, `sonarcloud` and CodeQL, the two longest, do not queue
-([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md)). The
+jobs are not served in the order they joined, so the only lever is when a job joins the queue. Jobs join in three tiers
+([ADR-0580](adr/0580-the-long-ci-jobs-wait-for-a-gate-so-sonar-and-codeql-take-runners-first.md),
+[ADR-0743](adr/0743-analyses-then-build-and-test-then-packages-take-runners.md)): the analyses (`sonarcloud`, CodeQL, `tsan`, `asan-ubsan`, then coverage, fuzzing, clang-tidy,
+gitleaks, dependency review and triage) need nothing and join at once; every build and test job in `ci.yml`,
+`postgres-integration.yml` and `reproducible-build.yml` that needs no other job `needs:` that workflow's instant gate
+`queue-after-analyses`; and every package job in `packages.yml` `needs:` `queue-after-build-and-test`, which sleeps 60
+seconds first. Each gated job carries `if: ${{ !cancelled() }}`. CodeRabbit runs on its own service, not on these
+runners. The
 condition matters: without it a failed gate skips the jobs, and a skipped required check counts as passed.
 A job that waits for the gate through another job states its condition on its own needs (`needs.<job>.result`, with
 `!cancelled()` or `always()`), never `success()` or `failure()`, written or implicit: both look at every ancestor, the
-gate included. `tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when a job behind the gate
+gate included. `tests/tooling/test_ci_runner_order.py` fails when a job there needs nothing, when the package gate does not wait or a
+build and test gate does, when a job behind the gate
 has no `if`, uses `success()` or `failure()`, or uses `!cancelled()` without a `needs.<job>.result` check (a job on
 `always()` must judge its needs in its steps, which the test cannot read), when an analysis waits for anything, or when the jobs that start at once exceed 20. A new workflow that runs for pull requests adds to that count.
 

@@ -47,17 +47,20 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 
 | Platform | Minimum version | glibc (Linux) | Toolchain source | CI image |
 |---|---|---|---|---|
-| Ubuntu | Ubuntu 24.04 LTS | ≥ 2.39 | distro clang 18+ | `ubuntu-24.04` and `ubuntu-26.04` runners, `ubuntu:rolling` |
-| Debian | Debian 13 (trixie) | ≥ 2.39 | distro clang 18+ | `debian:trixie` |
-| Fedora | Fedora 40+ (source build); Fedora 44 or the current release for the RPM | ≥ 2.39 | dnf clang 18+ | `fedora:44`, `fedora:latest` |
+| Ubuntu | Ubuntu 24.04 LTS (packaged; built and tested on 26.04 and 26.10) | ≥ 2.39 | distro clang 18+ | `ubuntu-26.04` runner, `ubuntu:26.10`; `ubuntu:24.04` for its package only |
+| Debian | Debian 13 (trixie); Debian 12 is not packaged, use the static tarball | ≥ 2.39 | distro clang 18+ | `debian:trixie` |
+| Fedora | Fedora 40+ (source build); Fedora 44 or 45 for the RPM | ≥ 2.39 | dnf clang 18+ | `fedora:44`, `fedora:45` |
 | RHEL-compatible | RHEL 10 / AlmaLinux 10 | ≥ 2.39 | dnf clang 18+ (AppStream) | `almalinux:10` |
 | OpenSUSE | Tumbleweed (rolling) or Leap 16.0 | current (Tumbleweed); the release's own (Leap) | zypper clang 18+ | `opensuse/tumbleweed`, `opensuse/leap:16.0` |
-| FreeBSD | 14.1+ (base clang ≥ 18) | n/a (no glibc) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
-| OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
-| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
+| FreeBSD | 14.1+ (base clang ≥ 18) for a source build; 15 for the package | n/a (no glibc) | base clang | `vmactions/freebsd-vm` (`release: '15'`, the newest 15.x) |
+| OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm` (its default 7.x) |
+| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm` (its default 10.x) |
 
-The CI VM/runner images track the current stable release of each platform, so
-"build on" is the latest stable and "build for" is the minimum version above.
+Every Linux image and the FreeBSD VM are pinned by release, never a moving tag such as
+`ubuntu:rolling` or `fedora:latest`, so the release CI tests is the release a package is
+built for; a new release is added by editing the workflows
+([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The OpenBSD and NetBSD VMs run each action's default release.
+"Build for" is the minimum version above.
 Earlier Linux releases (Ubuntu 22.04, Debian 12, RHEL 9) fail on **both** counts
 — pre-C++26 toolchain and too-old glibc — and even after installing a newer
 Clang the glibc remains too old, so they are not buildable or runnable from a
@@ -110,13 +113,13 @@ carry a job-level `continue-on-error`; a failure there fails the run
 
 | Platform | CI job | Toolchain | Notes |
 |---|---|---|---|
-| Linux (glibc, Ubuntu 26.04 LTS and 24.04 LTS) | `ubuntu-build-and-test` (26.04), `ubuntu-24.04-build-and-test` | clang | Reference platform; GitHub's runner image for each release, named by release, never `ubuntu-latest` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) |
-| Linux (Ubuntu interim release) | `ubuntu-rolling-build-and-test` | clang, container | apt-supplied libraries; `ubuntu:rolling`, since GitHub has runner images for LTS releases only |
+| Linux (glibc, Ubuntu 26.04 LTS) | `ubuntu-build-and-test` | clang | Reference platform; GitHub's `ubuntu-26.04` runner image, named by release, never `ubuntu-latest` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)). Ubuntu 24.04 is packaged but not built and tested ([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) |
+| Linux (Ubuntu 26.10) | `ubuntu-interim-build-and-test` (check `ubuntu-26.10-build-and-test`) | clang, container | apt-supplied libraries; `ubuntu:26.10`, pinned by release, since GitHub has runner images for LTS releases only |
 | Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
-| Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:latest` |
+| Linux (Red Hat family, Fedora) | `fedora-build-and-test`, which requires `fedora-suite` to pass on each image | clang, container | dnf-supplied libraries; `fedora:44` and `fedora:45` |
 | Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
 | Linux (OpenSUSE Tumbleweed and Leap 16.0) | `opensuse-build-and-test` (Tumbleweed), `opensuse-leap-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed`, `opensuse/leap:16.0` |
-| FreeBSD | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm` |
+| FreeBSD 15 | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm`, `release: '15'` |
 | OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
 | NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |
 
@@ -138,21 +141,22 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 
 | Artifact | Workflow | Runtime coverage via |
 |---|---|---|
-| Ubuntu `.deb`, one each for 24.04 LTS, 26.04 LTS and `ubuntu:rolling`, named `-ubuntu<release>.deb` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) | `packages.yml` (`deb`; the required check "Debian package" is `deb-all-releases`, which passes only when every release built) | Tier 1 Ubuntu |
-| Debian trixie `.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
-| Fedora `.rpm`, one each for `fedora:44` and `fedora:latest` ([ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
-| RHEL-compatible `.rpm` (AlmaLinux 10) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
-| OpenSUSE `.rpm`, one each for Tumbleweed (`.opensuse`) and Leap 16.0 (`.leap16`) | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
-| FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
-| OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
-| NetBSD `.tgz` (tar-assembled, no `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
-| Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnail requests are then answered `404`) |
+| Ubuntu `.deb`, one each for 24.04 LTS, 26.04 LTS and 26.10, named `-ubuntu<release>.deb` ([ADR-0650](adr/0650-each-ubuntu-and-opensuse-release-gets-its-own-build-check-and-package.md)) | `packages.yml` (`deb`; the required check "Debian package" is `deb-all-releases`, which passes only when every release built) | Tier 1 Ubuntu |
+| Debian 13 (trixie) `.deb`, named `-debian13.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
+| Fedora `.rpm`, one each for Fedora 44 and 45 (`.fc44`, `.fc45`; [ADR-0376](adr/0376-build-an-rpm-for-fedora-44-and-for-fedora-latest.md), [ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)) | `packages.yml` (`rpm`) | Tier 1 Fedora |
+| RHEL-compatible `.rpm` (AlmaLinux 10, `.el10`) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
+| OpenSUSE `.rpm`, one each for Tumbleweed (`.tumbleweed`) and Leap 16.0 (`.leap16`) | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
+| FreeBSD 15 `.pkg`, named `-freebsd15.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
+| OpenBSD `.tgz` (standalone `pkg_create`), named `-openbsd<release>.tgz` | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
+| NetBSD `.tgz` (tar-assembled, no `pkg_create`), named `-netbsd<release>.tgz` | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
+| Portable static Linux tarball (musl), named `-linux-static-x86_64.tar.gz` | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnail requests are then answered `404`) |
 
 A package installs only on the distribution release it was built on, because it links against
-that release's libraries, so each supported release has its own. A tagged release ships every
-Ubuntu, Fedora, RHEL-compatible and OpenSUSE package as well as the tarballs: `release.yml` calls
-`packages.yml` for them. The Debian trixie package reaches a release through the Complement step
-(`release-process.md`, "Complement").
+that release's libraries, so each supported release has its own, and its file name says which.
+Every package is x86_64 and built with the hardened profile. A tagged release ships exactly the
+set above, the same as `latest`: `release.yml` calls `packages.yml`, whose own staging and signing
+jobs serve the tag ([ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)). The Complement step attaches the Debian 13 package it
+tested beside it, as `-debian.deb` (`release-process.md`, "Complement").
 
 The OpenBSD package job builds with standalone `pkg_create(1)` (no ports tree),
 generating a framework-free packing list from the staged install. The NetBSD
