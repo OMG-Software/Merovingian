@@ -86,6 +86,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   readers opened at start keep open (ADR-0739).
 * The C44 worker test finds the worker on NetBSD by `ps -o ucomm`: `comm` is the worker's full path there, cut at 79
   columns; it lists the children it saw when the count is wrong.
+* The reset-mail daily cap test waits for each background send to end, so a slow host no longer hits the cap of eight
+  sends in flight and leaves a session without a code.
 
 ## Release notes
 

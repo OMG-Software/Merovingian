@@ -23,7 +23,9 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -123,6 +125,23 @@ auto let_a_minute_pass(hs::ClientServerRuntime& runtime, std::string const& secr
     session_of(runtime, secret).reset_sent_at_ms -= hs::password_reset_address_interval_ms + 1000U;
 }
 
+// Waits until every reset mail this runtime started has ended. Each send runs in the background and holds one of
+// password_reset_max_sends_in_flight slots until it does; a request made while all are held mails nothing and leaves
+// its session without a code. A loop of requests faster than the sends end would race that cap.
+[[nodiscard]] auto reset_sends_drained(hs::ClientServerRuntime& runtime) -> bool
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (runtime.homeserver.password_reset_sends_in_flight_.load() != 0U)
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    return true;
+}
+
 } // namespace
 
 SCENARIO("A session the throttle gave no code uses the code mailed to the address",
@@ -189,6 +208,7 @@ SCENARIO("A day's reset mail to one address is capped", "[password-reset][c17][i
             {
                 let_a_minute_pass(runtime, "caller");
             }
+            REQUIRE(reset_sends_drained(runtime));
             REQUIRE(request_token(runtime, "caller", attempt).response.status == 200U);
             REQUIRE_FALSE(session_of(runtime, "caller").reset_token.empty());
         }
@@ -197,6 +217,7 @@ SCENARIO("A day's reset mail to one address is capped", "[password-reset][c17][i
         WHEN("another request would mail it again")
         {
             let_a_minute_pass(runtime, "caller");
+            REQUIRE(reset_sends_drained(runtime));
             auto const answered = request_token(runtime, "caller", 100);
 
             THEN("it is answered alike, nothing is mailed and the last code still validates")
