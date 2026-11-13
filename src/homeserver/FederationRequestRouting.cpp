@@ -210,6 +210,13 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     {
         return true;
     }
+    // A hierarchy reads the space and every child room it names, and the children may belong to any shard, while a
+    // worker's copy of a room another shard owns is its start-up snapshot. Main's store is current for all of them
+    // (C47, ADR-0712).
+    if (request.method == "GET" && request.target.starts_with("/_matrix/federation/v1/hierarchy/"))
+    {
+        return true;
+    }
     // Media download needs the local media repository, which lives only in the
     // main process. The worker has no access to local blobs, so keep this route
     // on main even when the federation worker pool is active.

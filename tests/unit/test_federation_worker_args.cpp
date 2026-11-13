@@ -316,7 +316,7 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
     GIVEN("a digit string longer than any int for each descriptor option")
     {
         auto const huge = std::string(64U, '9');
-        for (auto const* const option : {"--ipc-fd", "--ipc-key-fd", "--db-uri-fd"})
+        for (auto const* const option : {"--ipc-fd", "--ipc-key-fd"})
         {
             WHEN(std::string{"it is passed to "} + option)
             {
@@ -417,6 +417,35 @@ SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][
             THEN("an error is reported")
             {
                 REQUIRE(result.error.has_value());
+            }
+        }
+    }
+}
+
+// ADR-0736: main hands the worker no database credential, so the argument that carried one is gone and is refused
+// like any other unknown argument.
+SCENARIO("parse_worker_args refuses the retired --db-uri-fd", "[federation-worker][args][c44]")
+{
+    GIVEN("an otherwise valid command line that also passes --db-uri-fd")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "8",
+                "--db-uri-fd",
+                "9",
+            });
+
+            THEN("it is refused as an unknown argument")
+            {
+                REQUIRE(result.error.has_value());
+                REQUIRE(result.error->find("unknown argument: --db-uri-fd") != std::string::npos);
             }
         }
     }

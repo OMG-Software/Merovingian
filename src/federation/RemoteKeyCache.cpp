@@ -112,6 +112,13 @@ namespace
         return stripped;
     }
 
+    // The most keys one remote server's key document may add to the cache (C27, ADR-0713). Every key becomes a stored
+    // row that nothing deletes, so the document sets what a server may add per fetch. A server publishes a handful of
+    // current keys and keeps a few retired ones; a document with more current keys than this is refused, and retired
+    // keys past the limit are not stored (they only judge older events).
+    inline constexpr std::size_t max_remote_verify_keys{16U};
+    inline constexpr std::size_t max_remote_old_verify_keys{64U};
+
     // server-server-api.md, Publishing keys: `old_verify_keys` maps a key ID to
     // {expired_ts, key}. Each entry stands alone: one that is malformed, lacks a
     // usable expired_ts (an integer above zero), repeats a current key's ID or
@@ -131,6 +138,10 @@ namespace
         }
         for (auto const& entry : *object)
         {
+            if (old_keys.size() >= max_remote_old_verify_keys)
+            {
+                break;
+            }
             auto const is_current = std::ranges::any_of(verify_keys, [&entry](RemoteVerifyKey const& current) {
                 return current.key_id == entry.key;
             });
@@ -192,6 +203,10 @@ namespace
         record.server_name = std::move(*server_name);
         record.valid_until_ts = *valid_until_ts;
 
+        if (verify_keys_object->size() > max_remote_verify_keys)
+        {
+            return std::nullopt;
+        }
         for (auto const& key_member : *verify_keys_object)
         {
             auto const* key_object = std::get_if<canonicaljson::Object>(&key_member.value->storage());
@@ -502,7 +517,7 @@ auto find_own_server_signing_key(database::PersistentStore const& store, std::st
 auto find_any_cached_remote_key(database::PersistentStore const& store, std::string_view server_name)
     -> std::optional<FederationKeyRecord>
 {
-    for (auto const& persistent : database::snapshot_server_signing_keys(store))
+    for (auto const& persistent : database::snapshot_server_signing_keys_of(store, server_name))
     {
         // A retired key is only valid for events; this lookup serves callers that want a key to authenticate
         // with, so it never returns one.
@@ -650,13 +665,13 @@ namespace
             }
             auto const now = clock();
             auto cached_key = find_cached_remote_key(store, server_name, key_id);
-            // A worker's mirror is a snapshot from its start: a key main verified
-            // and cached since is in the database but not here. Read that one
-            // server's public rows before paying a fetch (discovery, a fresh
-            // connection and a TLS handshake) for a key main already holds. The
-            // row carries main's seven-day cap, so it is trusted no longer than
-            // main trusts it. An absent or lapsed row still falls through to a
-            // verified fetch.
+            // A worker's mirror holds only what main sent it (ADR-0733): a key
+            // main verified and cached is in main's store but may not be here.
+            // Ask main for that one server's public rows before paying a fetch
+            // (discovery, a fresh connection and a TLS handshake) for a key main
+            // already holds. The row carries main's seven-day cap, so it is
+            // trusted no longer than main trusts it. An absent or lapsed row
+            // still falls through to a verified fetch.
             if (mirror_refresh == KeyMirrorRefresh::on_miss &&
                 (!cached_key.has_value() || !cached_remote_key_usable(*cached_key, now)))
             {
@@ -705,9 +720,9 @@ namespace
                                  {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
                 });
                 // ADR-0238: the key just fetched and self-verified is the answer;
-                // caching it is best-effort. A federation worker cannot write the
-                // cache (read-only SQLite, a SELECT-only PostgreSQL role), so a
-                // read-back after its failed write would find nothing.
+                // caching it is best-effort, and a read-back after a failed write
+                // would find nothing. A federation worker's write lands only in its
+                // own in-memory mirror (ADR-0733), never in main's database.
                 if (!cache_remote_server_keys(store, fetched.response, now))
                 {
                     log_resolver("key_cache_write_failed", {

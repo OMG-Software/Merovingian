@@ -49,6 +49,10 @@ public:
     // budget when it is smaller), as for requests (push_gateway_host_in_flight_cap).
     [[nodiscard]] static auto host_cap(std::size_t max_in_flight) noexcept -> std::size_t;
 
+    // Batches in flight at which one gateway host is refused once the unreserved share is spent, so the reserve is
+    // taken: a quarter of host_cap, at least one (C48, ADR-0721).
+    [[nodiscard]] static auto reserve_host_cap(std::size_t max_in_flight) noexcept -> std::size_t;
+
     // Admits a batch whose pushers are served by `hosts` when `in_flight` batches already run.
     [[nodiscard]] auto admit(std::size_t in_flight, std::size_t max_in_flight, std::span<std::string const> hosts,
                              bool all_hosts_reachable) -> Outcome;

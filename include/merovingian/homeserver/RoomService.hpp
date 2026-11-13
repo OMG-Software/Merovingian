@@ -217,6 +217,14 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
 // resident never chooses the timestamp this server signs.
 auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
                                      std::int64_t now_ms) -> void;
+
+// The content of a make_join, make_leave or make_knock template is the resident's, and this server signs it as its
+// user's own event. Rebuilds it from an allow-list: `membership`, and for a join (`allow_join_authoriser`) the
+// `join_authorised_via_users_server` the resident must name for a restricted join. Everything else (a `reason`,
+// profile fields, any other key) is dropped, so the user's reason and profile are only what this server adds after
+// (C18, ADR-0709). Returns a refusal when a join template names a user of this server as authoriser, else empty.
+[[nodiscard]] auto restrict_membership_template_content(canonicaljson::Object& event, std::string_view our_server_name,
+                                                        bool allow_join_authoriser) -> std::string;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
 

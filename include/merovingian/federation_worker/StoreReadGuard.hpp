@@ -3,9 +3,12 @@
 #pragma once
 
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/RoomReloadSnapshot.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
 
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string_view>
 
@@ -20,8 +23,8 @@ namespace merovingian::federation_worker
 //
 //   * every provider that reads the store runs under a SHARED lock, for the provider's own call
 //     only, and returns values it owns, so nothing it hands back points into a table;
-//   * a reload reads the database first, with no lock held, and takes the EXCLUSIVE lock only for the
-//     in-memory swap, so readers wait for the swap and never for the database.
+//   * a reload reads the room first (from main, ADR-0733), with no lock held, and takes the EXCLUSIVE lock
+//     only for the in-memory swap, so readers wait for the swap and never for the read.
 //
 // It is worker-only. The same provider lambdas run in main, where the store is guarded by
 // runtime.mutex and a whole-table read must not be moved under it, so they are left as they are and
@@ -49,6 +52,13 @@ public:
     // fails, in which case the store is untouched. Reloads are serialised with each other (the last
     // one to run holds the freshest read), never with readers except during the swap.
     [[nodiscard]] auto reload_room(database::PersistentStore& store, std::string_view room_id) -> bool;
+
+    // The same split with the read supplied by the caller: the federation worker reads the room from main over its
+    // IPC channel (ADR-0733). `read` runs with no store lock held (reloads stay serialised with each other), so a
+    // reader waits only for the swap and never for main; nullopt is a failed read and leaves the store untouched.
+    [[nodiscard]] auto reload_room_from(
+        database::PersistentStore& store, std::string_view room_id,
+        std::function<std::optional<database::RoomReloadSnapshot>(std::string_view room_id)> const& read) -> bool;
 
 private:
     std::shared_mutex store_mutex_{};

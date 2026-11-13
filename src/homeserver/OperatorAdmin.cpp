@@ -317,21 +317,21 @@ auto apply_admin_review(HomeserverRuntime& runtime, std::string_view admin_user,
     auto const record = trust_safety::ReviewRecord{*target, std::string{target_id}, true, reason};
     auto const decision = trust_safety::review_policy(record);
     auto const audit = trust_safety::make_safety_audit_event(admin_user, target_id, decision);
-    append_local_audit(runtime.database, observability::AuditCategory::policy, audit.event_type, audit.actor,
-                       audit.entity, audit.reason.code);
     auto const scope = std::string{trust_safety::policy_surface_name(decision.surface)};
-    if (!database::store_policy_rule(runtime.database.persistent_store,
-                                     {scope + ':' + std::string{target_id}, scope, std::string{target_id},
-                                      std::string{trust_safety::policy_action_name(decision.action)},
-                                      parsed_body->reason}))
+    // C49 (ADR-0687): the rule, the admin_actions row and the audit row commit together or not at all, and the audit
+    // row is no longer written before the rule it accuses.
+    if (!database::commit_policy_rule_with_audit(runtime.database.persistent_store,
+                                                 {scope + ':' + std::string{target_id}, scope, std::string{target_id},
+                                                  std::string{trust_safety::policy_action_name(decision.action)},
+                                                  parsed_body->reason},
+                                                 {std::string{admin_user}, audit.event_type, std::string{target_id}},
+                                                 local_audit_row(observability::AuditCategory::policy, audit.event_type,
+                                                                 audit.actor, audit.entity, audit.reason.code)))
     {
         return {500U, "M_UNKNOWN", "policy rule persistence failed"};
     }
-    if (!database::append_admin_action(runtime.database.persistent_store,
-                                       {std::string{admin_user}, audit.event_type, std::string{target_id}}))
-    {
-        return {500U, "M_UNKNOWN", "admin action persistence failed"};
-    }
+    remember_local_audit(runtime.database, observability::AuditCategory::policy, audit.event_type, audit.actor,
+                         audit.entity, audit.reason.code);
     if (decision.action == trust_safety::PolicyAction::quarantine || decision.allowed)
     {
         return {200U, {}, {}};

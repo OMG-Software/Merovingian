@@ -215,3 +215,42 @@ SCENARIO("Invite room state for room version 12 is refused when it is not an hon
         }
     }
 }
+
+SCENARIO("Invite room state is bounded in total bytes in every room version", "[federation][invite][unit][c04]")
+{
+    GIVEN("entries that together take exactly the byte limit")
+    {
+        auto const limit = merovingian::federation::max_invite_room_state_bytes;
+        auto const entries =
+            std::vector<std::string>{std::string(limit / 2U, 'x'), std::string(limit - limit / 2U, 'x')};
+
+        WHEN("a version 11 invite is validated")
+        {
+            auto const outcome = validate("11", entries);
+
+            THEN("it is accepted as it arrives")
+            {
+                REQUIRE(outcome.decision.accepted);
+            }
+        }
+    }
+
+    GIVEN("entries that together take one byte over the limit, each far under the event size limit")
+    {
+        auto const limit = merovingian::federation::max_invite_room_state_bytes;
+        auto const entries =
+            std::vector<std::string>{std::string(limit / 2U, 'x'), std::string(limit - limit / 2U + 1U, 'x')};
+
+        WHEN("a version 11 invite is validated")
+        {
+            auto const outcome = validate("11", entries);
+
+            THEN("it is refused before any signature lookup")
+            {
+                REQUIRE_FALSE(outcome.decision.accepted);
+                REQUIRE(outcome.decision.status == 400U);
+                REQUIRE(outcome.key_lookups == 0U);
+            }
+        }
+    }
+}

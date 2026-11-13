@@ -25,6 +25,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 | `RoomAliasTable.cpp` | `RoomAliasTable`, the in-memory mirror of `room_aliases` with indexes by alias, room and creator (ADR-0581) |
 | `ForwardExtremityTable.cpp` | `ForwardExtremityTable`, a room's tips with a count per server of their sender (ADR-0602) |
 | `ResolvedStateMemo.cpp` | `ResolvedStateMemo`, each room's last resolved state, bounded and in memory only (ADR-0600) |
+| `StateBeforeMemo.cpp` | `StateBeforeMemo`, the group holding the state before an event by its distinct prev groups, bounded and in memory only (ADR-0694) |
 | `StateGroupTable.cpp`, `StateGroupEntryTable.cpp`, `EventStateGroupTable.cpp` | The state-group tables with their hash indexes (ADR-0325); their shared rules are in `StateGroupTableSupport.hpp` |
 | `RuntimeDatabaseConfig.cpp` | Exposes the live store to the rest of the server |
 
@@ -53,6 +54,9 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
    one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
    A PostgreSQL connection is reused only while idle with nothing to read on its socket.
+   Main's reads for a federation worker (room list, room snapshots) lease a reader from `SnapshotReaderPool`, opened
+   one per shard before main enters a sandbox that forbids opening files or sockets (FreeBSD Capsicum, ADR-0739). Never
+   read for a worker through the path- or conninfo-taking functions, which open a connection per read.
 
 8. **Nothing in this process opens a SQLite database file except SQLite** (ADR-0157). Closing any descriptor of a
    file releases every POSIX lock the process holds on it, so a check that opens and closes the database (for its
@@ -70,11 +74,13 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     autocommit reads let a commit between them give the worker state naming an event its snapshot lacks. The snapshot
     carries the room's state groups, their entries and its events' group mappings too: federation reads fail closed on an
     event with no group, so a new table a worker-served read depends on must be added to the snapshot and `reload_room`.
+    The snapshot carries the room's forward extremities too (ADR-0733): the federation worker opens no database and
+    builds its whole store from snapshots main sends (`fill_store_from_room_snapshots`).
 
 11. **The to-device queue is bounded in rows, age and bytes, per device and per user, and read through its indexes**
     (ADR-0335, ADR-0336, ADR-0618). `index_to_device_recipients` gathers all the queues of every user a batch names through
     `to_device_user_index`; `prepare_to_device_enqueue` then evicts expired, then oldest rows (count, then bytes) from that
-    recipient's queue, then the user's oldest rows across devices. The byte totals are never stored: they are summed from
+    recipient's queue, then the user's oldest rows across devices. The rows are shared out per sender (run-3 C12, ADR-0674): `ShareBook` (one per queue, one per user) ranks senders (a local user ID, or a remote server) by share; once another sender is queued a sender holds at most half of a bound and its next message evicts its own oldest row, and a full bound gives way by evicting the largest holder's oldest row; the incoming message is always stored. `evict_queued_row` is the only place a row leaves a batch's books. Never scan a queue for a sender's row. The byte totals are never stored: they are summed from
     the rows when the batch is prepared, so they cannot drift from them. Remove in-memory rows with `erase_to_device_rows`,
     which moves the last row into the gap, so the vector has no order; a writer calls `sync_to_device_indexes` first.
     Never scan `to_device_messages` in a request. `store_account_data` and the capped writers refuse content over
@@ -90,7 +96,22 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
     `prepare_store_event_with_state` and `upsert_invite` ask `invite_is_over_store_caps` before building a statement; a new
     writer of `invites` does too. Change `invites` only through `append_invite_row`, `replace_invite_row` and
     `erase_invite_row`, and look a record up with `find_invite` or `find_invite_row`. Rows are charged by
-    `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`.
+    `local_server_name`, so whoever sets it calls `rebuild_invite_indexes`. The same three functions keep the byte ledger of remote invites
+    (`charge_invite_bytes`) that the per-origin and server-wide byte caps read (C04, ADR-0707).
+
+14. **A server's signing-key rows are read through `server_signing_key_index`** (C27, ADR-0713). Ask for one server's
+    rows with `snapshot_server_signing_keys_of`, never `snapshot_server_signing_keys`, which copies every cached remote
+    key. `public_signing_keys_of_server` (a federation worker's key lookup, ADR-0733) reads through the index too, counted
+    in `server_signing_key_rows_examined`; a new per-server reader does the same. Append only through `append_server_signing_key` (store_server_signing_key and refresh_remote_signing_keys do);
+    the index is trusted only while it is in step with the row count and readers scan otherwise.
+
+15. **A federated join writes its auth chain and member rows in one transaction each** (C03, ADR-0714):
+    `store_outlier_events_batch` and `store_memberships_batch`. A new writer of many rows for one answer uses a batch,
+    never `store_event_with_state` or `store_membership` in a loop, which commits once per row.
+    A batch of events that write no `current_state` or membership row has `prepare_outlier_events_batch`,
+    `commit_prepared_outlier_batch` (reads no store state, so the caller may release its lock around it) and
+    `apply_prepared_outlier_batch`. A batch that writes those rows keeps the lock for its commit (ADR-0714).
+    `PersistentStore::test_before_backend_commit` is a test seam only.
 
 ## Reloading a room (F-27, ADR-0360)
 
@@ -107,6 +128,7 @@ change to what a reload rewrites goes in both the snapshot and the swap, and the
 state.size()` and the row a position names still matches. Every code path that appends to or erases from `state`
 calls `note_state_row_appended` or `rebuild_state_index` (the two writers in `PersistentStore.cpp`, `reload_room`,
 and both hydration paths) or, for a deletion, goes through `remove_current_state_rows` (ADR-0615); a new one must too. Do not scan `state` for one key or one room in a handler.
+Both readers add the rows they look at to `state_rows_examined`; tests prove a handler's state reads with it.
 
 ## Per-user and per-ID indexes (ADR-0440, ADR-0441)
 
@@ -136,10 +158,28 @@ key backup tables. Same trust rule as the state index: used only while built for
 reader scans. A writer calls its `sync_*` first and `note_appended` after a push; an erase of `one_time_keys`,
 `key_backup_sessions` or rows of a key table moves the last row into the gap (`erase_row_swap`), so those vectors have no
 meaningful order; `devices` and `key_backup_versions` keep order and rebuild. Hydration calls `rebuild_key_indexes`.
-Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`,
+Read through `find_user_row`, `find_membership_row`, `has_room_membership_row`, `for_each_user_device`, `has_user_device`,
 `for_each_user_device_key`, `find_device_key`, `find_key_backup_session`, `count_key_backup_sessions`, never by looping the
 vector in a request. Tests prove cost with `user_rows_examined`, `membership_rows_examined`, `key_rows_examined`,
 `key_backup_rows_examined` and `device_table_rows_examined`.
+
+## Key signature indexes (ADR-0672)
+
+`key_signatures` has four position indexes: by target user (`key_signature_target_index`), by (signer, target user, target key)
+(`key_signature_key_index`), by signer (`key_signature_signer_index`) and by (target user, target key)
+(`key_signature_target_key_index`). Rows are never erased, so a write is an append or an in-place update. Write through
+`store_key_signature` / `store_key_signatures` (one transaction for the whole list; a stale index is rebuilt first) and read
+through `for_each_signer_key_signature` and `key_signatures_for_target_key`, counted in `key_rows_examined`. A new reader
+never loops the vector; hydration and a direct fill call `rebuild_key_signature_index`.
+
+## Key backup digests (ADR-0673)
+
+`PersistentStore::key_backup_digests` holds a `KeyBackupDigest` (session count and an order-independent sum of per-session
+BLAKE2b hashes) for each (user, version). `append_backup_session`, `replace_backup_session_json` and `erase_backup_session_at`
+are the only places a backup session row appears, changes or goes, and each moves the digest, healing it first when its count
+differs from the version's session count; `rebuild_key_indexes` rebuilds all of them. Read the content identity through
+`key_backup_content_digest` (constant time while in step, a recomputation that stores nothing otherwise); the client etag is a
+hash of the version and that digest. A new writer of `key_backup_sessions` goes through those three functions.
 
 ## The relation index (ADR-0430)
 
@@ -201,7 +241,7 @@ the hole, so row order means nothing. The table has no lock: a reader needs excl
 the sender), so a writer cannot leave the counts wrong. A hydrating loader inserts each tip with no sender and calls
 `rebuild_forward_extremity_servers` once the events are indexed (ADR-0602). `PersistentStore::resolved_state_memo` is read
 under `runtime.mutex` only. Anything that changes a stored event's JSON or status calls `forget_room`, or a later resolution
-reuses a result that read the old value (ADR-0600).
+reuses a result that read the old value (ADR-0600). `state_before_memo` is forgotten at the same points (ADR-0694).
 
 `PersistentStore::access_tokens` and `refresh_tokens` are `CredentialTable<Row>` (header-only,
 `include/merovingian/database/CredentialTable.hpp`), not vectors: they own their rows, show them read-only and index them
@@ -239,3 +279,14 @@ store gets fresh, unlocked mutexes, so copy a store only while no other thread i
 assignment are defaulted (ADR-0523): a copy carries every member and index. Never go back to a hand-written member list;
 one missed `state_transitions` and its index for months. A member that must not be copied gets its own copy semantics,
 as `core::CopyableMutex` has. No production code copies a store; only tests do.
+
+
+## Observer, user and presence indexes (ADR-0659)
+
+`device_list_observer_index` (device-list changes by observer), `filter_user_index` (stored filters by user) and
+`presence_user_index` (presence rows by user) follow the row-index rule above: trusted only while built for the vector's
+current row count, rebuilt by their writer when found out of step and by `rebuild_key_indexes` after hydration. Read through
+`for_each_observer_device_list_change`, `for_each_user_filter`, `find_filter` and `find_presence_state`, never by looping the
+vector in a request. `record_device_list_changes` replaces a pair's row by erasing it (the last row moves into the gap, so the
+vector has no order) and appending the new one. Tests prove cost with `device_list_rows_examined`, `filter_rows_examined`
+and `presence_rows_examined`.

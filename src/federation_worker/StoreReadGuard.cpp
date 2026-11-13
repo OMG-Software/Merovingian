@@ -45,8 +45,18 @@ auto StoreReadGuard::wrap_store_readers(federation::FederationRuntimeState& stat
 
 auto StoreReadGuard::reload_room(database::PersistentStore& store, std::string_view room_id) -> bool
 {
+    return reload_room_from(store, room_id, [&store](std::string_view room) {
+        return database::load_room_snapshot(store, room);
+    });
+}
+
+auto StoreReadGuard::reload_room_from(
+    database::PersistentStore& store, std::string_view room_id,
+    std::function<std::optional<database::RoomReloadSnapshot>(std::string_view room_id)> const& read) -> bool
+{
     auto const reloading = std::lock_guard{reload_mutex_};
-    auto snapshot = database::load_room_snapshot(store, room_id);
+    // No store lock is held across the read: it waits on main.
+    auto snapshot = read(room_id);
     if (!snapshot.has_value())
     {
         return false;

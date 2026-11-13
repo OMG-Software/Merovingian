@@ -5,6 +5,8 @@
 // the distinct events a resolution reaches, not with the state size times the depth of the auth chain.
 // Each scenario builds K state events that all cite one chain of D events and asserts on
 // StateResolutionResult::auth_walk_visits, a count of work, never on wall-clock time. ADR-0599.
+// The iterative auth checks must copy and index each distinct auth event once, however many events they judge
+// against it: StateResolutionResult::auth_events_prepared counts them. ADR-0693.
 //
 // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth chain", "Auth difference",
 // "Mainline ordering"), Algorithm step 1.
@@ -420,6 +422,116 @@ SCENARIO("The mainline depth cap counts every hop an event's position needs",
             {
                 REQUIRE_FALSE(result.resolved);
                 REQUIRE(result.reason == "state-res v2: mainline ordering auth-chain walk failed");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A power_levels content naming Alice at 100 and `members` other users at 50, less the member numbered `omit`.
+[[nodiscard]] auto large_power_content(std::size_t members, std::optional<std::size_t> omit = std::nullopt)
+    -> std::string
+{
+    auto content = std::string{
+        R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,"users_default":0,"users":{"@alice:example.org":100)"};
+    for (std::size_t index = 0U; index < members; ++index)
+    {
+        if (omit.has_value() && *omit == index)
+        {
+            continue;
+        }
+        content += R"(,"@member)" + std::to_string(index) + R"(:example.org":50)";
+    }
+    return content + "}}";
+}
+
+// A room whose power_levels event lists `members` users besides Alice.
+[[nodiscard]] auto make_room_with_large_power(std::size_t members) -> Room
+{
+    auto room = Room{};
+    room.create = room.dag.add(make_ref("m.room.create", "", "$create", 1, {}, R"({"creator":"@alice:example.org"})"));
+    room.join = room.dag.add(make_ref("m.room.member", alice, "$join", 2, {"$create"}, R"({"membership":"join"})"));
+    room.power = room.dag.add(
+        make_ref("m.room.power_levels", "", "$power", 3, {"$create", "$join"}, large_power_content(members)));
+    return room;
+}
+
+constexpr auto power_members = std::size_t{1000U};
+constexpr auto conflicted_keys = std::size_t{200U};
+
+} // namespace
+
+SCENARIO("The iterative auth checks read each auth event once, however many events they judge",
+         "[state_res_v2][auth_event_work]")
+{
+    GIVEN("a room whose power_levels event lists many users, and two groups conflicting on many keys")
+    {
+        auto room = make_room_with_large_power(power_members);
+        auto base = std::vector<StateEventReference>{room.create, room.power, room.join};
+        auto group_a = StateGroup{"a", base};
+        auto group_b = StateGroup{"b", base};
+        for (std::size_t index = 0U; index < conflicted_keys; ++index)
+        {
+            auto const key = std::to_string(index);
+            group_a.state.push_back(room.dag.add(
+                make_ref("x.custom", key, "$a_" + key, 1000, {"$create", "$power", "$join"}, R"({"value":"a"})")));
+            group_b.state.push_back(room.dag.add(
+                make_ref("x.custom", key, "$b_" + key, 1001, {"$create", "$power", "$join"}, R"({"value":"b"})")));
+        }
+
+        WHEN("the groups are resolved")
+        {
+            auto const result = resolve(room, {group_a, group_b});
+
+            THEN("every key resolves as before, and only the create, power_levels and member events were read")
+            {
+                REQUIRE(result.resolved);
+                for (std::size_t index = 0U; index < conflicted_keys; ++index)
+                {
+                    REQUIRE(event_at(result, "x.custom", std::to_string(index)) == "$b_" + std::to_string(index));
+                }
+                REQUIRE(event_at(result, "m.room.power_levels", "") == "$power");
+                REQUIRE(result.auth_events_prepared == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("Conflicting power_levels events with many users are judged by the auth rules as before",
+         "[state_res_v2][auth_event_work]")
+{
+    GIVEN("a room whose power_levels event lists many users")
+    {
+        auto room = make_room_with_large_power(power_members);
+        // Each fork holds its own power_levels event; both cite the room's first one, which the checks reach
+        // through each event's own auth_events.
+        auto base = std::vector<StateEventReference>{room.create, room.join};
+        auto member_join = [&room](std::size_t index) {
+            auto const user = "@member" + std::to_string(index) + ":example.org";
+            return room.dag.add(make_ref("m.room.member", user, "$member_join_" + std::to_string(index), 4,
+                                         {"$create", "$power"}, R"({"membership":"join"})", user));
+        };
+        base.push_back(member_join(1U));
+        auto group_a = StateGroup{"a", base};
+        auto group_b = StateGroup{"b", base};
+
+        WHEN("Alice removes one user and a member at 50 removes another at 50 in a later fork")
+        {
+            group_a.state.push_back(
+                room.dag.add(make_ref("m.room.power_levels", "", "$power_alice", 1000, {"$create", "$power", "$join"},
+                                      large_power_content(power_members, 0U))));
+            group_b.state.push_back(room.dag.add(
+                make_ref("m.room.power_levels", "", "$power_member", 1001, {"$create", "$power", "$member_join_1"},
+                         large_power_content(power_members, 2U), "@member1:example.org")));
+            auto const result = resolve(room, {group_a, group_b});
+
+            THEN("Alice's change stands and the member's removal of an equal is refused (rule 9.8)")
+            {
+                REQUIRE(result.resolved);
+                REQUIRE(event_at(result, "m.room.power_levels", "") == "$power_alice");
+                REQUIRE(result.auth_events_prepared <= 6U);
             }
         }
     }

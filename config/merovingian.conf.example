@@ -381,34 +381,16 @@ federation.worker.shards=2
 federation.worker.apply_hardening=true
 # federation.worker.binary=
 
-# Federation worker database credentials (ADR-0062 part 2, PostgreSQL only)
-# The worker is the process most exposed to hostile input, so it must never
-# connect to the database with the same login main uses: SET ROLE was
-# rejected for this boundary because a session holding the login role can
-# always RESET ROLE back to it. database_uri_file names an owner-only secret
-# file holding a connection URI for a SEPARATE, least-privilege login,
-# provisioned with packaging/postgresql/provision-federation-worker-role.sql
-# (grants SELECT only, and excludes server_signing_keys/users/access_tokens/
-# refresh_tokens/login_tokens/openid_tokens/account_threepids — see
-# docs/database-persistence.md, "Federation worker least-privilege role").
-# Required when database.backend=postgresql (the default); startup fails
-# validation if this is left empty without also setting the opt-out below.
-# Defaults to the placeholder path shown here (commented, matching
-# database.uri_file's own presentation above) — a fresh install still
-# validates for --dry-run inspection, but production deployments must
-# provision the file and role before starting for real. Not needed for
-# database.backend=sqlite, which offers no role boundary to separate.
-#federation.worker.database_uri_file=/etc/merovingian/fed-worker-db-uri
-#
-# allow_shared_database_credentials is the explicit, loudly-logged opt-out:
-# set it to true (and leave database_uri_file empty) to let the worker share
-# main's own PostgreSQL login instead of provisioning a separate role. Every
-# startup then logs CRITICAL, since this restores the pre-part-2 exposure.
-#federation.worker.allow_shared_database_credentials=true
+# The federation worker opens no database on either backend: main sends it the
+# rooms and keys it reads over its IPC channel (ADR-0733). The 1.0.0 keys
+# federation.worker.database_uri_file and
+# federation.worker.allow_shared_database_credentials are retired: a
+# configuration that still sets either is refused at start-up, naming the key
+# (ADR-0736). Remove the line; the worker's PostgreSQL role can be dropped.
 
 # ADR-0062 part 3: the worker restricts its own filesystem access with Linux
 # Landlock (requires Linux 5.13+ with Landlock enabled) before handling any
-# inbound request -- never the master key file, either database URI file, or
+# inbound request -- never the master key file, the database URI file, or
 # TLS private keys. On a kernel without Landlock the worker refuses to start
 # unless this is set true, in which case it runs with NO filesystem sandbox
 # and logs CRITICAL on every start.
@@ -826,6 +808,7 @@ security.federation.query.max_missing_events_traversal=4096
 # security.federation.state_resolution
 security.federation.state_resolution.max_state_groups=1000
 security.federation.state_resolution.max_state_tips_per_server=32
+security.federation.state_resolution.max_unprivileged_state_tips=128
 security.federation.state_resolution.max_events_per_state_group=65536
 security.federation.state_resolution.max_total_state_events=131072
 security.federation.state_resolution.max_conflicted_state_keys=65536

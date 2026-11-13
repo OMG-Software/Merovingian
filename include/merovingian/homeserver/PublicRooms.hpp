@@ -11,6 +11,7 @@
 #include "merovingian/homeserver/PublicRoomsScope.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,6 +27,11 @@ namespace merovingian::homeserver
 // (at most twice the size) and again base64-encoded (kIpcMaxFrameBytes is 24 MiB). A page always holds at
 // least one room, so paging always advances.
 inline constexpr auto max_public_rooms_page_bytes = std::size_t{8U * 1024U * 1024U};
+
+// The bytes of room state events one filtered or searched directory request may parse in all (C24, ADR-0724). A
+// request that has spent it stops examining rooms: the rooms not yet examined are not listed, and the answer is
+// shorter than the directory holds. A page of an unfiltered listing is bounded by its size and bytes instead.
+inline constexpr auto max_public_rooms_examined_bytes = std::uint64_t{4U * 1024U * 1024U};
 
 // The prefix of every `instance_id` minted for one protocol of one appservice (ADR-0192):
 // `<registration id>:<protocol>:`, both parts percent-encoded so the colons between them are the only
@@ -45,7 +51,9 @@ inline constexpr auto max_public_rooms_page_bytes = std::size_t{8U * 1024U * 102
 [[nodiscard]] auto public_rooms_response_json(LocalDatabase const& database,
                                               federation::PublicRoomsFilter const& filter, std::size_t limit,
                                               std::size_t since_offset, PublicRoomsScope const& scope = {},
-                                              std::size_t max_page_bytes = max_public_rooms_page_bytes) -> std::string;
+                                              std::size_t max_page_bytes = max_public_rooms_page_bytes,
+                                              std::uint64_t max_examined_bytes = max_public_rooms_examined_bytes)
+    -> std::string;
 
 // The federation endpoint's answer for an authenticated request: caps `limit` at the operator's
 // server.client_api.max_public_rooms_page_size, resolves the scope and lists. Takes runtime.mutex itself

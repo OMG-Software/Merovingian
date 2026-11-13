@@ -521,6 +521,18 @@ per group over them, enlarging X is one traversal from every power event, and
 a mainline walk reuses what an earlier walk found. The cap still means one
 group's chain, and the mainline depth limit still counts every hop.
 
+The iterative auth checks read each distinct auth event once (ADR-0693). An
+`IndexedAuthEventCache` per resolution copies each create, power-levels,
+join-rules or member event the checks need once and reads it into an
+`IndexedAuthEvent`: its members, its scalar power levels decoded, its
+`users`, `events` and `notifications` maps hashed and sorted, and its
+`additional_creators` as a set. The auth rules run against these indexes
+(`authorize_event_against_auth_indexes`; `authorize_event_against_auth_events`
+indexes an `AuthEventMap` and calls it), so judging one event costs lookups,
+not a walk of each auth event, and rule 9 compares two power-levels events in
+the size of the new one. `StateResolutionResult::auth_events_prepared` counts
+the indexed events.
+
 As of 0.12.18, `security.federation.state_resolution` also configures group
 count, entries per group, aggregate submitted entries, distinct/conflicted
 keys and mainline depth. The aggregate entry limit is checked before indexing
@@ -759,13 +771,24 @@ tips (`event_may_become_forward_extremity`, ADR-0602), and then writes no
 `current_state` row or membership, since no tip holds its state; a message past
 that limit stays a tip only in a state group a tip already holds. A server is
 charged only for its own events, so a ban or a demotion from another server
-still reaches resolution. `send_join`, `send_leave` and `send_knock` past the
+still reaches resolution. One operator runs as many server names as it likes,
+so the tips of senders without power, whatever their servers, also share
+`max_unprivileged_state_tips` (default 128); a sender who may ban or change the
+power levels (`RoomPowerJudge`) is exempt from that cap and its tips are not
+charged to it; only its own server's cap applies to it (ADR-0695). `send_join`, `send_leave` and `send_knock` past the
 limit are answered 503 with nothing stored. Each room remembers its last
 resolved state by its sorted distinct state groups (`ResolvedStateMemo`,
 ADR-0600): a PDU that leaves those groups unchanged reuses the result and still
 applies it through the normal write path. A recomputation parses each stored
 event once however many groups name it. Folding a change into the previous
 result is not done, because state resolution is not associative (ADR-0601).
+The state before an event is resolved and stored once per set of distinct prev
+groups (`StateBeforeMemo`, ADR-0694): a later event naming the same groups reads
+the group that holds it, every prev_event naming one group is that group, and
+`record_event_state` chains the event's after-state off the group of its state
+before, so a rejected or non-state event adds no rows. A freshly resolved state
+before is stored as `sb:<event_id>`, a delta off a resolved group that holds no
+key the resolution dropped where there is one.
 While a refusal lasts each accepted
 state event that is a tip still writes its own `current_state` row, so a ban applies; the
 residual is that a state event resolution would have reverted can stay current
@@ -839,7 +862,7 @@ path decoding without blanket payload filtering, is recorded in proposed
 device lists, and realigns the row if state resolution left a different member event current. Inbound member
 events (`send_join`, `send_leave`, `send_knock`, `/invite`, PDUs over `/send`) pass a projection the same
 way, and `send_join`, `send_leave` and PDUs apply it to the roster through `apply_membership_to_roster`, which
-also records the device-list `changed`/`left` rows for the local members. At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
+also records the device-list `changed`/`left` rows for the local members. A join by a user of a server that had no joined member in the room sends that server every local member's device list; a join by a server that already has a member sends nothing (it has them), and the local members come from the roster's per-server group, not a scan of the accounts (`RoomMembers::members_of_server`, ADR-0706). At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
 roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
 does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 
@@ -1208,6 +1231,9 @@ state and auth-chain writer, a knock's stored `knock_room_state`, the inbound in
 client's `unsigned` is built from what this server computes (`replaces_state`, `redacted_because`, and the viewer's
 `transaction_id`, `membership` and `prev_content` through `sync::ViewerEventUnsigned`), in `client_event_with_id`
 and in sliding sync alike, never from a stored copy with a list of keys removed. `age` is not served.
+`without_unsigned_json` skips the parse only for text that holds neither `"unsigned"` nor a `\u` escape, because a key
+written as `unsigne\u0064` decodes to `unsigned`; the `GET /event` answer without a `pdus` wrapper is re-serialised as
+canonical JSON, so stored remote events are canonical bytes (C43, ADR-0710).
 
 ### The algorithm
 

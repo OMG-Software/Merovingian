@@ -1617,10 +1617,7 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     // only have got there through a failure (a partial deactivation, a
     // revocation race, a leak), and honouring it would resurrect a session for
     // a device the user believes is gone. Fail closed rather than recreate it.
-    auto const device_exists = std::ranges::any_of(
-        runtime.database.persistent_store.devices, [&user_id, &device_id](database::PersistentDevice const& device) {
-            return device.user_id == user_id && device.device_id == device_id;
-        });
+    auto const device_exists = database::has_user_device(runtime.database.persistent_store, user_id, device_id);
     if (!device_exists)
     {
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.rejected", user_id,
@@ -2121,18 +2118,6 @@ namespace
         return all_deleted;
     }
 
-    // The audit row of an administrator's account action, as `append_local_audit` would write it, for the writers that
-    // commit it with the state change (ADR-0629).
-    [[nodiscard]] auto account_action_audit_row(observability::AuditCategory category, std::string_view event_type,
-                                                std::string_view actor, std::string_view target,
-                                                std::string_view reason) -> database::PersistentAuditEvent
-    {
-        return {std::string{observability::audit_category_name(category)}, std::string{event_type},
-                observability::bounded_utf8(actor, observability::max_audit_field_bytes),
-                observability::sanitized_audit_target(target),
-                observability::bounded_utf8(reason, observability::max_audit_field_bytes)};
-    }
-
 } // namespace
 
 // Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
@@ -2157,12 +2142,11 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     // completed) writes the flag again and no second row.
     auto const first_deactivation = !user->deactivated;
     auto const flag_persisted =
-        first_deactivation
-            ? database::commit_user_deactivation_with_audit(
-                  runtime.database.persistent_store, user_id,
-                  account_action_audit_row(observability::AuditCategory::auth, "auth.account_deactivated", audit.actor,
-                                           audit.target, audit.reason))
-            : database::set_user_deactivated(runtime.database.persistent_store, user_id);
+        first_deactivation ? database::commit_user_deactivation_with_audit(
+                                 runtime.database.persistent_store, user_id,
+                                 local_audit_row(observability::AuditCategory::auth, "auth.account_deactivated",
+                                                 audit.actor, audit.target, audit.reason))
+                           : database::set_user_deactivated(runtime.database.persistent_store, user_id);
     if (!flag_persisted)
     {
         return make_operation_result(false, {}, "deactivation persistence failed", 500U);
@@ -2258,7 +2242,7 @@ auto set_local_user_moderation(HomeserverRuntime& runtime, std::string_view admi
     // ADR-0629: the state change and its audit row are one transaction.
     if (!database::commit_user_account_state_with_audit(
             runtime.database.persistent_store, user_id, suspended, locked,
-            account_action_audit_row(observability::AuditCategory::admin, audit_event, admin_id, user_id, reason_code)))
+            local_audit_row(observability::AuditCategory::admin, audit_event, admin_id, user_id, reason_code)))
     {
         return make_operation_result(false, {}, "failed to persist account state", 500U);
     }
@@ -2298,10 +2282,8 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     // failure anywhere leaves the device present and the call retryable, and a retry (or a repeat
     // of a call that answered 404) still revokes tokens an earlier failure left behind. Deleting
     // the row first made it the retry gate: the retry saw "not found" and never revoked.
-    auto const device_known = std::ranges::any_of(runtime.database.persistent_store.devices,
-                                                  [&user_id, &device_id](database::PersistentDevice const& device) {
-                                                      return device.user_id == user_id && device.device_id == device_id;
-                                                  });
+    // Through the user's own device rows and the session (user, device) index, not the two tables (run-3 C02).
+    auto const device_known = database::has_user_device(runtime.database.persistent_store, user_id, device_id);
     // Revoke only when a token is still live, so a repeated delete of a gone device writes nothing.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
@@ -2312,13 +2294,7 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
         }
     }
-    for (auto& session : runtime.database.sessions)
-    {
-        if (session.user_id == user_id && session.device_id == device_id)
-        {
-            session.revoked = true;
-        }
-    }
+    std::ignore = runtime.database.sessions.revoke_device(user_id, device_id);
     if (!device_known)
     {
         return make_operation_result(false, {}, "device not found", 404U);
@@ -2712,8 +2688,16 @@ auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_vi
         return std::nullopt;
     }
     auto const now = std::chrono::system_clock::now();
-    for (auto const& row : runtime.database.persistent_store.openid_tokens)
+    // One index lookup per candidate hash, whatever the number of tokens held (ADR-0681); the row it names is
+    // confirmed with the constant-time comparison below.
+    for (auto const& candidate : candidate_hashes)
     {
+        auto const* const found = database::find_openid_token(runtime.database.persistent_store, candidate);
+        if (found == nullptr)
+        {
+            continue;
+        }
+        auto const& row = *found;
         // A match on an expired row still falls through to nullopt below --
         // "unknown token" and "expired token" are indistinguishable to the
         // caller, so a probing third party cannot tell a token merely lapsed

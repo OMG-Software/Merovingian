@@ -94,9 +94,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
    signing key must be valid at the event's own `origin_server_ts`, never judged against the
    current time; v1-v4 ignore `valid_until_ts` (ADR-0075).
-   A federation worker's key mirror is a snapshot taken at start-up, so its resolver is built with
-   `KeyMirrorRefresh::on_miss` and re-reads the one server's public key rows (never `secret_key`) from
-   the database before it fetches; main's resolver never does (its mirror is authoritative).
+   A federation worker's key mirror holds only what main sent it (ADR-0733), so both its
+   `cached_pdu_key_lookup` and its resolver (built with `KeyMirrorRefresh::on_miss`) ask main for the
+   one server's public key rows (never `secret_key`) on a miss, before the lookup gives up or the
+   resolver fetches; main never does (its mirror is authoritative).
    Never call `remote_key_resolver` directly for a network fetch: go through an admitted path so
    the fetch counts against `key_resolution_max_in_flight` and the server/key failure cache
    (FED-10). Inbound and relay verification refuse over budget (`resolve_verification_key`);
@@ -221,6 +222,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `effective_max_pending_failing` slots between them (half the queue, never below one destination's own share, ADR-0621): `remember_destination_locked` is the
    only place a destination starts or stops failing, and past the share it cuts the largest holders' newest
    transactions. A failing destination past its backoff is always admitted: never refuse it, or it can never recover.
+   Destinations that deliver but slowly (an answer over a quarter of `slow_attempt_ms`) hold at most the same number
+   of slots between them, refused at enqueue and never shed, and `next_ready_locked` offers their oldest row only
+   when nothing else is ready (`set_slow_locked`, ADR-0720).
    A failing destination's transaction past `max_failing_transaction_age_ms` is deleted by `sweep_aged_locked`. An event's destinations go through `enqueue_batch` (ADR-0441): one durable commit, all or none on a failed commit. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
    A failure's backoff runs from the end of the attempt (`finished_at`, `perform_outbound_transaction`'s
@@ -243,7 +247,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `ip_address_in_allowed_private_range`, which re-checks each range with
    `config::private_ip_range_is_allowable` so loopback and link-local can never open.
 
-14. **An invite's `invite_room_state` is bounded in count and entry size in every room version (ADR-0619), validated
+14. **An invite's `invite_room_state` is bounded in count, entry size and total bytes (`max_invite_room_state_bytes`, 64 KiB,
+   ADR-0707) in every room version (ADR-0619), validated
    for room versions 12 and up, and otherwise left alone below.**
    Spec v1.19 (`PUT /v2/invite`): the list "MUST contain the `m.room.create` event" and every entry is a
    full PDU of the room version, not a stripped event. `validate_invite_room_state`
@@ -380,7 +385,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `KeySignatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060); also `cross_signing_key_ids` and `device_id_names_cross_signing_key`, the device-ID versus cross-signing-key-ID test |
 | `Security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `Transactions.cpp` | Transaction batching and deduplication |
-| `ServerAcl.cpp`, `ServerAclGlob.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists. The glob is a two-pointer match; an ACL over 4096 patterns or with a pattern over 255 bytes, or a check over its step budget, refuses the server; parsed ACLs are cached per event, keyed with the JSON size and hash (ADR-0640) |
+| `ServerAcl.cpp`, `ServerAclGlob.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists. The glob is a two-pointer match; an ACL over 4096 patterns or with a pattern over 255 bytes, or a check over its step budget, refuses the server; parsed ACLs are cached per event, keyed with the JSON size and hash (ADR-0640). A request that checks several rooms makes one `ServerAclBudget` and passes it to every `room_server_acl_allows` (the receipt sink per EDU, a worker relay per frame); answers per (ACL event version, host) are cached (ADR-0653) |
 | `RemoteDeviceListCache.cpp` | The in-memory device lists of remote users who share a room with a local user (G14, ADR-0560, ADR-0561): fill tickets, update sequencing by `stream_id`/`prev_id`, caps per user and in all. Guarded by `runtime.mutex` |
 | `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
 | `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |

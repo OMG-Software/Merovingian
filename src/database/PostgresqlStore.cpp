@@ -8,16 +8,17 @@
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/database/ConnectionPool.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
 #include "merovingian/database/PostgresqlConnectionDeleter.hpp"
 #include "merovingian/database/PostgresqlConnectionHandle.hpp"
 #include "merovingian/database/PostgresqlConnectionOpenResult.hpp"
-#include "merovingian/database/PostgresqlExecution.hpp"
 #include "merovingian/database/PostgresqlConnectionPolicyResult.hpp"
+#include "merovingian/database/PostgresqlExecution.hpp"
 #include "merovingian/database/PostgresqlWritePool.hpp"
-#include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/Schema.hpp"
+#include "merovingian/database/SchemaTableDefinition.hpp"
+#include "merovingian/database/SnapshotReaderConnections.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -420,17 +421,9 @@ namespace
         // server_signing_keys is the one allowlisted table with a column
         // restriction: the federation worker profile omits `secret_key`
         // entirely from the SELECT list (never just filters it client-side),
-        // so a worker connecting with the least-privilege role in
-        // packaging/postgresql/provision-federation-worker-role.sql — which
-        // grants SELECT on exactly server_name/key_id/public_key/
-        // valid_until_ts, never secret_key — can still read this table for
-        // its own legitimate purpose (caching OTHER servers' public keys via
-        // federation::remote_key_cache_probe/remote_key_resolver;
-        // src/homeserver/LocalHttpRouter.cpp:1857-1871) without ever being
-        // able to select this server's own signing secret, even under a bug
-        // that widened `full`-style access elsewhere. See
-        // docs/database-persistence.md, "Federation worker least-privilege
-        // role".
+        // so a store opened with that profile holds OTHER servers' public keys
+        // and never this server's own signing secret, even under a bug that
+        // widened `full`-style access elsewhere.
         if (profile == TableLoadProfile::full)
         {
             auto server_signing_keys =
@@ -2118,6 +2111,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     rebuild_membership_index(store);
     rebuild_key_indexes(store);
     rebuild_client_txn_index(store);
+    rebuild_openid_token_indexes(store);
     rebuild_account_data_index(store);
     rebuild_notification_index(store);
     rebuild_federation_transaction_index(store);
@@ -2379,6 +2373,24 @@ namespace
             }
         }
 
+        // The room's tips (ADR-0733), from the same snapshot as the events they name.
+        auto tips = connection.execute({"postgresql_reload_forward_extremities",
+                                        "SELECT room_id, event_id FROM forward_extremities WHERE room_id = $1 "
+                                        "ORDER BY event_id",
+                                        {{room_id_str, false}}});
+        if (!tips.ok)
+        {
+            return std::nullopt;
+        }
+        notify_read("forward_extremities");
+        for (auto const& row : tips.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                snapshot.forward_extremities.push_back({row[0], row[1]});
+            }
+        }
+
         if (snapshot.events.empty())
         {
             return snapshot;
@@ -2494,9 +2506,8 @@ namespace detail
         return committed;
     }
 
-    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
-                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
-        -> std::optional<RoomReloadSnapshot>
+    auto open_postgresql_snapshot_reader(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<PostgresqlConnection>
     {
         if (conninfo.empty())
         {
@@ -2511,19 +2522,37 @@ namespace detail
         {
             return std::nullopt;
         }
+        return std::move(opened.connection);
+    }
+
+    auto load_room_snapshot_from_postgresql_connection(PostgresqlConnection& connection, std::string_view room_id,
+                                                       RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
         // One room's rows from one snapshot (ADR-0161): under READ COMMITTED
         // each statement would see every commit made before it started.
-        if (!opened.connection
-                 .execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
+        if (!connection.execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
                  .ok)
         {
             return std::nullopt;
         }
-        auto snapshot = load_room_snapshot_impl(opened.connection, room_id, after_table);
+        auto snapshot = load_room_snapshot_impl(connection, room_id, after_table);
         // A read-only transaction has nothing to commit; ending it either way
-        // releases its snapshot before the connection closes.
-        std::ignore = opened.connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
+        // releases its snapshot, so a reused connection holds none between reads.
+        std::ignore = connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
         return snapshot;
+    }
+
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        auto connection = open_postgresql_snapshot_reader(conninfo, runtime_role);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        return load_room_snapshot_from_postgresql_connection(*connection, room_id, after_table);
     }
 
     auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
@@ -2589,6 +2618,38 @@ namespace detail
         return std::move(result.rows.front()[0]);
     }
 
+    auto load_room_ids_from_postgresql(std::string_view conninfo, std::string_view runtime_role)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto connection = open_postgresql_snapshot_reader(conninfo, runtime_role);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        return load_room_ids_from_postgresql_connection(*connection);
+    }
+
+    auto load_room_ids_from_postgresql_connection(PostgresqlConnection& connection)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto result =
+            connection.execute({"postgresql_load_room_ids", "SELECT room_id FROM rooms ORDER BY room_id", {}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto room_ids = std::vector<std::string>{};
+        room_ids.reserve(result.rows.size());
+        for (auto& row : result.rows)
+        {
+            if (!row.empty())
+            {
+                room_ids.push_back(std::move(row.front()));
+            }
+        }
+        return room_ids;
+    }
+
     auto load_remote_signing_keys_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                   std::string_view server_name)
         -> std::optional<std::vector<PersistentServerSigningKey>>
@@ -2606,8 +2667,8 @@ namespace detail
         {
             return std::nullopt;
         }
-        // The same four columns the worker role is granted and the start-up load
-        // selects: secret_key is never named, and the role could not read it.
+        // The same columns the federation_worker start-up load selects:
+        // secret_key is never named.
         auto result = opened.connection.execute(
             {"postgresql_load_remote_signing_keys",
              "SELECT server_name, key_id, public_key, valid_until_ts, expired_ts FROM server_signing_keys WHERE "

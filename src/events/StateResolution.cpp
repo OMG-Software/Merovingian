@@ -4,8 +4,9 @@
 #include "merovingian/events/StateResolution.hpp"
 
 #include "merovingian/canonicaljson/Value.hpp"
-#include "merovingian/events/AuthEventMap.hpp"
+#include "merovingian/events/AuthEventIndexes.hpp"
 #include "merovingian/events/Authorization.hpp"
+#include "merovingian/events/IndexedAuthEvent.hpp"
 #include "merovingian/events/Limits.hpp"
 #include "merovingian/events/StateEventReference.hpp"
 #include "merovingian/events/StateGroup.hpp"
@@ -30,6 +31,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -925,12 +927,13 @@ namespace
     // event's own auth check degrades (as if the key were simply absent),
     // exactly as it already did before this fallback existed.
     [[nodiscard]] auto find_own_auth_event(canonicaljson::Object const& event_obj, AuthChainEventSource& source,
-                                           StateKey const& wanted, std::string& found_event_id) -> canonicaljson::Value
+                                           StateKey const& wanted, std::string& found_event_id)
+        -> canonicaljson::Value const*
     {
         auto const* auth = array_member(event_obj, "auth_events");
         if (auth == nullptr)
         {
-            return {};
+            return nullptr;
         }
         for (auto const& entry : *auth)
         {
@@ -956,23 +959,75 @@ namespace
             if (key_type == wanted.event_type && key_state_key == wanted.state_key)
             {
                 found_event_id = *id;
-                return *candidate;
+                return candidate;
             }
         }
-        return {};
+        return nullptr;
     }
 
-    [[nodiscard]] auto find_own_auth_event(canonicaljson::Object const& event_obj, AuthChainEventSource& source,
-                                           StateKey const& wanted) -> canonicaljson::Value
+    // The auth events of one resolution's iterative auth checks, each copied and read into an index once
+    // (ADR-0693). Keyed by event ID, which names one JSON; an entry never moves (unordered_map nodes are stable), so
+    // an index stays valid while `resolved` replaces the event it was read from. An event with no ID is indexed
+    // where it lies, for the one check that reads it.
+    class IndexedAuthEventCache final
     {
-        auto ignored_event_id = std::string{};
-        return find_own_auth_event(event_obj, source, wanted, ignored_event_id);
-    }
+    public:
+        explicit IndexedAuthEventCache(PowerLevelEncoding encoding) noexcept
+            : encoding_{encoding}
+        {
+        }
 
-    [[nodiscard]] auto build_auth_event_map_from_state(canonicaljson::Value const& event, StateMap const& current_state,
-                                                       AuthChainEventSource& source) -> AuthEventMap
+        // The index of `json`, the event `event_id`, and the ID as the cache holds it.
+        [[nodiscard]] auto get(std::string const& event_id, canonicaljson::Value const& json,
+                               std::deque<IndexedAuthEvent>& unnamed)
+            -> std::pair<IndexedAuthEvent const*, std::string_view>
+        {
+            if (event_id.empty())
+            {
+                ++prepared_;
+                unnamed.emplace_back(json, encoding_);
+                return {&unnamed.back(), std::string_view{}};
+            }
+            auto [entry, inserted] = entries_.try_emplace(event_id);
+            if (inserted)
+            {
+                ++prepared_;
+                entry->second.json = json;
+                entry->second.index = IndexedAuthEvent{entry->second.json, encoding_};
+            }
+            return {&entry->second.index, std::string_view{entry->first}};
+        }
+
+        // How many auth events were read into an index.
+        [[nodiscard]] auto prepared() const noexcept -> std::size_t
+        {
+            return prepared_;
+        }
+
+    private:
+        struct Entry final
+        {
+            canonicaljson::Value json{};
+            IndexedAuthEvent index{};
+        };
+
+        PowerLevelEncoding encoding_;
+        std::unordered_map<std::string, Entry> entries_{};
+        std::size_t prepared_{0U};
+    };
+
+    // The auth events `event` is judged against in the iterative auth checks, as indexes, with no copy per event
+    // judged (ADR-0693). Each slot is read from `current_state` first and otherwise from the event's own
+    // auth_events: spec (rooms/v10.md — Definitions, "Iterative auth checks"): "If a (event_type, state_key) key
+    // that is required for checking the authorisation rules is not present in the state, then the appropriate state
+    // event from the event's auth_events is used if the auth event is not rejected." This matters most for room v12
+    // (state-res v2.1), where the iterative auth checks start from an empty map, so almost nothing is present in
+    // `current_state` on the first pass.
+    [[nodiscard]] auto index_auth_events_from_state(canonicaljson::Value const& event, StateMap const& current_state,
+                                                    AuthChainEventSource& source, IndexedAuthEventCache& cache,
+                                                    std::deque<IndexedAuthEvent>& unnamed) -> AuthEventIndexes
     {
-        auto result = AuthEventMap{};
+        auto result = AuthEventIndexes{};
         auto const* obj = value_is_object(event);
         if (obj == nullptr)
         {
@@ -982,62 +1037,31 @@ namespace
         auto const* sender = string_member(*obj, "sender");
         auto const* state_key = string_member(*obj, "state_key");
 
-        // Spec (rooms/v10.md — Definitions, "Iterative auth checks"): "If a
-        // (event_type, state_key) key that is required for checking the
-        // authorisation rules is not present in the state, then the
-        // appropriate state event from the event's auth_events is used if
-        // the auth event is not rejected." `resolved` (`current_state`) is
-        // tried first for every slot below; `find_own_auth_event` is the
-        // fallback for whichever slots it leaves unset. This matters most
-        // for room v12 (state-res v2.1), where the iterative auth checks
-        // start from an empty map, so almost nothing is present in
-        // `current_state` on the first pass.
-        if (auto it = current_state.find(StateKey{"m.room.create", ""}); it != current_state.end())
-        {
-            result.create = it->second.event_json;
-            result.create_event_id = it->second.event_id;
-        }
-        else
-        {
-            result.create = find_own_auth_event(*obj, source, StateKey{"m.room.create", ""}, result.create_event_id);
-        }
-        if (auto it = current_state.find(StateKey{"m.room.power_levels", ""}); it != current_state.end())
-        {
-            result.power_levels = it->second.event_json;
-        }
-        else
-        {
-            result.power_levels = find_own_auth_event(*obj, source, StateKey{"m.room.power_levels", ""});
-        }
-        if (auto it = current_state.find(StateKey{"m.room.join_rules", ""}); it != current_state.end())
-        {
-            result.join_rules = it->second.event_json;
-        }
-        else
-        {
-            result.join_rules = find_own_auth_event(*obj, source, StateKey{"m.room.join_rules", ""});
-        }
+        // The slot for `key`, and its event's ID as the cache or `current_state` holds it.
+        auto const slot = [&](StateKey const& key) -> std::pair<IndexedAuthEvent const*, std::string_view> {
+            if (auto const it = current_state.find(key); it != current_state.end())
+            {
+                return cache.get(it->second.event_id, it->second.event_json, unnamed);
+            }
+            auto found_event_id = std::string{};
+            auto const* own = find_own_auth_event(*obj, source, key, found_event_id);
+            if (own == nullptr)
+            {
+                return {nullptr, std::string_view{}};
+            }
+            return cache.get(found_event_id, *own, unnamed);
+        };
+
+        std::tie(result.create, result.create_event_id) = slot(StateKey{"m.room.create", ""});
+        result.power_levels = slot(StateKey{"m.room.power_levels", ""}).first;
+        result.join_rules = slot(StateKey{"m.room.join_rules", ""}).first;
         if (sender != nullptr)
         {
-            if (auto it = current_state.find(StateKey{"m.room.member", *sender}); it != current_state.end())
-            {
-                result.sender_member = it->second.event_json;
-            }
-            else
-            {
-                result.sender_member = find_own_auth_event(*obj, source, StateKey{"m.room.member", *sender});
-            }
+            result.sender_member = slot(StateKey{"m.room.member", *sender}).first;
         }
         if (state_key != nullptr && event_type != nullptr && *event_type == "m.room.member")
         {
-            if (auto it = current_state.find(StateKey{"m.room.member", *state_key}); it != current_state.end())
-            {
-                result.target_member = it->second.event_json;
-            }
-            else
-            {
-                result.target_member = find_own_auth_event(*obj, source, StateKey{"m.room.member", *state_key});
-            }
+            result.target_member = slot(StateKey{"m.room.member", *state_key}).first;
 
             // Spec: rooms/v11.md rule 4.3.1.5 — 3PID-token invites are authorized
             // against the m.room.third_party_invite event named by content's token.
@@ -1049,16 +1073,7 @@ namespace
             auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
             if (token != nullptr)
             {
-                if (auto it = current_state.find(StateKey{"m.room.third_party_invite", *token});
-                    it != current_state.end())
-                {
-                    result.third_party_invite = it->second.event_json;
-                }
-                else
-                {
-                    result.third_party_invite =
-                        find_own_auth_event(*obj, source, StateKey{"m.room.third_party_invite", *token});
-                }
+                result.third_party_invite = slot(StateKey{"m.room.third_party_invite", *token}).first;
             }
 
             // Spec: server-server-api.md § Auth events selection — "If membership
@@ -1076,16 +1091,7 @@ namespace
             if (membership != nullptr && *membership == "join" && authorising_user != nullptr &&
                 !authorising_user->empty())
             {
-                if (auto it = current_state.find(StateKey{"m.room.member", *authorising_user});
-                    it != current_state.end())
-                {
-                    result.authorising_user_member = it->second.event_json;
-                }
-                else
-                {
-                    result.authorising_user_member =
-                        find_own_auth_event(*obj, source, StateKey{"m.room.member", *authorising_user});
-                }
+                result.authorising_user_member = slot(StateKey{"m.room.member", *authorising_user}).first;
             }
         }
         return result;
@@ -1880,8 +1886,9 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
             resolved[it->first] = it->second;
         }
     }
-    auto apply_iterative_auth_checks = [&resolved, &policy,
-                                        &source](std::vector<StateEventReference> const& sorted) -> void {
+    auto auth_event_cache = IndexedAuthEventCache{power_level_encoding(policy)};
+    auto apply_iterative_auth_checks = [&resolved, &policy, &source,
+                                        &auth_event_cache](std::vector<StateEventReference> const& sorted) -> void {
         for (auto const& event : sorted)
         {
             // Events whose JSON representation is null/invalid cannot be applied.
@@ -1890,8 +1897,10 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
                 continue;
             }
 
-            auto auth_map = build_auth_event_map_from_state(event.event_json, resolved, source);
-            auto const decision = authorize_event_against_auth_events(event.event_json, policy, auth_map);
+            auto unnamed = std::deque<IndexedAuthEvent>{};
+            auto const auth_events =
+                index_auth_events_from_state(event.event_json, resolved, source, auth_event_cache, unnamed);
+            auto const decision = authorize_event_against_auth_indexes(event.event_json, policy, auth_events);
             if (decision.allowed)
             {
                 resolved[event.key] = event;
@@ -2019,7 +2028,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
                                                     {"room_version", request.room_version,                false},
                                                     {"events",       std::to_string(result_state.size()), false}
     });
-    return {true, std::move(result_state), {}, source.walk_visits()};
+    return {true, std::move(result_state), {}, source.walk_visits(), auth_event_cache.prepared()};
 }
 
 auto state_resolution_summary(StateResolutionResult const& result) -> std::string

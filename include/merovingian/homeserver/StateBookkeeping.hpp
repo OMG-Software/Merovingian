@@ -124,6 +124,17 @@ namespace merovingian::homeserver
                                       std::vector<database::PersistentStateGroupStateEntry> const& state_after,
                                       bool accepted = true) -> std::optional<std::string>;
 
+// The same, for an event whose state before is `state_before` (what compute_state_before gave for `prev_event_ids`).
+// The state before is kept as a group of its own and is the delta parent of `state_after`: a group the result already
+// names, or, after a fresh resolution, one stored now (`sb:<event_id>`, chained off a resolved group that holds no key
+// the resolution dropped where there is one) and remembered for those groups (ADR-0694). A rejected or non-state event
+// therefore adds no rows, and a later event naming the same groups neither resolves nor stores them again.
+[[nodiscard]] auto record_event_state(database::PersistentStore& store, std::string_view room_id,
+                                      std::string_view event_id, std::vector<std::string> const& prev_event_ids,
+                                      StateBeforeResult const& state_before,
+                                      std::vector<database::PersistentStateGroupStateEntry> const& state_after,
+                                      bool accepted = true) -> std::optional<std::string>;
+
 // Recomputes the room's current state as the state resolution over its
 // forward extremities' after-states (one extremity: that state directly, no
 // resolution needed), diffs it against the cached `current_state`, and

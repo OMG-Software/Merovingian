@@ -7,14 +7,15 @@
 
 #include "../FederationSigningTestSupport.hpp"
 #include "../support/JsonTestSupport.hpp"
+#include "merovingian/database/PersistentEvent.hpp"
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/FederationRuntimeState.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/PublicRooms.hpp"
 #include "merovingian/federation/PublicRoomsFilter.hpp"
 #include "merovingian/federation/PublicRoomsRequest.hpp"
 #include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
-#include "merovingian/federation/PublicRooms.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
@@ -452,6 +453,56 @@ SCENARIO("GET and POST /publicRooms count against the per-origin request cap", "
                 REQUIRE(third.status == 429U);
                 REQUIRE(third.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
                 REQUIRE(listings == 2U);
+            }
+        }
+    }
+}
+
+// C24 (ADR-0724): a search used to parse the name and topic of every published room, whatever the page size.
+SCENARIO("A search over a large directory parses a bounded number of bytes", "[public_rooms][c24]")
+{
+    GIVEN("40 published rooms whose topics are 60 KB each, and one 'needle' in the last room")
+    {
+        auto database = database_with_published_rooms(40U);
+        auto& store = database.persistent_store;
+        for (auto index = std::size_t{0U}; index < 40U; ++index)
+        {
+            auto const room_id = database.rooms[index].room_id;
+            auto topic = std::string(60U * 1024U, 'x');
+            if (index == 39U)
+            {
+                topic += " needle";
+            }
+            auto event = merovingian::database::PersistentEvent{};
+            event.event_id = "$topic" + std::to_string(index);
+            event.room_id = room_id;
+            event.json = R"({"type":"m.room.topic","state_key":"","content":{"topic":")" + topic + R"("}})";
+            store.events.push_back(std::move(event));
+            store.state.push_back({room_id, "m.room.topic", "", "$topic" + std::to_string(index)});
+        }
+        auto filter = merovingian::federation::PublicRoomsFilter{};
+        filter.generic_search_term = "needle";
+
+        WHEN("it is searched with a budget of 300 KB")
+        {
+            auto const body = merovingian::homeserver::public_rooms_response_json(
+                database, filter, 10U, 0U, {}, merovingian::homeserver::max_public_rooms_page_bytes, 300U * 1024U);
+            auto const answer = parse_object(body);
+
+            THEN("it stops examining rooms before reaching the match, and still counts every published room")
+            {
+                REQUIRE(rooms_in(body) == 0U);
+                REQUIRE(body.find(R"("total_room_count_estimate":40)") != std::string::npos);
+            }
+        }
+
+        WHEN("it is searched with the default budget")
+        {
+            auto const body = merovingian::homeserver::public_rooms_response_json(database, filter, 10U, 0U);
+
+            THEN("the 2.4 MB of topics fit and the match is found")
+            {
+                REQUIRE(rooms_in(body) == 1U);
             }
         }
     }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/events/AuthEventIndexes.hpp"
 #include "merovingian/events/AuthEventMap.hpp"
 #include "merovingian/events/AuthEventSlots.hpp"
 #include "merovingian/events/EventAuthorizationDecision.hpp"
@@ -30,6 +31,12 @@ namespace merovingian::events
 [[nodiscard]] auto authorize_event_against_auth_events(canonicaljson::Value const& event,
                                                        rooms::RoomVersionPolicy const& policy,
                                                        AuthEventMap const& auth_events) -> EventAuthorizationDecision;
+// The same rules, against auth events already read into indexes (ADR-0693): what the iterative auth checks of one
+// resolution call for every event they judge, so that each auth event is read once, not once per event. An index
+// built with another power-level encoding than `policy`'s is refused, never read.
+[[nodiscard]] auto authorize_event_against_auth_indexes(canonicaljson::Value const& event,
+                                                        rooms::RoomVersionPolicy const& policy,
+                                                        AuthEventIndexes const& indexes) -> EventAuthorizationDecision;
 
 // A join's content.join_authorised_via_users_server, or empty. Spec "Auth events selection": "If
 // membership is join, content.join_authorised_via_users_server is present, and the room version

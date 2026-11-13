@@ -8,7 +8,9 @@
 #include "merovingian/sync/StreamToken.hpp"
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace merovingian::sync
@@ -26,11 +28,22 @@ namespace merovingian::sync
 // Describes the first request limit the parsed request exceeds (too many room_subscriptions,
 // lists, sort keys or bump_event_types, too many required_state entries on one list or
 // subscription, or more rooms in the receipts or typing extension than room_subscriptions
-// allows), or nullopt when the request is within limits. The caller answers a violation with 400 M_INVALID_PARAM.
+// allows, a room_types, not_room_types, ranges, conn_id or list name over its cap, or lists that retain more
+// bytes than one connection may), or nullopt when the request is within limits. The caller answers a violation with 400
+// M_INVALID_PARAM.
 [[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request)
     -> std::optional<std::string_view>;
 [[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, SlidingSyncLimits limits)
     -> std::optional<std::string_view>;
+
+// The bytes a connection keeps of a request: its conn_id, and for each list its name and the strings, ranges
+// and fixed size of its configuration, at the size the copy has in memory. A caller sums it across a device's
+// connections (ADR-0663).
+[[nodiscard]] auto sliding_sync_retained_bytes(SlidingSyncRequest const& request) noexcept -> std::uint64_t;
+
+// The same measure for a stored set of list configurations (a connection's list_configs).
+[[nodiscard]] auto sliding_sync_retained_bytes(std::map<std::string, SlidingSyncList> const& lists) noexcept
+    -> std::uint64_t;
 
 // Extract and decode the ?pos= query parameter from a request target.
 // Returns nullopt when pos is absent or cannot be decoded as a StreamToken.

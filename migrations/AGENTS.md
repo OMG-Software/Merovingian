@@ -62,7 +62,7 @@ NEXT SQL STATEMENT
 ## Federation worker classification
 
 Every table a migration creates must be classified for the federation worker: in
-`federation_worker_table_allowlist`, in `tests/unit/test_worker_db_uri.cpp`'s set of
+`federation_worker_table_allowlist`, in `tests/unit/test_worker_table_load_profile.cpp`'s set of
 tables the worker never reads, or as ungated infrastructure. That test parses every
 `CREATE TABLE` in `migrations/*.sql` and fails on an unclassified or stale name, so a new
 table is classified in the commit that adds it.

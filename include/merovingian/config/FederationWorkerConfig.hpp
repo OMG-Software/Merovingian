@@ -67,33 +67,6 @@ struct FederationWorkerConfig final
     // binary directly set this false to avoid the strict filter while the
     // filter allowlist is validated separately in unit tests.
     bool apply_hardening{true};
-    // ADR-0062 part 2: secret file holding a PostgreSQL connection URI for a
-    // SEPARATE, least-privilege login role for the federation worker,
-    // granted SELECT (never INSERT/UPDATE/DELETE) on exactly
-    // database::federation_worker_table_allowlist's tables — never this
-    // server's own server_signing_keys.secret_key column, nor any table
-    // outside that allowlist (fail closed on a new/unlisted table) — see
-    // docs/database-persistence.md, "Federation worker least-privilege
-    // role". Read and validated by main exactly like database.uri_file,
-    // then handed to each worker over a second inherited pipe fd
-    // (homeserver::kWorkerDbUriFd) — the worker never opens this file
-    // itself. Required when database.backend=postgresql and
-    // security.federation.enabled=true, unless
-    // allow_shared_database_credentials=true. Defaults to a placeholder
-    // path (mirroring database.uri_file's own default) so a bare,
-    // unconfigured install still validates for --dry-run inspection; a real
-    // deployment must provision the file or the worker fails to start (see
-    // homeserver::WorkerPool::WorkerPool). Ignored for
-    // database.backend=sqlite — a single shared file offers no role
-    // boundary to separate.
-    std::string database_uri_file{"/etc/merovingian/fed-worker-db-uri"};
-    // Explicit opt-out: when true and the worker cannot use a separate role
-    // (database_uri_file left empty), the worker shares main's PostgreSQL
-    // login credentials — today's pre-ADR-0062-part-2 behaviour — instead of
-    // failing config validation. Every startup logs CRITICAL while this
-    // applies, so the downgrade cannot go unnoticed. Ignored for
-    // database.backend=sqlite.
-    bool allow_shared_database_credentials{false};
     // ADR-0062 part 3 (0.12.13 audit, finding N1): on Linux, the worker
     // restricts its own filesystem access with Landlock
     // (platform::apply_worker_landlock) before handling any untrusted input,

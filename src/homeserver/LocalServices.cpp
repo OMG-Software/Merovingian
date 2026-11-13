@@ -153,6 +153,15 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
         {observability::audit_category_name(category), std::string{event_type}, safe_actor, safe_target, safe_reason});
 }
 
+auto local_audit_row(observability::AuditCategory category, std::string_view event_type, std::string_view actor,
+                     std::string_view target, std::string_view reason) -> database::PersistentAuditEvent
+{
+    return {std::string{observability::audit_category_name(category)}, std::string{event_type},
+            observability::bounded_utf8(actor, observability::max_audit_field_bytes),
+            observability::sanitized_audit_target(target),
+            observability::bounded_utf8(reason, observability::max_audit_field_bytes)};
+}
+
 auto remember_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                           std::string_view actor, std::string_view target, std::string_view reason) -> void
 {

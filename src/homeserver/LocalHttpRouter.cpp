@@ -6,11 +6,11 @@
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
-#include "merovingian/core/SecretBuffer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/Ed25519Keypair.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
@@ -39,6 +39,7 @@
 #include "merovingian/federation/EduDispositionStatus.hpp"
 #include "merovingian/federation/EduIdempotenceWindow.hpp"
 #include "merovingian/federation/EduType.hpp"
+#include "merovingian/federation/EventQuery.hpp"
 #include "merovingian/federation/FederationDirectory.hpp"
 #include "merovingian/federation/FederationKeyRecord.hpp"
 #include "merovingian/federation/FederationProfile.hpp"
@@ -46,55 +47,55 @@
 #include "merovingian/federation/FederationResponse.hpp"
 #include "merovingian/federation/FederationThumbnailQuery.hpp"
 #include "merovingian/federation/InboundEduEnvelope.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
+#include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/KeyMirrorRefresh.hpp"
+#include "merovingian/federation/KeyQuery.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/federation/RemoteDeviceListOutcome.hpp"
-#include "merovingian/federation/SignedFederationRequest.hpp"
-#include "merovingian/federation/EventQuery.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
-#include "merovingian/federation/InboundRequest.hpp"
-#include "merovingian/federation/KeyQuery.hpp"
-#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/RemoteKeyCache.hpp"
 #include "merovingian/federation/Security.hpp"
 #include "merovingian/federation/ServerAcl.hpp"
+#include "merovingian/federation/ServerAclBudget.hpp"
 #include "merovingian/federation/ServerDiscovery.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/CurrentStateRecomputeStatus.hpp"
+#include "merovingian/homeserver/DeferredPduRetry.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
-#include "merovingian/homeserver/OperationResult.hpp"
-#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
-#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
-#include "merovingian/homeserver/RequestLockScope.hpp"
-#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
-#include "merovingian/homeserver/RuntimeLockRelease.hpp"
-#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
-#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
-#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/DeferredPduRetry.hpp"
-#include "merovingian/homeserver/FederationRequestRouting.hpp"
-#include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/MediaService.hpp"
+#include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PublicRooms.hpp"
+#include "merovingian/homeserver/PublishedStreamOrdering.hpp"
+#include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
+#include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RestrictedJoin.hpp"
+#include "merovingian/homeserver/RestrictedJoinVerdict.hpp"
 #include "merovingian/homeserver/RoomResidency.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
+#include "merovingian/homeserver/RuntimeLockRelease.hpp"
+#include "merovingian/homeserver/RuntimeSigningKeyStore.hpp"
 #include "merovingian/homeserver/SendJoinAnswer.hpp"
+#include "merovingian/homeserver/SendJoinAnswerEvents.hpp"
+#include "merovingian/homeserver/SendJoinAnswerPlan.hpp"
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
@@ -106,12 +107,12 @@
 #include "merovingian/observability/CorrelationContext.hpp"
 #include "merovingian/observability/CorrelationScope.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/rooms/RoomVersionPolicy.hpp"
-#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <algorithm>
 #include <array>
@@ -638,25 +639,33 @@ namespace
         });
     }
 
+    // The room's local members, from the roster's per-server group: the work is the number of local members, not of the
+    // roster or of the accounts on the server (C32, ADR-0706). A roster member on this server's name joined through
+    // this server, so it needs no second look in the account list.
     [[nodiscard]] auto joined_local_members(LocalDatabase const& database, std::string_view room_id,
                                             std::string_view local_server) -> std::vector<std::string>
     {
-        auto members = std::vector<std::string>{};
-        auto const room_it = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
-            return room.room_id == room_id;
-        });
-        if (room_it == database.rooms.end())
-        {
-            return members;
-        }
-        for (auto const& member : room_it->members)
-        {
-            if (server_name_from_user_id(member) == local_server && local_user_exists(database, member))
-            {
-                members.push_back(member);
-            }
-        }
-        return members;
+        auto const* const room = find_local_room(database, room_id);
+        return room == nullptr ? std::vector<std::string>{} : room->members.members_of_server(local_server);
+    }
+
+    // True when a joined member of `joiner`'s server is in the room. Read before the joiner's membership is applied
+    // to the roster: a server that already has one has been sent the local members' device lists.
+    [[nodiscard]] auto joiner_server_already_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                     std::string_view joining_user_id) -> bool
+    {
+        auto const* const room = find_local_room(runtime.database, room_id);
+        return room != nullptr && room->members.has_member_of_server(server_name_from_user_id(joining_user_id));
+    }
+
+    // C11 (ADR-0711): main's store is changed by its writers under runtime.mutex, and the federation core calls the
+    // read providers below without it, so each reads under it. A federation worker answers from its own snapshot,
+    // guarded against the reload swap by StoreReadGuard instead (it sets `federation_policy_decided_upstream`), and
+    // takes no lock here. The providers do no network I/O, so the lock is never held across any. Recursive: a caller
+    // that already holds it takes it again.
+    [[nodiscard]] auto main_store_read_lock(HomeserverRuntime const& runtime) -> RuntimeLock
+    {
+        return runtime.federation_policy_decided_upstream ? RuntimeLock{} : RuntimeLock{runtime.mutex};
     }
 
     auto dispatch_device_list_update(HomeserverRuntime& runtime, std::string_view destination, std::string_view user_id,
@@ -692,10 +701,14 @@ namespace
         }
     }
 
+    // Sends every local member's device lists to the server of a user who just joined, unless that server already had
+    // a joined member in the room (`server_already_in_room`, read before the roster changed): then it has them and is
+    // told of changes as they happen. The work is one pass over the local members' devices (C32, ADR-0706).
     auto broadcast_local_device_lists_to_remote_joiner(HomeserverRuntime& runtime, std::string_view room_id,
-                                                       std::string_view joining_user_id) -> void
+                                                       std::string_view joining_user_id, bool server_already_in_room)
+        -> void
     {
-        if (runtime.dispatch_worker == nullptr)
+        if (runtime.dispatch_worker == nullptr || server_already_in_room)
         {
             return;
         }
@@ -719,6 +732,7 @@ namespace
     {
         for (auto const& change : changes)
         {
+            auto const server_already_in_room = joiner_server_already_in_room(runtime, room_id, change.user_id);
             if (!apply_membership_to_roster(runtime, room_id, change.user_id, change.membership))
             {
                 LOG_WARNING("Device-list change persistence failed after a membership followed state resolution; "
@@ -727,7 +741,7 @@ namespace
             }
             if (change.membership == "join")
             {
-                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id);
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, change.user_id, server_already_in_room);
             }
         }
     }
@@ -1930,6 +1944,9 @@ namespace
                 auto rooms_looked_at = std::size_t{0U};
                 auto users_looked_at = std::size_t{0U};
                 auto receipt_budget_spent = false;
+                auto accepted = std::vector<database::PersistentReceipt>{};
+                // One ACL step budget for the whole EDU, however many rooms it names (ADR-0653).
+                auto acl_budget = federation::ServerAclBudget{};
                 for (auto const& room_member : *root)
                 {
                     // A peer chooses how many rooms and users the EDU names; only so many are looked at, and the
@@ -1946,7 +1963,7 @@ namespace
                     // rooms, and one stale room_id must not discard the rest.
                     if (!room_has_local_membership(*rt, room_member.key) ||
                         !federation::room_server_acl_allows(rt->database.persistent_store, room_member.key,
-                                                            envelope.origin))
+                                                            envelope.origin, acl_budget))
                     {
                         // FED-8: receipts are keyed by room, not a top-level
                         // room_id. Check the authenticated origin before any
@@ -2045,37 +2062,6 @@ namespace
                                 }
                                 thread_id = *thread_string;
                             }
-                            auto& store = rt->database.persistent_store;
-                            auto const replaces_existing =
-                                std::ranges::any_of(store.receipts, [&](auto const& current) {
-                                    return current.room_id == room_member.key && current.user_id == user_member.key &&
-                                           current.receipt_type == receipt_type_member.key &&
-                                           current.thread_id == thread_id;
-                                });
-                            // 0.12.5 audit, finding 13. Same shape as the typing cap: the
-                            // membership check above is the real bound, this evicts the oldest
-                            // receipt of a remote user if a peer floods a room it is in. A local
-                            // user's receipts are never evicted: they are that user's unread
-                            // state, and a peer must not be able to mark rooms unread for them.
-                            auto evicted = std::optional<database::PersistentReceipt>{};
-                            if (!replaces_existing && store.receipts.size() >= max_inbound_receipt_entries)
-                            {
-                                auto const& local_server = rt->config.server().server_name;
-                                auto victim = store.receipts.end();
-                                for (auto candidate = store.receipts.begin(); candidate != store.receipts.end();
-                                     ++candidate)
-                                {
-                                    if (server_name_from_user_id(candidate->user_id) != local_server &&
-                                        (victim == store.receipts.end() || candidate->stream_id < victim->stream_id))
-                                    {
-                                        victim = candidate;
-                                    }
-                                }
-                                if (victim != store.receipts.end())
-                                {
-                                    evicted = *victim;
-                                }
-                            }
                             auto incoming = database::PersistentReceipt{};
                             incoming.room_id = room_member.key;
                             incoming.receipt_type = receipt_type_member.key;
@@ -2083,15 +2069,20 @@ namespace
                             incoming.event_id = *first_event_id;
                             incoming.ts = ts;
                             incoming.thread_id = std::move(thread_id);
-                            // A receipt that cannot be committed is not kept: it is ephemeral
-                            // data the peer has already been told was accepted, and the next
-                            // receipt from this user replaces it in any case. Commit any
-                            // eviction with the upsert so failure preserves the old receipt.
-                            if (database::store_receipt(store, incoming, std::move(evicted)))
-                            {
-                                queue_appservice_receipt(*rt, incoming);
-                            }
+                            accepted.push_back(std::move(incoming));
                         }
+                    }
+                }
+                // The EDU's accepted receipts are committed in ONE transaction, with the oldest remote rows evicted
+                // in it when the table passes its cap (0.12.5 audit, finding 13; ADR-0652). A local user's receipts
+                // are never evicted: they are that user's unread state, and a peer must not be able to mark rooms
+                // unread for them. A batch that cannot be committed is not kept: it is ephemeral data the peer has
+                // already been told was accepted, and the next receipt from each user replaces it in any case.
+                if (database::store_receipts(rt->database.persistent_store, accepted, max_inbound_receipt_entries))
+                {
+                    for (auto const& stored : accepted)
+                    {
+                        queue_appservice_receipt(*rt, stored);
                     }
                 }
                 if (receipt_budget_spent)
@@ -2922,8 +2913,8 @@ namespace
                     state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
                 auto const state_after =
                     compute_state_after(state_before.state, accepted_event_id, event_type, state_key);
-                auto const state_group =
-                    record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids, state_after, true);
+                auto const state_group = record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids,
+                                                            state_before, state_after, true);
                 if (!state_group.has_value())
                 {
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
@@ -2955,6 +2946,7 @@ namespace
             {
                 // The roster and the device-list changes this membership causes (a remote
                 // user's join or leave is `changed` or `left` for the local members).
+                auto const server_already_in_room = joiner_server_already_in_room(*rt, room_id, *envelope.state_key);
                 if (!apply_membership_to_roster(*rt, room_id, *envelope.state_key, membership))
                 {
                     LOG_WARNING("Device-list change persistence failed after membership PDU was accepted; event_id=" +
@@ -2962,7 +2954,8 @@ namespace
                 }
                 if (membership == "join")
                 {
-                    broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
+                    broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key,
+                                                                  server_already_in_room);
                 }
             }
             apply_recomputed_memberships(*rt, room_id, recomputed_memberships);
@@ -3319,6 +3312,7 @@ namespace
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             // FED-2: refuses (403) a server with no joined user in the room unless
             // the room is world readable.
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_backfill_response(rt->database.persistent_store, req,
                                                        rt->federation.config.query_policy);
         };
@@ -3357,27 +3351,32 @@ namespace
         // state/state_ids/backfill/get_missing_events, main's for /event.
         runtime.federation.event_query_provider = [rt](std::string_view event_id,
                                                        std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_event_response(rt->database.persistent_store, event_id,
                                                     rt->config.server().server_name, origin);
         };
 
         runtime.federation.state_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                        std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_state_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.state_ids_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                            std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.event_auth_query_provider = [rt](std::string_view room_id, std::string_view event_id,
                                                             std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_event_auth_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
                                                                 std::string_view origin) -> federation::RoomReadResult {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin,
                                                                  rt->federation.config.query_policy);
         };
@@ -3395,6 +3394,7 @@ namespace
 
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only,
                                                            std::string_view origin) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only, origin);
         };
 
@@ -3423,6 +3423,7 @@ namespace
         // invites into rooms it did not hold under v10 redaction, which keeps the
         // `origin` key v11 and later strip (Complement run 10, F1).
         runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
+            auto const store_guard = main_store_read_lock(*rt);
             return stored_room_version(rt->database.persistent_store, room_id).value_or(std::string{});
         };
 
@@ -3437,6 +3438,7 @@ namespace
 
         runtime.federation.room_server_acl_provider = [rt](std::string_view room_id,
                                                            std::string_view server_name) -> bool {
+            auto const store_guard = main_store_read_lock(*rt);
             return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
         };
 
@@ -3468,10 +3470,14 @@ namespace
             // PDU verification needs a signing key, not discovery metadata.
             // Read it directly so cached verification cannot accidentally run
             // the full resolver's discovery cascade (FED-10).
+            // A federation worker's key mirror starts empty and holds only what main sent it (ADR-0733), so a
+            // miss asks main for that one server's public rows before the lookup gives up: a key main already
+            // verified needs no discovery and no fetch here, as when the worker loaded main's table at start.
             runtime.federation.cached_pdu_key_lookup =
-                [&store = runtime.database.persistent_store, own_name = runtime.config.server().server_name,
-                 key_clock](std::string_view server_name,
-                            std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
+                [&store = runtime.database.persistent_store, own_name = runtime.config.server().server_name, key_clock,
+                 read_through = runtime.database.remote_signing_keys_read_through](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
                 if (server_name == own_name)
                 {
                     return federation::find_own_server_signing_key(store, server_name, key_id);
@@ -3480,6 +3486,14 @@ namespace
                 if (key.has_value() && federation::cached_remote_key_usable(*key, key_clock()))
                 {
                     return key;
+                }
+                if (read_through && database::refresh_remote_signing_keys(store, server_name))
+                {
+                    key = federation::find_cached_remote_key(store, server_name, key_id);
+                    if (key.has_value() && federation::cached_remote_key_usable(*key, key_clock()))
+                    {
+                        return key;
+                    }
                 }
                 return std::nullopt;
             };
@@ -3819,8 +3833,8 @@ namespace
 
     // Spec: GET /_matrix/federation/v1/event/{eventId} returns a Transaction
     // object whose "pdus" array contains the requested PDU. Extract and return
-    // the first PDU as canonical JSON; fall back to returning the raw body when
-    // it already looks like a single PDU.
+    // the first PDU as canonical JSON; fall back to the body, also as canonical
+    // JSON, when it already looks like a single PDU.
     [[nodiscard]] auto extract_pdu_from_event_response(std::string_view body) -> std::optional<std::string>
     {
         if (body.empty() || body.front() != '{')
@@ -3847,10 +3861,15 @@ namespace
             }
             return std::nullopt;
         }
-        // No Transaction wrapper: return the body verbatim if it is a JSON object.
+        // No Transaction wrapper: the body is the PDU. It is re-serialised as the `pdus` branch does, so that what is
+        // stored is canonical bytes and a key spelt with an escape is spelt literally (C43, ADR-0710).
         if (std::holds_alternative<canonicaljson::Object>(parsed.value.storage()))
         {
-            return std::string{body};
+            auto const serialized = canonicaljson::serialize_canonical(parsed.value);
+            if (serialized.error == canonicaljson::CanonicalJsonError::none)
+            {
+                return serialized.output;
+            }
         }
         return std::nullopt;
     }
@@ -4094,6 +4113,23 @@ namespace
         return std::make_pair(std::move(*pdu_ids), std::move(*auth_chain_ids));
     }
 
+    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
+    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
+    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
+    // Appendices' Canonical JSON.
+    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
+        -> bool
+    {
+        if (json.size() > events::max_event_size_bytes)
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(json);
+        return parsed.error == canonicaljson::ParseError::none &&
+               events::parse_event_envelope(parsed.value).error.empty() &&
+               federation::pdu_format_violation(parsed.value, policy).empty();
+    }
+
     // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId} returns the
     // full auth chain for an event as an array of PDUs. This is used by the
     // /state_ids fallback to verify historical state events whose prev_events
@@ -4200,22 +4236,23 @@ namespace
             auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = RuntimeLock{runtime.mutex};
-            auto const same_stored_event = [&](database::PersistentEvent const& evt) {
-                if (raw_event_id == nullptr || evt.event_id != *raw_event_id)
-                {
-                    return false;
-                }
-                auto const stored = canonicaljson::parse_lossless(evt.json);
-                if (stored.error != canonicaljson::ParseError::none)
-                {
-                    return false;
-                }
-                auto const stored_hash = events::make_reference_hash(stored.value, policy);
-                return stored_hash.error.empty() && stored_hash.sha256 == supplied_hash.sha256;
-            };
-            if (std::ranges::any_of(runtime.database.persistent_store.events, same_stored_event))
+            // C30: one indexed lookup by the event_id member, not a walk of every row of the event table under
+            // the global lock. Only a v1/v2 PDU carries the member; a v3+ PDU that does is refused where it enters.
+            if (raw_event_id != nullptr)
             {
-                return true;
+                auto const stored_row = runtime.database.persistent_store.events.find(*raw_event_id);
+                if (stored_row != runtime.database.persistent_store.events.end())
+                {
+                    auto const stored = canonicaljson::parse_lossless(stored_row->json);
+                    if (stored.error == canonicaljson::ParseError::none)
+                    {
+                        auto const stored_hash = events::make_reference_hash(stored.value, policy);
+                        if (stored_hash.error.empty() && stored_hash.sha256 == supplied_hash.sha256)
+                        {
+                            return true;
+                        }
+                    }
+                }
             }
         }
 
@@ -4396,19 +4433,21 @@ namespace
         // against the state before it; it must then be stored as rejected with
         // after-state equal to state_before so it cannot influence later state.
 
+        // What compute_state_before gave, when it was asked: record_event_state keeps it as a group (ADR-0694).
+        auto computed_state_before = std::optional<StateBeforeResult>{};
         auto const known_state_before = [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
             if (forced_state_before.has_value())
             {
                 return *forced_state_before;
             }
-            auto const computed =
+            computed_state_before =
                 compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids,
                                      state_resolution_limits(runtime.config.security().federation.state_resolution));
-            if (!computed.ok)
+            if (!computed_state_before->ok)
             {
                 return std::nullopt;
             }
-            return computed.state;
+            return computed_state_before->state;
         }();
         // ADR-0069: historical state events pulled in by the /state_ids
         // fallback may have prev_events whose state groups are not recorded
@@ -4486,6 +4525,9 @@ namespace
                 forced_state_before.has_value()
                     ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
                                                      envelope.prev_event_ids, std::nullopt, after, false)
+                : computed_state_before.has_value() && computed_state_before->ok
+                    ? record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                         envelope.prev_event_ids, *computed_state_before, after, false)
                     : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
                                          envelope.prev_event_ids, after, false);
             if (!group.has_value())
@@ -4799,10 +4841,24 @@ namespace
                             std::string{room_id} + " event_id=" + id);
                 return false;
             }
+            // C30: the answer is limited in entry count as /state_ids is, and each entry must be a well-formed PDU
+            // (no event_id member in a reference-hash room) before anything is looked up or verified.
+            if (auth_pdus->size() > limits.max_auth_chain_ids)
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: /event_auth answer exceeds the auth chain limit; room_id=" +
+                            std::string{room_id} + " event_id=" + id);
+                return false;
+            }
             for (auto const& auth_json : *auth_pdus)
             {
                 if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
+                    return false;
+                }
+                if (!returned_pdu_is_well_formed(auth_json, policy))
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: malformed /event_auth entry; room_id=" +
+                                std::string{room_id} + " snapshot_event_id=" + id);
                     return false;
                 }
                 if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, budget,
@@ -5048,23 +5104,6 @@ namespace
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
     // Preserve transient local key denial separately from an unresolved gap.
-    // True when `json` is a PDU this server may even consider: within the 65 536 byte event limit,
-    // canonical JSON (no floats, integers in range) and with a valid envelope (identifier and type
-    // lengths, a `state_key` of at most 255 bytes). Spec: Client-Server "Size limits" and the
-    // Appendices' Canonical JSON.
-    [[nodiscard]] auto returned_pdu_is_well_formed(std::string_view json, rooms::RoomVersionPolicy const& policy)
-        -> bool
-    {
-        if (json.size() > events::max_event_size_bytes)
-        {
-            return false;
-        }
-        auto const parsed = canonicaljson::parse_lossless(json);
-        return parsed.error == canonicaljson::ParseError::none &&
-               events::parse_event_envelope(parsed.value).error.empty() &&
-               federation::pdu_format_violation(parsed.value, policy).empty();
-    }
-
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
                                                        federation::InboundPduEnvelope const& envelope,
                                                        rooms::RoomVersionPolicy const& policy) -> BackfillResult
@@ -5829,12 +5868,19 @@ namespace
         return {federation::PduIngestionStatus::internal_error, "event persistence pre-check failed"};
     }
 
-    // Release only the global mutex for the backend commit. Independent rooms
-    // can now commit concurrently (each still holds its own stripe), while the
-    // in-memory store stays protected against concurrent reads/writes. The
-    // early return inside the scope re-acquires on the way out, as does a
-    // throw from the backend.
+    // Invariant (ADR-0696): what memory holds after this commit equals what the commit wrote, for every row it
+    // touched. A current_state or membership row is also written by local sends, which take runtime.mutex but no room
+    // stripe; with runtime.mutex released, one could prepare that row from the old memory, commit after this, and apply
+    // before it, leaving memory and the database apart. So a commit that writes such a row keeps runtime.mutex, as a
+    // local send's commit does. Any other commit writes only this event's own rows and releases only the global mutex,
+    // so independent rooms commit concurrently (each still holds its own stripe); the scope re-acquires on the way out,
+    // as does a throw from the backend.
+    auto const writes_shared_rows = prepared->state.has_value() || prepared->membership.has_value();
     auto const committed = [&] {
+        if (writes_shared_rows)
+        {
+            return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
+        }
         auto const released = RuntimeLockRelease{global_guard};
         return database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements);
     }();
@@ -5868,8 +5914,9 @@ namespace
             outcome == ReceiptOutcome::rejected
                 ? state_before.state
                 : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
-        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                                    envelope.prev_event_ids, state_after, becomes_forward_extremity);
+        auto const state_group =
+            record_event_state(runtime.database.persistent_store, room_id, envelope.event_id, envelope.prev_event_ids,
+                               state_before, state_after, becomes_forward_extremity);
         if (!state_group.has_value())
         {
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
@@ -5914,6 +5961,7 @@ namespace
         {
             // The roster and the device-list changes this membership causes (a remote user's
             // join or leave is `changed` or `left` for the local members).
+            auto const server_already_in_room = joiner_server_already_in_room(runtime, room_id, *envelope.state_key);
             if (!apply_membership_to_roster(runtime, room_id, *envelope.state_key, membership))
             {
                 LOG_WARNING("Device-list change persistence failed after PDU was processed; event_id=" +
@@ -5921,7 +5969,8 @@ namespace
             }
             if (membership == "join")
             {
-                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key,
+                                                              server_already_in_room);
             }
             // Those device-list rows took stream ids after the one allocated above, and a long-poll
             // is woken only by a stream id past its own.

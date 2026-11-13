@@ -67,18 +67,18 @@ auto ReadMarkers::covers(std::uint64_t stream_ordering, std::string_view thread_
     return thread != threads.end() && stream_ordering <= thread->second;
 }
 
-auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, database::PersistentStore const& store,
-                      std::string_view room_id, std::string_view user) -> ReadMarkers
+auto read_markers_for(database::PersistentStore const& store, std::string_view room_id, std::string_view user)
+    -> ReadMarkers
 {
     // Spec: "Note that users can send both an m.read and m.read.private receipt, both of which are
     // capable of clearing notifications", and "the receipt which is more recent/ahead must be used".
+    // Only this user's rows in this room are read, through the store's receipt index (ADR-0737).
     auto relevant = std::vector<database::PersistentReceipt const*>{};
-    for (auto const& receipt : receipts)
+    for (auto const* receipt : database::receipts_of_user_in_room(store, room_id, user))
     {
-        if (receipt.room_id == room_id && receipt.user_id == user &&
-            (receipt.receipt_type == "m.read" || receipt.receipt_type == "m.read.private"))
+        if (receipt->receipt_type == "m.read" || receipt->receipt_type == "m.read.private")
         {
-            relevant.push_back(&receipt);
+            relevant.push_back(receipt);
         }
     }
 
@@ -141,7 +141,8 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     return markers;
 }
 
-auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event) -> std::string
+auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event,
+                     std::size_t* bytes_left) -> std::string
 {
     // Parents are parsed into `parent`, which owns the object `current` points into while it is
     // examined.
@@ -168,6 +169,14 @@ auto event_thread_id(database::PersistentStore const& store, canonicaljson::Obje
         if (stored == store.events.end())
         {
             return std::string{main_thread_id};
+        }
+        if (bytes_left != nullptr)
+        {
+            if (stored->json.size() > *bytes_left)
+            {
+                return std::string{main_thread_id};
+            }
+            *bytes_left -= stored->json.size();
         }
         auto parsed = canonicaljson::parse_lossless(stored->json);
         auto const* parent_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());

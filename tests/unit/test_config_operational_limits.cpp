@@ -471,3 +471,58 @@ SCENARIO("The to-device byte limits default to bounded values, can be tuned and 
         }
     }
 }
+
+SCENARIO("The joint cap on the tips of senders without power is parsed, bounded and needs a restart",
+         "[config][operational-limits][unprivileged_tip_cap][boundary]")
+{
+    GIVEN("no override")
+    {
+        auto const config = merovingian::config::Config{};
+
+        THEN("the default is 128")
+        {
+            REQUIRE(config.security().federation.state_resolution.max_unprivileged_state_tips == 128U);
+        }
+    }
+
+    GIVEN("an override at each end of the allowed range")
+    {
+        auto const value = GENERATE(1U, 4096U);
+        auto const input =
+            "security.federation.state_resolution.max_unprivileged_state_tips=" + std::to_string(value) + "\n";
+
+        WHEN("it is parsed, validated and compared with the default deployment")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+
+            THEN("it is accepted, kept, and needs a restart")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(findings.empty());
+                REQUIRE(parsed.config.security().federation.state_resolution.max_unprivileged_state_tips == value);
+                REQUIRE(plan.restart_required_change_count() == 1U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+            }
+        }
+    }
+
+    GIVEN("an override outside the allowed range or malformed")
+    {
+        auto const input = GENERATE("security.federation.state_resolution.max_unprivileged_state_tips=0\n",
+                                    "security.federation.state_resolution.max_unprivileged_state_tips=4097\n",
+                                    "security.federation.state_resolution.max_unprivileged_state_tips=many\n");
+
+        WHEN("it is parsed and validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the operator gets an error")
+            {
+                REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}

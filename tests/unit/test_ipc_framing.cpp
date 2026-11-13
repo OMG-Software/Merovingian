@@ -1969,3 +1969,53 @@ SCENARIO("a pending request admits each relay permit of its verified request onc
         std::ignore = reply.get();
     }
 }
+
+// ADR-0734: a frame written in part leaves the peer's decryptor behind, so every later frame is unreadable. Before,
+// send_response ignored the failure and the channel still reported healthy, so the supervisor kept a broken worker.
+SCENARIO("A frame that cannot be written ends the channel", "[ipc][channel][c44][write-failure]")
+{
+    GIVEN("a channel pair whose client end has been closed")
+    {
+        // Closing the client's socket is the one way to make a write fail on every platform: shutting down its read
+        // side fails the peer's write on Linux and FreeBSD, but NetBSD and OpenBSD keep accepting the bytes.
+        auto pair = make_channel_pair();
+        pair.client.reset();
+        REQUIRE(pair.server->healthy());
+
+        WHEN("the server sends a response to it")
+        {
+            pair.server->send_response(1U, R"({"type":"reply","ok":true})");
+
+            THEN("the server's channel is no longer healthy")
+            {
+                CHECK_FALSE(pair.server->healthy());
+            }
+        }
+        WHEN("the server sends a notification to it")
+        {
+            auto const sent = pair.server->send_notification(R"({"type":"room_sync","room_id":"!r:example.org"})");
+
+            THEN("the send fails and the server's channel is no longer healthy")
+            {
+                CHECK_FALSE(sent);
+                CHECK_FALSE(pair.server->healthy());
+            }
+        }
+    }
+    GIVEN("a channel pair with a 64 KiB frame cap")
+    {
+        auto pair = make_channel_pair(64U * 1024U);
+
+        WHEN("the server is asked to send a notification over the cap, which is never encrypted")
+        {
+            auto const sent =
+                pair.server->send_notification(R"({"type":"big","pad":")" + std::string(128U * 1024U, 'x') + R"("})");
+
+            THEN("the send fails but the channel stays healthy")
+            {
+                CHECK_FALSE(sent);
+                CHECK(pair.server->healthy());
+            }
+        }
+    }
+}

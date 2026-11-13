@@ -170,10 +170,12 @@ auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::P
         signatures = *existing;
     }
     auto merged_any = false;
-    for (auto const& upload_ref : database::key_signatures_for_target(store, target_user_id))
+    // The signatures of this one key through the (target user, target key) index (run-3 C14, ADR-0672), not every
+    // signature of the user for each key they publish.
+    for (auto const& upload_ref : database::key_signatures_for_target_key(store, target_user_id, target_key_id))
     {
         auto const& upload = upload_ref.get();
-        if (upload.target_device_id != target_key_id || !upload_is_visible(upload, target_user_id, viewer_user_id))
+        if (!upload_is_visible(upload, target_user_id, viewer_user_id))
         {
             continue;
         }

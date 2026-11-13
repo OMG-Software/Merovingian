@@ -10,7 +10,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `LocalMediaRepository.cpp` | Core media store: save, retrieve, deduplicate by content hash |
 | `Security.cpp` | MIME type allow-list, size limits, quarantine policy |
 | `Thumbnailer.cpp` | Generates thumbnails for image media |
-| `ThumbnailCache.cpp` | `ThumbnailCache`: byte-bounded LRU of generated thumbnails, keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
+| `ThumbnailCache.cpp` | `ThumbnailCache`: byte- and count-bounded (`max_thumbnail_cache_entries`) LRU of generated thumbnails, evicted from a recency index (C29, ADR-0690), keyed by source record, size and method (MED-4, ADR-0152). A hit authorises nothing: the caller checks the record is servable first |
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `DecoderHardening.cpp` |
 | `DecoderHardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter; refuses on NetBSD), behind an injectable `DecoderHardeningOps` function table |
 | `ClamdScanner.cpp` | `ClamdScanner` (ADR-0565): clamd `zINSTREAM` over an AF_UNIX socket, one deadline, a bounded number of concurrent scans, fail closed (`ClamdVerdict`: clean / infected / failed / oversize; only clean clears). No logging: `homeserver/ClamdMediaScan.cpp` logs and audits |
@@ -80,6 +80,8 @@ is reserved (`auth::localpart_is_reserved`).
   removes a local record keeps the map in step (`release_owner_slot`, the insert in `upload_local_media`,
   `rebuild_owner_record_counts` on restore). Never count by scanning the records: the check runs under
   `runtime.mutex`.
+- The per-user byte quota is charged for a deduplicated upload too (C42, ADR-0689): never pass a "stores a new blob" flag back into
+  `capacity_rejection_reason`, or a refusal reveals whether other users hold the bytes.
 - `RemoteMediaCacheEntry::size_bytes` is set at admission and hydration. `plan_remote_media_admission` sums
   it and never looks a record up per entry; it drops at most 16 expired entries per admission.
 

@@ -25,6 +25,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace merovingian::federation
@@ -197,6 +198,11 @@ private:
     // Drops failing destinations' transactions past max_failing_transaction_age_ms, at most once per
     // age_sweep_interval_ms. Caller must hold mutex_.
     auto sweep_aged_locked(std::uint64_t now) -> void;
+    // Marks a destination that answers, but slowly, or clears the mark (C20, ADR-0720). A slow destination keeps the
+    // rows already queued for it, but its new rows are refused once the slow destinations hold their share, and its
+    // rows go after every other destination's. Keeps slow_slots_ equal to the sum of the marked destinations' entries
+    // in queued_per_destination_. Caller must hold mutex_.
+    auto set_slow_locked(std::string const& destination, bool slow) -> void;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
@@ -223,6 +229,12 @@ private:
     // queued_per_destination_.
     std::unordered_map<std::string, std::uint64_t> failing_destinations_{};
     std::size_t failing_slots_{0U};
+    // Destinations that deliver, but slowly: the last attempt took more than a quarter of slow_attempt_ms (C20,
+    // ADR-0720), and the slots they hold between them. Disjoint from failing_destinations_. A destination leaves the
+    // set when a quicker attempt follows, when it starts to fail, or when its last slot is released, so the set is
+    // bounded by the destinations that hold a slot. Guarded by mutex_.
+    std::unordered_set<std::string> slow_destinations_{};
+    std::size_t slow_slots_{0U};
     // The next time sweep_aged_locked looks at the queue, guarded by mutex_.
     std::uint64_t next_age_sweep_ms_{0U};
     std::vector<DispatchDestinationSnapshot> destinations_{};

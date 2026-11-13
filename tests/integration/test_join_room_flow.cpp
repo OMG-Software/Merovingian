@@ -823,6 +823,151 @@ SCENARIO("join_room completes a live federated join with every member of the ret
 // invited". When the resident server refuses the join (make_join or send_join answered 403),
 // that is the answer the client gets; it was a 502 (Complement TestKnocking, "Attempting to
 // join a room with join rule 'knock' without an invite should fail").
+// C03 (ADR-0714): the commits of a federated join's answer are one transaction each, and the auth chain's, which is
+// the bulk of a big room's answer, is written with runtime.mutex released. `test_before_backend_commit` runs on the
+// committing thread just before each write, and a second thread tries the mutex then.
+SCENARIO("A federated join writes its auth chain in one transaction with runtime.mutex released",
+         "[homeserver][federation][join][c03][concurrency][integration]")
+{
+    GIVEN("a resident whose answer holds 300 members in its state and 250 more events only in its auth chain")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!bigroom:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const room_chain = resident_room_chain(room_id, creator, policy);
+        auto const make_join_event =
+            naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" +
+                                   room_id + R"(","sender":")" + alice +
+                                   R"(","depth":6,"origin_server_ts":1000,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})",
+                               room_chain.member_auth());
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+
+        auto const member_event = [&](std::string const& member_id) {
+            return sign_test_event(
+                naming_auth_events(std::string{R"({"type":"m.room.member","state_key":")"} + member_id +
+                                       R"(","room_id":")" + room_id + R"(","sender":")" + member_id +
+                                       R"(","depth":3,"origin_server_ts":902,"prev_events":[],"auth_events":[],)"
+                                       R"("content":{"membership":"join"}})",
+                                   room_chain.member_auth()),
+                policy, resident_server, resident_key_id, resident_key_seed);
+        };
+        constexpr auto state_members = std::size_t{300U};
+        constexpr auto auth_only_members = std::size_t{250U};
+        auto state_array = room_chain.events();
+        state_array.push_back(sign_with_local_server_key(runtime, make_join_event, policy));
+        for (auto index = std::size_t{0U}; index < state_members; ++index)
+        {
+            state_array.push_back(member_event("@member" + std::to_string(index) + ":" + resident_server));
+        }
+        auto auth_chain_array = room_chain.events();
+        for (auto index = std::size_t{0U}; index < auth_only_members; ++index)
+        {
+            auth_chain_array.push_back(member_event("@authonly" + std::to_string(index) + ":" + resident_server));
+        }
+        auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
+                                    R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+
+        // (statements in the transaction, whether another thread could take runtime.mutex while it was written)
+        auto commits = std::vector<std::pair<std::size_t, bool>>{};
+        runtime.database.persistent_store.test_before_backend_commit = [&runtime, &commits](std::size_t statements) {
+            auto lock_was_free = false;
+            auto probe = std::thread{[&runtime, &lock_was_free] {
+                if (runtime.mutex.try_lock())
+                {
+                    runtime.mutex.unlock();
+                    lock_was_free = true;
+                }
+            }};
+            probe.join();
+            commits.emplace_back(statements, lock_was_free);
+        };
+
+        WHEN("join_room is called")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto const make_join_response = json_http_response("200 OK", make_join_body);
+            auto const send_join_response = json_http_response("200 OK", send_join_body);
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const before = [&] {
+                auto const lock = std::lock_guard{runtime.mutex};
+                return runtime.database.persistent_store.committed_transactions;
+            }();
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            runtime.database.persistent_store.test_before_backend_commit = nullptr;
+
+            THEN("the join succeeds, each large answer part is one transaction, and the auth chain's took no lock")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                // The two largest transactions are the state array and the auth chain, in that order of size; the
+                // chain is the one written with the lock released. No part of the answer is committed row by row: the
+                // single-statement commits (a watermark each) stay a handful, not one per event or member.
+                auto by_size = commits;
+                std::ranges::sort(by_size, std::ranges::greater{}, &std::pair<std::size_t, bool>::first);
+                REQUIRE(by_size.size() >= 3U);
+                REQUIRE(by_size[0].first >= state_members);     // Fixture: the state array.
+                REQUIRE(by_size[1].first >= auth_only_members); // Fixture: the auth chain.
+                REQUIRE(by_size[1].second); // The auth-chain commit ran with runtime.mutex released.
+                auto const single_statement_commits =
+                    std::ranges::count(commits, 1U, &std::pair<std::size_t, bool>::first);
+                CAPTURE(single_statement_commits);
+                REQUIRE(single_statement_commits < 20);
+                auto const lock = std::lock_guard{runtime.mutex};
+                REQUIRE(runtime.database.persistent_store.committed_transactions - before >= 3U);
+                auto auth_only_stored = std::size_t{0U};
+                for (auto const& row : runtime.database.persistent_store.events)
+                {
+                    if (row.room_id == room_id && row.sender_user_id.starts_with("@authonly") &&
+                        row.status == "outlier")
+                    {
+                        ++auth_only_stored;
+                    }
+                }
+                REQUIRE(auth_only_stored == auth_only_members);
+                REQUIRE(runtime.database.persistent_store.memberships.size() >= state_members + 1U);
+                REQUIRE(runtime.database.pending_stream_orderings.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("join_room answers 403 when the resident server refuses the join",
          "[homeserver][federation][join][join-refused][integration]")
 {
@@ -1094,12 +1239,35 @@ SCENARIO("What a knock keeps of a resident's knock_room_state is bounded in coun
             }
             auto const response = knock_answering(answer_with(list));
 
-            THEN("they are kept")
+            THEN("the knock stands and the repeats of one state are merged into its last entry (C31)")
             {
                 CAPTURE(response.body);
                 REQUIRE(response.status == 200U);
-                REQUIRE(record()->invite_state_events_json.size() ==
-                        merovingian::federation::max_invite_room_state_entries);
+                auto const kept = record();
+                REQUIRE(kept.has_value());
+                REQUIRE(kept->invite_state_events_json.size() == 1U);
+                REQUIRE(kept->invite_state_events_json.front().find(R"("depth":16)") != std::string::npos);
+            }
+        }
+
+        WHEN("the resident repeats every summary type many times")
+        {
+            auto list = merovingian::canonicaljson::Array{};
+            list.push_back(signed_state("m.room.create", "", R"({"room_version":"10","creator":"@c:d"})", 1));
+            for (auto round = 0; round < 3; ++round)
+            {
+                list.push_back(signed_state("m.room.topic", "", R"({"topic":"t"})", 2 + round));
+                list.push_back(signed_state("m.room.name", "", R"({"name":"n"})", 5 + round));
+            }
+            auto const response = knock_answering(answer_with(list));
+
+            THEN("one entry per state is kept, so a record never holds more than the summary types and the member")
+            {
+                CAPTURE(response.body);
+                REQUIRE(response.status == 200U);
+                auto const kept = record();
+                REQUIRE(kept.has_value());
+                REQUIRE(kept->invite_state_events_json.size() == 3U);
             }
         }
 

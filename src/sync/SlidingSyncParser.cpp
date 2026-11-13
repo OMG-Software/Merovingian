@@ -114,6 +114,25 @@ namespace
         return std::min(static_cast<std::uint64_t>(requested), static_cast<std::uint64_t>(limits.timeline_limit));
     }
 
+    // What one string costs a stored copy: its object and its characters (ADR-0663).
+    [[nodiscard]] auto string_cost(std::string const& s) noexcept -> std::uint64_t
+    {
+        return sizeof(std::string) + s.size();
+    }
+
+    [[nodiscard]] auto strings_cost(std::vector<std::string> const& strings) noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& s : strings)
+        {
+            total += string_cost(s);
+        }
+        return total;
+    }
+
+    // Per map node: the node links and the key string object, beside the list itself.
+    constexpr auto list_node_overhead = std::uint64_t{64U};
+
     // ── Sub-parsers ──────────────────────────────────────────────────────────
 
     [[nodiscard]] auto parse_range(canonicaljson::Value const& v) -> std::optional<SlidingSyncRange>
@@ -556,6 +575,32 @@ auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits)
     return req;
 }
 
+auto sliding_sync_retained_bytes(std::map<std::string, SlidingSyncList> const& lists) noexcept -> std::uint64_t
+{
+    auto total = std::uint64_t{0U};
+    for (auto const& [name, list] : lists)
+    {
+        total += list_node_overhead + string_cost(name) + sizeof(SlidingSyncList);
+        total += list.ranges.size() * sizeof(SlidingSyncRange);
+        total += strings_cost(list.sort) + strings_cost(list.bump_event_types);
+        for (auto const& [type, state_key] : list.required_state)
+        {
+            total += string_cost(type) + string_cost(state_key);
+        }
+        if (list.filters.has_value())
+        {
+            total += strings_cost(list.filters->room_types) + strings_cost(list.filters->not_room_types);
+        }
+    }
+    return total;
+}
+
+auto sliding_sync_retained_bytes(SlidingSyncRequest const& request) noexcept -> std::uint64_t
+{
+    auto const conn_id = request.conn_id.has_value() ? string_cost(*request.conn_id) : std::uint64_t{0U};
+    return conn_id + sliding_sync_retained_bytes(request.lists);
+}
+
 auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request) -> std::optional<std::string_view>
 {
     return sliding_sync_request_limit_violation(request, SlidingSyncLimits{});
@@ -568,12 +613,35 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     {
         return "too many room_subscriptions";
     }
+    if (request.conn_id.has_value() && request.conn_id->size() > limits.name_bytes)
+    {
+        return "conn_id too long";
+    }
     if (request.lists.size() > limits.lists)
     {
         return "too many lists";
     }
     for ([[maybe_unused]] auto const& [name, list] : request.lists)
     {
+        if (name.size() > limits.name_bytes)
+        {
+            return "list name too long";
+        }
+        if (list.ranges.size() > limits.ranges)
+        {
+            return "too many ranges in a list";
+        }
+        if (list.filters.has_value())
+        {
+            if (list.filters->room_types.size() > limits.room_types)
+            {
+                return "too many room_types in a list";
+            }
+            if (list.filters->not_room_types.size() > limits.room_types)
+            {
+                return "too many not_room_types in a list";
+            }
+        }
         if (list.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a list";
@@ -607,6 +675,11 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
         {
             return "too many rooms in the typing extension";
         }
+    }
+    // The count caps bound the entries; this bounds what they weigh, since a string may be as long as the body.
+    if (sliding_sync_retained_bytes(request) > limits.retained_bytes_per_connection)
+    {
+        return "the lists are too large to keep for a connection";
     }
     return std::nullopt;
 }

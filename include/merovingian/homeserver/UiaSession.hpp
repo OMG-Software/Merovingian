@@ -25,6 +25,9 @@ struct UiaSession final
     // deletion must not satisfy a registration challenge.
     std::string purpose{};
     std::uint64_t created_at_ms{0U};
+    // Who the challenge was issued to: the authenticated user ID, or for registration the client address key. A
+    // session is valid only for its owner, and each owner holds a bounded share of the pool (C45, ADR-0683).
+    std::string owner{};
 };
 
 } // namespace merovingian::homeserver

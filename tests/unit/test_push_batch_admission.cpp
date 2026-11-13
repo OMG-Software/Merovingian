@@ -201,3 +201,49 @@ SCENARIO("A gateway host is reachable only after a prompt answer and until it fa
         }
     }
 }
+
+// C48 (ADR-0721): hosts that answer just inside the old "prompt" threshold must not hold the reserve for hosts that
+// answer promptly.
+SCENARIO("A gateway host that answers slowly does not keep the delivery reserve", "[push][push-slots][c48]")
+{
+    GIVEN("a budget of 256 with the unreserved three quarters in flight")
+    {
+        auto dispatcher = Dispatcher{};
+        for (auto host = 0; host < 6; ++host)
+        {
+            for (auto batch = 0; batch < 32; ++batch)
+            {
+                REQUIRE(dispatcher.start({"busy" + std::to_string(host) + ".example"}, true) == PushBatchRefusal::none);
+            }
+        }
+        REQUIRE(dispatcher.in_flight == 192U);
+
+        WHEN("one host that was reachable asks for the reserve 33 times")
+        {
+            auto admitted = std::size_t{0U};
+            auto last = PushBatchRefusal::none;
+            for (auto batch = 0; batch < 33; ++batch)
+            {
+                last = dispatcher.start({"burst.example"}, true);
+                admitted += last == PushBatchRefusal::none ? 1U : 0U;
+            }
+
+            THEN("it gets a quarter of its usual share, and a different reachable host is still admitted")
+            {
+                CHECK(PushBatchAdmission::reserve_host_cap(256U) == 8U);
+                CHECK(admitted == 8U);
+                CHECK(last == PushBatchRefusal::gateway_host);
+                CHECK(dispatcher.start({"other.example"}, true) == PushBatchRefusal::none);
+            }
+        }
+
+        WHEN("a small budget is used")
+        {
+            THEN("the reserve cap is never below one")
+            {
+                CHECK(PushBatchAdmission::reserve_host_cap(4U) == 1U);
+                CHECK(PushBatchAdmission::reserve_host_cap(256U) == 8U);
+            }
+        }
+    }
+}

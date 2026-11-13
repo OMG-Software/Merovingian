@@ -63,7 +63,8 @@ struct SignedKeyResponse final
 // for a freshly generated Ed25519 keypair. Mirrors the local server's
 // publish path so the verifier exercises the same canonical signing shape.
 [[nodiscard]] auto build_signed_key_response(std::string_view server_name, std::string_view key_id,
-                                             std::uint64_t valid_until_ts, bool include_unsigned_extra_key = false)
+                                             std::uint64_t valid_until_ts, bool include_unsigned_extra_key = false,
+                                             std::size_t old_key_count = 0U, std::size_t extra_current_keys = 0U)
     -> SignedKeyResponse
 {
     REQUIRE(sodium_is_ready());
@@ -95,9 +96,36 @@ struct SignedKeyResponse final
             "ed25519:unsigned", merovingian::canonicaljson::Value{std::move(extra_verify_key_entry)}));
     }
 
+    // C27: further current keys, and retired keys, to test the limits on what one document may add.
+    auto const filler_key = [&](std::size_t number) {
+        auto filler_public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        filler_public_key.fill(static_cast<unsigned char>(number + 1U));
+        return merovingian::events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(filler_public_key.data()), filler_public_key.size()});
+    };
+    for (auto number = std::size_t{0U}; number < extra_current_keys; ++number)
+    {
+        auto entry = merovingian::canonicaljson::Object{};
+        entry.push_back(
+            merovingian::canonicaljson::make_member("key", merovingian::canonicaljson::Value{filler_key(number)}));
+        verify_keys.push_back(merovingian::canonicaljson::make_member(
+            "ed25519:extra" + std::to_string(number), merovingian::canonicaljson::Value{std::move(entry)}));
+    }
+    auto old_keys = merovingian::canonicaljson::Object{};
+    for (auto number = std::size_t{0U}; number < old_key_count; ++number)
+    {
+        auto entry = merovingian::canonicaljson::Object{};
+        entry.push_back(
+            merovingian::canonicaljson::make_member("key", merovingian::canonicaljson::Value{filler_key(number)}));
+        entry.push_back(merovingian::canonicaljson::make_member(
+            "expired_ts", merovingian::canonicaljson::Value{std::int64_t{1000} + static_cast<std::int64_t>(number)}));
+        old_keys.push_back(merovingian::canonicaljson::make_member(
+            "ed25519:old" + std::to_string(number), merovingian::canonicaljson::Value{std::move(entry)}));
+    }
+
     auto response = merovingian::canonicaljson::Object{};
-    response.push_back(merovingian::canonicaljson::make_member(
-        "old_verify_keys", merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{}}));
+    response.push_back(merovingian::canonicaljson::make_member("old_verify_keys",
+                                                               merovingian::canonicaljson::Value{std::move(old_keys)}));
     response.push_back(merovingian::canonicaljson::make_member(
         "server_name", merovingian::canonicaljson::Value{std::string{server_name}}));
     response.push_back(merovingian::canonicaljson::make_member(
@@ -915,6 +943,60 @@ SCENARIO("make_persistent_remote_key_resolver answers our own server name from o
                 REQUIRE_FALSE(unknown.has_value());
                 REQUIRE(network.lookup_calls == 0U);
                 REQUIRE(network.well_known_calls == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("A remote key document can add only a bounded number of keys to the cache",
+         "[federation][remote-key-cache][c27]")
+{
+    GIVEN("a document with exactly as many retired keys as may be stored, and one with more")
+    {
+        auto const at_limit =
+            build_signed_key_response("limit.example.org", "ed25519:auto", 2000000000000ULL, false, 64U);
+        auto const over_limit =
+            build_signed_key_response("over.example.org", "ed25519:auto", 2000000000000ULL, false, 70U);
+
+        WHEN("each is parsed")
+        {
+            auto const parsed_at =
+                merovingian::federation::parse_and_verify_remote_key_response(at_limit.body, "limit.example.org");
+            auto const parsed_over =
+                merovingian::federation::parse_and_verify_remote_key_response(over_limit.body, "over.example.org");
+
+            THEN("the limit is kept whole and the excess is not stored, with the current key intact")
+            {
+                REQUIRE(parsed_at.ok);
+                REQUIRE(parsed_at.response.old_verify_keys.size() == 64U);
+                REQUIRE(parsed_over.ok);
+                REQUIRE(parsed_over.response.old_verify_keys.size() == 64U);
+                REQUIRE(parsed_over.response.verify_keys.size() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a document with exactly as many current keys as may be published, and one with one more")
+    {
+        auto const at_limit =
+            build_signed_key_response("limit.example.org", "ed25519:auto", 2000000000000ULL, false, 0U, 15U);
+        auto const over_limit =
+            build_signed_key_response("over.example.org", "ed25519:auto", 2000000000000ULL, false, 0U, 16U);
+
+        WHEN("each is parsed")
+        {
+            auto const parsed_at =
+                merovingian::federation::parse_and_verify_remote_key_response(at_limit.body, "limit.example.org");
+            auto const parsed_over =
+                merovingian::federation::parse_and_verify_remote_key_response(over_limit.body, "over.example.org");
+
+            THEN("the first gets past the parser (and fails only the self-signature check the fillers cannot meet)")
+            {
+                REQUIRE_FALSE(parsed_at.ok);
+                REQUIRE(parsed_at.reason.find("unsigned verify key") != std::string::npos);
+                // The second is refused by the parser, before any key is looked at.
+                REQUIRE_FALSE(parsed_over.ok);
+                REQUIRE(parsed_over.reason.find("unsigned verify key") == std::string::npos);
             }
         }
     }

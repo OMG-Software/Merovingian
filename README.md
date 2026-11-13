@@ -81,7 +81,7 @@ gpg --verify merovingian-X.Y.Z-linux-static-x86_64.tar.gz.asc \
 sha256sum -c merovingian-X.Y.Z-linux-static-x86_64.tar.gz.sha256
 ```
 
-Releases also carry SLSA provenance attestations (`gh attestation verify`), SPDX/CycloneDX SBOMs, and a machine-readable license summary. See [docs/release-process.md](docs/release-process.md) and [docs/user-manual.md](docs/user-manual.md) for full details.
+Releases also carry SLSA provenance attestations (`gh attestation verify`, pinned to the workflow and tag that made the file), SPDX/CycloneDX SBOMs, and a machine-readable license summary. See [docs/release-process.md](docs/release-process.md) and [docs/user-manual.md](docs/user-manual.md) for full details.
 
 ## Installation and Configuration
 

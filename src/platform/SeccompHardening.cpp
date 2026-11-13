@@ -308,6 +308,11 @@ namespace
 #elif defined(__x86_64__) || defined(__aarch64__)
         ALLOW_SYSCALL(436),
 #endif
+        // setsid (ADR-0731): main spawns the federation worker with POSIX_SPAWN_SETSID, and the thumbnail decoder's
+        // forked child calls setsid() before exec, so neither child holds the terminal of the shell that started the
+        // server. Both run in the child under this filter (a filter survives fork and exec; only another one can be
+        // stacked on it), so the call must be here. It takes no argument and changes only the calling process.
+        ALLOW_SYSCALL(__NR_setsid),
 
         // ── Threads and synchronisation ────────────────────────────────────
         ALLOW_SYSCALL(__NR_futex),
@@ -904,14 +909,19 @@ namespace
                     allow,                                                          // [4]
                 };
             }
+            // ADR-0731: TIOCSTI pushes bytes into a terminal's input, which the shell that started the server reads
+            // and runs, and TIOCLINUX can paste into a virtual console. The worker needs neither, whatever terminal
+            // it was given; the decoder's allowlist above already refuses both.
             return {
                 BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(1U)), // [0] A = request
-                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOASYNC, 4, 0),            // [1] -> [6]
-                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOSETOWN, 3, 0),           // [2] -> [6]
-                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIOCSPGRP, 2, 0),           // [3] -> [6]
-                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSPGRP, 1, 0),           // [4] -> [6]
-                allow,                                                          // [5]
-                deny,                                                           // [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOASYNC, 6, 0),            // [1] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOSETOWN, 5, 0),           // [2] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIOCSPGRP, 4, 0),           // [3] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSPGRP, 3, 0),           // [4] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 2, 0),             // [5] -> [8]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 1, 0),           // [6] -> [8]
+                allow,                                                          // [7]
+                deny,                                                           // [8]
             };
         }
         if (nr == __NR_prlimit64)

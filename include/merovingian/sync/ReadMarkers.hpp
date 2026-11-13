@@ -20,11 +20,17 @@ namespace merovingian::sync
 // The thread ID of the main timeline (Client-Server API, "Threaded read receipts"): "When
 // referring to the main timeline as a thread (e.g. in receipts and notifications counts) a
 // special thread ID of `main` is used."
-inline constexpr auto main_thread_id = std::string_view{"main"};
+inline constexpr auto main_thread_id = database::main_receipt_thread_id;
 
 // The rows of a room one unread count, or one reading of the user's own events for read markers, looks at, newest
 // first (ADR-0617). Past it a count is a lower bound: it counts no event /sync would not.
 inline constexpr std::size_t max_unread_rows_examined{1000U};
+
+// The bytes of event JSON one unread count of one room may parse (ADR-0655): the events it classifies and the parents
+// it follows to find a thread. A row is up to 64 KiB, so the row budget alone allows tens of megabytes; past this the
+// count stops and, as at the row budget, is a lower bound. Events of ordinary size (a few hundred bytes) never reach
+// it.
+inline constexpr std::size_t max_unread_bytes_parsed{512U * 1024U};
 
 // Where one user has read up to in one room, from their m.read and m.read.private receipts.
 //
@@ -46,12 +52,11 @@ struct ReadMarkers final
     [[nodiscard]] auto covers(std::uint64_t stream_ordering, std::string_view thread_id) const noexcept -> bool;
 };
 
-// The user's read markers in `room_id`, from `receipts`, with stream orderings looked up in
-// `store`. A receipt naming an event `store` does not hold covers nothing. Each non-state event
-// the user sent in the room also reads its own thread up to itself (spec: the read receipt is
-// updated "either by using the API or by sending an event"; ADR-0170).
-[[nodiscard]] auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts,
-                                    database::PersistentStore const& store, std::string_view room_id,
+// The user's read markers in `room_id`, from the user's receipt rows in it (read through the store's receipt index),
+// with stream orderings looked up in `store`. A receipt naming an event `store` does not hold covers nothing. Each
+// non-state event the user sent in the room also reads its own thread up to itself (spec: the read receipt is updated
+// "either by using the API or by sending an event"; ADR-0170).
+[[nodiscard]] auto read_markers_for(database::PersistentStore const& store, std::string_view room_id,
                                     std::string_view user) -> ReadMarkers;
 
 // The thread `event` belongs to: the root's event ID, or `main`. Spec (Client-Server API,
@@ -60,7 +65,9 @@ struct ReadMarkers final
 // with a rel_type of m.thread"; "a maximum of 3 hops is recommended". Thread roots, and events
 // related to them by other relations, are in the main timeline. Parents are looked up in
 // `store`; a parent it does not hold ends the search in the main timeline.
-[[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event)
-    -> std::string;
+// When `bytes_left` is given, parsing a stored parent spends its JSON size from it, and a parent that no longer fits
+// ends the search in the main timeline, as a missing parent does (ADR-0655).
+[[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event,
+                                   std::size_t* bytes_left = nullptr) -> std::string;
 
 } // namespace merovingian::sync

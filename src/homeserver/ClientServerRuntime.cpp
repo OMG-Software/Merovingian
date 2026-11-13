@@ -172,6 +172,7 @@
 #include "merovingian/sync/SlidingSyncParser.hpp"
 #include "merovingian/sync/SlidingSyncPendingResponse.hpp"
 #include "merovingian/sync/SlidingSyncRequest.hpp"
+#include "merovingian/sync/SlidingSyncRequestLookups.hpp"
 #include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 #include "merovingian/sync/SlidingSyncRoomList.hpp"
 #include "merovingian/sync/SlidingSyncRoomResponse.hpp"
@@ -1410,8 +1411,10 @@ namespace
                                                        std::string_view user_id) -> canonicaljson::Array
     {
         auto result = canonicaljson::Array{};
-        auto const invite = database::find_invite(store, room_id, user_id);
-        if (!invite.has_value())
+        // By reference: the record is read once per sync, and a copy of up to a user's whole byte allowance is not
+        // made for it (C31, ADR-0708).
+        auto const* const invite = database::find_invite_row(store, room_id, user_id);
+        if (invite == nullptr)
         {
             return result;
         }
@@ -1450,7 +1453,7 @@ namespace
         // verified knock_room_state in the user's invite record (ADR-0243); this
         // server holds no state for that room. The record is read here only because
         // the user's membership is knock.
-        if (database::find_invite(store, room_id, user_id).has_value())
+        if (database::find_invite_row(store, room_id, user_id) != nullptr)
         {
             return build_invite_state_events_array(store, room_id, user_id);
         }
@@ -1725,22 +1728,17 @@ namespace
                                                 std::string_view canonical_json) -> StoredFilterSummary
     {
         auto summary = StoredFilterSummary{};
-        for (auto const& filter : store.filters)
-        {
-            if (filter.user_id != user_id)
-            {
-                continue;
-            }
+        database::for_each_user_filter(store, user_id, [&](database::PersistentFilter const& filter) {
             ++summary.count;
             if (summary.identical_filter_id.has_value())
             {
-                continue;
+                return;
             }
             if (filter.json == canonical_json)
             {
                 summary.identical_filter_id = filter.filter_id;
             }
-        }
+        });
         return summary;
     }
 
@@ -2213,47 +2211,73 @@ namespace
     // one stage, so there is no ordering to enforce yet. Adding a second stage
     // means adding persisted completed-stage tracking; see ADR-0057.
     auto constexpr uia_session_ttl_ms = std::uint64_t{10U * 60U * 1000U};
-    // Bounds what an unauthenticated caller can grow: every 401 mints an entry.
+    // The most UIA sessions one owner (the authenticated user, or for registration the client address) holds. A
+    // further challenge from the same owner replaces that owner's oldest session (C45, ADR-0683).
+    auto constexpr max_uia_sessions_per_owner = std::size_t{16U};
 
-    [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose) -> std::string
+    // Issues a session owned by `owner`, or nullopt when the pool is full: the pool is shared, so a full pool refuses
+    // the new challenge and never evicts another owner's live session (C45, ADR-0683). An empty id is returned when no
+    // random id could be drawn; it never matches in uia_session_is_valid.
+    [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose, std::string_view owner)
+        -> std::optional<std::string>
     {
         auto const now_ms = wall_clock_milliseconds();
         std::erase_if(rt.uia_sessions, [now_ms](UiaSession const& session) {
             return now_ms > session.created_at_ms && now_ms - session.created_at_ms > uia_session_ttl_ms;
         });
-        // Oldest-first eviction keeps the newest challenges usable under a
-        // flood; an evicted client simply receives a fresh challenge on retry.
-        while (rt.uia_sessions.size() >= rt.limits.max_uia_sessions && !rt.uia_sessions.empty())
+        // Sessions are appended, so an owner's oldest is its first. One pass counts the owner's sessions and finds it.
+        auto held = std::size_t{0U};
+        auto oldest = rt.uia_sessions.end();
+        for (auto session = rt.uia_sessions.begin(); session != rt.uia_sessions.end(); ++session)
         {
-            rt.uia_sessions.erase(rt.uia_sessions.begin());
+            if (session->owner == owner)
+            {
+                if (held == 0U)
+                {
+                    oldest = session;
+                }
+                ++held;
+            }
+        }
+        if (held >= max_uia_sessions_per_owner)
+        {
+            rt.uia_sessions.erase(oldest);
+        }
+        else if (rt.uia_sessions.size() >= rt.limits.max_uia_sessions)
+        {
+            return std::nullopt;
         }
         auto const id = crypto::secure_random_hex(16U);
         if (!id.has_value())
         {
-            // No random id means no session this server could later recognise.
-            // Return an empty one rather than a guessable placeholder: an empty
-            // id never matches in uia_session_is_valid.
-            return {};
+            return std::string{};
         }
-        rt.uia_sessions.push_back({*id, std::string{purpose}, now_ms});
+        rt.uia_sessions.push_back({*id, std::string{purpose}, now_ms, std::string{owner}});
         return *id;
     }
 
-    // A client-supplied session id is honoured only when this server issued it,
-    // issued it for this endpoint, and it has not expired. A request that omits
+    // 429 for a challenge the full pool cannot take. Existing sessions stay usable; a session lives ten minutes.
+    [[nodiscard]] auto uia_pool_full_response(ClientServerRuntime& rt, LocalHttpRequest const& req) -> DispatchResult
+    {
+        return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                            "Too many authentication challenges are pending. Please try again shortly.", 5000U);
+    }
+
+    // A client-supplied session id is honoured only when this server issued it to this owner, issued it for this
+    // endpoint, and it has not expired. A request that omits
     // `session` entirely is still served: the spec permits completing a
     // single-stage flow in one shot, and the credential that stage checks is in
     // the same auth block.
     [[nodiscard]] auto uia_session_is_valid(ClientServerRuntime const& rt, std::string_view purpose,
-                                            std::string_view session_id) -> bool
+                                            std::string_view session_id, std::string_view owner) -> bool
     {
         if (session_id.empty())
         {
             return false;
         }
         auto const now_ms = wall_clock_milliseconds();
-        return std::ranges::any_of(rt.uia_sessions, [now_ms, purpose, session_id](UiaSession const& session) {
-            return session.session_id == session_id && session.purpose == purpose &&
+        return std::ranges::any_of(rt.uia_sessions, [now_ms, purpose, session_id, owner](UiaSession const& session) {
+            return session.session_id == session_id && session.purpose == purpose && session.owner == owner &&
                    (now_ms <= session.created_at_ms || now_ms - session.created_at_ms <= uia_session_ttl_ms);
         });
     }
@@ -2302,6 +2326,65 @@ namespace
                 return true;
             });
         return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
+    }
+
+    // The latest code this server mailed for `address` that is still held by a session (C17, ADR-0685), empty when
+    // none is. The code is the same for every session of the address that asks within the throttle interval.
+    [[nodiscard]] auto latest_password_reset_code(ClientServerRuntime const& rt, std::string_view address)
+        -> std::string
+    {
+        auto const* latest = static_cast<RegistrationValidationSession const*>(nullptr);
+        for (auto const& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+                !candidate.reset_token.empty() &&
+                (latest == nullptr || candidate.reset_sent_at_ms > latest->reset_sent_at_ms))
+            {
+                latest = &candidate;
+            }
+        }
+        return latest == nullptr ? std::string{} : latest->reset_token;
+    }
+
+    // A code is single use: once one session of the address has proved it, no session of the address holds it.
+    auto spend_password_reset_code(ClientServerRuntime& rt, std::string_view address, std::string_view code) -> void
+    {
+        for (auto& candidate : rt.registration_validation_sessions)
+        {
+            if (candidate.purpose == password_reset_purpose && candidate.address == address &&
+                candidate.reset_token == code)
+            {
+                core::secure_zero(
+                    std::as_writable_bytes(std::span{candidate.reset_token.data(), candidate.reset_token.size()}));
+                candidate.reset_token.clear();
+            }
+        }
+    }
+
+    // Whether another reset mail may go to `address` today. Times older than a day are dropped as they are read.
+    // Only an address that was mailed has an entry, and only an address with an account is mailed.
+    [[nodiscard]] auto password_reset_mail_budget_left(ClientServerRuntime& rt, std::string const& address,
+                                                       std::uint64_t now_ms) -> bool
+    {
+        auto const entry = rt.password_reset_mail_times.find(address);
+        if (entry == rt.password_reset_mail_times.end())
+        {
+            return true;
+        }
+        std::erase_if(entry->second, [now_ms](std::uint64_t sent) {
+            return now_ms > sent && now_ms - sent >= password_reset_address_window_ms;
+        });
+        if (entry->second.empty())
+        {
+            rt.password_reset_mail_times.erase(entry);
+            return true;
+        }
+        return entry->second.size() < password_reset_address_daily_cap;
+    }
+
+    auto note_password_reset_mail(ClientServerRuntime& rt, std::string const& address, std::uint64_t now_ms) -> void
+    {
+        rt.password_reset_mail_times[address].push_back(now_ms);
     }
 
     // Records the validation session for a requestToken the identity server
@@ -4438,30 +4521,36 @@ namespace
         {
             return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
         }
-        auto const challenge = [&] {
-            return device_delete_uia_challenge(issue_uia_session(rt, "login_get_token"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "login_get_token", user_id);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
         };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* supplied_session = string_member(*auth, "session");
-        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session))
+        if (supplied_session != nullptr && !uia_session_is_valid(rt, "login_get_token", *supplied_session, user_id))
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         auto const* current_password = string_member(*auth, "password");
         if (auth_type == nullptr || *auth_type != "m.login.password" || current_password == nullptr ||
             current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, challenge());
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -4473,7 +4562,7 @@ namespace
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(challenge()));
+            return challenge(true);
         }
         // The password was just proved: the session that carried it is spent.
         if (supplied_session != nullptr)
@@ -4828,19 +4917,29 @@ namespace
         {
             return room->members.size();
         }
-        return static_cast<std::size_t>(std::ranges::count_if(
-            rt.homeserver.database.persistent_store.memberships, [&](database::PersistentMembership const& membership) {
-                return membership.room_id == room_id && membership.membership == "join";
-            }));
+        auto count = std::size_t{0U};
+        database::for_each_room_membership_row(rt.homeserver.database.persistent_store, room_id,
+                                               [&](database::PersistentMembership const& membership) {
+                                                   if (membership.membership == "join")
+                                                   {
+                                                       ++count;
+                                                   }
+                                               });
+        return count;
     }
 
     [[nodiscard]] auto invited_member_count(database::PersistentStore const& store, std::string_view room_id)
         -> std::size_t
     {
-        return static_cast<std::size_t>(
-            std::ranges::count_if(store.memberships, [&](database::PersistentMembership const& membership) {
-                return membership.room_id == room_id && membership.membership == "invite";
-            }));
+        // The room's own membership rows, through the index (ADR-0437), not every row on the server.
+        auto count = std::size_t{0U};
+        database::for_each_room_membership_row(store, room_id, [&](database::PersistentMembership const& membership) {
+            if (membership.membership == "invite")
+            {
+                ++count;
+            }
+        });
+        return count;
     }
 
     // Spec: GET /_matrix/client/v3/sync §JoinedRoom summary
@@ -4873,13 +4972,13 @@ namespace
         }
         else
         {
-            for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
-            {
-                if (membership.room_id == room_id && membership.membership == "join")
-                {
-                    add(membership.user_id);
-                }
-            }
+            database::for_each_room_membership_row(rt.homeserver.database.persistent_store, room_id,
+                                                   [&](database::PersistentMembership const& membership) {
+                                                       if (membership.membership == "join")
+                                                       {
+                                                           add(membership.user_id);
+                                                       }
+                                                   });
         }
         return heroes;
     }
@@ -5052,6 +5151,43 @@ namespace
         content.push_back(json_member("event_id", json_str(std::string{event_id})));
         return set_account_data(runtime, {std::string{user_id}, std::string{room_id}, "m.fully_read",
                                           json_serialize(json_obj(std::move(content))), 0U});
+    }
+
+    // The thread `event_id` of `room_id` belongs to, or nullopt when this server holds no such event there (ADR-0737).
+    [[nodiscard]] auto receipt_thread_of_event(database::PersistentStore const& store, std::string_view room_id,
+                                               std::string_view event_id) -> std::optional<std::string>
+    {
+        auto const event = store.events.find_in_room(room_id, event_id);
+        if (event == store.events.end())
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        {
+            return std::nullopt;
+        }
+        return sync::event_thread_id(store, *object);
+    }
+
+    // Whether `thread_id` names a thread root of `room_id` (an event in the main timeline) and the event `event_id`
+    // is that root or belongs to its thread (ADR-0737). An event this server does not hold in the room is related to
+    // nothing: the endpoint answers 400 for it.
+    [[nodiscard]] auto receipt_event_is_in_thread(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view event_id, std::string_view thread_id) -> bool
+    {
+        auto const root_thread = receipt_thread_of_event(store, room_id, thread_id);
+        if (!root_thread.has_value() || *root_thread != sync::main_thread_id)
+        {
+            return false;
+        }
+        if (event_id == thread_id)
+        {
+            return true;
+        }
+        auto const event_thread = receipt_thread_of_event(store, room_id, event_id);
+        return event_thread.has_value() && *event_thread == thread_id;
     }
 
     // Sets one of the user's receipts and wakes /sync. Spec (Receipts): "Each user_id,
@@ -5271,24 +5407,20 @@ namespace
                                                         LazySelectorRef lazy = std::nullopt) -> canonicaljson::Array
     {
         auto state_events = canonicaljson::Array{};
-        for (auto const& state_entry : store.state)
-        {
-            if (state_entry.room_id != room_id)
-            {
-                continue;
-            }
+        // The room's own state rows through the state index (ADR-0344), in storage order.
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& state_entry) {
             auto const event = store.events.find(state_entry.event_id);
             if (event == store.events.end() ||
                 !sync::event_passes_filter(filter, state_entry.event_type, event->sender_user_id))
             {
-                continue;
+                return;
             }
             if (lazy.has_value() && !keep_lazily(lazy->get(), state_entry.event_type, state_entry.state_key, *event))
             {
-                continue;
+                return;
             }
             state_events.push_back(client_event_with_id(store, *event));
-        }
+        });
         return state_events;
     }
 
@@ -5531,12 +5663,7 @@ namespace
         auto earliest_above = store.events.end();
         auto ids = std::vector<std::string>{};
         auto above = std::vector<std::reference_wrapper<database::PersistentEvent const>>{};
-        for (auto const& entry : store.state)
-        {
-            if (entry.room_id != room_id)
-            {
-                continue;
-            }
+        database::for_each_room_state_row(store, room_id, [&](database::PersistentStateEvent const& entry) {
             auto const event = store.events.find(entry.event_id);
             if (event != store.events.end() && event->stream_ordering > position)
             {
@@ -5545,10 +5672,10 @@ namespace
                     earliest_above = event;
                 }
                 above.emplace_back(*event);
-                continue;
+                return;
             }
             ids.push_back(entry.event_id);
-        }
+        });
         if (earliest_above == store.events.end())
         {
             return build_current_state_events_array(store, filter, room_id, lazy);
@@ -5755,9 +5882,11 @@ namespace
         }
 
         auto receipts = sync::ReceiptContentBuilder{};
-        for (auto const& receipt : runtime.database.persistent_store.receipts)
+        // The room's own rows, through the receipt index (ADR-0737), never the whole table.
+        for (auto const* receipt_row : database::receipts_in_room(runtime.database.persistent_store, room_id))
         {
-            if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
+            auto const& receipt = *receipt_row;
+            if (receipt.stream_id <= since_sync_stream_id)
             {
                 continue;
             }
@@ -5836,14 +5965,13 @@ namespace
     [[nodiscard]] auto joined_membership_changed_since(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id, std::uint64_t since_ordering) -> bool
     {
-        auto const state_entry = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
-        });
-        if (state_entry == store.state.end())
+        // The state index (ADR-0344), not a scan of the whole state table, for every joined room of every sync.
+        auto const member_event_id = database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        if (!member_event_id.has_value())
         {
             return false;
         }
-        auto const event = store.events.find(state_entry->event_id);
+        auto const event = store.events.find(*member_event_id);
         if (event == store.events.end() || event->stream_ordering <= since_ordering)
         {
             return false;
@@ -5919,6 +6047,97 @@ namespace
             rows[data.room_id].push_back(&data);
         });
         return rows;
+    }
+
+    // The most recent event stream position in `room_id`, of any status; 0 when it holds none. One index lookup.
+    [[nodiscard]] auto room_latest_event_ordering(database::PersistentStore const& store, std::string_view room_id)
+        -> std::uint64_t
+    {
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const count = static_cast<std::ptrdiff_t>(std::ranges::size(rows));
+        return count == 0 ? std::uint64_t{0U} : rows[count - 1].stream_ordering;
+    }
+
+    // The joined rooms a classic /sync does per-room work for (ADR-0654, ADR-0658). Candidates come from the user's
+    // own membership rows and the room index, in the order of `database.rooms`. On an incremental sync (`incremental`)
+    // a room is left out, and not charged to max_sync_rooms, when none of the things that put a room in the response
+    // can be true of it: an event above `since`, a typing change above `since`, an account-data row of the user above
+    // `since`, or a receipt row above `since`. Each is an index lookup or a read of the room's own rows, and the test
+    // is a superset of what the room builder emits, so no room with news is left out. Past max_sync_rooms the rooms
+    // with the most recent event are served, ties by room ID. A room that has news and is past the cap is not served by
+    // this sync, and the next_batch still moves on: the same as before this check existed, when the 1001st room with
+    // news was dropped (ADR-0658).
+    [[nodiscard]] auto select_sync_rooms(ClientServerRuntime const& rt, database::PersistentStore const& store,
+                                         std::string_view user, sync::SyncFilter const& filter, bool incremental,
+                                         std::uint64_t since_ordering, std::uint64_t since_sync_stream_id,
+                                         AccountDataByRoom const& user_account_data) -> std::vector<LocalRoom const*>
+    {
+        struct Candidate final
+        {
+            LocalRoom const* room{nullptr};
+            std::uint64_t activity{0U};
+        };
+        auto candidates = std::vector<Candidate>{};
+        database::for_each_user_membership_row(store, user, [&](database::PersistentMembership const& membership) {
+            if (membership.membership != "join")
+            {
+                return;
+            }
+            auto const* room = find_local_room(rt.homeserver.database, membership.room_id);
+            if (room == nullptr || !joined(*room, user) ||
+                (filter.present && !sync::room_passes_filter(filter.room, room->room_id)))
+            {
+                return;
+            }
+            candidates.push_back({room, room_latest_event_ordering(store, room->room_id)});
+        });
+        std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+            return left.room < right.room;
+        });
+        candidates.erase(std::ranges::unique(candidates, {}, &Candidate::room).begin(), candidates.end());
+
+        if (incremental)
+        {
+            std::erase_if(candidates, [&](Candidate const& candidate) {
+                auto const& room_id = candidate.room->room_id;
+                if (candidate.activity > since_ordering ||
+                    room_typing_stream_id_for(rt.homeserver, room_id) > since_sync_stream_id)
+                {
+                    return false;
+                }
+                if (auto const rows = user_account_data.find(room_id);
+                    rows != user_account_data.end() &&
+                    std::ranges::any_of(rows->second, [&](database::PersistentAccountData const* row) {
+                        return row->stream_id > since_sync_stream_id;
+                    }))
+                {
+                    return false;
+                }
+                return !std::ranges::any_of(database::receipts_in_room(store, room_id),
+                                            [&](database::PersistentReceipt const* receipt) {
+                                                return receipt->stream_id > since_sync_stream_id;
+                                            });
+            });
+        }
+
+        if (candidates.size() > rt.limits.max_sync_rooms)
+        {
+            std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+                return left.activity != right.activity ? left.activity > right.activity
+                                                       : left.room->room_id < right.room->room_id;
+            });
+            candidates.resize(rt.limits.max_sync_rooms);
+            std::ranges::sort(candidates, [](Candidate const& left, Candidate const& right) {
+                return left.room < right.room;
+            });
+        }
+        auto served = std::vector<LocalRoom const*>{};
+        served.reserve(candidates.size());
+        for (auto const& candidate : candidates)
+        {
+            served.push_back(candidate.room);
+        }
+        return served;
     }
 
     [[nodiscard]] auto build_account_data_events(AccountDataByRoom const& user_account_data,
@@ -6394,16 +6613,16 @@ namespace
         // The user's account data, read once for every room below and the global section (ADR-0440).
         auto const user_account_data = read_user_account_data(store, user);
 
-        for (auto const& room : rt.homeserver.database.rooms)
+        // The joined rooms this sync does per-room work for (ADR-0654, ADR-0658): found from the user's own membership
+        // rows, not by walking every room on the server; an incremental sync leaves out a room that cannot have news
+        // without charging it to max_sync_rooms; and when more rooms remain than the cap the most recently active are
+        // served.
+        auto const served_rooms = select_sync_rooms(rt, store, user, filter, since_token.has_value() && !full_state,
+                                                    since_ordering, since_sync_stream_id, user_account_data);
+
+        for (auto const* const served_room : served_rooms)
         {
-            if (join_count >= rt.limits.max_sync_rooms || !joined(room, user))
-            {
-                continue;
-            }
-            if (filter.present && !sync::room_passes_filter(filter.room, room.room_id))
-            {
-                continue;
-            }
+            auto const& room = *served_room;
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
             // derived from THIS window per the Matrix sync spec — never from the
@@ -6523,6 +6742,18 @@ namespace
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
 
+            // Incremental sync: suppress rooms that have nothing new to report. Done before the unread counts, which
+            // an omitted room never shows (ADR-0655).
+            // Without this check, re-dispatches after a long-poll timeout emit
+            // the full membership state of every joined room on every 5-second
+            // cycle, causing clients to receive the same stale payload repeatedly
+            // and making it appear as if the room is stuck.
+            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() &&
+                state_events.empty() && ephemeral_events.empty())
+            {
+                continue;
+            }
+
             // unread_notifications: counts are relative to the user's
             // m.read/m.read.private receipts, unthreaded and per thread, not
             // the sync position (#417, ported from the sliding-sync path).
@@ -6559,17 +6790,6 @@ namespace
                         thread_counts.push_back(json_member(thread_id, counts_object(counts)));
                     }
                 }
-            }
-
-            // Incremental sync: suppress rooms that have nothing new to report.
-            // Without this check, re-dispatches after a long-poll timeout emit
-            // the full membership state of every joined room on every 5-second
-            // cycle, causing clients to receive the same stale payload repeatedly
-            // and making it appear as if the room is stuck.
-            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() &&
-                state_events.empty() && ephemeral_events.empty())
-            {
-                continue;
             }
 
             ++join_count;
@@ -7037,13 +7257,10 @@ namespace
         auto const now = std::chrono::steady_clock::now();
         auto& connections = runtime.sliding_sync_connections;
 
-        for (auto it = connections.begin(); it != connections.end();)
-        {
-            // A default-constructed last_used is the clock's epoch and so reads as
-            // arbitrarily old; every entry is stamped immediately after insertion,
-            // so only genuinely idle connections match here.
-            it = (now - it->second.last_used) > sliding_sync_idle_ttl ? connections.erase(it) : std::next(it);
-        }
+        // The idle ones are at the front of the table's last_used index: the work is the connections removed, not the
+        // connections of every user (ADR-0663). Every entry is stamped when it is made, so only genuinely idle
+        // connections are removed here.
+        connections.erase_idle(now, sliding_sync_idle_ttl);
 
         // A poll on a connection that already exists needs no room made for it.
         // Reserving a slot unconditionally meant a device sitting at exactly the
@@ -7055,10 +7272,11 @@ namespace
         }
 
         auto const prefix = sliding_sync_device_prefix(user, device_id);
-        auto owned = std::vector<std::map<std::string, sync::SlidingSyncConnectionState>::iterator>{};
-        for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
+        auto const& states = connections.states();
+        auto owned = std::vector<std::pair<std::chrono::steady_clock::time_point, std::string>>{};
+        for (auto it = states.lower_bound(prefix); it != states.end() && it->first.starts_with(prefix); ++it)
         {
-            owned.push_back(it);
+            owned.emplace_back(it->second.last_used, it->first);
         }
         auto const cap = static_cast<std::size_t>(std::max(1U, max_per_device));
         if (owned.size() < cap)
@@ -7067,14 +7285,37 @@ namespace
         }
 
         // Keep the cap-1 most recently used, leaving room for the new connection.
-        std::ranges::sort(owned, [](auto const& left, auto const& right) {
-            return left->second.last_used < right->second.last_used;
-        });
+        std::ranges::sort(owned);
         auto const to_evict = owned.size() - (cap - 1U);
         for (auto index = std::size_t{0U}; index < to_evict; ++index)
         {
-            connections.erase(owned[index]);
+            connections.erase(owned[index].second);
         }
+    }
+
+    // The bytes of list configuration the device's other connections keep (committed and pending), for the
+    // per-device budget (ADR-0663). Walks at most sliding_sync_connections_per_device entries of one device's
+    // key range, so the work does not grow with what a client sends. Caller holds runtime.mutex.
+    [[nodiscard]] auto sliding_sync_other_connections_bytes(HomeserverRuntime const& runtime, std::string_view user,
+                                                            std::string_view device_id, std::string const& conn_key)
+        -> std::uint64_t
+    {
+        auto const prefix = sliding_sync_device_prefix(user, device_id);
+        auto total = std::uint64_t{0U};
+        auto const& connections = runtime.sliding_sync_connections.states();
+        for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
+        {
+            if (it->first == conn_key)
+            {
+                continue;
+            }
+            total += sync::sliding_sync_retained_bytes(it->second.list_configs);
+            if (it->second.pending_response.has_value())
+            {
+                total += sync::sliding_sync_retained_bytes(it->second.pending_response->list_configs);
+            }
+        }
+        return total;
     }
 
     // MSC4186 "Changes to `timeline_limit`": the joined rooms whose timeline this request will resend
@@ -7197,8 +7438,18 @@ namespace
         prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key,
                                        rt.limits.sliding_sync_connections_per_device);
 
-        auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
-        conn.last_used = std::chrono::steady_clock::now();
+        // ADR-0663: the lists this request would make the connection keep, with those of the device's other
+        // connections, stay within the per-device byte budget. Refused before the entry is created.
+        if (sync::sliding_sync_retained_bytes(ssreq) +
+                sliding_sync_other_connections_bytes(rt.homeserver, user, device_id, conn_key) >
+            rt.limits.sliding_sync.retained_bytes_per_device)
+        {
+            return DispatchResult{DispatchResult::Status::complete,
+                                  err(400U, "M_INVALID_PARAM", "this device's sliding sync connections hold too much"),
+                                  {}};
+        }
+
+        auto& conn = rt.homeserver.sliding_sync_connections.touch(conn_key, std::chrono::steady_clock::now());
 
         // MSC4186 does not let a server assume that a completed HTTP response
         // reached the client. Only a later request carrying the returned pos
@@ -7261,16 +7512,19 @@ namespace
         // changes that end the long-poll anyway (see SlidingSyncConnectionState::list_configs), so
         // an idle long-poll still loads neither the user's rules nor the room list.
         auto unread_classifier = std::optional<PushRuleUnreadClassifier>{};
+        // One set of per-request lookups for every list and every room built (ADR-0665).
+        auto request_lookups = std::optional<sync::SlidingSyncRequestLookups>{};
         auto list_results = std::map<std::string, sync::RoomListResult>{};
         auto const build_list_windows = [&]() {
             unread_classifier.emplace(store, user, rt.limits.max_push_rules_per_user, history_visibility);
+            request_lookups.emplace(store, user);
             for (auto const& [list_name, list] : ssreq.lists)
             {
                 auto const empty_prev = std::vector<std::string>{};
                 auto const it = conn.list_prev_windows.find(list_name);
                 auto const& prev_win = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
                 list_results[list_name] =
-                    sync::compute_room_list(rt.homeserver, user, list, prev_win, store, *unread_classifier);
+                    sync::compute_room_list(user, list, prev_win, store, *unread_classifier, *request_lookups);
             }
         };
         bool const list_config_changed = std::ranges::any_of(ssreq.lists, [&conn](auto const& entry) {
@@ -7374,10 +7628,14 @@ namespace
                 //   - account-data rows owned by this user (account_data)
                 //   - receipts or typing updates in any room the user has joined
                 //     (receipts / typing)
-                bool const has_relevant_dlc =
-                    wants_e2ee && std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
-                        return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
-                    });
+                auto has_relevant_dlc = false;
+                if (wants_e2ee)
+                {
+                    database::for_each_observer_device_list_change(
+                        store, user, [&](database::PersistentDeviceListChange const& change) {
+                            has_relevant_dlc = has_relevant_dlc || change.stream_id > since_sync_stream_id;
+                        });
+                }
                 bool const has_relevant_tdm = wants_to_device && database::has_to_device_message_after(
                                                                      store, user, device_id, since_sync_stream_id);
                 auto has_relevant_ad = false;
@@ -7388,10 +7646,13 @@ namespace
                     });
                 }
                 bool const has_relevant_receipts =
-                    wants_receipts &&
-                    std::ranges::any_of(rt.homeserver.database.persistent_store.receipts, [&](auto const& r) {
-                        return r.stream_id > since_sync_stream_id && joined_rooms.contains(r.room_id) &&
-                               sync::receipt_visible_to(r.receipt_type, r.user_id, user);
+                    wants_receipts && std::ranges::any_of(joined_rooms, [&](auto const& joined_room) {
+                        return std::ranges::any_of(
+                            database::receipts_in_room(rt.homeserver.database.persistent_store, joined_room),
+                            [&](database::PersistentReceipt const* r) {
+                                return r->stream_id > since_sync_stream_id &&
+                                       sync::receipt_visible_to(r->receipt_type, r->user_id, user);
+                            });
                     });
                 bool const has_relevant_typing =
                     wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
@@ -7481,6 +7742,14 @@ namespace
         auto initial_room_ids = std::unordered_set<std::string>{};
         // ADR-0247: the one event position this response's pos names; no room's
         // timeline holds an event above it, or the next request would send it again.
+        // Each list's window as a set, so asking which lists hold a room is a lookup, not a scan of the window (a
+        // range's end is the client's, so a window can hold every room the user has).
+        auto windowed_sets = std::map<std::string, std::unordered_set<std::string>>{};
+        for (auto const& [lname, result] : list_results)
+        {
+            windowed_sets[lname].insert(result.windowed_room_ids.begin(), result.windowed_room_ids.end());
+        }
+
         auto const visible_event_ordering = visible_stream_position(rt.homeserver.database);
         for (auto const& room_id : response_room_ids)
         {
@@ -7513,7 +7782,7 @@ namespace
             // one list over the neutral start.
             for (auto const& [lname, result] : list_results)
             {
-                if (std::ranges::find(result.windowed_room_ids, room_id) == result.windowed_room_ids.end())
+                if (!windowed_sets.at(lname).contains(room_id))
                 {
                     continue;
                 }
@@ -7548,10 +7817,10 @@ namespace
             }
             // The floor is the later of the request pos and the room's last send; the room's
             // last send alone decides what counts as resent (`expanded_timeline`).
-            auto room =
-                sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                          lazy_already_sent, ignored_senders, history_visibility, *unread_classifier,
-                                          expansion, room_last_ordering, visible_event_ordering, device_id);
+            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                                  lazy_already_sent, ignored_senders, history_visibility,
+                                                  *unread_classifier, expansion, room_last_ordering,
+                                                  visible_event_ordering, device_id, &request_lookups.value());
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -7954,26 +8223,11 @@ namespace
     [[nodiscard]] auto key_backup_etag(database::PersistentStore const& store, std::string_view user_id,
                                        std::string_view version) -> std::string
     {
-        auto sessions = std::vector<database::PersistentKeyBackupSession const*>{};
-        database::for_each_key_backup_session(store, user_id, version,
-                                              [&sessions](database::PersistentKeyBackupSession const& session) {
-                                                  sessions.push_back(&session);
-                                              });
-        std::ranges::sort(sessions, [](database::PersistentKeyBackupSession const* lhs,
-                                       database::PersistentKeyBackupSession const* rhs) {
-            return std::tie(lhs->room_id, lhs->session_id, lhs->json) <
-                   std::tie(rhs->room_id, rhs->session_id, rhs->json);
-        });
-
-        auto pieces = std::vector<std::string_view>{};
-        pieces.reserve(sessions.size() * 3U + 1U);
-        pieces.push_back(version);
-        for (auto const* session : sessions)
-        {
-            pieces.push_back(session->room_id);
-            pieces.push_back(session->session_id);
-            pieces.push_back(session->json);
-        }
+        // The etag is derived from the version's content digest, which every writer keeps (run-3 C22, ADR-0673): the
+        // work does not grow with the bytes the user has stored. It changes exactly when a session is added, replaced
+        // or removed, and is the same after a restart because hydration rebuilds the digest from the rows.
+        auto const digest = database::key_backup_content_digest(store, user_id, version);
+        auto const pieces = std::array<std::string_view, 2U>{version, digest};
         auto const etag = crypto::generic_hash(pieces);
         return etag.value_or("0");
     }
@@ -8815,6 +9069,11 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "key query body must contain device_keys");
         }
+        // Run-3 C19 (ADR-0671): the same entry cap as the federation twin, before any lookup.
+        if (federation::key_request_exceeds_entry_cap(body, "device_keys"))
+        {
+            return err(413U, "M_TOO_LARGE", "key query names too many users and devices");
+        }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
         auto const& store = rt.homeserver.database.persistent_store;
@@ -8867,20 +9126,18 @@ namespace
             auto devices = canonicaljson::Object{};
             if (requested_devices->empty())
             {
-                for (auto const& key : store.device_keys)
-                {
-                    if (key.user_id != user_request.key)
-                    {
-                        continue;
-                    }
-                    auto device_object = federation::published_device_keys(store, key, requesting_user, display_names);
-                    if (!device_object.has_value())
-                    {
-                        continue;
-                    }
-                    normalize_device_key_object_for_client(rt, *device_object, user_request.key, key.device_id);
-                    devices.push_back(json_member(key.device_id, json_obj(std::move(*device_object))));
-                }
+                // The user's own device-key rows through the index, not the server-wide table (run-3 C19).
+                database::for_each_user_device_key(
+                    store, user_request.key, [&](database::PersistentDeviceKey const& key) {
+                        auto device_object =
+                            federation::published_device_keys(store, key, requesting_user, display_names);
+                        if (device_object.has_value())
+                        {
+                            normalize_device_key_object_for_client(rt, *device_object, user_request.key, key.device_id);
+                            devices.push_back(json_member(key.device_id, json_obj(std::move(*device_object))));
+                        }
+                        return true;
+                    });
             }
             else
             {
@@ -9165,6 +9422,11 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "key claim body must contain one_time_keys");
         }
+        // Run-3 C13 (ADR-0670): refused whole before any key is claimed, so no key is burnt for a refused request.
+        if (federation::key_request_exceeds_entry_cap(body, "one_time_keys"))
+        {
+            return err(413U, "M_TOO_LARGE", "key claim names too many users and devices");
+        }
 
         // Validate the whole body before any key is claimed: a claim burns a one-time key, so a malformed
         // entry found after earlier devices were served would answer 400 for keys already consumed.
@@ -9312,13 +9574,19 @@ namespace
                     }
                     else
                     {
+                        // The users the response holds, so each accepted entry costs one lookup, not a pass over
+                        // `users` (run-3 C13, ADR-0670). Built from the response so far, inserted into as it grows.
+                        auto held_users = std::unordered_set<std::string>{};
+                        held_users.reserve(users.size() + accepted->one_time_keys.size());
+                        for (auto const& held : users)
+                        {
+                            held_users.insert(held.key);
+                        }
                         for (auto& entry : accepted->one_time_keys)
                         {
                             // A user this response already holds (a local answer) is never overwritten or
                             // repeated: the serialiser refuses a duplicate member.
-                            if (std::ranges::none_of(users, [&entry](canonicaljson::ObjectMember const& held) {
-                                    return held.key == entry.key;
-                                }))
+                            if (held_users.insert(entry.key).second)
                             {
                                 users.push_back(std::move(entry));
                             }
@@ -10626,24 +10894,30 @@ namespace
         auto visibility = sync::HistoryVisibility{store, user_id};
         auto aggregations = make_bundled_aggregations(store, visibility, user_id, ignored_senders);
 
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events.room_in_stream_order(room_id))
+        // The room's rows in stream order, read in place: the target is found by its stream ordering and the walks
+        // below start there, so a request costs the rows it examines, never a copy of the room (ADR-0656).
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const row_count = static_cast<std::size_t>(std::ranges::size(rows));
+        auto target_index = static_cast<std::size_t>(
+            std::ranges::lower_bound(rows, target.stream_ordering, {}, &database::PersistentEvent::stream_ordering) -
+            std::ranges::begin(rows));
+        while (target_index < row_count &&
+               rows[static_cast<std::ptrdiff_t>(target_index)].event_id != target.event_id &&
+               rows[static_cast<std::ptrdiff_t>(target_index)].stream_ordering == target.stream_ordering)
         {
-            // ADR-0064 phase B2: events_before/events_after page through the
-            // timeline, so a rejected or soft-failed event is excluded the
-            // same as sync's and /messages'. `target` itself is handled by
-            // the caller (a rejected/soft-failed target_event_id 404s before
-            // this function is even called), so it is always present here.
-            if (event.status == "rejected" || event.status == "soft_failed")
-            {
-                continue;
-            }
-            entries.push_back(&event);
+            ++target_index;
         }
-        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
-            return candidate->event_id == target.event_id;
-        });
-        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+        // ADR-0064 phase B2: events_before/events_after page through the timeline, so a rejected or soft-failed event
+        // is excluded the same as sync's and /messages'. `target` itself is handled by the caller (a rejected or
+        // soft-failed target_event_id 404s before this function is even called).
+        auto const hidden_status = [](database::PersistentEvent const& event) {
+            return event.status == "rejected" || event.status == "soft_failed";
+        };
+        // Every row looked at, visible or not, counts against the examination budget /messages has, for each of the
+        // two walks (ADR-0656).
+        auto examined = std::size_t{0U};
+        auto examined_after = std::size_t{0U};
+        auto const examination_budget = rt.limits.max_messages_events_examined;
 
         // RoomEventFilter.rooms/not_rooms gate the whole response: this
         // endpoint is inherently single-room, so a room list that excludes
@@ -10658,26 +10932,45 @@ namespace
         auto chunk_senders = std::unordered_set<std::string>{target.sender_user_id};
         auto events_before = canonicaljson::Array{};
         auto start_token = std::to_string(target.stream_ordering);
+        auto last_examined_before = target.stream_ordering;
+        auto last_examined_after = target.stream_ordering;
         if (room_allowed && target_index > 0U)
         {
             for (auto i = target_index; i > 0U && events_before.size() < before_limit; --i)
             {
-                auto const* candidate = entries[i - 1U];
-                if (!passes_room_event_filter(filter.timeline, *candidate))
+                if (examined >= examination_budget)
+                {
+                    break;
+                }
+                ++examined;
+                auto const& candidate = rows[static_cast<std::ptrdiff_t>(i - 1U)];
+                if (hidden_status(candidate))
+                {
+                    last_examined_before = candidate.stream_ordering;
+                    continue;
+                }
+                last_examined_before = candidate.stream_ordering;
+                if (!passes_room_event_filter(filter.timeline, candidate))
                 {
                     continue;
                 }
-                if (withheld_as_ignored(ignored_senders, *candidate))
+                if (withheld_as_ignored(ignored_senders, candidate))
                 {
                     continue;
                 }
-                if (!visibility.can_see(*candidate))
+                if (!visibility.can_see(candidate))
                 {
                     continue;
                 }
-                events_before.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
-                chunk_senders.insert(candidate->sender_user_id);
-                start_token = std::to_string(candidate->stream_ordering);
+                events_before.push_back(aggregations.apply(candidate, client_event_with_id(store, candidate)));
+                chunk_senders.insert(candidate.sender_user_id);
+                start_token = std::to_string(candidate.stream_ordering);
+            }
+            // The budget ended the walk before the page was full: the token is the last row examined, so a
+            // /messages request from it carries on (as /messages does when its own budget ends, ADR-0470).
+            if (examined >= examination_budget && events_before.size() < before_limit)
+            {
+                start_token = std::to_string(last_examined_before);
             }
         }
 
@@ -10691,25 +10984,39 @@ namespace
         auto last_returned_event_id = target.event_id;
         if (room_allowed)
         {
-            for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
+            for (auto i = target_index + 1U; i < row_count && events_after.size() < after_limit; ++i)
             {
-                auto const* candidate = entries[i];
-                if (!passes_room_event_filter(filter.timeline, *candidate))
+                if (examined_after >= examination_budget)
+                {
+                    break;
+                }
+                ++examined_after;
+                auto const& candidate = rows[static_cast<std::ptrdiff_t>(i)];
+                last_examined_after = candidate.stream_ordering;
+                if (hidden_status(candidate))
                 {
                     continue;
                 }
-                if (withheld_as_ignored(ignored_senders, *candidate))
+                if (!passes_room_event_filter(filter.timeline, candidate))
                 {
                     continue;
                 }
-                if (!visibility.can_see(*candidate))
+                if (withheld_as_ignored(ignored_senders, candidate))
                 {
                     continue;
                 }
-                events_after.push_back(aggregations.apply(*candidate, client_event_with_id(store, *candidate)));
-                chunk_senders.insert(candidate->sender_user_id);
-                end_token = std::to_string(candidate->stream_ordering);
-                last_returned_event_id = candidate->event_id;
+                if (!visibility.can_see(candidate))
+                {
+                    continue;
+                }
+                events_after.push_back(aggregations.apply(candidate, client_event_with_id(store, candidate)));
+                chunk_senders.insert(candidate.sender_user_id);
+                end_token = std::to_string(candidate.stream_ordering);
+                last_returned_event_id = candidate.event_id;
+            }
+            if (examined_after >= examination_budget && events_after.size() < after_limit)
+            {
+                end_token = std::to_string(last_examined_after);
             }
         }
 
@@ -11475,37 +11782,51 @@ namespace
         }
 
         auto const& store = rt.homeserver.database.persistent_store;
-        auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : store.events.room_in_stream_order(room_id))
-        {
-            // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
-            if (event.status != "rejected" && event.status != "soft_failed")
-            {
-                entries.push_back(&event);
-            }
-        }
-
-        // Room History Visibility (CSAZ-3): only events the user may see. For a user who has
-        // left, that stops at their departure, because nothing received after it is visible.
+        // Room History Visibility (CSAZ-3): only events the user may see. For a user who has left, that stops at
+        // their departure, because nothing received after it is visible. The room's rows are walked newest first in
+        // place, and every row looked at counts against the examination budget /messages has, so a reader whose
+        // newest rows are all hidden from them costs the budget and not the room's history (ADR-0656).
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
-        for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+        auto last_examined = std::optional<std::uint64_t>{};
+        auto const rows = store.events.room_in_stream_order(room_id);
+        auto const budget = rt.limits.max_messages_events_examined;
+        auto examined = std::size_t{0U};
+        for (auto index = static_cast<std::size_t>(std::ranges::size(rows)); index > 0U; --index)
         {
-            if (chunk.size() >= limit)
+            if (chunk.size() >= limit || examined >= budget)
             {
                 break;
             }
-            if (!visibility.can_see(**it))
+            ++examined;
+            auto const& event = rows[static_cast<std::ptrdiff_t>(index - 1U)];
+            // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                last_examined = event.stream_ordering;
+                continue;
+            }
+            last_examined = event.stream_ordering;
+            if (!visibility.can_see(event))
             {
                 continue;
             }
             if (chunk.empty())
             {
-                start_token = std::to_string((*it)->stream_ordering);
+                start_token = std::to_string(event.stream_ordering);
             }
-            end_token = std::to_string((*it)->stream_ordering);
-            chunk.push_back(client_event_with_id(store, **it));
+            end_token = std::to_string(event.stream_ordering);
+            chunk.push_back(client_event_with_id(store, event));
+        }
+        // The budget ended the walk before the page was full: the tokens stand at the last row examined.
+        if (examined >= budget && chunk.size() < limit && last_examined.has_value())
+        {
+            if (chunk.empty())
+            {
+                start_token = std::to_string(*last_examined);
+            }
+            end_token = std::to_string(*last_examined);
         }
         return {std::move(chunk), std::move(start_token), std::move(end_token)};
     }
@@ -12328,13 +12649,12 @@ namespace
         }
         using TargetKey = std::pair<std::string_view, std::string_view>;
         auto held = std::set<TargetKey>{};
-        for (auto const& row : rt.homeserver.database.persistent_store.key_signatures)
-        {
-            if (row.signer_user_id == signer)
-            {
-                held.emplace(row.target_user_id, row.target_device_id);
-            }
-        }
+        // The signer's own rows through the per-signer index (run-3 C14, ADR-0672), never the whole table.
+        database::for_each_signer_key_signature(rt.homeserver.database.persistent_store, signer,
+                                                [&held](database::PersistentKeySignature const& row) {
+                                                    held.emplace(row.target_user_id, row.target_device_id);
+                                                    return true;
+                                                });
         auto added = std::set<TargetKey>{};
         for (auto const& user_member : *parsed)
         {
@@ -12671,6 +12991,7 @@ namespace
             return false;
         }
         auto stored = true;
+        auto rows = std::vector<database::PersistentKeySignature>{};
         for (auto const& user_member : *parsed)
         {
             auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
@@ -12687,14 +13008,11 @@ namespace
                     stored = false;
                     continue;
                 }
-                if (!database::store_key_signature(
-                        store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
-                {
-                    stored = false;
-                }
+                rows.push_back({std::string{user}, user_member.key, key_member.key, serialized.output});
             }
         }
-        return stored;
+        // One transaction for the whole upload, not one commit per signature (run-3 C14, ADR-0672).
+        return database::store_key_signatures(store, std::move(rows)) && stored;
     }
 
     // PUT /_matrix/client/v3/room_keys/keys/{roomId}: stores the sessions of one room.
@@ -13110,6 +13428,54 @@ namespace
         return resp(200U, "{}");
     }
 
+    // Run-3 C22 (ADR-0673): true when a PUT of backup sessions carries a session over `max_uploaded_key_document_bytes`
+    // (16 KiB, the limit of every other uploaded key document). A real session is a few hundred bytes; before this the
+    // only bound was the 1 MiB body, so one user could store sessions of that size up to the session-count cap. The
+    // size judged is the stored one: the body of a single-session PUT, the canonical form of a session in a room or
+    // batch PUT. A body that does not parse is left for the store step to refuse.
+    [[nodiscard]] auto key_backup_put_has_oversized_session(auth::KeyApiEndpoint endpoint, LocalHttpRequest const& req)
+        -> bool
+    {
+        auto const oversized_in = [](canonicaljson::Object const& sessions) {
+            return std::ranges::any_of(sessions, [](canonicaljson::ObjectMember const& session) {
+                if (session.value == nullptr)
+                {
+                    return false;
+                }
+                auto const serialized = canonicaljson::serialize_canonical(*session.value);
+                return serialized.error == canonicaljson::CanonicalJsonError::none &&
+                       serialized.output.size() > max_uploaded_key_document_bytes;
+            });
+        };
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::put_room_key_backup:
+            return req.body.size() > max_uploaded_key_document_bytes;
+        case auth::KeyApiEndpoint::put_room_key_backup_room: {
+            auto const body = parsed_json_object(req.body);
+            auto const* sessions = body.has_value() ? object_member_as_object(*body, "sessions") : nullptr;
+            return sessions != nullptr && oversized_in(*sessions);
+        }
+        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
+            auto const body = parsed_json_object(req.body);
+            auto const* rooms = body.has_value() ? object_member_as_object(*body, "rooms") : nullptr;
+            if (rooms == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*rooms, [&oversized_in](canonicaljson::ObjectMember const& room) {
+                auto const* room_object =
+                    room.value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&room.value->storage());
+                auto const* sessions =
+                    room_object == nullptr ? nullptr : object_member_as_object(*room_object, "sessions");
+                return sessions != nullptr && oversized_in(*sessions);
+            });
+        }
+        default:
+            return false;
+        }
+    }
+
     // ADR-0606: true when a PUT of sessions would leave the user holding more than
     // `max_key_backup_sessions_per_user`. Counts only the sessions the request would ADD: one already held in this
     // version is replaced (or kept) in place, so re-uploading a backup is never refused. Each offered session costs
@@ -13215,6 +13581,12 @@ namespace
         if (current_version == nullptr || current_version->version != session_ver)
         {
             return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
+        }
+        if (key_backup_put_has_oversized_session(route.endpoint, req))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "a key backup session may be at most " + std::to_string(max_uploaded_key_document_bytes) +
+                           " bytes");
         }
         if (key_backup_put_exceeds_cap(rt, route.endpoint, user, session_ver, req))
         {
@@ -13408,6 +13780,27 @@ namespace
         return json_serialize(json_obj({json_member("reports", json_arr(std::move(reports)))}));
     }
 
+    // Writes the audit row for an accepted report unless the reporter already filed it inside the window the
+    // administrators' listing shows, and refuses a reporter past their daily share (C26, ADR-0686). The check is the
+    // in-memory `safety_reports` index: no read of `audit_log` on the request path.
+    [[nodiscard]] auto record_safety_report(ClientServerRuntime& rt, trust_safety::SafetyAuditEvent const& audit)
+        -> LocalHttpResponse
+    {
+        switch (rt.safety_reports.admit(audit.event_type, audit.actor, audit.entity, wall_clock_milliseconds(),
+                                        rt.limits.max_safety_report_rows))
+        {
+        case SafetyReportIndex::Admission::duplicate:
+            break;
+        case SafetyReportIndex::Admission::reporter_over_budget:
+            return {429U, matrix_error("M_LIMIT_EXCEEDED", "Too many reports filed today. Please try again later.",
+                                       3'600'000U)};
+        case SafetyReportIndex::Admission::admitted:
+            append_policy_audit(rt, audit);
+            break;
+        }
+        return resp(200U, "{}");
+    }
+
     [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
         -> LocalHttpResponse
     {
@@ -13444,16 +13837,7 @@ namespace
         // reporter, same event) among the rows the admin listing shows is acknowledged without
         // writing another. A member cannot grow the table faster than the events they can see.
         auto const audit = trust_safety::make_safety_audit_event(user, event_id, decision);
-        auto const recent =
-            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
-        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
-            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
-        });
-        if (!already_reported)
-        {
-            append_policy_audit(rt, audit);
-        }
-        return resp(200U, "{}");
+        return record_safety_report(rt, audit);
     }
 
     // POST /_matrix/client/v3/users/{userId}/report (spec v1.14). "The caller is not required to be joined to any
@@ -13493,16 +13877,7 @@ namespace
             return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
         }
         auto const audit = trust_safety::make_safety_audit_event(user, reported, decision);
-        auto const recent =
-            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
-        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
-            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
-        });
-        if (!already_reported)
-        {
-            append_policy_audit(rt, audit);
-        }
-        return resp(200U, "{}");
+        return record_safety_report(rt, audit);
     }
 
     [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
@@ -13537,18 +13912,17 @@ namespace
             auto const rule = database::PersistentPolicyRule{
                 path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,
             };
-            if (!database::store_policy_rule(rt.homeserver.database.persistent_store, rule))
+            // C49 (ADR-0687): the rule, the admin_actions row and the audit row commit together or not at all.
+            if (!database::commit_policy_rule_with_audit(
+                    rt.homeserver.database.persistent_store, rule,
+                    {std::string{admin_user}, "trust_safety.policy_rule.upsert", rule.rule_id},
+                    local_audit_row(observability::AuditCategory::policy, "trust_safety.policy_rule.upsert", admin_user,
+                                    rule.rule_id, rule.action)))
             {
                 return err(500U, "M_UNKNOWN", "policy rule persistence failed");
             }
-            if (!database::append_admin_action(
-                    rt.homeserver.database.persistent_store,
-                    {std::string{admin_user}, "trust_safety.policy_rule.upsert", rule.rule_id}))
-            {
-                return err(500U, "M_UNKNOWN", "admin action persistence failed");
-            }
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
-                               "trust_safety.policy_rule.upsert", admin_user, rule.rule_id, rule.action);
+            remember_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                                 "trust_safety.policy_rule.upsert", admin_user, rule.rule_id, rule.action);
             return resp(200U, "{}");
         }
         if (req.method == "DELETE")
@@ -13559,17 +13933,23 @@ namespace
                 return err(400U, "M_BAD_JSON", "policy rule path must include scope and entity");
             }
             auto const rule_id = path->scope + ':' + path->entity;
-            if (!database::delete_policy_rule(rt.homeserver.database.persistent_store, rule_id))
+            if (std::ranges::none_of(rt.homeserver.database.persistent_store.policy_rules,
+                                     [&rule_id](database::PersistentPolicyRule const& held) {
+                                         return held.rule_id == rule_id;
+                                     }))
             {
                 return err(404U, "M_NOT_FOUND", "policy rule not found");
             }
-            if (!database::append_admin_action(rt.homeserver.database.persistent_store,
-                                               {std::string{admin_user}, "trust_safety.policy_rule.delete", rule_id}))
+            if (!database::commit_policy_rule_removal_with_audit(
+                    rt.homeserver.database.persistent_store, rule_id,
+                    {std::string{admin_user}, "trust_safety.policy_rule.delete", rule_id},
+                    local_audit_row(observability::AuditCategory::policy, "trust_safety.policy_rule.delete", admin_user,
+                                    rule_id, "deleted")))
             {
-                return err(500U, "M_UNKNOWN", "admin action persistence failed");
+                return err(500U, "M_UNKNOWN", "policy rule persistence failed");
             }
-            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
-                               "trust_safety.policy_rule.delete", admin_user, rule_id, "deleted");
+            remember_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                                 "trust_safety.policy_rule.delete", admin_user, rule_id, "deleted");
             return resp(200U, "{}");
         }
 
@@ -13794,6 +14174,11 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
         client_api.max_registration_validation_sessions_per_remote;
     rt.limits.max_uia_sessions = client_api.max_uia_sessions;
     rt.limits.max_safety_report_rows = client_api.max_safety_report_rows;
+    // Filled once, here, from the rows the audit log already holds; the report routes read this and not the log (C26).
+    rt.safety_reports.rebuild(
+        database::load_audit_events_by_type_prefix(rt.homeserver.database.persistent_store, "trust_safety.",
+                                                   rt.limits.max_safety_report_rows),
+        trust_safety::policy_action_name(trust_safety::PolicyAction::accept_report), rt.limits.max_safety_report_rows);
     rt.limits.max_notifications_page_size = client_api.max_notifications_page_size;
     rt.limits.max_relations_page_size = client_api.max_relations_page_size;
     rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
@@ -14550,9 +14935,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "no randomness for a session ID");
             }
-            session = record_identity_validation_session(rt, std::string{password_reset_purpose}, "email", address,
-                                                         body->client_secret, req.remote_addr, body->send_attempt, *sid,
-                                                         {}, {});
+            session = record_identity_validation_session(
+                rt, std::string{password_reset_purpose}, "email", address, body->client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *sid, {}, {});
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -14568,7 +14953,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->send_attempt = body->send_attempt;
             send_code = session->validated_at_ms == 0U;
         }
-        if (send_code && !throttled)
+        // A day's mail to one address is capped as well as its pace (C17, ADR-0685); an address past the cap is
+        // answered as a throttled one is, and the code already mailed stays good for every session of the address.
+        if (send_code && !throttled && password_reset_mail_budget_left(rt, address, now_ms))
         {
             session->user_id = owner;
             session->reset_token.clear();
@@ -14580,6 +14967,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     session->reset_token = std::move(*token);
                     session->reset_sent_at_ms = now_ms;
+                    note_password_reset_mail(rt, address, now_ms);
                 }
             }
         }
@@ -14654,17 +15042,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_SESSION_EXPIRED", "too many wrong codes; request a new one");
         }
         ++session->token_attempts;
-        // An empty stored code (no account) is compared like any other, so the work does not depend on it.
+        // An empty stored code (no account) is compared like any other, so the work does not depend on it. The code
+        // judged is this session's own or the latest one mailed to the address, whichever session asked for it (C17,
+        // ADR-0685): the address keeps one code per throttle interval, so a session the throttle gave no code of its
+        // own is not locked out. Both comparisons always run.
         auto const typed = normalize_password_reset_token(*token);
-        auto const stored =
-            session->reset_token.empty() ? std::string(password_reset_token_length, '-') : session->reset_token;
-        auto const matches =
-            crypto::constant_time_equal_variable_length(typed, stored) && !session->reset_token.empty();
+        auto const dummy = std::string(password_reset_token_length, '-');
+        auto const latest = latest_password_reset_code(rt, session->address);
+        auto const own_matches = crypto::constant_time_equal_variable_length(
+                                     typed, session->reset_token.empty() ? dummy : session->reset_token) &&
+                                 !session->reset_token.empty();
+        auto const latest_matches =
+            crypto::constant_time_equal_variable_length(typed, latest.empty() ? dummy : latest) && !latest.empty();
+        auto const matches = own_matches | latest_matches;
         if (!matches)
         {
             return dispatch_err(req, rt, 400U, "M_TOKEN_INCORRECT", "the code is not correct");
         }
         session->validated_at_ms = wall_clock_milliseconds();
+        spend_password_reset_code(rt, session->address, typed);
         core::secure_zero(std::as_writable_bytes(std::span{session->reset_token.data(), session->reset_token.size()}));
         session->reset_token.clear();
         return dispatch_resp(req, rt, 200U, R"({"success":true})");
@@ -14841,9 +15237,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // bind can recover the medium/address. The IS is the validation
             // authority: the session starts unvalidated and add/bind ask the IS
             // (getValidated3pid) whether its owner completed validation (AUTH-5).
-            auto* session = record_identity_validation_session(rt, "register", "email", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link);
+            auto* session =
+                record_identity_validation_session(rt, "register", "email", normalized_address, client_secret,
+                                                   rate_limit_client_key(req, rt.homeserver.config.server()),
+                                                   body->send_attempt, *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -14944,9 +15341,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Key the local session by the IS-issued sid (see register/email). The
             // country is preserved so the later bind can recover the MSISDN locale.
-            auto* session = record_identity_validation_session(rt, "register", "msisdn", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link, country);
+            auto* session = record_identity_validation_session(
+                rt, "register", "msisdn", normalized_address, client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *is_sid, base_url,
+                id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -15116,15 +15514,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // per attempt (L-01, security audit 2026-09); it used to be the
             // constant "merovingian-ui-auth", shared by every client and every
             // attempt.
-            auto const uia_challenge = json_serialize(json_obj({
-                json_member("flows", json_arr({json_obj({json_member("stages", json_arr({json_str(stage)}))})})),
-                json_member("params", json_obj({})),
-                json_member("session", json_str(issue_uia_session(rt, "register"))),
-            }));
+            // The pool is shared, so a session belongs to the requesting address (C45, ADR-0683).
+            auto const uia_owner = rate_limit_client_key(req, rt.homeserver.config.server());
+            auto const challenge = [&]() -> DispatchResult {
+                auto const session = issue_uia_session(rt, "register", uia_owner);
+                if (!session.has_value())
+                {
+                    return uia_pool_full_response(rt, req);
+                }
+                return dispatch_resp(
+                    req, rt, 401U,
+                    json_serialize(json_obj({
+                        json_member("flows",
+                                    json_arr({json_obj({json_member("stages", json_arr({json_str(stage)}))})})),
+                        json_member("params", json_obj({})),
+                        json_member("session", json_str(*session)),
+                    })));
+            };
             auto const* auth = object_member_object(*registration_object, "auth");
             if (auth == nullptr)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             // A supplied session must be one this server issued for this
             // endpoint; echoing a stale, guessed, or cross-endpoint id is not
@@ -15132,19 +15542,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // allows: the client "must pass back" a session only "if one is
             // provided" (ADR-0276). Complement's own blueprints register this way.
             if (auto const* supplied_session = string_member(*auth, "session");
-                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session))
+                supplied_session != nullptr && !uia_session_is_valid(rt, "register", *supplied_session, uia_owner))
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             auto const* auth_type = string_member(*auth, "type");
             if (auth_type == nullptr || *auth_type != stage)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
             // Spec: dummy authentication "requires no extra parameters".
             if (require_token && string_member(*auth, "token") == nullptr)
             {
-                return dispatch_resp(req, rt, 401U, uia_challenge);
+                return challenge();
             }
         }
         auto body = parse_register_body(req.body);
@@ -15818,9 +16228,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = record_identity_validation_session(rt, "account-3pid", "email", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link);
+            auto* session =
+                record_identity_validation_session(rt, "account-3pid", "email", normalized_address, client_secret,
+                                                   rate_limit_client_key(req, rt.homeserver.config.server()),
+                                                   body->send_attempt, *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -15924,9 +16335,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = record_identity_validation_session(rt, "account-3pid", "msisdn", normalized_address,
-                                                               client_secret, req.remote_addr, body->send_attempt,
-                                                               *is_sid, base_url, id_access_token, next_link, country);
+            auto* session = record_identity_validation_session(
+                rt, "account-3pid", "msisdn", normalized_address, client_secret,
+                rate_limit_client_key(req, rt.homeserver.config.server()), body->send_attempt, *is_sid, base_url,
+                id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -16559,6 +16971,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!permitted)
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to delete this alias");
+        }
+        // Spec (Application Service API, "Namespaces"): an exclusive namespace "prevents humans and other application
+        // services from creating/deleting entities in that namespace". The creation paths enforce it; so does this one,
+        // for the creator, a room moderator and a server administrator alike (C40, ADR-0688). Only the owning
+        // appservice, recovered from its masquerade token as on creation, may delete.
+        if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                room_alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
         }
         if (!database::delete_room_alias(rt.homeserver.database.persistent_store, room_alias))
         {
@@ -18304,34 +18726,42 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         // Spec §10.7.1: DELETE /devices/{deviceId} requires UIA with
         // m.login.password to prove account ownership before deletion.
-        auto const uia_challenge = device_delete_uia_challenge(issue_uia_session(rt, "delete_device"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "delete_device", *user);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
+        };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         // A supplied session must be one this server issued for this endpoint.
         // Omitting it is still allowed (single-shot flow); echoing a stale,
         // guessed, or cross-endpoint id is not.
         if (auto const* supplied_session = string_member(*auth, "session");
-            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_device", *supplied_session))
+            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_device", *supplied_session, *user))
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         if (auth_type == nullptr || *auth_type != "m.login.password")
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -18343,7 +18773,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
+            return challenge(true);
         }
         auto const device_id = device_id_from_device_path(request_path);
         // The servers to tell, read before the device is removed.
@@ -18361,39 +18791,60 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/delete_devices")
     {
-        auto const uia_challenge = device_delete_uia_challenge(issue_uia_session(rt, "delete_devices"));
+        auto const challenge = [&](bool password_failed) -> DispatchResult {
+            auto const session = issue_uia_session(rt, "delete_devices", *user);
+            if (!session.has_value())
+            {
+                return uia_pool_full_response(rt, req);
+            }
+            auto const body = device_delete_uia_challenge(*session);
+            return dispatch_resp(req, rt, 401U, password_failed ? uia_password_failure_body(body) : body);
+        };
         auto const body_obj = parsed_json_object(req.body);
         if (!body_obj.has_value())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
-        auto const devices = string_array_member(*body_obj, "devices");
+        auto devices = string_array_member(*body_obj, "devices");
         if (devices.empty())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "devices must be a non-empty array of device IDs");
         }
+        // Run-3 C02 (ADR-0669): no account holds more devices than the cap, so a longer list is refused before the
+        // password check or any lookup, and a repeated ID is handled once.
+        if (devices.size() > device_count_limit)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "devices names more device IDs than an account may hold");
+        }
+        {
+            auto seen = std::unordered_set<std::string>{};
+            std::erase_if(devices, [&seen](std::string const& device_id) {
+                return !seen.insert(device_id).second;
+            });
+        }
         auto const* auth = object_member_object(*body_obj, "auth");
         if (auth == nullptr)
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         // A supplied session must be one this server issued for this endpoint.
         // Omitting it is still allowed (single-shot flow); echoing a stale,
         // guessed, or cross-endpoint id is not.
         if (auto const* supplied_session = string_member(*auth, "session");
-            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_devices", *supplied_session))
+            supplied_session != nullptr && !uia_session_is_valid(rt, "delete_devices", *supplied_session, *user))
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* auth_type = string_member(*auth, "type");
         if (auth_type == nullptr || *auth_type != "m.login.password")
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const* current_password = string_member(*auth, "password");
         if (current_password == nullptr || current_password->empty())
         {
-            return dispatch_resp(req, rt, 401U, uia_challenge);
+            return challenge(false);
         }
         auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
         if (!password_verified.ok)
@@ -18405,7 +18856,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
                                     "Too many password attempts. Please try again later.", retry_after);
             }
-            return dispatch_resp(req, rt, 401U, uia_password_failure_body(uia_challenge));
+            return challenge(true);
         }
         // The servers to tell, read before any device is removed.
         auto const destinations = remote_servers_for_user(rt.homeserver, *user);
@@ -18712,17 +19163,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 continue;
             }
-            auto const invite_state =
-                std::ranges::find_if(rt.homeserver.database.persistent_store.state,
-                                     [&room_id, &invitee](database::PersistentStateEvent const& state) {
-                                         return state.room_id == room_id && state.event_type == "m.room.member" &&
-                                                state.state_key == invitee;
-                                     });
-            if (invite_state == rt.homeserver.database.persistent_store.state.end())
+            auto const invite_state_event_id = database::find_current_state_event_id(
+                rt.homeserver.database.persistent_store, room_id, "m.room.member", invitee);
+            if (!invite_state_event_id.has_value())
             {
                 continue;
             }
-            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, invite_state->event_id);
+            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, *invite_state_event_id);
             if (!invite_json.has_value())
             {
                 continue;
@@ -18730,7 +19177,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // Server-Server API, "Inviting to a room": the invitee's server is asked to sign the invite
             // before createRoom answers, so the client can use the invite at once (Complement
             // TestFederationRoomsInvite). Only a server that gives no usable answer is left to the queue.
-            auto const invite_event_id = invite_state->event_id;
+            auto const invite_event_id = *invite_state_event_id;
             // Read once: remaining_seconds() rounds up, so 0 means the deadline has passed, and a 0 passed on
             // would mean "the whole default budget" to deliver_remote_invite.
             auto const seconds_left = invite_deadline.remaining_seconds();
@@ -18922,6 +19369,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 400U, "M_NOT_FOUND", "filter not found");
                 }
                 sync_request.filter = stored->json;
+            }
+            // An inline filter, and one stored before the list cap existed, are refused the same way (ADR-0657).
+            if (auto const problem = sync::filter_list_cap_problem(*sync_request.filter); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
             }
         }
 
@@ -19408,6 +19860,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
 
                 auto const filter_argument = core::query_parameter(req.target, "filter");
+                if (auto const problem = sync::filter_list_cap_problem(filter_argument); problem.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+                }
                 auto const parsed_filter = sync::parse_room_event_filter_argument(filter_argument);
                 if (!parsed_filter.has_value())
                 {
@@ -20133,6 +20589,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 // `filter` is "A JSON RoomEventFilter": a malformed one is refused, as on
                 // /context, never silently dropped for an unfiltered page.
+                if (auto const problem = sync::filter_list_cap_problem(core::query_parameter(req.target, "filter"));
+                    problem.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+                }
                 if (!sync::parse_room_event_filter_argument(core::query_parameter(req.target, "filter")).has_value())
                 {
                     return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
@@ -20473,26 +20934,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
                         }
-                        // A thread_id is "The thread root's event ID (or main)". One naming no event
-                        // in this room is not a thread root; refusing it also bounds the receipt rows
-                        // a user can create to one per event in the room.
+                        // Spec (receipt endpoint, 400): "The `event_id` is not related to the `thread_id`". A
+                        // threaded receipt is accepted when the receipted event is the thread root itself or
+                        // reaches it by an `m.thread` relation (event_thread_id). One event is in one thread, so
+                        // a user cannot file receipts for an event under threads of their choosing; the rows one
+                        // user holds in a room are also capped by store_receipt (ADR-0737). The lookup is by
+                        // the event index and reads one event, not the table.
                         if (!thread_id.empty() && thread_id != sync::main_thread_id &&
-                            std::ranges::none_of(
-                                rt.homeserver.database.persistent_store.events,
-                                [&](database::PersistentEvent const& event) {
-                                    if (event.event_id != thread_id || event.room_id != room_id)
-                                    {
-                                        return false;
-                                    }
-                                    auto const parsed = canonicaljson::parse_lossless(event.json);
-                                    auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                                    return parsed.error == canonicaljson::ParseError::none && object != nullptr &&
-                                           sync::event_thread_id(rt.homeserver.database.persistent_store, *object) ==
-                                               sync::main_thread_id;
-                                }))
+                            !receipt_event_is_in_thread(rt.homeserver.database.persistent_store, room_id, event_id,
+                                                        thread_id))
                         {
-                            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
-                                                "thread_id must be main or the event ID of a thread root in the room");
+                            return dispatch_err(
+                                req, rt, 400U, "M_INVALID_PARAM",
+                                "thread_id must be main or the root of the thread the event belongs to");
                         }
                         log_diagnostic("room.receipt.accepted", {
                                                                     {"actor",        *user,        false},
@@ -21166,6 +21620,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // The body is a `Filter`: a field of the wrong type is refused (Complement
             // TestFilter), and nothing is stored, counted against the user's cap or logged
             // as a stored filter.
+            // A list over the 100-entry cap has its own answer, M_INVALID_PARAM (ADR-0657).
+            if (auto const problem = sync::filter_list_cap_problem(req.body); problem.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", *problem);
+            }
             if (auto const problem = sync::validate_filter_definition(req.body); problem.has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", *problem);

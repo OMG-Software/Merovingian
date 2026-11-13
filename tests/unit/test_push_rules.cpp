@@ -1521,3 +1521,72 @@ SCENARIO("A spent glob budget does not stop wildcard-free conditions from matchi
         }
     }
 }
+
+// C25 (ADR-0723): resolving a condition's key path scans a sender-chosen object, which used to be unbudgeted.
+SCENARIO("Resolving property paths over a very wide event is charged to the evaluation's budget",
+         "[push][security][c25]")
+{
+    GIVEN("40 override rules of 16 property conditions on the last of 8000 content keys, and an event with those keys")
+    {
+        auto rules = Array{};
+        for (auto rule_index = 0; rule_index < 40; ++rule_index)
+        {
+            auto conditions = Array{};
+            for (auto condition = 0; condition < 15; ++condition)
+            {
+                conditions.push_back(cond_event_property_is("content.zzz", Value{std::string{"x"}}));
+            }
+            conditions.push_back(cond_event_property_is("content.zzz", Value{std::string{"never"}}));
+            rules.push_back(
+                make_rule("wide" + std::to_string(rule_index), true, std::move(conditions), Array{action_notify()}));
+        }
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member("override", Value{std::move(rules)}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto content = Object{};
+        for (auto key = 0; key < 8000; ++key)
+        {
+            content.push_back(str_member("k" + std::to_string(key), "v"));
+        }
+        content.push_back(str_member("zzz", "x"));
+        auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org", std::move(content));
+
+        WHEN("it is evaluated for one recipient")
+        {
+            auto const result = merovingian::push::evaluate_push_rules(
+                ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"});
+
+            THEN("the path scans spent the budget, within it, and no rule matched")
+            {
+                REQUIRE(result.glob_budget_exhausted);
+                REQUIRE(result.glob_steps_used <= merovingian::push::max_push_glob_steps_per_evaluation);
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+    }
+
+    GIVEN("a property rule and an ordinary event")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member(
+            "override",
+            Value{Array{make_rule("by-type", true,
+                                  Array{cond_event_property_is("content.msgtype", Value{std::string{"m.text"}})},
+                                  Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                      Object{str_member("msgtype", "m.text")});
+
+        WHEN("it is evaluated")
+        {
+            auto const result = merovingian::push::evaluate_push_rules(
+                ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"});
+
+            THEN("the rule matches and the path walk cost nothing")
+            {
+                REQUIRE(result.notify);
+                REQUIRE(result.glob_steps_used == 0U);
+            }
+        }
+    }
+}

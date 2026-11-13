@@ -97,6 +97,10 @@ is full.
 - An administrator's account action and its audit row (`account.locked`, `account.suspended`, `auth.account_deactivated`)
   commit in one transaction (ADR-0629): the row exists exactly when the change does, and a store that cannot insert the
   row refuses the action with 500.
+- An administrator's policy-rule change (`PUT`/`DELETE` `/admin/safety/policy_rules/...` and the review action on both
+  surfaces), its `admin_actions` row and its `trust_safety.*` audit row commit in one transaction (C49, ADR-0687,
+  `commit_policy_rule_with_audit`): a rule is in force exactly when both rows exist, and no audit row is written for a
+  rule that was not stored. The in-memory window is updated only after the commit (`remember_local_audit`).
 - Account-moderation audit rows: `account.locked` and `account.suspended`
   (admin category) are appended when an admin locks/unlocks or
   suspends/unsuspends a user via `/_matrix/client/v1/admin/lock/{userId}` or

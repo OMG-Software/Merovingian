@@ -44,7 +44,8 @@ namespace merovingian::push
 [[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> GatewayCircuitOutcome;
 
 // gateway_circuit_outcome(result), except that an HTTP answer that took longer than half of
-// `total_timeout` is `slow_answer`. `elapsed` is how long the request took.
+// `total_timeout` is `slow_answer` and one that took longer than an eighth of it is `unproven_answer` (C48). `elapsed`
+// is how long the request took.
 [[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result, std::chrono::milliseconds elapsed,
                                            std::chrono::seconds total_timeout) noexcept -> GatewayCircuitOutcome;
 

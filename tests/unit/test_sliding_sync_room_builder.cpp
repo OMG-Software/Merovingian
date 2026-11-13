@@ -621,7 +621,7 @@ SCENARIO("Sliding sync notification counts are baselined on the user's read rece
         receipt.user_id = "@alice:example.org";
         receipt.event_id = "$m2";
         receipt.stream_id = 1U;
-        runtime.database.persistent_store.receipts.push_back(receipt);
+        store.receipts.push_back(receipt);
 
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.timeline_limit = 20U;

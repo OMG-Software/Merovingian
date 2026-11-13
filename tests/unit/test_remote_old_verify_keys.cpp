@@ -794,3 +794,73 @@ SCENARIO("Cached retired keys are never treated as current", "[federation][remot
         }
     }
 }
+
+SCENARIO("A server's signing keys are read through a per-server index that follows every write",
+         "[database][signing-keys][c27]")
+{
+    GIVEN("a store holding this server's key and the keys of many remote servers")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto const row = [](std::string const& server, std::string const& key_id, std::string secret = {}) {
+            return merovingian::database::PersistentServerSigningKey{server, key_id, "KEY", 1'000U, std::move(secret)};
+        };
+        REQUIRE(merovingian::database::store_server_signing_key(store, row("local.example", "ed25519:own", "secret")));
+        for (auto number = 0; number < 50; ++number)
+        {
+            REQUIRE(merovingian::database::store_server_signing_key(
+                store, row("remote" + std::to_string(number) + ".example", "ed25519:a")));
+        }
+        REQUIRE(merovingian::database::store_server_signing_key(store, row("local.example", "ed25519:rotated", "s2")));
+
+        WHEN("the rows of one server are read")
+        {
+            auto const own = merovingian::database::snapshot_server_signing_keys_of(store, "local.example");
+            auto const remote = merovingian::database::snapshot_server_signing_keys_of(store, "remote7.example");
+            auto const none = merovingian::database::snapshot_server_signing_keys_of(store, "unknown.example");
+
+            THEN("only that server's rows come back, in the order they were stored")
+            {
+                REQUIRE(own.size() == 2U);
+                REQUIRE(own[0].key_id == "ed25519:own");
+                REQUIRE(own[1].key_id == "ed25519:rotated");
+                REQUIRE(remote.size() == 1U);
+                REQUIRE(none.empty());
+            }
+        }
+
+        WHEN("a key is updated in place and a remote row is added after")
+        {
+            auto retired = row("local.example", "ed25519:own");
+            retired.expired_ts = 500U;
+            REQUIRE(merovingian::database::store_server_signing_key(store, row("remote7.example", "ed25519:b")));
+
+            THEN("a lookup finds the row at its position and the server's list grew by one")
+            {
+                REQUIRE(
+                    merovingian::database::find_server_signing_key(store, "remote7.example", "ed25519:b").has_value());
+                REQUIRE(merovingian::database::find_server_signing_key(store, "local.example", "ed25519:rotated")
+                            .has_value());
+                REQUIRE_FALSE(
+                    merovingian::database::find_server_signing_key(store, "local.example", "ed25519:none").has_value());
+                REQUIRE(merovingian::database::snapshot_server_signing_keys_of(store, "remote7.example").size() == 2U);
+                REQUIRE(merovingian::database::snapshot_server_signing_keys(store).size() == 53U);
+            }
+        }
+
+        WHEN("the rows are replaced behind the index, as a load from the database does")
+        {
+            store.server_signing_keys.push_back(row("loaded.example", "ed25519:a"));
+
+            THEN("a read still gives the right rows and the next write puts the index back in step")
+            {
+                REQUIRE(merovingian::database::snapshot_server_signing_keys_of(store, "loaded.example").size() == 1U);
+                REQUIRE(merovingian::database::snapshot_server_signing_keys_of(store, "local.example").size() == 2U);
+                REQUIRE(merovingian::database::store_server_signing_key(store, row("loaded.example", "ed25519:b")));
+                REQUIRE(merovingian::database::snapshot_server_signing_keys_of(store, "loaded.example").size() == 2U);
+                REQUIRE(store.server_signing_key_index.in_step(store.server_signing_keys.size()));
+            }
+        }
+    }
+}

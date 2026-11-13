@@ -176,7 +176,8 @@ public:
     // only for this call; the caller runs the provider after it returns. False for no match.
     [[nodiscard]] auto consume_pending_relay(std::uint64_t parent_request_id, std::string_view relay_digest) -> bool;
 
-    // Sends a response to an inbound request. json_body: without "id"/"reply_to".
+    // Sends a response to an inbound request. json_body: without "id"/"reply_to". A response that cannot be
+    // written ends the channel (healthy() turns false, ADR-0734); one over the cap is replaced as described above.
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
 
     // Sends a one-way notification (no response expected). json_body: without "id"/"reply_to". False when the frame
@@ -215,7 +216,10 @@ public:
 private:
     [[nodiscard]] auto raw_send_exact(void const* buf, std::size_t n) noexcept -> bool;
     [[nodiscard]] auto raw_recv_exact(void* buf, std::size_t n) noexcept -> bool;
+    // Writes one frame. A failure after encryption ends the channel (end_after_failed_write, ADR-0734); one before
+    // it (over the cap, no memory) leaves the channel as it was.
     [[nodiscard]] auto write_frame(std::string_view plaintext) noexcept -> bool;
+    auto end_after_failed_write() noexcept -> void;
     [[nodiscard]] auto read_frame() noexcept -> std::optional<std::string>;
     // Logs a warning that a frame of `body.size()` bytes for the given IPC
     // message kind was dropped for exceeding the frame cap. The frame "type"

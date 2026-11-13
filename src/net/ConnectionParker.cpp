@@ -80,21 +80,32 @@ namespace
         std::unique_ptr<ConnectionParker::Connection> connection{};
         std::string client_key{};
         std::chrono::steady_clock::time_point deadline{};
+        // When the connection became readable and joined the ready queue.
+        std::chrono::steady_clock::time_point ready_since{};
     };
 
     // poll() takes whole milliseconds; round up so a deadline is never
-    // re-checked a moment before it passes (which would spin).
-    [[nodiscard]] auto poll_timeout_ms(std::vector<Entry> const& awaiting,
+    // re-checked a moment before it passes (which would spin). A ready entry
+    // counts too when `max_ready_wait` is set: it expires `max_ready_wait`
+    // after it became ready.
+    [[nodiscard]] auto poll_timeout_ms(std::vector<Entry> const& awaiting, std::deque<Entry> const& ready,
+                                       std::chrono::milliseconds max_ready_wait,
                                        std::chrono::steady_clock::time_point now) noexcept -> int
     {
-        if (awaiting.empty())
+        auto const track_ready = max_ready_wait.count() > 0 && !ready.empty();
+        if (awaiting.empty() && !track_ready)
         {
             return -1;
         }
-        auto earliest = awaiting.front().deadline;
+        auto earliest = std::chrono::steady_clock::time_point::max();
         for (auto const& entry : awaiting)
         {
             earliest = std::min(earliest, entry.deadline);
+        }
+        if (track_ready)
+        {
+            // Entries join `ready` in order of readiness, so the front is the oldest.
+            earliest = std::min(earliest, ready.front().ready_since + max_ready_wait);
         }
         if (earliest <= now)
         {
@@ -280,6 +291,7 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
         {
             if (entry.connection->has_buffered_input())
             {
+                entry.ready_since = std::chrono::steady_clock::now();
                 ready.push_back(std::move(entry));
             }
             else
@@ -295,8 +307,9 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
         {
             fds.push_back(pollfd{entry.connection->fd(), POLLIN, 0});
         }
-        auto const poll_result = ::poll(fds.data(), static_cast<nfds_t>(fds.size()),
-                                        poll_timeout_ms(awaiting, std::chrono::steady_clock::now()));
+        auto const poll_result =
+            ::poll(fds.data(), static_cast<nfds_t>(fds.size()),
+                   poll_timeout_ms(awaiting, ready, state.limits().max_ready_wait, std::chrono::steady_clock::now()));
         if (poll_result < 0 && errno != EINTR)
         {
             log_diagnostic("poll.failed",
@@ -330,6 +343,7 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
             {
                 // Readable: a request (or the peer's orderly close, which the
                 // worker reads as end of stream and closes quietly).
+                entry.ready_since = now;
                 ready.push_back(std::move(entry));
                 continue;
             }
@@ -348,6 +362,24 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
             still_waiting.push_back(std::move(entry));
         }
         awaiting.swap(still_waiting);
+        // A readable connection that has waited for a share too long is closed
+        // (C01): nothing else bounds how long it holds its caller's parking slot.
+        if (state.limits().max_ready_wait.count() > 0)
+        {
+            auto kept = std::deque<Entry>{};
+            for (auto& entry : ready)
+            {
+                if (now - entry.ready_since >= state.limits().max_ready_wait)
+                {
+                    leaving.push_back(std::move(entry));
+                }
+                else
+                {
+                    kept.push_back(std::move(entry));
+                }
+            }
+            ready.swap(kept);
+        }
         if (!leaving.empty())
         {
             {

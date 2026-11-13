@@ -41,6 +41,28 @@ namespace
         observability::log_diagnostic("http_server", event, fields, severity);
     }
 
+    // C01: one client key may hold at most 1/16 of a process-wide parking budget (at least one connection). False
+    // when the key is full. An empty key (a trusted proxy, which carries many clients over one address) and an
+    // unbounded budget (cap 0) are exempt: `slot` stays empty and true is returned.
+    constexpr auto per_key_divisor = std::uint32_t{16U};
+
+    auto acquire_key_slot(http::ConnectionLimiter& limiter, std::string const& client_key, std::uint32_t cap,
+                          std::optional<http::ConnectionLimiter::Slot>& slot) -> bool
+    {
+        slot.reset();
+        if (cap == 0U || client_key.empty())
+        {
+            return true;
+        }
+        auto acquired = limiter.try_acquire(client_key, std::max(1U, cap / per_key_divisor));
+        if (!acquired.has_value())
+        {
+            return false;
+        }
+        slot.emplace(std::move(*acquired));
+        return true;
+    }
+
 } // namespace
 
 auto HttpConnectionDispatcher::Impl::start() -> bool
@@ -54,7 +76,8 @@ auto HttpConnectionDispatcher::Impl::start() -> bool
     // hold at most a quarter of them (HTTP-1). A trusted proxy's connections
     // carry an empty key and are exempt from the second cap only.
     auto const workers = std::max<std::size_t>(1U, pool.worker_count());
-    auto const limits = net::ConnectionParker::Limits{workers, std::max<std::size_t>(1U, workers / 4U)};
+    auto const limits =
+        net::ConnectionParker::Limits{workers, std::max<std::size_t>(1U, workers / 4U), tuning.ready_wait_timeout};
     m_parker = std::make_unique<net::ConnectionParker>(
         limits, [weak = weak_from_this()](net::ConnectionParker::Dispatched dispatched) {
             if (auto const self = weak.lock(); self != nullptr)
@@ -136,12 +159,34 @@ auto HttpConnectionDispatcher::Impl::park_awaiting_first_request(ConnectionOwner
         });
         return; // ~owner closes it
     }
+    if (!acquire_key_slot(m_pending_per_key, connection.client_key, cap, connection.parked_key_slot))
+    {
+        log_diagnostic("connection.pending_key_cap_reached", {
+                                                                 {"cap", std::to_string(cap), false}
+        });
+        return; // ~owner closes it
+    }
     connection.parked_reservation = std::move(reservation);
     auto key = connection.client_key;
     if (!m_parker->park(std::move(owner), std::move(key), std::chrono::steady_clock::now() + tuning.first_byte_timeout))
     {
         log_diagnostic("connection.refused_stopping", {});
     }
+}
+
+auto HttpConnectionDispatcher::Impl::reserve_keep_alive(HttpConnection& connection, std::uint32_t cap) -> bool
+{
+    auto reservation = ParkingReservation::try_acquire(m_parked_keep_alive, cap);
+    if (!reservation.has_value())
+    {
+        return false;
+    }
+    if (!acquire_key_slot(m_keep_alive_per_key, connection.client_key, cap, connection.parked_key_slot))
+    {
+        return false;
+    }
+    connection.parked_reservation = std::move(reservation);
+    return true;
 }
 
 auto HttpConnectionDispatcher::Impl::park_for_next_request(ConnectionOwner owner) -> void
@@ -178,6 +223,7 @@ auto HttpConnectionDispatcher::Impl::serve(net::ConnectionParker::Dispatched dis
     auto& connection = http_connection(owner);
     // No longer parked: its parking slot goes back.
     connection.parked_reservation.reset();
+    connection.parked_key_slot.reset();
     if (connection.tls_handshake_owed.has_value())
     {
         // The ClientHello is readable; the handshake is bounded by the

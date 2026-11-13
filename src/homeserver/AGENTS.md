@@ -33,10 +33,11 @@ This is the largest and most complex module — read this file carefully before 
 | `RedactionService.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `RemoteDeviceListScope.cpp` | `remote_users_sharing_a_room_with_local_users`: which remote users' device lists may be cached (ADR-0560), from two passes over the memberships |
 | `StateContentCheck.cpp` | `state_content_refusal`: the `m.room.canonical_alias` and `m.room.encryption` content checks (F-19, ADR-0588). Called by `send_event_as_user` (so `PUT /state`, `PUT /send` and `POST /send` with a `state_key`) after the power check, and by `create_room` for `m.room.canonical_alias` entries of `initial_state`; never copy the checks into a route |
+| `RoomPowerJudge.cpp` | A room's power judged by current state, read once: `may_send_state_event`, and `holds_room_power` (may ban or change the power levels), whose senders are exempt from the joint tip cap (ADR-0695) |
 | `RoomPower.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `SearchRoomIndex.cpp` | `SearchRoomIndex`: the timelines of the rooms a `POST /search` page's matches are in, from one pass over the events, for `event_context` (F-31, ADR-0333) |
 | `UserDirectorySearch.cpp` | `matching_directory_profiles`: the profiles `POST /user_directory/search` matches, deactivated accounts read in one pass (F-50, ADR-0334) |
-| `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes |
+| `PublicRooms.cpp` | The published room directory listing behind the client and federation `publicRooms` (ADR-0460): `public_rooms_response_json`, `public_rooms_scope`, `serve_federation_public_rooms`. Reads state by index, and bounds a page in rooms and bytes, and a filtered or searched request in the bytes of state it parses (`max_public_rooms_examined_bytes`, ADR-0724) |
 | `RoomResidency.cpp` | `room_state_is_current()`: whether held room state is current, i.e. the create event is stored and a user of this server is joined (ADR-0301) |
 | `InvitePermission.cpp` | `invite_permission_blocks`: whether a local user's `m.invite_permission_config` says `default_action: "block"` (SS7, ADR-0552). Read through the account-data index. Enforced in `invite_handler` (main, before signing), `invite_user`, `send_event_as_user` (state PUT invite, local invitee) and createRoom; `M_INVITE_BLOCKED` travels in `OperationResult::errcode`. A remote server's block (`RemoteInviteResult::errcode`) is a refusal: never queue it. `/sync` and sliding sync withhold every stored invite while the user blocks (one check per request, never per invite) |
 | `SendJoinPlanCache.cpp` | `SendJoinPlanCache`: the synchronised, bounded cache of the room-wide part of send_join answers and of the membership before a stored join (ADR-0624). Its own mutex, taken with `runtime.mutex` held; its callbacks never take `runtime.mutex` |
@@ -53,11 +54,12 @@ This is the largest and most complex module — read this file carefully before 
 | `PushRetry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206); a run is bounded by a time budget, takes retries one recipient at a time in turn and sends with a shorter timeout (ADR-0410), and a slow answer counts against the gateway's circuit (ADR-0409) |
 | `PasswordReset.cpp` | Password reset by email (ADR-0481): `make_password_reset_token` (8 characters, 40 bits), `normalize_password_reset_token`, `send_password_reset_email` (a background task parked in `orphan_futures_`, at most 8 in flight, no lock held while it sends). The endpoints are in `ClientServerRuntime.cpp` before the auth gate; `reset_local_user_password` is in `AuthService.cpp` |
 | `TurnCredentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
-| `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex`, then sends with the mutex released |
+| `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex` (one hold, one `PushBadgeBudget`: rows and glob steps bounded together, ADR-0722), then sends with the mutex released |
 | `RuntimeSigningKeyStore.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
+| `WorkerSnapshotService.cpp` | Main's answers to a federation worker's store requests (room list, room snapshot pages, public server keys; ADR-0733). A room is read only under a permit main issued on that channel, consumed once (ADR-0735); no lock and never `runtime.mutex` across a read. It reads through `database::SnapshotReaderPool`, whose readers `WorkerPool` opens before `cap_enter` (ADR-0739) |
 | `WorkerSupervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off, whether it exited or its main-side channel failed while it ran (it kills a live worker whose channel is unhealthy, ADR-0323) |
 | `MinimalWorkerEnv.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
 | `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
@@ -111,6 +113,11 @@ and no access token are answered before the authentication gate. Rules for chang
   `reset_sent_at_ms` on the sessions of the address (the list is capped). A throttled request answers as usual, keeps an
   existing session's code and tries, and gives a new session no code. A session out of tries stays until it ages out
   so the throttle record survives it.
+  A throttled session has no code of its own, and a code typed into a session is judged against its own code or the
+  latest one mailed to the address (`latest_password_reset_code`), so the owner can use a code another caller caused to
+  be sent; the code is spent from every session of the address once one session proves it, and a caller never sees
+  it. At most `password_reset_address_daily_cap` (10) mails go to one address a day (`password_reset_mail_times`).
+  Never key the throttle per client address: it multiplies the mail one address can be sent (ADR-0685).
 - **Reset sends are counted by `password_reset_sends_in_flight_`, never by `orphan_futures_.size()`**, which holds
   unrelated background tasks. The permit releases the slot on every exit path.
 - **Completion re-checks that `account_threepids` still binds the address to the session's user**; otherwise it spends
@@ -179,7 +186,10 @@ never a 200 with an etag. Do not skip a malformed entry or ignore a write result
 `handle_client_server_request` and `handle_local_http_request` each take
 `HomeserverRuntime::mutex` around request state. Inbound federation takes it
 for setup and narrower runtime callbacks; its core runs outside the global
-lock, and prepared database commits release it. Anything holding the mutex
+lock, and prepared database commits release it, except a commit that writes a
+`current_state` or membership row: local writers of those rows take only
+`runtime.mutex`, so such a commit keeps it, and what memory holds after the
+commit is what the commit wrote (ADR-0696). Anything holding the mutex
 still blocks other clients and federation callbacks that need runtime state.
 
 Never make a blocking network call while holding it. Wrap the call — and only
@@ -346,6 +356,17 @@ anything. A new path that changes a user's own membership over federation takes 
 new entry point that changes it checks `membership_exchange_refusal` first, or a concurrent request
 is overwritten when the exchange commits.
 
+The `make_join` race of `perform_federated_join` runs as at most `join_parallelism` worker tasks (`std::async`, parked in
+`orphan_futures_` when the caller stops waiting), never one thread per candidate. Their shared state is `MakeJoinRaceState`:
+a worker takes the next candidate with `next_candidate()` when it has finished the last, and is handed none once a winner
+exists or `cancel()` has been called (the caller calls it as soon as its wait ends); every call carries the race deadline as
+its `BoundedOutboundLimits` when `join_race_deadline_seconds` is set. The request's client-outbound slot is passed to
+`perform_federated_join` (`outbound_slot`) and moved into the race state with `adopt_slot()`: the last worker to end
+(`worker_finished()`, run by `MakeJoinWorkerExit` on every way out) releases it, so the client's budget counts the join while
+any of its calls runs, after the request has returned (C33, ADR-0725). A new task started for a client request that
+outlives the request is bounded the same way: a fixed number of workers, no work started after the request ended, and the
+request's slot held until the last one ends.
+
 ## Remote invites: reject, accept, rescind (Complement run 10)
 
 An invite from another server leaves this server with a `memberships` row (`invite`) and a `PersistentInvite`
@@ -477,7 +498,7 @@ default. The size limit does not count the `hashes` and `signatures` added after
 `SendJoinAnswer.cpp` is the one place the answer's contents and size are decided. The acceptor calls
 `plan_send_join_answer_cached` (event IDs and JSON sizes: a room-wide base, cached until the room's state changes, and
 what this one request changes, ADR-0624; never plan a whole answer per request under the lock, and a new writer of a
-current state row moves `database::room_state_revision`) after
+current state row moves `database::room_state_revision` after it writes the row to memory, ADR-0697) after
 it has judged the join and before it takes a stream ordering, refuses with 503 and nothing stored when
 `send_join_answer_fits` says no (`join_response_max_size` as the body, `worker_ipc_frame_bytes` with every event at twice
 its size as the frame), and only after the store copies the events out, once, with `collect_send_join_answer`. Never build
@@ -534,6 +555,12 @@ permit (`federation::verified_request_relay_digests`), and each handler hashes t
 `IpcChannel::consume_pending_relay` once the mutex is held, answering a refusal with the provider's empty answer. A new
 relay that reaches data the worker's role cannot read gets a `WorkerRelayKind`, a case in
 `verified_request_relay_digests`, and this check; a relay of data the worker may read needs none.
+
+The worker's store requests (`room_list_request`, `room_snapshot_request`, `server_keys_request`) are answered by
+`WorkerSnapshotService` on `snapshot_pool_`, never on `handler_pool_` and never under `runtime.mutex` (ADR-0733). A room is
+read for a worker only under a permit: the channel's one room listing, or a `room_sync` main sent, which
+`notify_room_changed` records before it sends the notification (ADR-0735). Never add a path that reads a room because a
+worker named it.
 
 Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
 inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
@@ -663,7 +690,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   the per-user index (`index_to_device_recipients`, ADR-0618) and never walks the queue per message.
 - The invite handler asks `database::invite_is_over_store_caps` before it signs and again on the signed record, and answers
   403 `M_FORBIDDEN` past the limits (ADR-0619). `knock_room` asks it before the exchange. What a knock keeps of the
-  resident's answer goes through `bounded_knock_room_state` before any signature check (ADR-0620).
+  resident's answer goes through `bounded_knock_room_state` before any signature check (ADR-0620); it keeps one entry
+  per (type, state_key), the last, and a user's knock records are capped in bytes (`max_remote_knock_bytes_per_user`,
+  2 MiB), because every `/sync` reads them under the lock (C31, ADR-0708). `build_invite_state_events_array` and
+  `build_knock_state_events_array` read the record by reference (`find_invite_row`), never `find_invite`'s copy.
 - A client transaction ID is part of an idempotency key with the request's device (`authenticated_request_device_id`),
   never the user alone, on `/send`, `/redact` and `/sendToDevice` (ADR-0380); an `eventType` or `txnId` over 255 bytes
   is `400 M_INVALID_PARAM` before the lookup (`client_txn_part_is_too_long`). Only the to-device `client_txn_ids`
@@ -683,6 +713,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   the function `store_fallback_key` replaces by: never compute it another way, or the cap and the replacement disagree.
   A held algorithm is a replacement and is never refused, even on a device above a lowered cap: only a request that adds
   an algorithm is judged against it. Any new per-device key material gets a cap the same way.
+- `POST /keys/signatures/upload` stores its signatures with `database::store_key_signatures` (one transaction) and counts the signer's rows with `for_each_signer_key_signature`; the merge into a published key reads `key_signatures_for_target_key` (run-3 C14, ADR-0672).
+- `PUT /room_keys/keys[...]` refuses a session over `max_uploaded_key_document_bytes` (16 KiB) with `400 M_TOO_LARGE` before the session-count check, and the backup's `etag` is `key_backup_etag`, a hash of the version and `database::key_backup_content_digest`; never rehash the sessions (run-3 C22, ADR-0673).
+- `POST /keys/query` is refused whole with `413 M_TOO_LARGE` over the same cap and reads each requested local user's device keys with `database::for_each_user_device_key`, never by looping `device_keys` (run-3 C19, ADR-0671).
+- `POST /keys/claim` is refused whole with `413 M_TOO_LARGE` when it names more than `federation::max_key_request_entries` users plus devices, before any key is claimed, and merges a remote answer through a hash set of the users the response holds (run-3 C13, ADR-0670).
 - `POST /keys/claim` keeps a remote server's answer only for the users and devices asked of it
   (`federation::accept_remote_key_claim_response`), never overwrites a user the response already holds, and answers
   500 if the response cannot be serialised: use `json_serialize_checked` on any response that holds members a remote
@@ -691,6 +725,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (shape, `id_access_token`, trusted `id_server`) before `create_room`, and are sent afterwards with
   `invite_user_by_threepid(..., max_total_seconds)` under the one ADR-0079 slot and `invite_deadline` of the remote
   invites; each call's timeouts are clamped to what is left of the deadline (ADR-0474). A failure leaves the room.
+- `POST /rooms/{roomId}/report/{eventId}` and `POST /users/{userId}/report` go through `record_safety_report` and
+  `ClientServerRuntime::safety_reports` (a `SafetyReportIndex`): never read `audit_log` (`load_audit_events_by_type_prefix`)
+  on the request path to find a repeat. 20 a minute per user (`builtin_per_user`), 100 distinct a day (C26, ADR-0686).
+- The cap on open identity validation sessions (`record_identity_validation_session`) is counted per `rate_limit_client_key`,
+  never `req.remote_addr`: behind a proxy the raw peer is shared by every client (C10, ADR-0684).
 - `GET /relations?recurse=true` walks at most 3 levels and offers at most 2048 events beyond the first level; it
   continues only through events that pass the filters and `HistoryVisibility` (ADR-0475). Keep both bounds.
 - `POST /upgrade` sends the tombstone, then moves the old room's aliases (`reassign_room_alias`) and tries to raise its
@@ -716,6 +755,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   truncated. A device-list announcement builds all of a user's EDUs with `federation::build_device_list_update_batch`
   (one `DeviceDisplayNames`, one key index; `PersistentStore::device_table_rows_examined` counts the rows read). Never call
   `build_device_list_update_content` per device in a loop: it scans both device tables each call.
+- `POST /delete_devices` refuses a `devices` list of more than `device_count_limit` entries (repeats counted) with `400 M_INVALID_PARAM` before the password check, handles a repeated ID once, and `delete_local_device` looks the device up through `database::has_user_device` and `SessionTable::revoke_device`, never by scanning `devices` or `sessions` (run-3 C02, ADR-0669).
 - A device ID is never a cross-signing key ID: `complete_login` and `login_local_user_by_id` (every device-creating
   path ends in one of them) refuse a match with 403 `M_FORBIDDEN`, and `POST /keys/device_signing/upload` refuses, before
   storing, a key whose ID is one of the uploader's device IDs (`cross_signing_upload_names_a_device`). A new path that
@@ -732,8 +772,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `max_state_groups` of them (ADR-0374). An accepted event citing no current tip is not made a tip once its sender's
   server holds `max_state_tips_per_server` of the room's tips (`event_may_become_forward_extremity`, ADR-0602), and then
   writes no `current_state` row or membership. A server is charged only for its own events, so a ban or demotion from
-  another server reaches resolution; never make the limit per room. A new path that adds a tip for an inbound event asks
-  the same question.
+  another server reaches resolution. Senders without power also share `max_unprivileged_state_tips` of the room's tips
+  whatever their servers, but a sender who may ban or change the power levels (`RoomPowerJudge::holds_room_power`) is
+  exempt from that joint cap and limited only by its own server's (ADR-0695): never let a limit that other servers can
+  fill refuse a power holder. A new path that adds a tip for
+  an inbound event asks the same question.
 - `recompute_current_state` removes a key the resolution does not hold, except a row whose event has no state group and
   that no tip's state names (ADR-0615). `membership_changes` lists the membership rows it corrected: a caller applies each
   with `apply_membership_to_roster`, after the event's own membership. Pass the event's stream ordering, so `/sync` sees a
@@ -742,6 +785,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
   state groups are unchanged (`ResolvedStateMemo`, ADR-0600), and still apply it through the normal write path: never
   skip the write on a hit, since `current_state` has other writers. Reach the memo only with `runtime.mutex` held.
   Resolution is over all tips and is never folded into the previous result: it is not associative (ADR-0601).
+- A path that records an inbound event's state passes `compute_state_before`'s `StateBeforeResult` to
+  `record_event_state`, so the state before is kept as a group and remembered for its distinct prev groups
+  (`StateBeforeMemo`, ADR-0694); a rejected or non-state event then adds no state rows. Never chain an event's
+  after-state off its first prev_event's group when the state before was resolved.
 - A local event's depth comes from `depth_after_prev_events` over the `prev_events` it was built on (ADR-0314).
   Never derive it from every row of a room: rejected rows keep the depth their sender chose.
 - `GET /rooms/{roomId}/timestamp_to_event` and the federation `timestamp_to_event` provider seek the per-room
@@ -775,11 +822,32 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - `GET /rooms/{roomId}/hierarchy` reads state through `database::find_current_state_event_id` and
   `for_each_room_state_row` (ADR-0344), parses each child event once, and stops its walk at the end of the page
   plus one room, or at `max_hierarchy_walk_visits` (ADR-0345). Never filter `store.state` for one key or one room.
+- Composing a local event (`compose_signed_event`, `build_auth_event_map`, `current_membership_of`) and `createRoom`'s
+  remote-invite step read the room's state by key through `database::find_current_state_event_id` (run-3 C35): their
+  cost under the lock is the keys the event names, never every room's state. `[create_room][state-index]` in
+  `tests/integration/test_create_room_state_reads_flow.cpp` proves it with `state_rows_examined`.
 - `GET /rooms/{roomId}/threads` aggregates by root ID in a hash map over `EventTable::walk_room_newest_first`, at
   most `max_thread_events_examined` events (ADR-0345); never walk `store.events` for one room.
 - `GET /rooms/{roomId}/members` collects the state-backed members in a set (F-10). With `at` it judges the one event
   the position resolves to (`sync::state_anchor_event`) with `HistoryVisibility::can_see` and answers 403 when it is
   not visible (ADR-0414); it never judges the members one by one.
+- The federation read providers wired by `wire_federation_callbacks_impl` (`backfill`, `event_query`, `state_query`,
+  `state_ids_query`, `event_auth_query`, `missing_events_query`, `room_server_acl`, `room_version_resolver`) read main's
+  store under `runtime.mutex` through `main_store_read_lock`, because the federation core calls them without it and every
+  writer changes the store under it. A federation worker takes no lock there (`StoreReadGuard` guards its snapshot). A new
+  provider that reads the store does the same, and none holds the lock across network I/O (C11, ADR-0711).
+- `join_room` writes a federated join's answer in few transactions (ADR-0714): the auth chain in one, with `runtime.mutex`
+  released around its commit (orderings reserved in `PendingStreamOrdering`s first, rows prepared before and applied after,
+  under `RuntimeLockRelease{guard}`); the state array and the member rows in one each, with the lock held, because they write
+  `current_state` and membership rows that a local send, an invite or a knock could also write. Release for them only after
+  every such writer checks a per-room claim. Never commit an answer-sized loop of rows one by one.
+- A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`) and then its
+  content is rebuilt from an allow-list (`restrict_membership_template_content`): `membership`, and for a join the
+  authorising user of another server. A `reason` or profile in the template is never signed as the user's; the user's own
+  reason (knock) and profile (join) are added after. A join template naming a user of this server is refused (C18, ADR-0709).
+- `broadcast_local_device_lists_to_remote_joiner` runs only when the joiner's server had no joined member in the room
+  before the event (`joiner_server_already_in_room`, read before `apply_membership_to_roster`), and lists the local members
+  with `RoomMembers::members_of_server`. Never scan `database.users` per roster member there (C32, ADR-0706).
 - `GET /make_join` (the template provider) and `decide_restricted_join` read the create, join rules, power levels and the
   joiner's member event by `find_current_state_event_id`, a named room's local members by one `for_each_room_state_row`
   walk of that room, and events by `EventTable::find_in_room` (F-19, ADR-0367); `stored_room_version` reads the create
@@ -799,6 +867,7 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `badge_budget` built per event to every `push_badge_unread_count`; a recipient past it gets `nullopt` and
   its notification omits `unread` (never a made-up count, which would overwrite the client's real badge).
   Recipients draw from `push_badge_draw_start(stream_ordering, n)`, so the skipped ones rotate. Never give each recipient a budget of its own.
+  Every rule evaluation of those badges draws from the budget's one `push::PushEvaluationBudget` (`PushBadgeBudget::glob`, 2^21 glob steps for the whole event, ADR-0722); when it is spent the walk ends `capped` and the row that spent it is not counted. A new evaluation in the badge path takes the same budget, never a fresh one.
 
 ### A profile change sends a fixed share, and a job sends the rest (F-11, ADR-0353)
 
@@ -853,6 +922,9 @@ with `runtime.mutex` released (`pending_pdu_under_room_version`); never replay a
   passing `via_appservice` to `send_event_as_user` (ADR-0628). A new use of `LocalUser::admin` goes through
   `authenticated_admin_user` or `require_admin`.
 - `upgrade_room_options` copies `m.federate: false` and no other custom create property (ADR-0627).
+- `commit_policy_rule_with_audit` / `commit_policy_rule_removal_with_audit` write a policy rule change, its `admin_actions` row and
+  its audit row in one transaction, and only then `remember_local_audit` (C49, ADR-0687). Never write the audit row before the
+  rule it describes, and never call `append_local_audit` for a rule change. `local_audit_row` builds the durable row.
 - `set_local_user_moderation` and `deactivate_user_account` commit the state change with its audit row
   (`commit_user_account_state_with_audit`, `commit_user_deactivation_with_audit`) and only then `remember_local_audit`
   (ADR-0629). Do not return to `append_local_audit` after the write.

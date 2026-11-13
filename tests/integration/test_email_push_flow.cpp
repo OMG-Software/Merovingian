@@ -1468,7 +1468,9 @@ SCENARIO("Reset emails to one address are throttled across sessions and answer a
                 }
                 REQUIRE(first.response.body.size() == second.response.body.size());
                 REQUIRE(sid_from(resend) == sid_from(first));
-                REQUIRE(errcode_from(submit_code(runtime, sid_from(second), "throttle_two", code)) ==
+                // The throttled session holds no code of its own, so a wrong code fails it. (A code mailed to the address is
+                // also good for the throttled session, ADR-0685; test_password_reset_address_throttle_flow.cpp covers it.)
+                REQUIRE(errcode_from(submit_code(runtime, sid_from(second), "throttle_two", "AAAAAAAA")) ==
                         "M_TOKEN_INCORRECT");
                 // The throttled resend did not clear the first session's code or its attempts.
                 REQUIRE(submit_code(runtime, sid_from(first), "throttle_one", code).response.status == 200U);

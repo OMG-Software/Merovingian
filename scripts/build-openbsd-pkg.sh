@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 1.0.0.
+# Build for merovingian 1.0.1.
 #
 # Standalone pkg_create(1), no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
@@ -8,7 +8,7 @@
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
@@ -44,12 +44,19 @@ for binary in bin/merovingian-server bin/merovingian-db-migrate \
     fi
 done
 
-# 2. Stage the rc.d control script and sample config (outside ${PREFIX}).
+# 2. Stage the rc.d control script and sample config (outside ${PREFIX}). The
+#    sample is the BSD example with @SYSCONFDIR@ set to the --sysconfdir above,
+#    never the Linux example (ADR-0738).
 install -d "${STAGE}/etc/rc.d"
 install -m 0755 packaging/openbsd/rc.d/merovingian "${STAGE}/etc/rc.d/merovingian"
 install -d "${STAGE}/etc/merovingian"
-install -m 0644 config/merovingian.conf.example \
-    "${STAGE}/etc/merovingian/merovingian.conf.sample"
+SAMPLE="${STAGE}/etc/merovingian/merovingian.conf.sample"
+sed 's|@SYSCONFDIR@|/etc|g' config/merovingian.conf.bsd.example > "${SAMPLE}"
+chmod 0644 "${SAMPLE}"
+if grep -q '@[A-Z_]*@' "${SAMPLE}"; then
+    echo "build-openbsd-pkg.sh: ${SAMPLE} still holds a placeholder" >&2
+    exit 1
+fi
 
 # 3. Generate a framework-free packing list from the staged tree. User/group
 #    creation is handled by packaging/openbsd/+INSTALL.

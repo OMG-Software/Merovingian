@@ -377,6 +377,11 @@ auto gateway_circuit_outcome(PushGatewayResult const& result, std::chrono::milli
     {
         return GatewayCircuitOutcome::slow_answer;
     }
+    if (outcome == GatewayCircuitOutcome::reachable &&
+        elapsed > std::chrono::duration_cast<std::chrono::milliseconds>(total_timeout) / 8)
+    {
+        return GatewayCircuitOutcome::unproven_answer;
+    }
     return outcome;
 }
 

@@ -21,6 +21,7 @@
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
 #include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
 #include "merovingian/homeserver/AppservicePendingEphemeral.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
@@ -35,7 +36,6 @@
 #include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
@@ -54,7 +54,7 @@
 #include "merovingian/push/PushBatchAdmission.hpp"
 #include "merovingian/push/PushRetryQueue.hpp"
 #include "merovingian/push/TestForcedPushGatewayResolution.hpp"
-#include "merovingian/sync/SlidingSyncConnectionState.hpp"
+#include "merovingian/sync/SlidingSyncConnectionTable.hpp"
 #include "merovingian/sync/SyncNotifier.hpp"
 #include "merovingian/trust_safety/PolicyDecision.hpp"
 #include "merovingian/trust_safety/PolicyDecisionCache.hpp"
@@ -339,7 +339,7 @@ struct HomeserverRuntime final
     std::int64_t last_create_event_ts_ms{0};
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
-    std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
+    sync::SlidingSyncConnectionTable sliding_sync_connections{};
     // In-flight budget and limits for client-triggered outbound proxying (ADR-0079):
     // publicRooms?server=, remote alias lookups and remote media fetches. The
     // budget has its own mutex and is never held together with `mutex`. Held
@@ -536,8 +536,11 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 auto wake_typing_expiry(HomeserverRuntime& rt) -> void;
 
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
+// `fill_store`, when set, fills the opened store before hydration (RuntimeStartOptions::fill_store, ADR-0733); a
+// false result returns the database unopened.
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
-                                            database::TableLoadProfile profile = database::TableLoadProfile::full)
+                                            database::TableLoadProfile profile = database::TableLoadProfile::full,
+                                            std::function<bool(database::PersistentStore&)> const& fill_store = {})
     -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
 // Allocates the next timeline stream_ordering and persists the new

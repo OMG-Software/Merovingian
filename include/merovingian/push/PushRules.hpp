@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/push/PushEvaluationBudget.hpp"
 #include "merovingian/push/PushEvaluationContext.hpp"
 #include "merovingian/push/PushEvaluationResult.hpp"
 #include "merovingian/push/PushRuleset.hpp"
@@ -36,12 +37,6 @@ inline constexpr std::size_t max_push_glob_body_bytes = 4096U;
 // it does not match a pattern holding a wildcard. A pattern without one compares equal lengths only.
 inline constexpr std::size_t max_push_glob_key_value_bytes = 4096U;
 
-// The most matcher steps one evaluation (one recipient, one event) spends on `content.body`
-// globs, summed over every rule: content rules and `event_match` conditions on `content.body`.
-// The sender chooses the body and the recipient the patterns, so without it their product, times
-// the rule count, is spent under `runtime.mutex` (ADR-0343).
-inline constexpr std::uint64_t max_push_glob_steps_per_evaluation = std::uint64_t{1U} << 21U;
-
 // Evaluates `event` (a full client-event-shaped JSON object: `type`,
 // `sender`, `room_id`, `content`, and optionally `state_key`) against
 // `ruleset` for the receiving user described by `context`.
@@ -64,5 +59,13 @@ inline constexpr std::uint64_t max_push_glob_steps_per_evaluation = std::uint64_
 // the typed PushRuleset across every event).
 [[nodiscard]] auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
                                        PushEvaluationContext const& context) -> PushEvaluationResult;
+
+// evaluate_push_rules(ruleset, event, context), drawing its glob steps from the caller's `budget` instead of a fresh
+// one, so many evaluations can share one bound (C15). `glob_steps_used` is what this call spent;
+// `glob_budget_exhausted` is whether the budget was spent, by this call or an earlier one. With the budget spent, globs
+// do not match.
+[[nodiscard]] auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                                       PushEvaluationContext const& context, PushEvaluationBudget& budget)
+    -> PushEvaluationResult;
 
 } // namespace merovingian::push

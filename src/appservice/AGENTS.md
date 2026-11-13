@@ -149,6 +149,9 @@ directory network (appservice, protocol) it names without asking the appservice 
   `appservice_owns_user` alone is NOT enough for these: it answers "is this in
   my namespace", and a non-exclusive `@.*` namespace overlaps another
   service's exclusive one (AUTH-7).
+- **An exclusive alias namespace also blocks deletion** (C40, ADR-0688): `DELETE /directory/room/{alias}` answers `400 M_EXCLUSIVE`
+  to everyone but the owning appservice, with the same `alias_namespace_exclusively_owned_by_other` check as creation and no
+  administrator exemption.
 - **Assertion acts only as a registered, active user** (`403 M_FORBIDDEN`
   otherwise, AUTH-12). The service creates virtual users with `/register`;
   `/register` and `/login` themselves are exempt from this check because they

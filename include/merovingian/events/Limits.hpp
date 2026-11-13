@@ -72,6 +72,12 @@ inline constexpr std::size_t max_total_state_events = 131'072U;
 // another server's events, so an honest server's ban or demotion is unaffected by a hostile server's forks.
 inline constexpr std::size_t max_state_tips_per_server = 32U;
 
+// Maximum number of a room's forward extremities the events of senders without power (who can neither change the power
+// levels nor ban) may hold together before a further such event that cites none of them stops becoming one (ADR-0695).
+// One operator runs as many server names as it likes, so the per-server limit alone does not bound them. A power
+// holder is exempt from this cap, and is limited only by its own server's tips (max_state_tips_per_server).
+inline constexpr std::size_t max_unprivileged_state_tips = 128U;
+
 // ---- Delta state group limits (ADR-0064) ----
 
 // Maximum number of parent hops a state group's delta chain may have before a

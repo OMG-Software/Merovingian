@@ -5,6 +5,7 @@
 #include "merovingian/database/PersistentStateGroupStateEntry.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,14 @@ struct StateBeforeResult final
     std::vector<database::PersistentStateGroupStateEntry> state{};
     // Why `ok` is false, for the caller's log; empty when it is true.
     std::string reason{};
+    // A stored state group whose full state is exactly `state`, when one is known: the one prev_event's group, the one
+    // group every prev_event names, or the group an earlier event with the same distinct prev groups recorded its
+    // state before in (ADR-0694). Unset after a fresh resolution, which record_event_state then stores once.
+    std::optional<std::string> state_group_id{};
+    // After a fresh resolution: the sorted distinct groups resolved and everything else the result depends on, the key
+    // under which the group that comes to hold `state` is remembered.
+    std::vector<std::string> resolved_group_ids{};
+    std::string resolution_context{};
 };
 
 } // namespace merovingian::homeserver

@@ -565,12 +565,12 @@ threat it closes; the controls above are the standing defences these reinforce.
   the worker — today's or a future one — can open the file even by accident.
   See [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
 
-  **Part 2, PostgreSQL: closed.** A PostgreSQL-backed worker now connects
-  with a *separate, least-privilege login* (`federation.worker.
-  database_uri_file`, provisioned by `packaging/postgresql/
-  provision-federation-worker-role.sql`), handed over a third inherited pipe
-  fd (`homeserver::kWorkerDbUriFd`) the same way the IPC auth key is — the
-  worker never opens that file itself. `SET ROLE`-based separation was
+  **Part 2, PostgreSQL: closed, then superseded in 1.0.1.** A PostgreSQL-backed
+  worker connected with a *separate, least-privilege login* (the retired
+  `federation.worker.database_uri_file`, provisioned by a since-deleted
+  `provision-federation-worker-role.sql`), handed over a third inherited pipe
+  fd the same way the IPC auth key is — the worker never opened that file
+  itself. `SET ROLE`-based separation was
   rejected: a session holding the login role that granted a restricted role
   can always `RESET ROLE` back to it, so only a distinct login credential
   closes this. The provisioned role has no `SELECT` on `server_signing_keys`
@@ -583,8 +583,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   or the other excluded tables' credential material — into its own process
   memory even when running in the explicit, `CRITICAL`-logged
   `allow_shared_database_credentials=true` opt-out mode. See
-  `docs/database-persistence.md`, "Federation worker least-privilege role",
-  for the full table list and the SQL.
+  `docs/database-persistence.md`, "Federation worker database access",
+  for the table list.
 
   **SQLite: not applicable, unchanged.** A single shared SQLite file offers
   no role boundary to separate — the worker keeps opening the same file
@@ -597,6 +597,13 @@ threat it closes; the controls above are the standing defences these reinforce.
   refuses a WAL-mode file (whose shared-memory index a read-only connection
   would still write), and its Landlock grant on the database directory is
   read-only, so even a raw writable `open()` fails.
+
+  **Superseded in 1.0.1 (C44, ADR-0733, ADR-0736):** the worker opens no
+  database on either backend, holds no database login, and gets no Landlock
+  grant on the database directory; main sends it the rows it reads over the
+  IPC channel. The two configuration keys and the `--db-uri-fd` argument
+  that delivered the worker's login are retired and refused. The two
+  paragraphs above describe the arrangement this replaced.
 
   **Part 3, Linux Landlock: closed.** The worker now restricts its own
   filesystem access with `platform::apply_worker_landlock()`
@@ -644,6 +651,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   main's uid, so the seccomp argument check is the only barrier on kernels before
   Landlock ABI 6. See
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
+- **A compromised worker could type into the terminal that started the server (run-3 audit NV-1,
+  closed in 1.0.1):** the worker inherited main's stdin and session, and its profile allowed
+  `TIOCSTI`. Started from a shell, on a kernel that still honours legacy `TIOCSTI`, a taken-over
+  worker could queue a command the shell ran when the server stopped. The worker now starts in a
+  session of its own with `/dev/null` for stdin, the decoder's child calls `setsid()`, and both
+  profiles kill `TIOCSTI` and `TIOCLINUX`. Residual: stdout and stderr may still be that terminal,
+  and the commands that change its settings stay allowed; they cannot run anything. See
+  [ADR-0731](adr/0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md).
+- **A compromised worker could stop every write in main by holding a read lock (run-3 audit C44,
+  closed in 1.0.1):** on SQLite the worker opened main's database file read-only, and read-only stops
+  writes, not locks: an open read transaction, or a bare `fcntl(F_RDLCK)` on the lock bytes, made every
+  COMMIT in main wait its 5 s busy timeout and fail while the worker's channel stayed healthy. On
+  PostgreSQL its SELECT-only login could exhaust connections, hold main's migration advisory lock, and
+  pin the xmin horizon with a transaction left open. The worker now opens no database on either
+  backend: its configuration copy names none, it is handed no login and gets no Landlock grant
+  (ADR-0736), and main sends it each room
+  it reads over the IPC channel, read in a transaction main closes before the first page is sent, and
+  only under a permit main issued. Residual: the worker still reads every room main lists, and a
+  crash-looping worker makes main read every room once per restart, bounded by the supervisor's
+  back-off. See
+  [ADR-0733](adr/0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md),
+  [ADR-0735](adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md) and
+  [ADR-0736](adr/0736-the-retired-worker-database-keys-are-refused-at-parse.md).
 - **A compromised worker could open any socket family (ISO-8,
   2026-09-29 security audit, closed):** `socket()` and `socketpair()` were
   unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker
@@ -2025,6 +2055,16 @@ until the refresh).
   state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
   only against current state, exactly as before; that is phase B2.
 
+### A local state write inside a federated state event's commit window (run-3 C41, ADR-0696)
+
+- **Memory and the database could hold different current-state rows.** `ingest_pdu_event` released `runtime.mutex`
+  for every PDU's commit; a local state send, which takes `runtime.mutex` but no room stripe, could prepare the same
+  `current_state` or membership row from the old memory, commit after the federated event and apply before it. The
+  running server then authorised with one event and the database, and so a restart, with the other. **Mitigation:** a
+  PDU commit that writes a `current_state` or membership row keeps `runtime.mutex`, so every writer of those rows is
+  serialised from prepare to apply; a message's commit still releases it. Test: `[commit_window]`. **Residual risk:**
+  other rooms wait for one backend transaction per accepted federated state event, as they already did for local ones.
+
 ### PDU ban-evasion accepted into client timelines (v0.12.13, ADR-0064 phase B2)
 
 - **A banned (or otherwise power-restricted) user could keep messages
@@ -2581,7 +2621,12 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   **Mitigation:** each destination holds a bounded share; refusals are counted and logged
   (ADR-0177). Sixteen or more dead destinations could still fill it together; since 0.12.92 failing destinations hold at
   most half of it between them and their transactions leave after 24 hours (ADR-0621). Residual risk: a burst to
-  never-seen dead destinations counts as live until each has failed once.
+  never-seen dead destinations counts as live until each has failed once. Destinations that answer slowly but inside the limit hold at most half of it between them and go after the others (ADR-0720); a first burst to never-seen slow names still fills the queue until each has answered once.
+- **Push delivery slots held by gateways the pushers' owners chose.** Gateways answering just inside the prompt
+  threshold held the reserved quarter of the delivery budget. **Mitigation:** only an answer within an eighth of the
+  timeout proves a host, a slower one revokes the proof, and the reserve limits a host to a quarter of its usual share
+  (ADR-0721). Residual risk: many host keys answering promptly some of the time can still take the reserve; the
+  pusher caps per user bound the keys.
 - **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
   **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
 - **Room version divergence.** A resident server could seat a local user in a room whose create
@@ -2656,7 +2701,7 @@ Four ways a remote server that an admin or a room had denied could keep federati
 nothing, all from trusting the worker's view or the hook's transport.
 
 - **Admin federation policy rules not enforced on worker-routed requests (F-21, ADR-0358).** The rule was read in the
-  process that handled the request. A worker's store holds no rules on PostgreSQL and a start-up snapshot on SQLite, so
+  process that handled the request. A worker's store held no rules on PostgreSQL and a start-up snapshot on SQLite (since 1.0.1 none on either), so
   a denied or quarantined origin was served and its PDUs accepted. Mitigated: `FederationProxy::handle` judges the
   verified origin in main before any branch (403 `M_FORBIDDEN`), the policy server is asked there once, and the main-side
   relay handlers judge the local rule again for requests in flight when a rule is added. The origin in a
@@ -2814,10 +2859,13 @@ nothing, all from trusting the worker's view or the hook's transport.
   reverted, such as a demoted moderator's, stayed current. **Mitigation:** extremities that share a state group resolve as
   one, so message floods cost one state; an accepted event with no `state_key` is not made a tip once the room holds
   `max_state_groups` of them (ADR-0374); a refusal is a distinct status, logged at warning level, and callers handle it
-  (ADR-0375). One server holds at most `max_state_tips_per_server` tips unless an event cites a current tip (ADR-0602), and
+  (ADR-0375). One server holds at most `max_state_tips_per_server` tips unless an event cites a current tip (ADR-0602), senders
+  without power hold at most `max_unprivileged_state_tips` between them however many server names they run, while a
+  power holder is exempt from that cap and bounded only by its own server's (ADR-0695), and
   a PDU that leaves the distinct state groups unchanged reuses the last result (ADR-0600). Tests: `[f49]`, `[tip_cap]`,
-  `[state_memo]`. **Residual risk:** many colluding servers can still approach `max_state_groups` distinct state tips
-  between them, and more than that or a room whose state exceeds `max_total_state_events` still refuses; current state is then
+  `[state_memo]`, `[unprivileged_tip_cap]`. **Residual risk:** senders who hold power are bounded only per server
+  name, so in a room an attacker controls, its moderators on many names can still approach `max_state_groups` distinct state tips; while senders without
+  power fill the joint cap, an honest member's state event citing no current tip is stored but not a tip; and more than that or a room whose state exceeds `max_total_state_events` still refuses; current state is then
   the cache plus each accepted event's own row, and a state event resolution would revert can stay current until the tips
   are back within budget. Freezing current state instead would drop a ban, so it is not done.
 - **A `/sync` token could rewrite the server-wide stream counter (audit run-2 F-03).** Raising it to 2^64-1 made it wrap,

@@ -203,6 +203,10 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                              // ADR-0212: the spec asks servers to limit "the rate of
                 // requests to create mxc:// URIs" as well as how many are pending.
                 {"/_matrix/media/v1/create", {30U, 60U}},
+                             // C26 (ADR-0686): trust_safety::route() declares 20 reports a minute and nothing read it. A
+                // report is a durable audit row, so each user is held to it (per user, normalised route).
+                {"/_matrix/client/v3/users/{userId}/report", {20U, 60U}},
+                             {"/_matrix/client/v3/rooms/{roomId}/report/{eventId}", {20U, 60U}},
                              },
         .default_per_ip = {600U, 60U},
     };
