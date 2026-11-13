@@ -185,11 +185,11 @@ sh scripts/check-release-readiness.sh
 ```
 
 Then run Complement against the candidate (see "Complement" below). It must be green
-before the tag is created. The one exception is 1.0.0: the owner waived this
-requirement for that release only, because it was tagged without a green run
-and the release-gate security audit was its gate instead
-([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)). The
-owner waived it once more for 1.0.1, which fixes the vulnerabilities 1.0.0 ships
+before the tag is created. The only exceptions are 1.0.0 and 1.0.1. The owner
+waived the requirement for 1.0.0 because it was tagged without a green run and
+the release-gate security audit was its gate instead
+([ADR-0648](adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)), and
+for 1.0.1 because it fixes the vulnerabilities 1.0.0 ships
 ([ADR-0744](adr/0744-the-complement-blocker-is-also-waived-for-1-0-1.md)). The
 waiver does not apply to 1.0.2 or any later release.
 
