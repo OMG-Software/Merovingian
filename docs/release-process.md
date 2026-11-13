@@ -82,26 +82,23 @@ Repository changes are additionally covered by:
   deploys it to <https://omg-software.github.io/Merovingian/> from `main`, so
   the published documentation always matches the latest merged release line
 
-The packaged tarballs include:
+The only tarball a release publishes is the static Linux one
+(`scripts/build-static-linux.sh`,
+[ADR-0742](adr/0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)).
+It holds:
 
 - `bin/merovingian-server`
 - `bin/merovingian-db-migrate`
 - `libexec/merovingian/merovingian-fed-worker`
-- `libexec/merovingian/merovingian-thumbnail-worker`
-- `INSTALL-PREFIX`, the install prefix the binaries were built for
-  (`/usr/local`). The server and the thumbnail worker look for their helpers in
-  `<prefix>/libexec/merovingian`, so install `bin/` and `libexec/` under that
-  prefix. Only the federation worker's path can be changed
-  (`federation.worker.binary`)
 - `config/merovingian.conf.example`
-- `docs/user-manual.md`
-- `docs/release-process.md`
-- `docs/security-review-checklist.md`
-- Linux and BSD packaging scaffolds, including Debian control metadata, RPM
-  spec metadata, FreeBSD manifest metadata, OpenBSD packing-list metadata, and
-  NetBSD/pkgsrc Makefile metadata
-- `README.md`
-- `LICENSE`
+- `docs/user-manual.md`, `docs/release-process.md` and
+  `docs/security-review-checklist.md`
+- `README.md` and `LICENSE`
+
+It is built with the prefix `/usr`, so the server looks for the federation
+worker at `/usr/libexec/merovingian/merovingian-fed-worker`. Install it there,
+or set `federation.worker.binary` to where you put it. The tarball carries no
+thumbnail worker.
 
 ## Starting a minor series: the upgrade fixture
 

@@ -517,7 +517,7 @@
 * [0594 - Fallback keys are capped per device by algorithm count, not by an algorithm allow-list](0594-fallback-keys-are-capped-per-device-by-algorithm-count-not-by-an-algorithm-allow-list.md)
 * [0595 - Bind worker key-claim and key/profile query relays to the verified request by digest](0595-bind-worker-key-claim-and-query-relays-to-the-verified-request-by-digest.md)
 * [0596 - Every module file is named in PascalCase, including function-only headers](0596-every-module-file-is-named-in-pascalcase-including-function-only-headers.md)
-* [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md)
+* [0597 - A release is any tag that names the meson.build version, and ships what Meson installs](0597-a-release-is-any-tag-that-names-the-meson-version-and-ships-what-meson-installs.md) — Partly superseded by ADR-0742: a tag ships the `latest` package set, not its own tarball
 * [0598 - The release SBOM is generated from the licence inventory and wrap pins, inside each publishing workflow](0598-the-release-sbom-is-generated-from-the-licence-inventory-and-wrap-pins-inside-each-publishing-workflow.md)
 * [0599 - One resolution reads its auth graph once, with a bit per group, not a closure per event](0599-one-resolution-reads-its-auth-graph-once-with-a-bit-per-group-not-a-closure-per-event.md)
 * [0600 - A room remembers its last resolved state by its distinct state groups](0600-a-room-remembers-its-last-resolved-state-by-its-distinct-state-groups.md)

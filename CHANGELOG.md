@@ -103,6 +103,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   the downloaded files instead of none.
 * The Complement publisher attaches the tested `-debian13.deb` as `-debian.deb`, beside the tag's own Debian build,
   and refuses a package name without a Debian release number.
+* The static tarball's install steps put the federation worker in `/usr/libexec/merovingian`, the path the `/usr`-prefix
+  build looks in, not `/usr/local/libexec`; `release-process.md` lists what the tarball holds.
 
 ## Release notes
 

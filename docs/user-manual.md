@@ -243,9 +243,15 @@ runtime package dependencies.
 tar xzf merovingian-X.Y.Z-linux-static-x86_64.tar.gz
 cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
 cp merovingian-X.Y.Z-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+install -d /usr/libexec/merovingian
 cp merovingian-X.Y.Z-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
-   /usr/local/libexec/merovingian/
+   /usr/libexec/merovingian/
 ```
+
+The tarball is built with the prefix `/usr`, so the server looks for the
+federation worker at `/usr/libexec/merovingian/merovingian-fed-worker`. To put it
+anywhere else, set `federation.worker.binary` to its path. The tarball carries no
+thumbnail worker.
 
 The static tarball does **not** receive automatic dependency security updates;
 redeploy a new tarball to pick up OpenSSL/LibSodium/libcurl fixes.
