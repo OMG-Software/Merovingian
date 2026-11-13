@@ -358,9 +358,12 @@ SCENARIO("the push-rule classifier reads the user's rooms and no server-wide tab
 
             THEN("only the user's rows and the user's rooms' rows were read")
             {
+                // Compared directly, not by difference: the counters are unsigned, so `after - before > 0` is
+                // only `after != before`. The rise is proved first, so the subtraction below cannot wrap.
+                REQUIRE(store.membership_rows_examined.value() >= members_before);
+                REQUIRE(store.state_rows_examined.value() > state_before);
                 REQUIRE(store.membership_rows_examined.value() - members_before <= 12U);
                 REQUIRE(store.state_rows_examined.value() - state_before <= 12U);
-                REQUIRE(store.state_rows_examined.value() - state_before > 0U);
             }
         }
     }
@@ -404,8 +407,8 @@ SCENARIO("a sync reads the presence of the users it can see, not the presence ta
             THEN("only bob's presence is sent, and one presence row was read for each user she shares a room with")
             {
                 REQUIRE(events.size() == 1U);
+                REQUIRE(store.presence_rows_examined.value() > before);
                 REQUIRE(store.presence_rows_examined.value() - before <= 3U);
-                REQUIRE(store.presence_rows_examined.value() - before > 0U);
             }
         }
     }

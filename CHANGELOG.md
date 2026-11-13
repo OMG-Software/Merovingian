@@ -88,6 +88,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   columns; it lists the children it saw when the count is wrong.
 * The reset-mail daily cap test waits for each background send to end, so a slow host no longer hits the cap of eight
   sends in flight and leaves a session without a code.
+* The sync row-index tests prove a counter rose by comparing it, not by an unsigned difference compared to zero, which
+  can only test inequality and would wrap if the counter fell.
 
 ## Release notes
 
