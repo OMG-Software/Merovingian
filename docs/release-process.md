@@ -18,8 +18,8 @@ Pushing any `v*` tag triggers [release.yml](../.github/workflows/release.yml)
   `v0.12.90-alpha.1` is refused
 - builds every package the rolling `latest` release carries, by calling
   `packages.yml` (`distro-packages`): the same jobs build, attest, stage and
-  sign them for the tag as for `main`, and install and boot the Ubuntu, Debian
-  and Fedora packages through the startup hardening gate, so a tag ships exactly
+  sign them for the tag as for `main`, and install and boot the Ubuntu, Debian,
+  Fedora and FreeBSD packages through the startup hardening gate, so a tag ships exactly
   the `latest` set, every package x86_64, hardened-profile and named after the
   platform it installs on (see "Rolling latest packages" below,
   [ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md))
