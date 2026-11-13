@@ -148,7 +148,7 @@ each tagged release carries the same `.deb` and `.rpm` packages.
 
 ```sh
 # Ubuntu example: use the package whose -ubuntuNN.NN suffix matches
-# VERSION_ID in /etc/os-release (24.04, 26.04 or the current interim release)
+# VERSION_ID in /etc/os-release (24.04, 26.04 or 26.10)
 apt install ./merovingian_X.Y.Z_amd64-ubuntu26.04.deb
 
 # Debian trixie example
@@ -160,15 +160,18 @@ dnf install merovingian-X.Y.Z-1.fc44.x86_64.rpm
 # openSUSE example: .tumbleweed is Tumbleweed, .leap16 is Leap 16.0
 zypper install merovingian-X.Y.Z-1.leap16.x86_64.rpm
 
-# FreeBSD example
-pkg add merovingian-X.Y.Z.pkg
+# FreeBSD 15 example
+pkg add merovingian-X.Y.Z-freebsd15.pkg
+
+# OpenBSD and NetBSD: use the .tgz whose suffix names your release, from uname -r
+pkg_add ./merovingian-X.Y.Z-openbsd7.8.tgz
 ```
 
 A package installs only on the distribution release it was built on, because it
 links against that release's libraries. There is one Ubuntu package each for
-24.04 LTS, 26.04 LTS and the current interim release, one RPM each for Fedora 44
-and the current Fedora, and one each for openSUSE Tumbleweed and Leap 16.0. On any
-other release, use the static tarball below or build from source.
+24.04 LTS, 26.04 LTS and 26.10, one Debian package for Debian 13, one RPM each for
+Fedora 44 and 45, and one each for RHEL 10, openSUSE Tumbleweed and Leap 16.0. On any
+other release, including Debian 12, use the static tarball below or build from source.
 
 On FreeBSD and OpenBSD, the federation worker's in-process sandbox is not
 available, so with the default settings the worker refuses to start and the
@@ -233,21 +236,22 @@ redeploy a new tarball to pick up OpenSSL/LibSodium/libcurl fixes.
 
 #### Verifying release artifacts
 
-Every release artifact is accompanied by a detached GPG signature (`.asc`) and a
-SHA-256 checksum. Verification uses the maintainer signing key fingerprint
+Every release artifact is accompanied by a detached GPG signature (`.asc`), and
+`SHA256SUMS` lists the SHA-256 of every artifact. Verification uses the maintainer signing key fingerprint
 published in [`docs/release-process.md`](release-process.md):
 
 ```sh
 # Import the release signing key.
 gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
 
-# Download the tarball, signature, and checksum for your platform, then verify
-the signature.
+# Download the tarball and its signature, and SHA256SUMS and its signature,
+# then verify both signatures.
 gpg --verify merovingian-X.Y.Z-linux-static-x86_64.tar.gz.asc \
              merovingian-X.Y.Z-linux-static-x86_64.tar.gz
+gpg --verify SHA256SUMS.asc SHA256SUMS
 
-# Verify the checksum.
-sha256sum -c merovingian-X.Y.Z-linux-static-x86_64.tar.gz.sha256
+# Verify the checksum of every listed file downloaded here.
+sha256sum --check --ignore-missing SHA256SUMS
 ```
 
 A valid signature reports a "Good signature" from `The Merovingian Release

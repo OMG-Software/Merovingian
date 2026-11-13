@@ -49,7 +49,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_CONFIG = REPO_ROOT / "tests" / "complement" / "run.toml"
 # The Debian package packages.yml publishes: merovingian_<version>_<arch>-debian<release>.deb.
-TESTED_PACKAGE = re.compile(r"(merovingian_[0-9][0-9.]*_[a-z0-9]+)-debian[0-9]*\.deb")
+# The release number is required: a bare -debian.deb is the name this script attaches, never
+# one latest publishes (ADR-0652).
+TESTED_PACKAGE = re.compile(r"(merovingian_[0-9][0-9.]*_[a-z0-9]+)-debian[0-9]+\.deb")
 
 
 class Refused(Exception):

@@ -363,9 +363,16 @@ class PublisherTests(unittest.TestCase):
         self.assertNotIn(PACKAGE_NAME, upload[0])
 
     def test_a_package_not_named_as_latest_names_it_is_refused(self) -> None:
-        # GIVEN results that record a package whose name is not a Debian package of
-        # the rolling latest release.
-        renamed = self.package.with_name(f"merovingian_{VERSION}_amd64.deb")
+        # GIVEN results that record a package with no Debian release in its name.
+        self.assert_refused_as_not_from_latest(f"merovingian_{VERSION}_amd64.deb")
+
+    def test_a_package_already_named_as_the_attached_one_is_refused(self) -> None:
+        # GIVEN results that record the -debian.deb name this script attaches, which has
+        # no release number and so is never a package latest publishes.
+        self.assert_refused_as_not_from_latest(ATTACHED_NAME)
+
+    def assert_refused_as_not_from_latest(self, name: str) -> None:
+        renamed = self.package.with_name(name)
         self.package.rename(renamed)
         self.package = renamed
         self.package_signature = self.package_signature.rename(self.workdir / f"{renamed.name}.asc")

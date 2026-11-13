@@ -92,7 +92,7 @@ if ! grep -qF "attestations: write" .github/workflows/packages.yml; then
     fail "packages.yml is missing the 'attestations: write' permission required for SLSA attestation"
 fi
 
-if ! grep -qF "sha256sum packages/* > packages/SHA256SUMS" .github/workflows/packages.yml; then
+if ! grep -qF "sha256sum -- * > SHA256SUMS" .github/workflows/packages.yml; then
     fail "packages.yml does not write SHA256SUMS over the published packages"
 fi
 

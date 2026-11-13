@@ -17,8 +17,9 @@ Pushing any `v*` tag triggers [release.yml](../.github/workflows/release.yml)
   `v<meson.build version>` (`check-tag`); a suffixed tag such as
   `v0.12.90-alpha.1` is refused
 - builds every package the rolling `latest` release carries, by calling
-  `packages.yml` (`distro-packages`): the same jobs build, install, boot,
-  attest, stage and sign them for the tag as for `main`, so a tag ships exactly
+  `packages.yml` (`distro-packages`): the same jobs build, attest, stage and
+  sign them for the tag as for `main`, and install and boot the Ubuntu, Debian
+  and Fedora packages through the startup hardening gate, so a tag ships exactly
   the `latest` set, every package x86_64, hardened-profile and named after the
   platform it installs on (see "Rolling latest packages" below,
   [ADR-0652](adr/0652-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md))
@@ -152,8 +153,9 @@ distribution failure.
 
 Release assets also include:
 
-- `SHA256SUMS` for every package (in rolling `latest` releases)
-- per-tarball and per-package `.sha256` files for tagged releases
+- `SHA256SUMS` over every asset, in both rolling `latest` and tagged releases,
+  naming each file as published, so `sha256sum --check --ignore-missing
+  SHA256SUMS` checks the assets downloaded beside it
 - `merovingian.spdx.json` and `merovingian.cdx.json` SBOMs, in both
 - `merovingian.licenses.json` machine-readable license summary, in both
 

@@ -203,7 +203,7 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("name: signed-packages\n", release)
         self.assertNotIn("generate_sbom.py", release)
         self.assertLess(packages.index("python scripts/generate_sbom.py"),
-                        packages.index("sha256sum packages/* > packages/SHA256SUMS"))
+                        packages.index("sha256sum -- * > SHA256SUMS"))
         self.assertFalse(SBOM_WORKFLOW.exists(), "sbom.yml publishes nothing a release keeps")
 
     def test_codeql_filters_catch2_false_positives_before_upload(self) -> None:

@@ -45,9 +45,14 @@ No version bump: these change only the workflows, packaging specs and their tool
 * Every package names its platform, set by the job that built it before attestation: `-debian13.deb`,
   `-freebsd15.pkg`, `-openbsd<release>.tgz`, `-netbsd<release>.tgz`, and openSUSE Tumbleweed's `.tumbleweed` (was
   `.opensuse`).
-* The three RPM specs build with `--buildtype=release`, so every package uses the hardened profile.
+* The three RPM specs build with `--buildtype=release`, so every package uses the hardened profile. Their comment
+  names the macro as `%%meson`, because RPM expands a macro even on a comment line.
+* `SHA256SUMS` is written from inside `packages/`, so each line names the asset as published and
+  `sha256sum --check --ignore-missing SHA256SUMS` checks the downloaded assets. It named them `packages/<file>`, so that
+  check found no file and checked nothing. The user manual verifies the static tarball with it, since there are no
+  per-file `.sha256` files.
 * `publish_complement_evidence.py` attaches the tested `-debian13.deb` as `-debian.deb`, since a tag now has its own
-  `-debian13.deb`, and refuses a package not named as `latest` names it.
+  `-debian13.deb`, and refuses a package not named as `latest` names it, including one with no Debian release number.
 * CI joins the runner queue in three tiers: the analyses first, then the build and test jobs (now including
   `postgres-integration.yml` and `reproducible-build.yml`) behind instant gates, then the package jobs behind
   `queue-after-build-and-test`, which waits 60 seconds (ADR-0653).

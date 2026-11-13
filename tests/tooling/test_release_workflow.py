@@ -291,7 +291,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # THEN staging writes SHA256SUMS over every asset before signing, the notes list
         # it, and the workflow uploads a GitHub release.
         stage = job_text(packages, "stage-package-assets")
-        self.assertIn("sha256sum packages/* > packages/SHA256SUMS", stage)
+        # From inside packages/, so each line names the asset as published and
+        # `sha256sum --check --ignore-missing SHA256SUMS` beside the downloads finds it.
+        self.assertIn("working-directory: packages", stage)
+        self.assertIn("sha256sum -- * > SHA256SUMS", stage)
+        self.assertNotIn("sha256sum packages/", stage)
         self.assertLess(stage.index("SHA256SUMS"), stage.index("name: unsigned-packages"))
         self.assertIn("done < release-assets/SHA256SUMS", workflow)
         self.assertIn("softprops/action-gh-release@", workflow)

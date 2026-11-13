@@ -916,8 +916,13 @@ jobs:
             --commit "${{ github.sha }}" \
             --repository "${{ github.repository }}"
 
+      # From inside packages/, so each line names the asset as published (no
+      # directory) and `sha256sum --check --ignore-missing SHA256SUMS` beside
+      # downloaded assets finds them. The shell expands the glob before it
+      # creates the redirection's file, so SHA256SUMS does not list itself.
       - name: Generate checksums
-        run: sha256sum packages/* > packages/SHA256SUMS
+        working-directory: packages
+        run: sha256sum -- * > SHA256SUMS
       - name: Upload unsigned package assets
         uses: actions/upload-artifact@v7
         with:
