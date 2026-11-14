@@ -424,6 +424,49 @@ class VmRemoteScriptTests(unittest.TestCase):
         self.assertEqual(0, to_file.returncode, to_file.stderr)
         self.assertEqual(b"file again", (self.checkout / "x").read_bytes())
 
+    def test_a_file_removed_by_a_failed_sync_is_resent_when_restored_unchanged(self) -> None:
+        # GIVEN two synced files.
+        self.assertEqual(0, self.sync({"a": b"a", "b": b"bb"}, "true").returncode)
+
+        # WHEN b is dropped locally and the sync that deletes it on the VM fails to unpack.
+        script, _ = self.prepare({"a": b"a"}, "true")
+        (self.source / "b").unlink()
+        failed = subprocess.run(["sh", "-c", script], input=b"not a tar archive" * 64,
+                                capture_output=True, env=self.environment())
+        self.assertNotEqual(0, failed.returncode)
+        self.assertFalse((self.checkout / "b").exists())
+
+        # AND b comes back with the size, mode and mtime it had, and the next sync runs.
+        restored = self.sync({"a": b"a", "b": b"bb"}, "true")
+
+        # THEN that sync sends b again, because the failed one left no manifest claiming the VM has it.
+        self.assertEqual(0, restored.returncode, restored.stderr)
+        self.assertEqual(b"bb", (self.checkout / "b").read_bytes())
+
+    def test_a_retry_after_an_unpack_interrupted_inside_a_new_directory_succeeds(self) -> None:
+        # GIVEN a synced file x that has become a directory holding x/y locally.
+        self.assertEqual(0, self.sync({"x": b"file"}, "true").returncode)
+        shutil.rmtree(self.source)
+        self.source.mkdir()
+        script, _ = self.prepare({"x/y": b"nested"}, "true")
+
+        # WHEN the sync is cut off just after unpacking x/y, before the manifest arrives.
+        partial = io.BytesIO()
+        with tarfile.open(fileobj=partial, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+            info = tarfile.TarInfo("x/y")
+            info.size = len(b"nested")
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(b"nested"))
+        cut_off = subprocess.run(["sh", "-c", script], input=partial.getvalue(),
+                                 capture_output=True, env=self.environment())
+        self.assertNotEqual(0, cut_off.returncode)
+        self.assertTrue((self.checkout / "x").is_dir())
+
+        # THEN the retry, which still sees x as a stale file, leaves the directory and completes.
+        retry = self.sync({"x/y": b"nested"}, "true")
+        self.assertEqual(0, retry.returncode, retry.stderr)
+        self.assertEqual(b"nested", (self.checkout / "x" / "y").read_bytes())
+
     def test_a_manifest_changed_since_planning_stops_the_run_untouched(self) -> None:
         # GIVEN a run planned against the VM's manifest.
         self.assertEqual(0, self.sync({"a": b"a"}, "true").returncode)

@@ -45,7 +45,12 @@ The rules this sets, each of which the code depends on:
 * **Incremental sync.** The VM keeps `.vm-sync/manifest` (mode, size, mtime, path). Only files that differ are sent;
   files the old manifest lists and the new one does not are deleted before the archive is unpacked (so a file that
   became a directory, or the reverse, cannot block it), never a path that is absolute or contains `..`, and any
-  directory that leaves empty goes too. The new manifest arrives last in the archive and is installed only after
+  directory that leaves empty goes too. A stale path that is now a real directory is left alone: only an interrupted
+  sync that already unpacked files into it can make one, and the archive fills it again. Before anything is deleted
+  or unpacked, the run zeroes the mode, size and mtime of every manifest line but keeps its path, so after an
+  interruption no file is listed as present and current, yet the stale list the next run plans still names
+  everything an earlier run sent. Deleting the manifest instead was rejected: a later run would then never delete
+  the files the interrupted run had left. The new manifest arrives last in the archive and is installed only after
   extraction succeeds, so an interrupted sync resends what it missed.
 * **The baseline is checked under the lock.** `build.py` reads the manifest, plans against it, and sends its SHA-256
   with the run; the remote script compares it once it holds the lock. If another run changed the manifest in between,
@@ -78,9 +83,17 @@ The rules this sets, each of which the code depends on:
 * **Memory.** Without `--jobs`, a run uses one compile job and one test process per 1.5 GiB of VM memory
   (`/proc/meminfo` on Linux, `sysctl hw.physmem` on the BSDs), at most one per CPU, through the `--jobs` option this
   adds to `build-linux.sh` and `build-bsd.sh`; Meson's default of one per CPU runs a small VM out of memory.
+* **Forwarded options.** `build.py` passes the build scripts only options they parse; `test_build_vm.py` runs
+  both scripts with `--hardening` and `--jobs` and checks what reaches Meson, so an option one script refuses fails
+  there, not on a developer's VM.
+* **The VM is not CI.** A VM run meets what a root CI job does not: a non-root user, and a host where a package
+  installed the system config. A smoke test that is not about the defaults passes `--config` with the example
+  config; the one test of the defaults skips (exit 77) when a system config exists; and the live-binary startup
+  test accepts the unsandboxed worker off Linux, as the startup hardening gate does (ADR-0041).
 * **Setup.** `scripts/remote-host-setup.sh` prepares the remote host: on the Debian family, Meson 1.11+ in a virtual
   environment in `~/.local/bin`, which `build.py vm` puts first on `PATH`; on FreeBSD, the FreeBSD CI job's packages
-  from `pkg`, whose Meson is current, plus `python3` for the lock. `scripts/wsl-setup.sh` stays for WSL only.
+  from `pkg`, whose Meson is current, plus `python3` for the lock. A VM without `python3` cannot be synced, so the
+  script is copied over and run on its own before the first sync. `scripts/wsl-setup.sh` stays for WSL only.
 
 ### Positive Consequences
 

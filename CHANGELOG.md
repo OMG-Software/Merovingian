@@ -14,8 +14,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * `python build.py vm` builds and tests on a Linux or FreeBSD VM over ssh, sending only changed files; it copies
   `testlog.txt` back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
 * `python build.py vm --vm <name>` uses the `[vm.<name>]` settings and `build-vm-<name>/`, so one machine can drive a
-  Linux VM and a FreeBSD VM.
-* `--jobs <n>` on `build-linux.sh`, `build-bsd.sh`, `build.py linux` and `build.py bsd` caps compile jobs and tests.
+  Linux VM and a FreeBSD VM (ADR-0752).
+* `--jobs <n>` on `build-linux.sh`, `build-bsd.sh`, `build.py linux` and `build.py bsd` caps compile jobs and tests
+  (ADR-0752).
 
 ## Security Fixes
 
@@ -47,13 +48,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
   `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
 * `build.py linux --hardening` and `build.py bsd --hardening` work: both build scripts used to refuse the option they
-  were passed.
+  were passed (ADR-0752).
 * The live-binary startup test runs as a non-root user on the BSDs too: off Linux it accepts the unsandboxed worker,
   as the startup hardening gate does (ADR-0041). It used to fail there.
 * The default-summary smoke test is skipped, not failed, on a host with an installed system config, which the server
   reads instead of its defaults.
 * `docs/hardening.md` said `federation.worker.apply_hardening=false` alone runs the worker on FreeBSD and OpenBSD;
   it needs `federation.worker.allow_without_landlock=true` too. It now lists the worker's hardening steps in order.
+* On a host with an installed system config, the `--dry-run` smoke tests read the example config and the
+  default-summary test is skipped, not failed: the server reads that config instead of its defaults (ADR-0752).
+* `build.py vm` resends a file an interrupted sync had deleted, and a retry after a sync interrupted inside a new
+  directory succeeds (ADR-0752).
 
 ## Release notes
 

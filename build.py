@@ -548,6 +548,15 @@ def vm_remote_script(checkout: str, run_line: str, *, token: str, baseline_sha25
         f'    : > "$run_dir/{VM_BASELINE_MARKER}"',
         f"    exit {VM_BASELINE_CHANGED}",
         "fi",
+        # Before the checkout changes, zero the metadata of every entry in the
+        # manifest. If the sync then fails part-way, the next run plans against
+        # this, so it resends every file (a file deleted here and later restored
+        # with its old metadata included), yet still knows which paths are stale.
+        f"if [ -f {VM_MANIFEST} ]; then",
+        """    awk 'BEGIN { FS = "\\t"; OFS = "\\t" } NF >= 4 { print 0, 0, 0, $4 }' """
+        f"{VM_MANIFEST} > .vm-sync/manifest.dirty",
+        f"    mv -f .vm-sync/manifest.dirty {VM_MANIFEST}",
+        "fi",
     ]
     if builddir:
         quoted = quote_bash(builddir)
@@ -560,6 +569,10 @@ def vm_remote_script(checkout: str, run_line: str, *, token: str, baseline_sha25
             '    case "$stale" in',
             "        ''|/*|..|../*|*/..|*/../*) continue ;;",
             "    esac",
+            # A stale file that is now a directory was made by an earlier unpack,
+            # interrupted after it had begun filling the file's replacement:
+            # the archive refills it, so leave it.
+            '    if [ -d "$stale" ] && [ ! -L "$stale" ]; then continue; fi',
             '    rm -f -- "$stale"',
             '    parent=$(dirname -- "$stale")',
             '    if [ "$parent" != . ]; then rmdir -p -- "$parent" 2>/dev/null || true; fi',

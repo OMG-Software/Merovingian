@@ -162,7 +162,9 @@ Each run:
    the archive is unpacked, so a file that became a directory, or the reverse,
    never blocks it. If another run changed the manifest between this run reading
    it and taking the lock, the VM touches nothing and `build.py vm` reads the
-   manifest again and resends (three attempts).
+   manifest again and resends (three attempts). A sync cut off part-way leaves
+   the manifest listing every path with no metadata, so the next run resends
+   each file and still deletes what it no longer has.
 3. Takes the ssh user's lock (`~/merovingian-vm/.lock`, through `python3`'s
    `fcntl.flock`, since the BSDs have no `flock` command), so a second run as
    that user, from any checkout, waits ("another run holds the VM lock"), then
@@ -232,14 +234,19 @@ One-time setup:
    identity = ~/.ssh/merovingian_bsd_ed25519
    ```
 
-4. Sync once and install the packages on the VM, as root or a user who can use
-   `sudo` or `doas`:
+4. Install the packages on the VM before the first sync, as root or a user who
+   can use `sudo` or `doas`. `build.py vm` takes its lock through `python3`, so
+   a VM without it cannot be synced yet: copy the setup script over on its own,
+   run it there, then sync once to check:
 
    ```sh
+   scp scripts/remote-host-setup.sh builder@192.0.2.10:
+   ssh -t builder@192.0.2.10 sh remote-host-setup.sh
    python build.py vm --exec true
-   # then, on the VM:
-   cd ~/merovingian-vm/<checkout directory> && sh scripts/remote-host-setup.sh
    ```
+
+   On FreeBSD, `pkg install python3` from the console does as well for the
+   first sync; the setup script can then run from the synced checkout.
 
    `scripts/remote-host-setup.sh` prepares a remote build host, the VM or
    another machine (`scripts/wsl-setup.sh` is for WSL only). It accepts Ubuntu,
