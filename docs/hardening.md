@@ -603,9 +603,10 @@ separate process on the same host:
   afterwards inherit Landlock and seccomp and cannot open the master key path.
   A kernel without seccomp or Landlock makes those scenarios SKIP with a
   message rather than pass.
-* **Worker-specific seccomp + runtime hardening** (#319): the worker applies
-  `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
-  a stricter seccomp-bpf filter (on top of the inherited server filter) that
+* **Worker-specific seccomp + runtime hardening** (#319): the worker applies,
+  in order and each fail-closed, the core-dump policy (`RLIMIT_CORE` 0 and
+  `PR_SET_DUMPABLE` 0), `PR_SET_NO_NEW_PRIVS` and the capability-bounding-set
+  drop, then installs a stricter seccomp-bpf filter (on top of the inherited server filter) that
   denies `execve`/`execveat`/spawn-oriented `clone` — the worker never execs or
   spawns, so those syscalls are unreachable in normal operation and kill the
   worker on attempted abuse. This sequence (`apply_worker_hardening()` in
@@ -620,8 +621,11 @@ separate process on the same host:
   controls, and the worker refuses to start. The server's first spawn then
   fails its IPC handshake and the server exits with status 80, rather than
   ever accepting unsandboxed federation traffic. An operator who accepts the
-  risk can still run the worker there by setting
-  `federation.worker.apply_hardening=false` explicitly, or run a
+  risk can still run the worker there by setting both
+  `federation.worker.apply_hardening=false` and
+  `federation.worker.allow_without_landlock=true`: the worker applies Landlock
+  first, whatever `apply_hardening` says, and refuses to start without it
+  unless the second key is set. Or run a
   non-federating server, which starts no worker, with
   `security.federation.enabled=false` (ADR-0377).
 * **ASan exit-time leak check disabled in the worker (#319):** the worker

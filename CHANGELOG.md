@@ -52,6 +52,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   as the startup hardening gate does (ADR-0041). It used to fail there.
 * The default-summary smoke test is skipped, not failed, on a host with an installed system config, which the server
   reads instead of its defaults.
+* `docs/hardening.md` said `federation.worker.apply_hardening=false` alone runs the worker on FreeBSD and OpenBSD;
+  it needs `federation.worker.allow_without_landlock=true` too. It now lists the worker's hardening steps in order.
 
 ## Release notes
 

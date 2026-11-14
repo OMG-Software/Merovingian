@@ -160,11 +160,13 @@ anything that does, above the hardening calls in `main.cpp`.
 Before the event loop opens the database or starts threads, `main.cpp` first calls
 `platform::apply_worker_landlock()` (ADR-0062 part 3; see Rules item 3 above), then
 `platform::apply_worker_hardening()` (gated by `federation.worker.apply_hardening`, default
-`true`): `PR_SET_NO_NEW_PRIVS`, capability drop, and a worker seccomp profile that denies
-`execve`/`execveat` (`clone`/`clone3` stay allowed because the worker runs thread pools). On
-platforms with no in-process equivalent this fails closed — the worker refuses to start rather
-than run unsandboxed (ADR-0041). ASan builds disable exit-time LeakSanitizer in the worker because
-the seccomp profile denies the `ptrace` it needs.
+`true`), which applies in order, each fail-closed: the core-dump policy (`RLIMIT_CORE` 0 and
+`PR_SET_DUMPABLE` 0), `PR_SET_NO_NEW_PRIVS`, the capability-bounding-set drop, and a worker seccomp profile that
+denies `execve`/`execveat` (`clone`/`clone3` stay allowed because the worker runs thread pools).
+`apply_worker_landlock()` sets `PR_SET_NO_NEW_PRIVS` on its own before `landlock_restrict_self()`, because it runs
+whether or not `apply_hardening` is on. On platforms with no in-process equivalent,
+`apply_worker_hardening()` fails closed — the worker refuses to start rather than run unsandboxed (ADR-0041).
+ASan builds disable exit-time LeakSanitizer in the worker because the seccomp profile denies the `ptrace` it needs.
 
 The worker filter also denies `kill`, `tkill` and `setrlimit`, allows `tgkill` only on the worker's
 own thread group and `prlimit64` only to read its own limits (ISO-2,
