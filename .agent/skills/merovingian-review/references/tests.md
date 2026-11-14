@@ -19,8 +19,10 @@ Sources: `tests/unit/AGENTS.md#Unit vs. other test directories`, `tests/integrat
 
 ## Required structure (check by hand where no gate does)
 
-- `SCENARIO` with `GIVEN`, `WHEN` and `THEN` in every tier, not only unit. Setup goes in GIVEN, one action in WHEN,
-  assertions in THEN. The BDD gate checks only `tests/unit`, and only that the words appear somewhere in the file.
+- `SCENARIO` with `GIVEN`, `WHEN` and `THEN` in every Catch2 test file (unit, conformance, integration), not only
+  unit. Setup goes in GIVEN, one action in WHEN, assertions in THEN. The BDD gate checks only `tests/unit`, and
+  only that the words appear somewhere in the file. Smoke tests (CLI probes registered in
+  `tests/smoke/meson.build`) and fuzz targets are not Catch2, so the rule does not apply to them.
 - Tags: unit `[module]` matching the directory; conformance `[conformance]` plus an area tag; fuzz regression
   `[<surface>][fuzz][regression]`. **A scenario that reaches PostgreSQL carries `[postgresql]`.** That tag is the
   whole of what the PostgreSQL CI job runs (ADR-0511). An untagged one skips in CI and passes having tested

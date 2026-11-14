@@ -10,8 +10,11 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   a store lock or the federation state mutex. Use `RuntimeLockRelease` around the call only. After re-locking,
   re-validate what the code depends on (`src/homeserver/AGENTS.md#The runtime lock and blocking calls`).
 - **Caps on everything a client or remote can grow:** rows per user, array lengths, walk depths, matcher steps,
-  in-flight requests. At the cap, refuse; never evict. Work under the lock is at most linear in request input
-  (`src/homeserver/AGENTS.md#Work under the runtime lock is bounded by the request`).
+  in-flight requests. State a client or remote owns is refused at the cap, never evicted to make room (ADR-0173,
+  ADR-0548). A cache of what the server can fetch or build again is bounded by eviction instead, where its module
+  doc prescribes it: cached remote media and thumbnails are deleted least recently used first
+  (`docs/media-repository.md#Runtime Behavior`, ADR-0120, ADR-0690). Work under the lock is at most linear in
+  request input (`src/homeserver/AGENTS.md#Work under the runtime lock is bounded by the request`).
 - **Main-process-only:** signing, email, appservice registrations, database access, the policy-server hook. The
   worker relays to main, and main re-verifies (`src/federation_worker/AGENTS.md#Rules — non-negotiable`).
 - **No thread before hardening** (ADR-0082): pools, parker and log writers start after Landlock and seccomp.
@@ -146,7 +149,12 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   `src/federation_worker/AGENTS.md#Rules — non-negotiable`
 - The worker opens no database, on either backend. Its store is filled from main under one-use permits
   (ADR-0733, ADR-0735).
-- Landlock, then seccomp, before any thread. It refuses to run unsandboxed. `#Hardening`
+- Landlock, then the seccomp filter, before any thread (ADR-0082). Without them the worker refuses to start
+  (ADR-0041): on a kernel without Landlock, and on FreeBSD and OpenBSD, which have no in-process sandbox for it
+  (the server exits 80, `docs/user-manual.md#Install from a distro package (recommended)`). The only ways round
+  are the documented opt-outs, `federation.worker.allow_without_landlock=true` and
+  `federation.worker.apply_hardening=false`, for an operator who confines the worker another way. A change that
+  adds another way to run unsandboxed, or skips the refusal, is a finding. `#Hardening`
 - `local_pool` and `relay_pool` stay separate, routed by `federation_endpoint_requires_main_relay`.
 - `room_sync` runs on `reload_pool` through `RoomReloadCoalescer` and `StoreReadGuard`. Hold no lock across IPC,
   and copy what a table lends before releasing (ADR-0623).
@@ -193,7 +201,10 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 ## src/ipc
 
 - Mutually authenticated key exchange, and no libsodium here. `src/ipc/AGENTS.md#Security model — non-negotiable`
-- No signing frame, and no token, Authorization header or secret in any frame. Add narrowly typed requests instead.
+- No signing frame. No access token, peer `Authorization` or `X-Matrix` header, or secret key in any frame: main
+  verifies the inbound signature and forwards only the verified identity. The one `Authorization` value that
+  crosses is main's own request-bound X-Matrix signature on an outbound request, not a reusable credential
+  (`docs/hardening.md`). Add narrowly typed requests instead of a generic one.
 - Oversize frames fail visibly via `worker_ipc_frame_bytes` (ADR-0368). Frames are valid UTF-8 (ADR-0321). A
   failed `write_frame` is never ignored (ADR-0322).
 - Pending requests carry main-owned origins and digests, never worker JSON (ADR-0595).

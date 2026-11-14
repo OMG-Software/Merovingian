@@ -39,7 +39,7 @@ against this skill.
 |---|---|
 | PR | `gh pr view <n> --json title,body,baseRefName,headRefName,headRefOid,commits,files` then `gh pr diff <n>` |
 | Branch | `git fetch origin` then `git diff --stat origin/main...HEAD` |
-| Local work | `git diff` and `git diff --staged` |
+| Local work | `git diff`, `git diff --staged` and `git ls-files --others --exclude-standard`. Neither diff lists untracked files: review each one as an addition, and report one the change needs but would leave uncommitted |
 | Another session's or subagent's work | Its branch or worktree, as a branch. Its report is a claim to test, not a summary to trust |
 
 Record the base and head SHAs. GitHub rewrites PR head commits after a squash or rebase, so take the SHA from the
@@ -114,9 +114,14 @@ Work through:
 - **Locks and concurrency**: the lock-scope questions above, plus check-then-act across a `RuntimeLockRelease`.
   After re-locking, is everything the code relies on re-validated? Are pointers kept across the release? Check lock
   order, and `std::terminate` from an exception escaping a pool task.
-- **Bounds and algorithmic cost**: anything a client or remote can grow must be capped and refused at the cap,
-  never evicted, and never scanned in full under the runtime lock. Regex, glob and substring matching on
-  caller-chosen input. Comparators that rescan. Per-row work multiplied by per-member work.
+- **Bounds and algorithmic cost**: anything a client or remote can grow must be capped. State it owns is refused
+  at the cap, never evicted; a cache the server can refill is bounded by LRU eviction where its module doc says
+  so. Work under the runtime lock grows at most linearly with request input. A single pass over a table that the
+  module doc sanctions is allowed, such as `matching_directory_profiles` reading `store.users` once; a scan
+  repeated per item, per member or per comparison is a finding
+  (`src/homeserver/AGENTS.md#Work under the runtime lock is bounded by the request`). Also check regex, glob and
+  substring matching on caller-chosen input, comparators that rescan, and per-row work multiplied by per-member
+  work.
 - **Spec**: status codes and errcodes as the spec states them, field names and presence. Every event in a sync
   or sliding-sync response carries `event_id`, and so on.
 - **Rules**: run the greps in [rule-checks.md](references/rule-checks.md) over the changed lines, then the
