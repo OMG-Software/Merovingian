@@ -850,7 +850,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   under `RuntimeLockRelease{guard}`); the state array and the member rows in one each, with the lock held, because they write
   `current_state` and membership rows that a local send, an invite or a knock could also write. Release for them only after
   every such writer checks a per-room claim. Never commit an answer-sized loop of rows one by one.
-- A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`) and then its
+- A resident's make_join, make_leave or make_knock template is claimed (`claim_membership_event_template`: our `origin`
+  and `origin_server_ts`; its `event_id`, `unsigned`, `hashes` and `signatures` dropped, since signing adds to the
+  signatures an event holds; ADR-0745) and then its
   content is rebuilt from an allow-list (`restrict_membership_template_content`): `membership`, and for a join the
   authorising user of another server. A `reason` or profile in the template is never signed as the user's; the user's own
   reason (knock) and profile (join) are added after. A join template naming a user of this server is refused (C18, ADR-0709).

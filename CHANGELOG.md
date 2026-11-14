@@ -19,7 +19,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Security Fixes
 
-* None: every fix below keeps the audit fix it touches. Each one is narrowed to the case the spec requires, and is
+* A resident's make_join, make_leave or make_knock template can no longer put signatures or hashes of its choosing
+  into this server's membership event; they are dropped before signing, and an unparseable join is refused (ADR-0745).
+* Every fix under Bug fixes keeps the audit fix it touches. Each one is narrowed to the case the spec requires, and is
   covered by tests that cover the refusal as well (ADR-0745 to ADR-0751).
 
 ## Bug fixes

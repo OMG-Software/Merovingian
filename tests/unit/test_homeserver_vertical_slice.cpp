@@ -244,6 +244,30 @@ SCENARIO("The joining server puts its own origin and timestamp on a membership t
         }
     }
 
+    // ADR-0745: signing adds to the `signatures` an event holds, so a template's own would travel in this server's
+    // join and be stored with it, one filed under this server's name included.
+    GIVEN("a validated make_join template carrying hashes and signatures the resident chose")
+    {
+        auto const body = std::string{
+            R"({"room_version":"10","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","content":{"membership":"join"},"hashes":{"sha256":"cmVzaWRlbnQ"},"signatures":{"local.example.org":{"ed25519:forged":"Zm9yZ2Vk"},"remote.example.org":{"ed25519:a":"cmVzaWRlbnQ"}}}})"};
+        auto parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                           "@alice:local.example.org", body);
+        REQUIRE(parsed.ok);
+        REQUIRE(member_of(parsed.event, "signatures") != nullptr);
+
+        WHEN("this server claims the template")
+        {
+            merovingian::homeserver::claim_membership_event_template(parsed.event, "local.example.org", 42);
+
+            THEN("neither the template's hashes nor its signatures are left to be signed over or sent")
+            {
+                REQUIRE(member_of(parsed.event, "hashes") == nullptr);
+                REQUIRE(member_of(parsed.event, "signatures") == nullptr);
+                REQUIRE(string_of(parsed.event, "sender") == "@alice:local.example.org");
+            }
+        }
+    }
+
     GIVEN("a validated make_join template without origin or origin_server_ts")
     {
         auto const body = std::string{

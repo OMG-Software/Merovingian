@@ -56,6 +56,9 @@ signature, or one signed by another key is refused with 502, and nothing is stor
   refuses the resident's copy in one place (`verify_resident_join`), so the two paths cannot drift apart.
 * The stored join's `event_signatures` rows list every signature its JSON carries, the co-signature included, so
   the rows and the event agree after a reload or in a worker's snapshot.
+* The resident's template brings no `hashes` or `signatures` into the join: `claim_membership_event_template` drops
+  them, because signing adds to the signatures an event holds. The signed join is parsed before it is sent and
+  refused with 502 if it does not parse, so a join this server sends can always be stored with its signature rows.
 
 ### Negative Consequences
 

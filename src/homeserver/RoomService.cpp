@@ -5719,6 +5719,18 @@ namespace
             });
             return federated_join_failure("event_id computation failed", 500U);
         }
+        // The join is stored with signature rows parsed from it (join_room). One that does not parse is refused before
+        // it is sent, so this server never sends a join it could not store whole.
+        if (auto const parsed_join = events::parse_event_envelope(signed_value.value); !parsed_join.error.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   user_id,              false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  parsed_join.error,    false}
+            });
+            return federated_join_failure("make_join template refused: " + parsed_join.error, 502U);
+        }
         // Send the signed join event via send_join.
         auto send_join_tx = federation::make_outbound_send_membership(
             federation::FederationEndpoint::send_join, remote_server, our_server, room_id, event_id_result.event_id,
@@ -10817,9 +10829,12 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
                                      std::int64_t now_ms) -> void
 {
     // The resident's template is signed and stored as this server's own event, so an `unsigned` it carries
-    // (covered by no signature) is dropped with the `event_id` (ADR-0402).
+    // (covered by no signature) is dropped with the `event_id` (ADR-0402). So are its `hashes` and `signatures`: a
+    // template is unsigned, signing adds to whatever `signatures` the event holds, and this server's join must carry
+    // only the signatures it adds itself and those it verified (ADR-0745).
     std::erase_if(event, [](canonicaljson::ObjectMember const& member) {
-        return member.key == "event_id" || member.key == "unsigned";
+        return member.key == "event_id" || member.key == "unsigned" || member.key == "hashes" ||
+               member.key == "signatures";
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});
