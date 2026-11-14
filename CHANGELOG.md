@@ -43,6 +43,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   whole `/send` transaction when any room it names is one of these, not only its first (ADR-0756).
 * Every worker shard now reloads every changed room, and main tracks each shard's copy, so a `/send` naming rooms
   of several shards is judged by one worker on current copies, never sent to main for that (ADR-0758).
+* `docs/architecture.md` described the worker's room reload twice, once in a pre-1.0.1 form with a database read; it
+  now describes it once, through main, with main's providers under `main_store_read_lock` and `/hierarchy` on main.
 * Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
   first retry after it comes back, including after this server restarts (ADR-0749).
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;
