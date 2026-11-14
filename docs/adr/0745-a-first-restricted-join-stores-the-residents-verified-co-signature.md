@@ -52,7 +52,8 @@ signature, or one signed by another key is refused with 502, and nothing is stor
 
 * A first restricted join works again, and the stored join carries the signature every other server's auth check
   requires.
-* There is one way to accept a co-signed join, used by both join paths.
+* There is one way to accept a co-signed join, used by both join paths: `perform_federated_join` verifies, logs and
+  refuses the resident's copy in one place (`verify_resident_join`), so the two paths cannot drift apart.
 
 ### Negative Consequences
 

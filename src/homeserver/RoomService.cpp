@@ -5778,8 +5778,9 @@ namespace
             });
             return federated_join_failure("malformed send_join response", 502U);
         }
-        if (purpose == FederatedJoinPurpose::join_through_resident)
-        {
+        // The resident's co-signed copy of this server's join, verified; a refusal is logged here and answered 502 by
+        // the caller. Shared by a join through another resident and a first restricted join (ADR-0745).
+        auto const verify_resident_join = [&]() {
             auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
                                                              event_id_result.event_id, signed_value.value);
             if (!resident_join.refusal.empty())
@@ -5793,6 +5794,14 @@ namespace
                                    {"reason",        resident_join.refusal, false}
                 },
                                observability::LogEventSeverity::warning);
+            }
+            return resident_join;
+        };
+        if (purpose == FederatedJoinPurpose::join_through_resident)
+        {
+            auto resident_join = verify_resident_join();
+            if (!resident_join.refusal.empty())
+            {
                 return federated_join_failure(resident_join.refusal, 502U);
             }
             auto outcome = FederatedJoinOutcome{};
@@ -5816,19 +5825,9 @@ namespace
         auto join_value = signed_value.value;
         if (!join_authorising_user_of(signed_value.value).empty())
         {
-            auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
-                                                             event_id_result.event_id, signed_value.value);
+            auto resident_join = verify_resident_join();
             if (!resident_join.refusal.empty())
             {
-                log_diagnostic("room.join.rejected",
-                               {
-                                   {"actor",         user_id,               false},
-                                   {"room_id",       std::string{room_id},  false},
-                                   {"status",        "502",                 false},
-                                   {"remote_server", remote_server,         false},
-                                   {"reason",        resident_join.refusal, false}
-                },
-                               observability::LogEventSeverity::warning);
                 return federated_join_failure(resident_join.refusal, 502U);
             }
             join_signed_event.event_json = std::move(resident_join.json);

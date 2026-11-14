@@ -20,8 +20,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
-* A first join into a restricted room stores the resident's verified co-signature, so it is no longer refused as
-  unauthorised; an answer without a valid co-signature is still refused (ADR-0745).
+* A first join into a restricted room stores the resident's co-signature, verified exactly as for a join through
+  another resident, so it is no longer refused as unauthorised; an invalid one is still refused (ADR-0745).
 * A threaded receipt is accepted for an event whose relation chain reaches the thread root within 3 hops, such as a
   reaction to a reference of the root (ADR-0746).
 * A remote user who is joined, invited or knocking can leave, or reject an invite, through this server after its last
