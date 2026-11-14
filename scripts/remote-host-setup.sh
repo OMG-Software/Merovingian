@@ -1,11 +1,13 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# One-time setup of a remote Linux build host, a VM or another machine, for
-# `python build.py vm` (ADR-0752): installs the build packages with apt-get and
-# a current Meson/Ninja in a virtual environment linked into ~/.local/bin, which
-# build.py vm puts first on PATH. Run it on the remote host, in the checkout
-# build.py vm synced, as a user who can use sudo. It is not for WSL, which has
+# One-time setup of a remote build host, a VM or another machine, for
+# `python build.py vm` (ADR-0752). On a Debian-family Linux host it installs the
+# build packages with apt-get and a current Meson/Ninja in a virtual environment
+# linked into ~/.local/bin, which build.py vm puts first on PATH. On FreeBSD it
+# installs the packages the FreeBSD CI job installs, Meson and Ninja included,
+# with pkg. Run it on the remote host, in the checkout build.py vm synced, as
+# root or as a user who can use sudo or doas. It is not for WSL, which has
 # scripts/wsl-setup.sh.
 
 set -eu
@@ -28,8 +30,9 @@ Options:
   --dry-run            Print commands without running them.
   --help               Show this help text.
 
-Supports Ubuntu, Debian, and distributions whose ID_LIKE names either
-(for example Linux Mint). After setup, run python build.py vm locally.
+Supports Ubuntu, Debian, distributions whose ID_LIKE names either (for
+example Linux Mint), and FreeBSD. On FreeBSD --tools-venv and --bin-dir are
+unused: pkg's Meson is current. After setup, run python build.py vm locally.
 EOF
 }
 
@@ -102,16 +105,39 @@ os_id=$(sed -n 's/^ID=//p' "$os_release" | tr -d "\"'")
 os_id_like=$(sed -n 's/^ID_LIKE=//p' "$os_release" | tr -d "\"'")
 case " $os_id $os_id_like " in
     *" ubuntu "*|*" debian "*)
+        family=debian
+        ;;
+    " freebsd "*)
+        family=freebsd
         ;;
     *)
-        fail "scripts/remote-host-setup.sh supports Ubuntu, Debian and their derivatives only (ID=$os_id)"
+        fail "scripts/remote-host-setup.sh supports Ubuntu, Debian, their derivatives and FreeBSD only (ID=$os_id)"
         ;;
 esac
 
 if [ "$(id -u)" -eq 0 ]; then
     as_root=
-else
+elif command -v sudo >/dev/null 2>&1; then
     as_root=sudo
+elif command -v doas >/dev/null 2>&1; then
+    as_root=doas
+elif [ "$dry_run" -eq 1 ]; then
+    as_root=sudo
+else
+    fail "run scripts/remote-host-setup.sh as root, or install sudo or doas"
+fi
+
+if [ "$family" = freebsd ]; then
+    # The FreeBSD CI job's packages (.github/workflows/ci.yml), plus python3 for
+    # build.py vm's lock and the skip gate. pkg's Meson is new enough.
+    packages="meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo"
+    # shellcheck disable=SC2086
+    run $as_root pkg install -y $packages
+    cat <<EOF
+
+The remote build host is ready. Run python build.py vm on the local machine.
+EOF
+    exit 0
 fi
 
 # Everything build-linux.sh checks for, including libcurl, plus the optional

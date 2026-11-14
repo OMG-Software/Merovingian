@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Tests for `build.py vm` (ADR-0752): settings, paths, the sync plan and archive,
-the script the VM runs, and `build-linux.sh --jobs`."""
+"""Tests for `build.py vm` (ADR-0752): settings, named VMs, paths, the sync plan
+and archive, the script the remote host runs on Linux and the BSDs, the
+`--jobs` and `--hardening` options of `build-linux.sh` and `build-bsd.sh`, and
+`remote-host-setup.sh`."""
 from __future__ import annotations
 
 import argparse
@@ -10,14 +12,17 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LINUX_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-linux.sh"
+BSD_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-bsd.sh"
 REMOTE_HOST_SETUP = REPO_ROOT / "scripts" / "remote-host-setup.sh"
 
 _spec = importlib.util.spec_from_file_location("merovingian_build", REPO_ROOT / "build.py")
@@ -26,7 +31,8 @@ _spec.loader.exec_module(build)
 
 
 def vm_args(**overrides) -> argparse.Namespace:
-    values = {"host": None, "user": None, "port": None, "identity": None, "jobs": None}
+    values = {"host": None, "user": None, "port": None, "identity": None, "jobs": None,
+              "vm": None}
     values.update(overrides)
     return argparse.Namespace(**values)
 
@@ -90,6 +96,38 @@ class VmSettingsTests(unittest.TestCase):
             # THEN build.py refuses it rather than guessing.
             with self.subTest(body=body), self.assertRaises(build.VmError):
                 build.load_vm_settings(vm_args(), {}, self.config)
+
+    def test_a_named_vm_reads_its_own_section_and_builds_into_its_own_directory(self) -> None:
+        # GIVEN a default VM and a named one in the settings file.
+        self.config.write_text("[vm]\nhost = linux-vm\nuser = claude\n\n"
+                               "[vm.freebsd]\nhost = bsd-vm\nuser = builder\njobs = 4\n",
+                               encoding="utf-8")
+
+        # WHEN each is chosen, by --vm and by MEROVINGIAN_VM_NAME, and without a name.
+        named = build.load_vm_settings(vm_args(vm="freebsd"), {}, self.config)
+        from_env = build.load_vm_settings(vm_args(), {"MEROVINGIAN_VM_NAME": "freebsd"}, self.config)
+        default = build.load_vm_settings(vm_args(), {}, self.config)
+
+        # THEN a named VM takes only its own section, and its logs land in build-vm-<name>.
+        self.assertEqual(("bsd-vm", "builder", 4, "freebsd"),
+                         (named.host, named.user, named.jobs, named.name))
+        self.assertEqual(named, from_env)
+        self.assertEqual(("linux-vm", "claude", None, ""),
+                         (default.host, default.user, default.jobs, default.name))
+        self.assertEqual("build-vm-freebsd", build.vm_default_builddir(named))
+        self.assertEqual("build-vm", build.vm_default_builddir(default))
+
+    def test_an_unknown_or_malformed_vm_name_is_refused(self) -> None:
+        # GIVEN a settings file with one named VM.
+        self.config.write_text("[vm.freebsd]\nhost = bsd-vm\n", encoding="utf-8")
+        for name in ("openbsd", "../x", "Free BSD", "-x"):
+            # WHEN another name, or one that is not a plain lower-case name, is chosen.
+            # THEN it is refused rather than falling back to another VM.
+            with self.subTest(name=name), self.assertRaises(build.VmError):
+                build.load_vm_settings(vm_args(vm=name), {}, self.config)
+        # WHEN the file is absent THEN a named VM is refused too.
+        with self.assertRaises(build.VmError):
+            build.load_vm_settings(vm_args(vm="freebsd"), {}, self.dir / "absent.ini")
 
     def test_ssh_never_prompts_and_refuses_unknown_host_keys(self) -> None:
         # GIVEN settings with a key file.
@@ -216,21 +254,31 @@ class VmManifestAndArchiveTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix" and all(shutil.which(tool) for tool in
-                                                ("sh", "tar", "flock", "comm", "cut", "sort")),
-                     "needs a POSIX host with tar and flock")
+                                                ("sh", "tar", "python3", "comm", "cut", "sort")),
+                     "needs a POSIX host with tar and python3")
 class VmRemoteScriptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name) / "home"
         self.source = Path(self.temp.name) / "source"
+        self.stubs = Path(self.temp.name) / "stubs"
         self.home.mkdir()
         self.source.mkdir()
+        self.stubs.mkdir()
         self.checkout = self.home / build.VM_REMOTE_ROOT / "co"
+        self.path = os.environ.get("PATH", "")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def sync(self, files: dict[str, bytes], run_line: str, **options) -> subprocess.CompletedProcess:
+    def stub(self, name: str, body: str) -> None:
+        """Put a command on PATH ahead of the real one, as another system would have it."""
+        script = self.stubs / name
+        script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        script.chmod(0o755)
+        self.path = f"{self.stubs}{os.pathsep}{os.environ.get('PATH', '')}"
+
+    def prepare(self, files: dict[str, bytes], run_line: str, **options) -> tuple[str, bytes]:
         local = {}
         for path, data in files.items():
             (self.source / path).parent.mkdir(parents=True, exist_ok=True)
@@ -241,9 +289,15 @@ class VmRemoteScriptTests(unittest.TestCase):
             if (self.checkout / build.VM_MANIFEST).exists() else "")
         archive = io.BytesIO()
         build.write_vm_sync_archive(archive, self.source, local, build.plan_vm_sync(local, remote))
-        script = build.vm_remote_script("co", run_line, **options)
-        return subprocess.run(["sh", "-c", script], input=archive.getvalue(), capture_output=True,
-                              env={**os.environ, "HOME": str(self.home)})
+        return build.vm_remote_script("co", run_line, **options), archive.getvalue()
+
+    def environment(self) -> dict[str, str]:
+        return {**os.environ, "HOME": str(self.home), "PATH": self.path}
+
+    def sync(self, files: dict[str, bytes], run_line: str, **options) -> subprocess.CompletedProcess:
+        script, archive = self.prepare(files, run_line, **options)
+        return subprocess.run(["sh", "-c", script], input=archive, capture_output=True,
+                              env=self.environment())
 
     def test_files_dropped_locally_are_deleted_and_nothing_outside_is_touched(self) -> None:
         # GIVEN a first sync of two files, a build output file, and a file beside the checkout.
@@ -301,6 +355,80 @@ class VmRemoteScriptTests(unittest.TestCase):
         self.assertGreaterEqual(jobs, 1)
         self.assertLessEqual(jobs, os.cpu_count())
 
+    def test_a_bsd_host_runs_build_bsd_sh_and_sizes_jobs_from_sysctl(self) -> None:
+        # GIVEN a host whose uname says FreeBSD, with 8 GiB of memory and 8 CPUs by sysctl.
+        self.stub("uname", "echo FreeBSD")
+        self.stub("sysctl", 'case "$2" in hw.physmem) echo 8589934592 ;; hw.ncpu) echo 8 ;;'
+                            ' *) exit 1 ;; esac')
+
+        # WHEN a build run reports what it chose.
+        result = self.sync({"a": b"a"}, 'echo "$build_script jobs=$jobs"', builddir="build-vm",
+                           size_jobs=True)
+
+        # THEN it picks the BSD build script and one job per 1.5 GiB: five, under the eight CPUs.
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("build-bsd.sh jobs=5", result.stdout.decode().strip())
+
+    def test_a_linux_host_runs_build_linux_sh(self) -> None:
+        # GIVEN a host whose uname says Linux.
+        self.stub("uname", "echo Linux")
+        # WHEN a run reports its build script.
+        result = self.sync({"a": b"a"}, 'echo "$build_script"')
+        # THEN it is the Linux one.
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("build-linux.sh", result.stdout.decode().strip())
+
+    def test_an_unsupported_system_is_refused_before_anything_is_unpacked(self) -> None:
+        # GIVEN a host whose uname names a system build.py vm has no build script for.
+        self.stub("uname", "echo Darwin")
+
+        # WHEN a run is sent to it.
+        result = self.sync({"a": b"a"}, "touch ran")
+
+        # THEN it fails with exit 2, naming the system, and neither unpacks nor runs anything.
+        self.assertEqual(2, result.returncode)
+        self.assertIn(b"unsupported remote system Darwin", result.stderr)
+        self.assertFalse(self.checkout.exists())
+
+    def test_a_second_run_waits_for_the_lock_and_then_runs(self) -> None:
+        # GIVEN another process holding the ssh user's lock, as a running suite does.
+        root = self.home / build.VM_REMOTE_ROOT
+        root.mkdir(parents=True)
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl, sys\n"
+             f"lock = open({str(root / '.lock')!r}, 'a')\n"
+             "fcntl.flock(lock, fcntl.LOCK_EX)\n"
+             "print('held', flush=True)\n"
+             "sys.stdin.read()\n"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual("held", holder.stdout.readline().strip())
+            script, archive = self.prepare({"a": b"a"}, "echo ran")
+            # The run reads its archive only once it holds the lock, so the archive
+            # comes from a file: written into a pipe, it can exceed the pipe's buffer
+            # (16 KiB on FreeBSD) and block this test before the holder lets go.
+            archive_file = Path(self.temp.name) / "archive.tar"
+            archive_file.write_bytes(archive)
+
+            # WHEN a run starts while it is held.
+            with archive_file.open("rb") as stdin:
+                waiting = subprocess.Popen(["sh", "-c", script], stdin=stdin,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           env=self.environment())
+            time.sleep(1)
+
+            # THEN it has not run yet.
+            self.assertIsNone(waiting.poll())
+        finally:
+            holder.communicate(timeout=30)
+
+        # WHEN the holder exits THEN the waiting run takes the lock, says it waited, and runs.
+        stdout, stderr = waiting.communicate(timeout=30)
+        self.assertEqual(0, waiting.returncode, stderr)
+        self.assertIn(b"another run holds the VM lock; waiting for it", stderr)
+        self.assertEqual(b"ran\n", stdout)
+
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
 class VmFetchTests(unittest.TestCase):
@@ -339,22 +467,41 @@ class VmFetchTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("sh"), "needs sh")
-class BuildLinuxJobsTests(unittest.TestCase):
-    def run_wrapper(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["sh", str(LINUX_BUILD_WRAPPER), *args], capture_output=True, text=True)
+class BuildScriptJobsAndHardeningTests(unittest.TestCase):
+    """build.py vm runs build-linux.sh or build-bsd.sh with --jobs, and build.py
+    linux and bsd pass --hardening to them, so both scripts take both options."""
+
+    def run_wrapper(self, wrapper: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(wrapper), *args], capture_output=True, text=True)
 
     def test_jobs_takes_a_positive_whole_number(self) -> None:
-        # GIVEN unusable --jobs values.
-        for bad in ("0", "-1", "two", "", "07"):
-            # WHEN build-linux.sh parses them THEN it fails before configuring anything.
-            result = self.run_wrapper("--jobs", bad)
-            with self.subTest(bad=bad):
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn("--jobs", result.stderr)
-        # GIVEN a valid value WHEN followed by --help THEN parsing accepts it and documents it.
-        accepted = self.run_wrapper("--jobs", "3", "--help")
-        self.assertEqual(0, accepted.returncode, accepted.stderr)
-        self.assertIn("--jobs <n>", accepted.stdout)
+        for wrapper in (LINUX_BUILD_WRAPPER, BSD_BUILD_WRAPPER):
+            # GIVEN unusable --jobs values.
+            for bad in ("0", "-1", "two", "", "07"):
+                # WHEN the script parses them THEN it fails before configuring anything.
+                result = self.run_wrapper(wrapper, "--jobs", bad)
+                with self.subTest(wrapper=wrapper.name, bad=bad):
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("--jobs", result.stderr)
+            # GIVEN a valid value WHEN followed by --help THEN parsing accepts it and documents it.
+            accepted = self.run_wrapper(wrapper, "--jobs", "3", "--help")
+            with self.subTest(wrapper=wrapper.name):
+                self.assertEqual(0, accepted.returncode, accepted.stderr)
+                self.assertIn("--jobs <n>", accepted.stdout)
+
+    def test_jobs_and_hardening_reach_meson(self) -> None:
+        for wrapper in (LINUX_BUILD_WRAPPER, BSD_BUILD_WRAPPER):
+            # GIVEN --jobs 3 and --hardening.
+            # WHEN the script previews its commands.
+            result = self.run_wrapper(wrapper, "--dry-run", "--jobs", "3", "--hardening",
+                                      "--builddir", "build-x")
+
+            # THEN Meson configures hardening, compiles with three jobs and tests three at once.
+            with self.subTest(wrapper=wrapper.name):
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("-Dhardening=true", result.stdout)
+                self.assertIn("meson compile -C build-x -j 3", result.stdout)
+                self.assertIn("--num-processes 3", result.stdout)
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
@@ -382,6 +529,21 @@ class RemoteHostSetupTests(unittest.TestCase):
                     self.assertIn(f" {package}", result.stdout)
                 self.assertIn("'meson>=1.11' ninja", result.stdout)
                 self.assertIn("ln -sf /opt/venv/bin/meson /opt/bin/meson", result.stdout)
+
+    def test_a_freebsd_host_gets_the_ci_packages_from_pkg_and_no_virtual_environment(self) -> None:
+        # GIVEN FreeBSD.
+        # WHEN the setup is previewed.
+        result = self.dry_run('NAME=FreeBSD\nVERSION_ID="15.1"\nID=freebsd\n')
+
+        # THEN pkg installs Meson, the libraries build-bsd.sh needs and python3 for build.py vm's lock,
+        # and no apt-get or virtual environment is involved.
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("pkg install -y meson ninja llvm", result.stdout)
+        for package in ("libsodium", "openssl", "postgresql17-client", "curl", "python3", "gmake",
+                        "catch2", "png", "libjpeg-turbo"):
+            self.assertIn(f" {package}", result.stdout)
+        self.assertNotIn("apt-get", result.stdout)
+        self.assertNotIn("venv", result.stdout)
 
     def test_another_distribution_is_refused_before_anything_runs(self) -> None:
         # GIVEN a distribution outside the Debian family.

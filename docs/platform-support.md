@@ -194,7 +194,7 @@ release-blocking.
 
 - **HardenedBSD** — uses the FreeBSD `pkg` toolchain and `scripts/build-bsd.sh`.
 - **Other Linux distributions** — via the portable static tarball or a from-source build.
-- **Windows** — development only, through a Linux VM over ssh (`python build.py vm`) or WSL (`python build.py wsl`). Not a server deployment target.
+- **Windows** — development only, through a Linux or FreeBSD VM over ssh (`python build.py vm`, `--vm <name>` for a second VM) or WSL (`python build.py wsl`). Not a server deployment target.
 - **macOS** — not a supported target.
 
 ## Per-platform hardening posture

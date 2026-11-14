@@ -37,6 +37,7 @@ VM_TESTLOGS = ("testlog.txt", "testlog.json")
 VM_SETTING_NAMES = ("host", "user", "port", "identity", "jobs")
 _VM_HOST_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]*$")
 _VM_USER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_VM_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _VM_BUILDDIR_PATTERN = re.compile(r"^build[A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*$")
 _TESTLOG_SUMMARY_PATTERN = re.compile(
     r"^(Ok|Expected Fail|Fail|Unexpected Pass|Skipped|Timeout):\s+\d+\s*$")
@@ -110,9 +111,10 @@ def run_wsl(args: argparse.Namespace, extra: list[str]) -> int:
     return subprocess.call(wsl_cmd)
 
 
-def add_common_dev_args(parser: argparse.ArgumentParser, builddir_default: str = "build"):
+def add_common_dev_args(parser: argparse.ArgumentParser, builddir_default: str | None = "build",
+                        builddir_help: str = ""):
     parser.add_argument("--builddir", default=builddir_default,
-                        help=f"Meson build directory (default: {builddir_default})")
+                        help=f"Meson build directory (default: {builddir_help or builddir_default})")
     parser.add_argument("--cc", default="clang", help="C compiler (default: clang)")
     parser.add_argument("--cxx", default="clang++", help="C++ compiler (default: clang++)")
     parser.add_argument("--wrap-mode", default="forcefallback",
@@ -199,6 +201,8 @@ def build_bsd(args: argparse.Namespace) -> int:
         cmd_args.append("--compile-only")
     if args.dry_run:
         cmd_args.append("--dry-run")
+    if args.jobs is not None:
+        cmd_args += ["--jobs", str(args.jobs)]
     return run_script(script, cmd_args)
 
 
@@ -212,12 +216,14 @@ class VmError(Exception):
 
 @dataclass(frozen=True)
 class VmSettings:
-    """Where and how build.py vm reaches the VM. jobs None means size by memory."""
+    """Where and how build.py vm reaches the VM. jobs None means size by memory;
+    name is the --vm name ("" for the default [vm] section)."""
     host: str
     user: str
     port: int
     identity: str
     jobs: int | None
+    name: str = ""
 
 
 def positive_int(value: str) -> int:
@@ -241,8 +247,13 @@ def vm_config_path(env: Mapping[str, str]) -> Path:
 def load_vm_settings(args: argparse.Namespace, env: Mapping[str, str],
                      config_path: Path) -> VmSettings:
     """Resolve each vm setting from the command line, then MEROVINGIAN_VM_<NAME>,
-    then the [vm] section of config_path. Raises VmError on a missing host or a
-    value ssh could read as an option."""
+    then config_path: its [vm] section, or [vm.<name>] for the VM that --vm or
+    MEROVINGIAN_VM_NAME names. Raises VmError on a missing host or VM section,
+    or a value ssh could read as an option."""
+    vm_name = (getattr(args, "vm", None) or env.get("MEROVINGIAN_VM_NAME", "")).strip()
+    if vm_name and not _VM_NAME_PATTERN.match(vm_name):
+        raise VmError(f"VM name {vm_name!r} must be lower-case letters, digits, '-' or '_'")
+    section = f"vm.{vm_name}" if vm_name else "vm"
     file_values: dict[str, str] = {}
     if config_path.is_file():
         parser = configparser.ConfigParser(interpolation=None)
@@ -250,11 +261,16 @@ def load_vm_settings(args: argparse.Namespace, env: Mapping[str, str],
             parser.read(config_path, encoding="utf-8")
         except configparser.Error as error:
             raise VmError(f"cannot read {config_path}: {error}") from error
-        if parser.has_section("vm"):
-            for name, value in parser.items("vm"):
+        if parser.has_section(section):
+            for name, value in parser.items(section):
                 if name not in VM_SETTING_NAMES:
-                    raise VmError(f"{config_path}: unknown [vm] setting {name!r}")
+                    raise VmError(f"{config_path}: unknown [{section}] setting {name!r}")
                 file_values[name] = value.strip()
+        elif vm_name:
+            known = ", ".join(s[3:] for s in parser.sections() if s.startswith("vm.")) or "none"
+            raise VmError(f"{config_path} has no [{section}] section (named VMs: {known})")
+    elif vm_name:
+        raise VmError(f"--vm {vm_name} needs a [{section}] section in {config_path}")
 
     def pick(name: str) -> str:
         from_cli = getattr(args, name, None)
@@ -268,7 +284,7 @@ def load_vm_settings(args: argparse.Namespace, env: Mapping[str, str],
     host = pick("host")
     if not host:
         raise VmError("no VM host: pass --host, set MEROVINGIAN_VM_HOST, "
-                      f"or set host in the [vm] section of {config_path}")
+                      f"or set host in the [{section}] section of {config_path}")
     if not _VM_HOST_PATTERN.match(host):
         raise VmError(f"VM host {host!r} is not a host name or IP address")
 
@@ -293,7 +309,14 @@ def load_vm_settings(args: argparse.Namespace, env: Mapping[str, str],
             raise VmError(f"VM jobs {jobs_text!r} is not a positive whole number")
         jobs = int(jobs_text)
 
-    return VmSettings(host=host, user=user, port=int(port_text), identity=identity, jobs=jobs)
+    return VmSettings(host=host, user=user, port=int(port_text), identity=identity, jobs=jobs,
+                      name=vm_name)
+
+
+def vm_default_builddir(settings: VmSettings) -> str:
+    """build-vm for the default VM, build-vm-<name> for a named one, so two VMs'
+    logs never overwrite each other locally."""
+    return f"{VM_DEFAULT_BUILDDIR}-{settings.name}" if settings.name else VM_DEFAULT_BUILDDIR
 
 
 def validate_vm_builddir(builddir: str) -> str:
@@ -430,24 +453,44 @@ def write_vm_sync_archive(stream: BinaryIO, repo_root: Path,
 
 def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
                      clean: bool = False, size_jobs: bool = False) -> str:
-    """The POSIX sh script the VM runs for one build.py vm call.
+    """The POSIX sh script the remote host runs for one build.py vm call.
 
-    It takes the ssh user's lock, so a second run as that user (from any checkout) waits, then
-    unpacks the archive on stdin into ~/merovingian-vm/<checkout>, deletes the
-    files the previous manifest listed and the new one does not, and installs
-    the new manifest. With builddir it removes that build's old test logs (and
-    the whole directory with clean) so a failed build cannot leave a stale
-    testlog behind. With size_jobs it sets $jobs from the VM's memory. Then it
-    runs run_line, still holding the lock."""
+    It sets $os from uname and $build_script to build-linux.sh on Linux or
+    build-bsd.sh on FreeBSD, OpenBSD, NetBSD or DragonFly, refusing any other
+    system. It takes the ssh user's lock, so a second run as that user (from any
+    checkout) waits, then unpacks the archive on stdin into
+    ~/merovingian-vm/<checkout>, deletes the files the previous manifest listed
+    and the new one does not, and installs the new manifest. With builddir it
+    removes that build's old test logs (and the whole directory with clean) so a
+    failed build cannot leave a stale testlog behind. With size_jobs it sets
+    $jobs from the host's memory. Then it runs run_line, still holding the lock.
+
+    The lock is flock(2) on fd 9, taken through Python's fcntl because FreeBSD,
+    OpenBSD and NetBSD ship no flock(1). A flock lock belongs to the open file,
+    so this shell's fd 9 keeps holding it after Python exits."""
     lines = [
         "set -eu",
+        "os=$(uname -s)",
+        'case "$os" in',
+        "    Linux) build_script=build-linux.sh ;;",
+        "    FreeBSD|OpenBSD|NetBSD|DragonFly) build_script=build-bsd.sh ;;",
+        '    *) echo "build.py vm: unsupported remote system $os" >&2; exit 2 ;;',
+        "esac",
+        "py=",
+        "for candidate in python3 python3.14 python3.13 python3.12 python3.11 python3.10; do",
+        '    if command -v "$candidate" >/dev/null 2>&1; then py=$candidate; break; fi',
+        "done",
+        'if [ -z "$py" ]; then',
+        "    echo 'build.py vm: no python3 on the remote host; run scripts/remote-host-setup.sh' >&2",
+        "    exit 2",
+        "fi",
         f'root="$HOME"/{quote_bash(VM_REMOTE_ROOT)}',
         f'checkout="$root"/{quote_bash(checkout)}',
         'mkdir -p "$checkout/.vm-sync"',
-        'exec 9>"$root/.lock"',
-        "if ! flock -n 9; then",
+        'exec 9>>"$root/.lock"',
+        """if ! "$py" -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then""",
         "    echo 'build.py vm: another run holds the VM lock; waiting for it' >&2",
-        "    flock 9",
+        """    "$py" -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)'""",
         "fi",
         'cd "$checkout"',
         f"rm -f {VM_MANIFEST_NEXT}",
@@ -474,8 +517,13 @@ def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
         lines += [f"rm -f -- {quoted}/meson-logs/{name}" for name in VM_TESTLOGS]
     if size_jobs:
         lines += [
-            "mem_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)",
-            "cpus=$(nproc)",
+            'if [ "$os" = Linux ]; then',
+            "    mem_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)",
+            "    cpus=$(nproc)",
+            "else",
+            "    mem_kib=$(( $(sysctl -n hw.physmem) / 1024 ))",
+            "    cpus=$(sysctl -n hw.ncpu)",
+            "fi",
             f"jobs=$((mem_kib / {VM_MEMORY_PER_JOB_KIB}))",
             '[ "$jobs" -ge 1 ] || jobs=1',
             '[ "$jobs" -le "$cpus" ] || jobs=$cpus',
@@ -485,9 +533,10 @@ def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
     return "\n".join(lines) + "\n"
 
 
-def _vm_build_line(args: argparse.Namespace, jobs: int | None) -> str:
-    """The build-linux.sh call for a build run; uses $jobs from the script when jobs is None."""
-    build_args = ["--builddir", args.builddir, "--cc", args.cc, "--cxx", args.cxx,
+def _vm_build_line(args: argparse.Namespace, builddir: str, jobs: int | None) -> str:
+    """The call of the remote host's build script ($build_script, set by
+    vm_remote_script); uses $jobs from that script when jobs is None."""
+    build_args = ["--builddir", builddir, "--cc", args.cc, "--cxx", args.cxx,
                   "--wrap-mode", args.wrap_mode]
     if args.profile:
         build_args += ["--profile", args.profile]
@@ -503,7 +552,7 @@ def _vm_build_line(args: argparse.Namespace, jobs: int | None) -> str:
             build_args.append(flag)
     quoted = " ".join(quote_bash(arg) for arg in build_args)
     jobs_arg = quote_bash(str(jobs)) if jobs is not None else '"$jobs"'
-    return (f'exec env PATH="$HOME/.local/bin:$PATH" sh ./scripts/build-linux.sh '
+    return (f'exec env PATH="$HOME/.local/bin:$PATH" sh "./scripts/$build_script" '
             f"{quoted} --jobs {jobs_arg}")
 
 
@@ -529,11 +578,11 @@ def vm_fetch(ssh: list[str], remote_path: str) -> bytes | None:
 
 
 def build_vm(args: argparse.Namespace) -> int:
-    """Sync this checkout to the Linux VM over ssh and build, test or run a
-    command there; see "Building on a Linux VM" in docs/dev-environment.md."""
+    """Sync this checkout to a Linux or BSD VM over ssh and build, test or run a
+    command there; see "Building on a VM" in docs/dev-environment.md."""
     try:
         settings = load_vm_settings(args, os.environ, vm_config_path(os.environ))
-        builddir = validate_vm_builddir(args.builddir)
+        builddir = validate_vm_builddir(args.builddir or vm_default_builddir(settings))
         if args.exec_command is not None and not args.exec_command:
             raise VmError("--exec needs a command to run")
         local = vm_local_files(REPO_ROOT)
@@ -560,7 +609,7 @@ def build_vm(args: argparse.Namespace) -> int:
                     + " ".join(quote_bash(arg) for arg in args.exec_command))
         script = vm_remote_script(checkout, run_line)
     else:
-        script = vm_remote_script(checkout, _vm_build_line(args, settings.jobs),
+        script = vm_remote_script(checkout, _vm_build_line(args, builddir, settings.jobs),
                                   builddir=builddir, clean=args.clean,
                                   size_jobs=settings.jobs is None)
 
@@ -649,6 +698,7 @@ examples:
   python build.py bsd
   python build.py wsl --distro Ubuntu
   python build.py vm
+  python build.py vm --vm freebsd
   python build.py vm --exec ./build-vm/tests/merovingian-unit-tests "[push]"
   python build.py deb
   python build.py rpm
@@ -672,6 +722,8 @@ examples:
     add_profile_args(bsd_parser)
     bsd_parser.add_argument("--pkg-config", default="",
                              help="pkg-config command (default: pkgconf, then pkg-config)")
+    bsd_parser.add_argument("--jobs", type=positive_int,
+                            help="Most compile jobs and tests at once (default: Meson's)")
 
     # wsl
     wsl_parser = subparsers.add_parser("wsl",
@@ -685,8 +737,11 @@ examples:
 
     # vm
     vm_parser = subparsers.add_parser(
-        "vm", help="Build and test on a Linux VM over ssh (docs/dev-environment.md)")
-    add_common_dev_args(vm_parser, VM_DEFAULT_BUILDDIR)
+        "vm", help="Build and test on a Linux or BSD VM over ssh (docs/dev-environment.md)")
+    add_common_dev_args(vm_parser, None,
+                        f"{VM_DEFAULT_BUILDDIR}, or {VM_DEFAULT_BUILDDIR}-<name> with --vm")
+    vm_parser.add_argument("--vm", help="Named VM: the [vm.<name>] section of the settings file "
+                                        "(default: MEROVINGIAN_VM_NAME, then [vm])")
     add_profile_args(vm_parser)
     vm_parser.add_argument("--host", help="VM host name or address "
                            "(default: MEROVINGIAN_VM_HOST, then the settings file)")

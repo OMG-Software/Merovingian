@@ -14,6 +14,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * `build-linux.sh --jobs <n>` (and `build.py linux --jobs`) caps compile jobs and tests run at once.
 * Agents review changes with `.agent/skills/merovingian-review/`, which checks module invariants, past defect classes,
   tests and the CHANGELOG, docs, ADR and version obligations, citing the binding docs (ADR-0754).
+* `python build.py vm` builds and tests on a Linux or FreeBSD VM over ssh, sending only changed files; it copies
+  `testlog.txt` back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
+* `python build.py vm --vm <name>` uses the `[vm.<name>]` settings and `build-vm-<name>/`, so one machine can drive a
+  Linux VM and a FreeBSD VM.
+* `--jobs <n>` on `build-linux.sh`, `build-bsd.sh`, `build.py linux` and `build.py bsd` caps compile jobs and tests.
 
 ## Security Fixes
 
@@ -40,6 +45,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   same machine no longer reads another run's leftover appservice registration and fails (ADR-0753, ADR-0755).
 * Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
   `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
+* Two Complement tests whose expectations contradict the spec are recorded as expected failures in the skip list.
+* `build.py linux --hardening` and `build.py bsd --hardening` work: both build scripts used to refuse the option they
+  were passed.
 
 ## Release notes
 
@@ -47,7 +55,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 needed. A remote member's own leave is now admitted in a room with no local member, which ADR-0591 had refused.
 One client address may now have three remote calls in flight instead of one; set
 `server.http.client_outbound_max_per_client=1` to keep the old limit. Windows developers can build and test on a
-Linux VM with `python build.py vm` instead of WSL.
+Linux or FreeBSD VM with `python build.py vm` instead of WSL.
 
 # Version 1.0.1
 

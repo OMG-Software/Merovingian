@@ -143,11 +143,11 @@ client headers, Catch2, clang tooling, cppcheck, and a current Meson/Ninja
 virtual environment. The virtual environment is used because the distribution
 Meson in Ubuntu 24.04 is too old to configure the repo's C++26 build.
 
-### Building on a Linux VM
+### Building on a VM
 
-`python build.py vm` builds and tests on a Linux virtual machine (or any Linux
-host) over ssh, from Windows or any other host with Python, Git and OpenSSH.
-The VM's native ext4 file system avoids every NTFS workaround above, and a
+`python build.py vm` builds and tests on a Linux or FreeBSD virtual machine (or
+any such host) over ssh, from Windows or any other host with Python, Git and
+OpenSSH. The VM's native file system avoids every NTFS workaround above, and a
 build there does not compete with the editor for the Windows host's memory.
 See [ADR-0752](adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
 
@@ -159,14 +159,19 @@ Each run:
 2. Reads the manifest the VM kept from the last run and sends, as one tar stream
    over ssh, only the files whose mode, size or modification time differ. Files
    the last manifest listed and this one does not are deleted on the VM.
-3. Takes the ssh user's lock (`~/merovingian-vm/.lock`), so a second run as
+3. Takes the ssh user's lock (`~/merovingian-vm/.lock`, through `python3`'s
+   `fcntl.flock`, since the BSDs have no `flock` command), so a second run as
    that user, from any checkout, waits ("another run holds the VM lock"), then
-   runs `scripts/build-linux.sh` in
+   runs the host's build script in
    `~/merovingian-vm/<checkout name>-<hash of its path>`, one directory per local
-   checkout or worktree. The lock does not cover other users on the VM: use one
-   VM user for every run, since two suites at once time out unrelated tests.
+   checkout or worktree: `scripts/build-linux.sh` where `uname -s` says `Linux`,
+   `scripts/build-bsd.sh` where it says `FreeBSD`, `OpenBSD`, `NetBSD` or
+   `DragonFly`; any other system is refused. The lock does not cover other users
+   on the VM: use one VM user for every run, since two suites at once time out
+   unrelated tests.
 4. Copies `meson-logs/testlog.txt` and `testlog.json` back to the same build
-   directory locally, `build-vm/meson-logs/` by default, and prints the `Ok:`,
+   directory locally, `build-vm/meson-logs/` by default (`build-vm-<name>/` for
+   a named VM), and prints the `Ok:`,
    `Fail:` and `Timeout:` counts. It deletes the local and the VM's previous logs
    first, so a build that fails before testing leaves no log, never an old one.
    If the logs cannot be copied back (ssh refuses the key, say), it says so,
@@ -206,7 +211,22 @@ One-time setup:
    `MEROVINGIAN_VM_HOST`, `MEROVINGIAN_VM_USER`, `MEROVINGIAN_VM_PORT`,
    `MEROVINGIAN_VM_IDENTITY` and `MEROVINGIAN_VM_JOBS` override it when no flag
    is given. An unknown key in `[vm]` is an error.
-4. Sync once and install the packages on the VM, as a user who can `sudo`:
+
+   More VMs go in sections named `[vm.<name>]` (lower-case letters, digits, `-`
+   and `_`), chosen with `--vm <name>` or `MEROVINGIAN_VM_NAME`. A named VM reads
+   only its own section, never `[vm]`, and a name with no section is an error.
+   Its default build directory is `build-vm-<name>`, so each VM's logs stay
+   apart locally:
+
+   ```ini
+   [vm.freebsd]
+   host = 192.0.2.11
+   user = builder
+   identity = ~/.ssh/merovingian_bsd_ed25519
+   ```
+
+4. Sync once and install the packages on the VM, as root or a user who can use
+   `sudo` or `doas`:
 
    ```sh
    python build.py vm --exec true
@@ -215,20 +235,25 @@ One-time setup:
    ```
 
    `scripts/remote-host-setup.sh` prepares a remote build host, the VM or
-   another Linux machine (`scripts/wsl-setup.sh` is for WSL only). It accepts Ubuntu, Debian and distributions whose
-   `ID_LIKE` names either, such as Linux Mint; installs with `apt-get` the
-   compiler, linker and every library `build-linux.sh` checks for, including
-   libcurl, libpng and libjpeg-turbo; and installs Meson 1.11 or later and
-   Ninja in a virtual environment linked into `~/.local/bin`, because Ubuntu
-   24.04's Meson is too old for the C++26 build. `build.py vm` puts
-   `~/.local/bin` first on `PATH` for the build. `--dry-run` prints the
-   commands; re-running it is safe.
+   another machine (`scripts/wsl-setup.sh` is for WSL only). It accepts Ubuntu,
+   Debian, distributions whose `ID_LIKE` names either, such as Linux Mint, and
+   FreeBSD. On the Debian family it installs with `apt-get` the compiler, linker
+   and every library `build-linux.sh` checks for, including libcurl, libpng and
+   libjpeg-turbo, and installs Meson 1.11 or later and Ninja in a virtual
+   environment linked into `~/.local/bin`, because Ubuntu 24.04's Meson is too
+   old for the C++26 build. `build.py vm` puts `~/.local/bin` first on `PATH`
+   for the build. On FreeBSD it installs with `pkg` the packages the FreeBSD CI
+   job installs, Meson and Ninja among them, plus `python3`. `--dry-run` prints
+   the commands; re-running it is safe.
 
 Usage:
 
 ```sh
 # Full build and test suite in build-vm
 python build.py vm
+
+# The same on the [vm.freebsd] VM, in build-vm-freebsd
+python build.py vm --vm freebsd
 
 # Other build-linux.sh options work as they do for linux
 python build.py vm --builddir build-vm-asan --profile sanitizer
@@ -243,7 +268,8 @@ under the same lock. `--dry-run` reads the VM's manifest and prints the number o
 files it would send and the script the VM would run, without sending anything.
 
 Without `--jobs`, a run compiles and tests with one job per 1.5 GiB of the VM's
-memory, never more than its CPUs: a C++26 translation unit here can take over
+memory (`/proc/meminfo` on Linux, `sysctl hw.physmem` on the BSDs), never more
+than its CPUs: a C++26 translation unit here can take over
 1 GiB to compile, and Meson's default of one job per CPU runs a small VM out of
 memory. Give the VM memory rather than lowering `--jobs` where you can.
 
@@ -314,7 +340,7 @@ python build.py bsd
 # WSL (Windows Subsystem for Linux)
 python build.py wsl
 
-# A Linux VM over ssh (see "Building on a Linux VM")
+# A Linux or FreeBSD VM over ssh (see "Building on a VM")
 python build.py vm
 
 # AddressSanitizer + UBSan through WSL
@@ -391,7 +417,8 @@ sh scripts/build-linux.sh
 
 The default build directory is `build`, with `CC=clang` and `CXX=clang++`.
 `--jobs <n>` caps both the compile jobs and the tests run at once (`build.py
-linux --jobs` and `build.py vm` pass it on); without it Meson picks its own.
+linux --jobs` and `build.py vm` pass it on; `build-bsd.sh` and `build.py bsd`
+take it too); without it Meson picks its own.
 Override the compiler when using another one:
 
 ```sh

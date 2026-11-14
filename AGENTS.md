@@ -128,8 +128,10 @@ because each one has already cost this project real time.
   the outcome, *then* report.
 - **Build and test on the Linux VM with `python build.py vm`, not WSL.** It syncs the
   working tree, uncommitted edits included, and runs the suite on the VM; see
-  [Building on a Linux VM](docs/dev-environment.md#building-on-a-linux-vm) and
+  [Building on a VM](docs/dev-environment.md#building-on-a-vm) and
   [ADR-0752](docs/adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
+  `python build.py vm --vm freebsd` does the same on the FreeBSD VM (its `[vm.freebsd]`
+  settings), with its logs in `build-vm-freebsd/`.
   It exceeds a 10-minute foreground limit: run it in the background and wait for it to
   finish. A second run as the same VM user, from any worktree, waits for its lock rather than
   competing; never run the suite there as a second user at the same time.
@@ -233,7 +235,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 ├── meson.build            #   Root build definition
 ├── meson.options           #   Build options
 ├── mkdocs.yml             #   Documentation site (GitHub Pages); hooks in scripts/mkdocs_site_hooks.py
-└── build.py               #   Unified build CLI (Linux, BSD, WSL, remote Linux VM)
+└── build.py               #   Unified build CLI (Linux, BSD, WSL, remote Linux or BSD VM)
 ```
 
 ### Key entry points
@@ -345,8 +347,11 @@ Base: docs/matrix-v1.19-spec/index.md
 ## Build & Test Commands
 ```bash
 
-# Build and test from Windows, on the Linux VM (docs/dev-environment.md#building-on-a-linux-vm)
+# Build and test from Windows, on the Linux VM (docs/dev-environment.md#building-on-a-vm)
 python build.py vm
+
+# The same on the FreeBSD VM
+python build.py vm --vm freebsd
 
 # Build and test inside WSL instead
 python build.py wsl

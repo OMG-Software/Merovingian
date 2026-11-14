@@ -4,7 +4,7 @@
 * Deciders: James Chapman
 * Date: 2026-11-14
 
-Technical Story: build and test on a Linux VM instead of WSL
+Technical Story: build and test on a Linux VM instead of WSL, and on a FreeBSD VM from the same machine
 
 ## Context and Problem Statement
 
@@ -47,21 +47,30 @@ The rules this sets, each of which the code depends on:
   The new manifest arrives last in the archive and is installed only after extraction succeeds, so an interrupted
   sync resends what it missed.
 * **Isolation.** One VM-side checkout per local checkout, named after its directory and a hash of its full path, and
-  one lock (`~/merovingian-vm/.lock`, `flock`) held across sync, build and test for every run from every checkout.
+  one lock (`~/merovingian-vm/.lock`) held across sync, build and test for every run from every checkout.
   The lock is in the ssh user's home, so it orders the runs of one VM user; every developer and agent using a VM
   shares one VM user. A shared lock in `/tmp` was rejected: another local user could pre-create or replace it.
-* **Results.** `build-linux.sh`, not `build-wsl.sh`, runs on the VM: the NTFS workarounds have nothing to work
-  around there. Before a run that tests, both the local and the VM's `testlog.txt` and `testlog.json` are deleted,
+* **The lock is `flock(2)` taken through `python3`'s `fcntl`**, on a descriptor the remote shell holds open for the
+  whole run. `flock(1)` was rejected because FreeBSD, OpenBSD and NetBSD do not ship it; `lockf(1)` because Linux
+  does not, and because it locks only for the one command it runs. Both lock kinds are `flock(2)`, so a run with the
+  older `flock(1)` script and a run with this one still exclude each other.
+* **Results.** `build-linux.sh`, not `build-wsl.sh`, runs on a Linux VM: the NTFS workarounds have nothing to work
+  around there. The remote host picks its build script from `uname -s`: `build-linux.sh` on Linux, `build-bsd.sh` on
+  FreeBSD, OpenBSD, NetBSD and DragonFly, and any other system is refused, never built with a guessed script. Before a run that tests, both the local and the VM's `testlog.txt` and `testlog.json` are deleted,
   then copied back after it, so a build that fails before testing leaves no log. The exit status is the build's.
 * **Host identity.** ssh runs with `StrictHostKeyChecking=yes` and `BatchMode=yes`: an unknown or changed host key
   stops the run, and nothing prompts. Settings come from flags, then `MEROVINGIAN_VM_*`, then
   `~/.config/merovingian/vm.ini`, outside the repository, so no host address is committed. A host or user that ssh
   could read as an option is refused.
-* **Memory.** Without `--jobs`, a run uses one compile job and one test process per 1.5 GiB of VM memory, at most one
-  per CPU, through the `--jobs` option this adds to `build-linux.sh`; Meson's default of one per CPU runs a small VM
-  out of memory.
-* **Setup.** `scripts/remote-host-setup.sh` prepares the remote host (Debian family, Meson 1.11+ in a virtual
-  environment in `~/.local/bin`, which `build.py vm` puts first on `PATH`). `scripts/wsl-setup.sh` stays for WSL only.
+* **Named VMs.** `--vm <name>` (or `MEROVINGIAN_VM_NAME`) reads the `[vm.<name>]` section and nothing from `[vm]`, so
+  a named VM never inherits the default VM's host or key; a name with no section is an error, not a fallback. Its
+  default build directory is `build-vm-<name>`, so each VM's copied-back logs have their own place locally.
+* **Memory.** Without `--jobs`, a run uses one compile job and one test process per 1.5 GiB of VM memory
+  (`/proc/meminfo` on Linux, `sysctl hw.physmem` on the BSDs), at most one per CPU, through the `--jobs` option this
+  adds to `build-linux.sh` and `build-bsd.sh`; Meson's default of one per CPU runs a small VM out of memory.
+* **Setup.** `scripts/remote-host-setup.sh` prepares the remote host: on the Debian family, Meson 1.11+ in a virtual
+  environment in `~/.local/bin`, which `build.py vm` puts first on `PATH`; on FreeBSD, the FreeBSD CI job's packages
+  from `pkg`, whose Meson is current, plus `python3` for the lock. `scripts/wsl-setup.sh` stays for WSL only.
 
 ### Positive Consequences
 

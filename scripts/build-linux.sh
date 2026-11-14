@@ -43,6 +43,7 @@ Options:
   --sanitize <list>   Meson b_sanitize value, for example address,undefined.
   --coverage          Enable Meson coverage instrumentation.
   --build-fuzz        Enable fuzz harness targets.
+  --hardening         Enable hardening flags (-Dhardening=true).
   --skip-job <name>   After the tests, fail on any Catch2 skip that job <name> in
                       tests/expected_skips.json does not list (ADR-0546).
   --jobs <n>          Run at most <n> compile jobs and <n> tests at once.
@@ -154,6 +155,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --build-fuzz)
             build_fuzz=true
+            ;;
+        --hardening)
+            hardening=true
             ;;
         --skip-job)
             shift
