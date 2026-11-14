@@ -2713,7 +2713,8 @@ nothing, all from trusting the worker's view or the hook's transport.
   `pdu_ingest`, `membership_ingest` or `invite_ingest` frame is the worker's claim; a compromised worker can name an allowed
   origin, but not change what the signed event says (below).
 - **A /send routed to a shard with a stale snapshot passed the room ACL (F-24, ADR-0359).** The shard is chosen by the
-  first PDU's room ID, which the sender picks; only the owning shard learns of later state. A denied server with a joined
+  first PDU's room ID, which the sender picks; until 1.0.2 only the owning shard learned of later state (every shard
+  reloads every changed room since, ADR-0758, and a shard's copy still lags main's until its reload lands). A denied server with a joined
   user picked a shard whose snapshot lacked the ACL, and main's relay handler did not check. Mitigated: main reads the room's
   current `m.room.server_acl` for the transport origin and for the verified sender's server on every relayed PDU,
   membership event and invite; a refused PDU is reported with an `error` entry (`PduIngestionStatus::rejected_acl`). Residual:

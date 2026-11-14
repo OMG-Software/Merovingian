@@ -3,7 +3,6 @@
 #include "merovingian/federation/FederationEndpoint.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/FederationRequestRouting.hpp"
-#include "merovingian/homeserver/WorkerPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,9 +14,7 @@ namespace
 
 using merovingian::homeserver::federation_request_room_ids;
 using merovingian::homeserver::federation_request_should_bypass_worker;
-using merovingian::homeserver::federation_request_spans_worker_shards;
 using merovingian::homeserver::federation_worker_room_id_from_request;
-using merovingian::homeserver::federation_worker_shard_for;
 using merovingian::homeserver::is_federation_key_server_endpoint;
 using merovingian::homeserver::LocalHttpRequest;
 
@@ -989,50 +986,6 @@ SCENARIO("Every room a federation request concerns is listed for the sync status
             {
                 REQUIRE(federation_request_room_ids(state) == std::vector<std::string>{"!pathroom:example.com"});
                 REQUIRE(federation_request_room_ids(version).empty());
-            }
-        }
-    }
-}
-
-SCENARIO("A federation request whose rooms belong to more than one worker shard is recognised",
-         "[federation][routing][shard][adr0756]")
-{
-    GIVEN("rooms owned by each of two shards")
-    {
-        auto rooms_by_shard = std::vector<std::vector<std::string>>(2U);
-        for (auto index = 0U; index < 64U && (rooms_by_shard[0U].size() < 2U || rooms_by_shard[1U].size() < 2U);
-             ++index)
-        {
-            auto room_id = "!room" + std::to_string(index) + ":example.com";
-            auto& owner = rooms_by_shard[federation_worker_shard_for(room_id, 2U)];
-            if (owner.size() < 2U)
-            {
-                owner.push_back(std::move(room_id));
-            }
-        }
-        REQUIRE(rooms_by_shard[0U].size() == 2U);
-        REQUIRE(rooms_by_shard[1U].size() == 2U);
-        auto const& shard_zero = rooms_by_shard[0U];
-        auto const& shard_one = rooms_by_shard[1U];
-
-        WHEN("each list of rooms is checked against two shards, and against one")
-        {
-            auto const mixed = std::vector<std::string>{shard_zero[0U], shard_zero[1U], shard_one[0U]};
-            auto const mixed_spans = federation_request_spans_worker_shards(mixed, 2U);
-            auto const same_spans = federation_request_spans_worker_shards(shard_one, 2U);
-            auto const single_spans = federation_request_spans_worker_shards({shard_zero[0U]}, 2U);
-            auto const none_spans = federation_request_spans_worker_shards({}, 2U);
-            auto const one_shard_spans = federation_request_spans_worker_shards(mixed, 1U);
-            auto const no_shards_spans = federation_request_spans_worker_shards(mixed, 0U);
-
-            THEN("only rooms of different shards span them, and one shard is never spanned")
-            {
-                CHECK(mixed_spans);
-                CHECK_FALSE(same_spans);
-                CHECK_FALSE(single_spans);
-                CHECK_FALSE(none_spans);
-                CHECK_FALSE(one_shard_spans);
-                CHECK_FALSE(no_shards_spans);
             }
         }
     }

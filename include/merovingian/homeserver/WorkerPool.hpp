@@ -42,7 +42,7 @@ struct HomeserverRuntime;
 // /send transaction so it is persisted through main's pdu_sink). Exposed as a
 // free function for the same test-seam reason handle_membership_ingest_request
 // is. Takes the wire JSON a worker sends and returns the ingestion result;
-// WorkerPool serializes it and, on acceptance, notifies the owning shard.
+// WorkerPool serializes it and, on acceptance, notifies every shard (ADR-0758).
 [[nodiscard]] auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> federation::PduIngestionResult;
 
@@ -245,14 +245,12 @@ public:
                                              std::chrono::seconds ipc_margin = default_worker_ipc_margin)
         -> http::OutboundResult;
 
-    // Tells the worker shard that owns room_id to re-read that room from the
-    // database. The worker's PersistentStore is otherwise a snapshot taken
-    // once at worker startup — it never learns about rooms created or joined
-    // by the main process afterward (see docs/architecture.md, "Federation
-    // worker room staleness"). Fire-and-forget: no reply is expected, and a
-    // failure to deliver the notification (e.g. an unhealthy shard) is not
-    // surfaced to the caller, matching the "best-effort cache refresh, not a
-    // correctness-critical write" nature of this call.
+    // Tells every worker shard to re-read room_id from main. A worker's PersistentStore is otherwise a snapshot taken
+    // once at worker startup: it never learns about rooms created or joined by the main process afterward (see
+    // docs/architecture.md, "Federation worker room staleness"). Every shard is told, not only the one that owns the
+    // room, because a /send goes whole to the shard its first PDU picks and may carry PDUs for rooms other shards own
+    // (ADR-0758). Fire-and-forget: no reply is expected, and a failure to deliver the notification (e.g. an unhealthy
+    // shard) is not surfaced to the caller; that shard's status for the room stays pending, so main serves it.
     auto notify_room_changed(std::string_view room_id) -> void;
 
     // True when all configured workers are healthy.
@@ -264,15 +262,16 @@ public:
     // Exposed for unit tests: which shard index would handle this room_id?
     [[nodiscard]] auto shard_for(std::string_view room_id) const noexcept -> std::size_t;
 
-    // The number of worker shards, at least 1.
-    [[nodiscard]] auto shard_count() const noexcept -> std::uint32_t;
-
     // Exposed for tests: the process ID of the worker serving a shard, or -1 when it has none.
     [[nodiscard]] auto worker_pid(std::size_t shard) const noexcept -> pid_t;
 
-    // Returns the last observed room-sync status for the shard that owns room_id.
+    // Returns the last observed room-sync status of room_id on the shard that owns it.
     // See FederationProxy::room_sync_status for semantics.
     [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
+
+    // Returns the last observed room-sync status of room_id on one shard: what the worker a request is sent to holds
+    // of that room (ADR-0758). A shard outside the pool holds nothing: failed and not held.
+    [[nodiscard]] auto room_sync_status(std::size_t shard, std::string_view room_id) const -> RoomSyncStatus;
 
 private:
     config::FederationWorkerConfig cfg_{};
@@ -291,23 +290,25 @@ private:
     std::string config_path_;
     std::vector<std::unique_ptr<WorkerSupervisor>> workers_{};
 
-    // Per-room room_sync tracking.  Guarded by room_sync_mu_.  generation is
-    // monotonically increasing per room_id and assigned by main when it sends a
-    // room_sync notification; the worker echoes the same generation in its
-    // room_sync_result notification so main can match asynchronous results to
-    // the pending entry.
+    // Room_sync tracking, guarded by room_sync_mu_. generation is monotonically increasing per room_id and assigned by
+    // main when it notifies every shard of a change; each worker echoes it in its room_sync_result so main can match
+    // asynchronous results to the pending entry. Status is kept per shard (one map per shard, sized at construction):
+    // each worker reloads its own copy, and a request is judged on the copy of the worker it is sent to (ADR-0758).
+    // Entries exist only for rooms main notified or listed to a channel, so a worker cannot grow these maps.
     mutable std::mutex room_sync_mu_{};
-    std::unordered_map<std::string, RoomSyncStatus> room_sync_status_{};
+    std::vector<std::unordered_map<std::string, RoomSyncStatus>> room_sync_status_{};
     std::unordered_map<std::string, std::uint64_t> room_sync_generations_{};
 
-    // Updates the tracked status for a room_id.  Called on the IPC dispatch
-    // thread when a room_sync_result notification arrives from a worker.
-    auto record_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation) -> void;
+    // Updates the tracked status of room_id on one shard. Called on the IPC dispatch
+    // thread when a room_sync_result notification arrives from that shard's worker.
+    auto record_room_sync_result(std::size_t shard, std::string_view room_id, std::string_view state,
+                                 std::uint64_t generation) -> void;
 
-    // Records that a worker's start-up fill left room_id out, so the worker holds no copy of it and main serves it
-    // until a reload of it succeeds (ADR-0756). A pending reload keeps its state and decides when its result arrives.
-    // The caller has checked the room against the channel's listing (WorkerSnapshotService::consume_fill_omission).
-    auto record_room_left_out_of_fill(std::string_view room_id) -> void;
+    // Records that a shard's start-up fill left room_id out, so that worker holds no copy of it and main serves its
+    // requests for the room until a reload of it succeeds (ADR-0756). A pending reload keeps its state and decides
+    // when its result arrives. The caller has checked the room against the channel's listing
+    // (WorkerSnapshotService::consume_fill_omission).
+    auto record_room_left_out_of_fill(std::size_t shard, std::string_view room_id) -> void;
 };
 
 } // namespace merovingian::homeserver

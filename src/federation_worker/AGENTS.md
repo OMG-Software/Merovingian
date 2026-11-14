@@ -128,8 +128,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
     client. Do not move another call onto the tunnel here, and do not add a worker-to-main frame whose content main
     would act on without a signature check. The reply is validated in `WorkerPool::send_outbound_request`.
 10. **The worker's ACL and policy view is advisory (F-21, F-24, ADR-0358, ADR-0359).** It holds no
-   policy rules on either backend (ADR-0733), and learns of a room only when it owns
-   its shard. Main judges the origin's rule and the room's ACL again on everything relayed, and the
+   policy rules on either backend (ADR-0733), and its copy of a room lags main's until
+   that room's reload lands (every shard reloads every changed room, ADR-0758). Main judges the origin's rule and the room's ACL again on everything relayed, and the
    worker does not run the policy-server hook: the proxy asked it once before forwarding.
 
 11. **A relayed EDU must be the one main verified in the request body (F-74, ADR-0395).** The `edu_sink` override

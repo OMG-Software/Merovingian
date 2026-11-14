@@ -40,7 +40,8 @@ How should a request for a room the worker has never loaded be served?
 
 ## Decision Outcome
 
-Chosen option: the first. `WorkerPool::notify_room_changed` and `record_room_sync_result` keep the flag, and
+Chosen option: the first. `WorkerPool::notify_room_changed` and `record_room_sync_result` keep the flag (per shard
+since ADR-0758), and
 `federation_room_request_served_by_main` returns true while it is false. Main already serves a room whose reload failed
 in full, so this adds no path main does not have.
 
@@ -52,16 +53,12 @@ Three more ways a worker can lack a room are covered the same way:
   `failed` at generation 0, which main never assigns. Main records the room as not held
   (`record_room_left_out_of_fill`). It takes the report only for a room in the listing it sent that channel, once
   (`WorkerSnapshotService::consume_fill_omission`), so a worker cannot make main record rooms main never named.
-  Every worker's fill lists every room, but requests for a room go only to the shard that owns it, so main takes a
-  `room_sync_result` of any generation only from that shard. Another shard's failed copy would otherwise mark a room
-  its owner holds as not held.
-* A `/send` transaction goes whole to the shard its first PDU picks, so the proxy checks the status of every room the
-  transaction names (`federation_request_room_ids`) and serves the whole transaction from main if any of them must be.
-  Only a room's owning shard reloads it, so another shard's copy of that room is its start-up snapshot, or nothing for
-  a room created since, whatever the room's status. A transaction whose rooms belong to more than one shard is
-  therefore served by main in full (`federation_request_spans_worker_shards`), as a space hierarchy is for the same
-  reason ([ADR-0712](0712-a-space-hierarchy-request-is-answered-by-main-not-by-a-worker-snapshot.md)). Splitting the
-  transaction across shards was rejected: one transaction ID would then be answered piecemeal by several workers.
+  The flag is kept per shard, and a report marks the room not held only on the shard that sent it
+  ([ADR-0758](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)).
+* A `/send` transaction goes whole to the shard its first PDU picks, so the proxy checks that shard's status of every
+  room the transaction names (`federation_request_room_ids`) and serves the whole transaction from main if any of them
+  must be. Every shard reloads every changed room (ADR-0758), so the selected shard's copy of a room another shard owns
+  is current once its reload lands.
 
 The flag is conservative: main does not record which rooms the startup listing held, so a room that existed at startup
 is also not held from its first notification until that reload succeeds. Main serves it for that one reload, once per
@@ -81,7 +78,6 @@ room per main process. Recording the listing would avoid that, at the cost of a 
   is loaded. So does a room first changed while the worker's channel was down, even when the restarted worker's fill
   copied it: the fill reports only the rooms it left out.
 * A transaction naming one room the worker does not hold is served by main in full, its other rooms included.
-* With more than one shard, every transaction that names rooms of two shards is served by main, not a worker.
 
 ## Pros and Cons of the Options
 
@@ -97,6 +93,7 @@ room per main process. Recording the listing would avoid that, at the cost of a 
 
 ## Links
 
+* Refined by [ADR-0758](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)
 * Refines [ADR-0748](0748-main-serves-a-rooms-federation-reads-while-the-workers-reload-is-pending.md)
 * Builds on [ADR-0733](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md) and
   [ADR-0623](0623-a-workers-room-reloads-are-coalesced-per-room-on-one-thread.md)

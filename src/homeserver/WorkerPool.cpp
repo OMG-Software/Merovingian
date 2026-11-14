@@ -837,7 +837,7 @@ namespace
 
     // F-21 and F-24 (ADR-0358, ADR-0359): main, not a worker, decides what an admin's policy rule and a room's
     // m.room.server_acl allow. A worker's store is a snapshot (PostgreSQL workers hold no policy rules at all, and
-    // only the shard that owns a room is told when it changes), and a worker is the process most exposed to hostile
+    // a shard's copy of a room lags main's until its reload lands), and a worker is the process most exposed to hostile
     // input, so a decision it made is not relied on: everything a worker relays is judged again here, against
     // main's own store, for the transport origin (`origin`, the worker's own claim, which the proxy has already
     // authenticated and judged) and, once the event is verified, for the server its sender belongs to.
@@ -971,7 +971,7 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     }
     // The default sink reserves stream_ordering internally and returns it in
     // accepted_stream_ordering. It also publishes the sync notification, so the
-    // worker path only forwards the result back to the shard that owns this room.
+    // worker path only forwards the result back to the shard that relayed the PDU.
     return runtime.federation.pdu_sink(*relayed.envelope);
 }
 
@@ -1501,6 +1501,8 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     }
 
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
+    // One status map per shard, sized before any worker starts: a worker's handler records by its own index.
+    room_sync_status_.resize(count);
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
     {
@@ -1695,29 +1697,21 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     auto const result_room_id = json_get_str(json, "room_id");
                     auto const result_state = json_get_str(json, "state");
                     auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
-                    // Main never sends generation 0: the worker uses it to report a room its start-up fill left out
-                    // (ADR-0756). It is taken only for a room main listed to this channel, once, so a worker cannot
-                    // grow main's status map with rooms main never named. Every worker's fill lists every room, and
-                    // the status is kept per room, so only the shard that owns a room reports on it: another shard's
-                    // failed copy says nothing about the copy requests for that room are routed to.
-                    if (shard_for(result_room_id) != std::size_t{shard_index})
-                    {
-                        if (result_generation != 0U)
-                        {
-                            LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
-                                        ": ignoring a room_sync_result for a room another shard owns");
-                        }
-                    }
-                    else if (result_generation == 0U)
+                    // The result is recorded against this shard only: each worker holds its own copy of every room,
+                    // and a request is judged on the copy of the worker it is sent to (ADR-0758). Main never sends
+                    // generation 0: the worker uses it to report a room its start-up fill left out (ADR-0756). It is
+                    // taken only for a room main listed to this channel, once, so a worker cannot grow main's status
+                    // maps with rooms main never named; any other result needs a generation main issued for the room.
+                    if (result_generation == 0U)
                     {
                         if (result_state == "failed" && snapshot_service_->consume_fill_omission(ch, result_room_id))
                         {
-                            record_room_left_out_of_fill(result_room_id);
+                            record_room_left_out_of_fill(shard_index, result_room_id);
                         }
                     }
                     else
                     {
-                        record_room_sync_result(result_room_id, result_state, result_generation);
+                        record_room_sync_result(shard_index, result_room_id, result_state, result_generation);
                     }
                 }
                 else
@@ -1801,36 +1795,41 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
 
 auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
 {
-    auto const index = shard_for(room_id);
-    if (index >= workers_.size())
-    {
-        return;
-    }
-    // The status is written even when the notification cannot be sent: a room first notified while the worker's
-    // channel is down is one the worker may never have loaded, and main serves it until a reload of it succeeds.
+    // Every shard is told (ADR-0758): a /send goes whole to the shard its first PDU picks, so any shard may be the
+    // one that answers for this room. The status is written for every shard even when a notification cannot be sent:
+    // a room first notified while a worker's channel is down is one that worker may never have loaded, and main
+    // serves that shard's requests for the room until a reload of it succeeds there.
     auto const generation = [this, room_id]() {
         auto guard = std::lock_guard{room_sync_mu_};
-        auto const next = ++room_sync_generations_[std::string{room_id}];
-        auto& status = room_sync_status_[std::string{room_id}];
-        // A first notification may be for a room created after the worker's fill, which it has never loaded: that
-        // room is held only once a reload of it succeeds (ADR-0756). A room the worker had already loaded stays held.
-        auto const held = !status.state.empty() && status.held;
-        status = RoomSyncStatus{"pending", next, held};
+        auto const key = std::string{room_id};
+        auto const next = ++room_sync_generations_[key];
+        for (auto& shard_status : room_sync_status_)
+        {
+            auto& status = shard_status[key];
+            // A first notification may be for a room created after the worker's fill, which it has never loaded:
+            // that room is held only once a reload of it succeeds (ADR-0756). A room already loaded stays held.
+            auto const held = !status.state.empty() && status.held;
+            status = RoomSyncStatus{"pending", next, held};
+        }
         return next;
     }();
 
-    auto const ch = workers_[index]->channel_snapshot();
-    if (!ch || !ch->healthy())
+    auto const notification = ipc::serialize_room_sync_notification(room_id, generation);
+    for (auto const& worker : workers_)
     {
-        return;
-    }
-
-    // The permit is recorded before the notification is sent, so a worker that reloads at once finds it (ADR-0735).
-    snapshot_service_->permit_reload(ch, room_id, generation);
-    if (!ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation)))
-    {
-        LOG_WARNING("Federation worker pool: room_sync notification could not be sent for room_id=" +
-                    std::string{room_id});
+        auto const ch = worker->channel_snapshot();
+        if (!ch || !ch->healthy())
+        {
+            continue;
+        }
+        // The permit is recorded before the notification is sent, so a worker that reloads at once finds it
+        // (ADR-0735).
+        snapshot_service_->permit_reload(ch, room_id, generation);
+        if (!ch->send_notification(notification))
+        {
+            LOG_WARNING("Federation worker pool: room_sync notification could not be sent for room_id=" +
+                        std::string{room_id});
+        }
     }
 }
 
@@ -1872,14 +1871,10 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
-auto WorkerPool::shard_count() const noexcept -> std::uint32_t
-{
-    return cfg_.shards > 0U ? cfg_.shards : 1U;
-}
-
 auto WorkerPool::worker_pid(std::size_t shard) const noexcept -> pid_t
 {
-    if (shard >= workers_.size() || !workers_[shard])
+    // Every entry of workers_ is set in the constructor; stop() clears the vector, never an entry.
+    if (shard >= workers_.size())
     {
         return -1;
     }
@@ -1888,17 +1883,27 @@ auto WorkerPool::worker_pid(std::size_t shard) const noexcept -> pid_t
 
 auto WorkerPool::room_sync_status(std::string_view room_id) const -> RoomSyncStatus
 {
+    return room_sync_status(shard_for(room_id), room_id);
+}
+
+auto WorkerPool::room_sync_status(std::size_t shard, std::string_view room_id) const -> RoomSyncStatus
+{
     auto guard = std::lock_guard{room_sync_mu_};
-    auto const it = room_sync_status_.find(std::string{room_id});
-    if (it == room_sync_status_.end())
+    if (shard >= room_sync_status_.size())
+    {
+        return RoomSyncStatus{"failed", 0U, false};
+    }
+    auto const& shard_status = room_sync_status_[shard];
+    auto const it = shard_status.find(std::string{room_id});
+    if (it == shard_status.end())
     {
         return RoomSyncStatus{"ok", 0U};
     }
     return it->second;
 }
 
-auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation)
-    -> void
+auto WorkerPool::record_room_sync_result(std::size_t shard, std::string_view room_id, std::string_view state,
+                                         std::uint64_t generation) -> void
 {
     auto guard = std::lock_guard{room_sync_mu_};
     auto const it = room_sync_generations_.find(std::string{room_id});
@@ -1907,7 +1912,8 @@ auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_v
         // Stale or unmatched result for a room we no longer track; ignore it.
         return;
     }
-    auto& status = room_sync_status_[std::string{room_id}];
+    // shard is the index of the worker that sent the result, always below the size set in the constructor.
+    auto& status = room_sync_status_.at(shard)[std::string{room_id}];
     // Any successful reload, even of an older generation, means the worker now holds a copy of the room (ADR-0756).
     if (state == "ok")
     {
@@ -1922,10 +1928,10 @@ auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_v
     // generation remains until its own result arrives or the room is re-synced.
 }
 
-auto WorkerPool::record_room_left_out_of_fill(std::string_view room_id) -> void
+auto WorkerPool::record_room_left_out_of_fill(std::size_t shard, std::string_view room_id) -> void
 {
     auto guard = std::lock_guard{room_sync_mu_};
-    auto& status = room_sync_status_[std::string{room_id}];
+    auto& status = room_sync_status_.at(shard)[std::string{room_id}];
     status.held = false;
     if (status.state != "pending")
     {

@@ -219,24 +219,16 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     }
 
     auto const room_id = federation_worker_room_id_from_request(request);
+    // The shard the request goes to: the one its first room picks, shard 0 for a request with no usable room key
+    // (ADR-0131). Its worker's copy of every room the request names is what answers, so that copy is judged.
+    auto const selected_shard = pool_->shard_for(room_id);
     // A failed reload leaves the worker's copy of the room stale; a pending one has not yet taken in a change main
     // made, such as an event a client just sent. Main answers then (ADR-0748), and for a room the worker has never
-    // loaded (ADR-0756). A /send goes whole to the shard its first PDU picks, so every room it names is checked.
-    auto const concerned_room_ids = federation_request_room_ids(request);
-    // Only a room's owning shard reloads it, so a transaction whose rooms span shards would reach a worker holding a
-    // start-up copy, or none, of some of them (ADR-0756).
-    if (federation_request_spans_worker_shards(concerned_room_ids, pool_->shard_count()))
+    // loaded (ADR-0756). A /send goes whole to the selected shard and may name rooms other shards own; every shard
+    // reloads every changed room, so each of those rooms is judged on the selected shard's copy (ADR-0758).
+    for (auto const& concerned_room_id : federation_request_room_ids(request))
     {
-        observability::log_diagnostic("federation_proxy", "federation_proxy.cross_shard_send_main",
-                                      {
-                                          {"target", observability::sanitized_http_target(request.target), false},
-                                          {"rooms",  std::to_string(concerned_room_ids.size()),            false},
-        });
-        return handle_federation_http_request(runtime_, verified_request);
-    }
-    for (auto const& concerned_room_id : concerned_room_ids)
-    {
-        auto const status = pool_->room_sync_status(concerned_room_id);
+        auto const status = pool_->room_sync_status(selected_shard, concerned_room_id);
         if (federation_room_request_served_by_main(verified_request, status))
         {
             auto const failed = status.state == "failed";
@@ -294,12 +286,9 @@ auto FederationProxy::healthy() const noexcept -> bool
     return pool_ != nullptr && pool_->healthy();
 }
 
+// The test accessors below rely on the constructor: pool_ is set there and never cleared.
 auto FederationProxy::worker_pid_for_room(std::string_view room_id) const noexcept -> pid_t
 {
-    if (pool_ == nullptr)
-    {
-        return -1;
-    }
     return pool_->worker_pid(pool_->shard_for(room_id));
 }
 
@@ -310,6 +299,16 @@ auto FederationProxy::room_sync_status(std::string_view room_id) const -> RoomSy
         return RoomSyncStatus{"failed", 0U};
     }
     return pool_->room_sync_status(room_id);
+}
+
+auto FederationProxy::room_sync_status(std::size_t shard, std::string_view room_id) const -> RoomSyncStatus
+{
+    return pool_->room_sync_status(shard, room_id);
+}
+
+auto FederationProxy::shard_for_room(std::string_view room_id) const noexcept -> std::size_t
+{
+    return pool_->shard_for(room_id);
 }
 
 } // namespace merovingian::homeserver

@@ -639,3 +639,4 @@
 * [0755 - No std::format: the NetBSD libc++ has no `<format>` header](0755-no-std-format-the-netbsd-libc-has-no-format-header.md)
 * [0756 - Main serves every request for a room the federation worker has never loaded](0756-main-serves-every-request-for-a-room-the-worker-has-never-loaded.md)
 * [0757 - Hardened BSD builds link -pie, and the ELF gate reads elftoolchain readelf](0757-hardened-bsd-builds-link-pie-and-the-elf-gate-reads-elftoolchain-readelf.md)
+* [0758 - Every worker shard reloads every changed room, and main tracks each shard's copy](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)

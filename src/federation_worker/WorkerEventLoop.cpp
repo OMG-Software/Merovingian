@@ -938,7 +938,7 @@ auto WorkerEventLoop::run() -> void
     // ADR-0185). In a restricted room the template names an authorising user
     // only after the allow conditions are checked, and those conditions name
     // OTHER rooms, whose state this shard's snapshot may not hold or may hold
-    // stale (room_sync refreshes only the shard that owns a room). Main holds
+    // stale (a room_sync reload lags behind main's commit). Main holds
     // every room, so it builds the template. make_leave and make_knock need
     // nothing outside the room being left or knocked on, so they stay local.
     runtime.federation.membership_template_provider =

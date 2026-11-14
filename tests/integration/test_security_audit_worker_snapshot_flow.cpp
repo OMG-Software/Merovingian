@@ -289,6 +289,25 @@ auto write_worker_config(std::filesystem::path const& path, merovingian::config:
     return request;
 }
 
+// A remote server's signed PUT /send carrying `body`.
+[[nodiscard]] auto signed_send(merovingian::config::Config const& config, std::string_view txn_id, std::string body)
+    -> merovingian::homeserver::LocalHttpRequest
+{
+    auto request = merovingian::homeserver::LocalHttpRequest{};
+    request.method = "PUT";
+    request.target = "/_matrix/federation/v1/send/" + std::string{txn_id};
+    auto const destination = config.server().server_name;
+    auto const signature = merovingian::federation::make_federation_signature(
+        origin, destination, "PUT", request.target, body,
+        merovingian::federation::test::keypair_from_seed(remote_key_seed).secret_key);
+    request.access_token = std::string{R"(X-Matrix origin=")"} + std::string{origin} + R"(",key=")" +
+                           std::string{remote_key_id} + R"(",sig=")" + signature + R"(",destination=")" + destination +
+                           R"(")";
+    request.body = std::move(body);
+    request.remote_addr = "198.51.100.27";
+    return request;
+}
+
 // A link to the worker binary for a pool to start from. Removing it before killing a worker makes every restart of
 // that worker fail, so its shard stays down until the test ends, however slowly the test runs; the pool's teardown
 // stops the supervisor's retries.
@@ -653,10 +672,11 @@ SCENARIO("A room the worker's start-up copy left out is served by main until the
     }
 }
 
-// ADR-0756: every worker's start-up copy lists every room, and the sync status is kept per room, so a shard that failed
-// to copy a room another shard owns marked that room as not held although its owner had loaded it.
-SCENARIO("A shard's failed start-up copy of a room another shard owns leaves that room held",
-         "[security_audit_worker_snapshot][federation][integration][adr0756]")
+// ADR-0756, ADR-0758: every worker's start-up copy lists every room. When the status was kept per room, a shard that
+// failed to copy a room another shard owns marked that room as not held although its owner had loaded it. Status is
+// kept per shard now: the failed copy is not held on the shard that failed it, and the owner's copy stays held.
+SCENARIO("A shard's failed start-up copy of a room is not held on that shard only",
+         "[security_audit_worker_snapshot][federation][integration][adr0756][adr0758]")
 {
     GIVEN("a pool of two workers, one room owned by each, and the listed room served by its owner")
     {
@@ -717,20 +737,185 @@ SCENARIO("A shard's failed start-up copy of a room another shard owns leaves tha
             auto const killed = proxy.worker_pid_for_room(other_room_id);
             REQUIRE(killed > 0);
             REQUIRE(::kill(killed, SIGKILL) == 0);
-            // The restarted worker reports both rooms as left out; its own room's report is the one main records.
-            auto const own_room_dropped = wait_until([&proxy, &other_room_id]() {
-                return !proxy.room_sync_status(other_room_id).held;
+            // The restarted worker reports both rooms as left out, and main records both against its shard.
+            auto const both_dropped = wait_until([&proxy, other, &other_room_id, &listed_room_id]() {
+                return !proxy.room_sync_status(other, other_room_id).held &&
+                       !proxy.room_sync_status(other, listed_room_id).held;
             });
-            // Its reports arrive together; give the one for the listed room time to be handled as well.
-            std::this_thread::sleep_for(200ms);
-            auto const listed = proxy.room_sync_status(listed_room_id);
+            auto const owner_copy = proxy.room_sync_status(owner, listed_room_id);
+            auto const owner_view = proxy.room_sync_status(listed_room_id);
             REQUIRE(database_table.restore());
 
-            THEN("only the room the restarted shard owns stops being held")
+            THEN("both rooms stop being held on the restarted shard only")
             {
-                CHECK(own_room_dropped);
+                CHECK(both_dropped);
                 CHECK(proxy.worker_pid_for_room(other_room_id) != killed);
-                CHECK(listed.held);
+                CHECK(owner_copy.held);
+                CHECK(owner_view.held);
+            }
+        }
+    }
+}
+
+// ADR-0758: only the shard that owns a room was told when it changed, so a /send whose first PDU picked another shard
+// reached a worker holding a start-up copy of the room, or none. Every shard now reloads every changed room.
+SCENARIO("A room created after the workers started is loaded and held by every shard",
+         "[security_audit_worker_snapshot][federation][integration][adr0758]")
+{
+    GIVEN("a pool of two workers started before a room is created")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        REQUIRE(config.federation_worker().shards == 2U);
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [listed_room_id, admin_token, listed_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        std::ignore = listed_acl_event_id;
+
+        auto proxy = merovingian::homeserver::FederationProxy{
+            config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
+        REQUIRE(wait_for_proxy(proxy, 15s));
+
+        auto const create = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", admin_token, R"({"room_version":"10"})"});
+        REQUIRE(create.status == 200U);
+        auto const new_room_id = create.body;
+        auto const owner = proxy.shard_for_room(new_room_id);
+        auto const other = owner == 0U ? std::size_t{1U} : std::size_t{0U};
+
+        WHEN("main notifies the workers of the new room")
+        {
+            proxy.notify_room_changed(new_room_id);
+            auto const pending_on_other = proxy.room_sync_status(other, new_room_id);
+            auto const loaded_everywhere = [&proxy, &new_room_id]() {
+                auto const deadline = std::chrono::steady_clock::now() + 10s;
+                auto const loaded = [&proxy, &new_room_id](std::size_t shard) {
+                    auto const status = proxy.room_sync_status(shard, new_room_id);
+                    return status.state == "ok" && status.held;
+                };
+                while (std::chrono::steady_clock::now() < deadline && !(loaded(0U) && loaded(1U)))
+                {
+                    std::this_thread::sleep_for(20ms);
+                }
+                return loaded(0U) && loaded(1U);
+            }();
+            auto const owner_copy = proxy.room_sync_status(owner, new_room_id);
+            auto const other_copy = proxy.room_sync_status(other, new_room_id);
+
+            THEN("the shard that does not own the room loads it too, at the same generation")
+            {
+                CHECK(pending_on_other.generation == 1U);
+                CHECK(loaded_everywhere);
+                CHECK(owner_copy.generation == other_copy.generation);
+                CHECK(other_copy.held);
+                CHECK_FALSE(proxy.room_sync_status(2U, new_room_id).held);
+            }
+        }
+    }
+}
+
+// ADR-0758 (CodeRabbit, PR #592): a /send whose first PDU has no room_id goes to shard 0 (ADR-0131), and the proxy
+// judged a later PDU's room on the copy of the shard that owns it. When that owner held the room and shard 0 did not,
+// the transaction reached a worker with no copy of the room. Every room is now judged on the selected shard's copy.
+SCENARIO("A /send whose first PDU has no room is judged on shard 0's copy of every room it names",
+         "[security_audit_worker_snapshot][federation][integration][adr0758][adr0131]")
+{
+    GIVEN("two shards, a room owned by shard 1 that shard 1 holds and shard 0, whose worker is down, does not")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        REQUIRE(config.federation_worker().shards == 2U);
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [first_room_id, admin_token, first_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        std::ignore = first_acl_event_id;
+        auto room_id = merovingian::homeserver::federation_worker_shard_for(first_room_id, 2U) == 1U
+                           ? std::string{first_room_id}
+                           : std::string{};
+        for (auto attempt = 0; attempt < 64 && room_id.empty(); ++attempt)
+        {
+            auto const create = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", admin_token, R"({"room_version":"10"})"});
+            REQUIRE(create.status == 200U);
+            if (merovingian::homeserver::federation_worker_shard_for(create.body, 2U) == 1U)
+            {
+                room_id = create.body;
+            }
+        }
+        REQUIRE_FALSE(room_id.empty());
+
+        auto const worker_link = link_worker_binary(temporary.path());
+        auto proxy = merovingian::homeserver::FederationProxy{config.federation_worker(), runtime, worker_link.string(),
+                                                              worker_config_path.string()};
+        REQUIRE(wait_for_proxy(proxy, 15s));
+        auto const wait_until = [](auto const& done) {
+            auto const deadline = std::chrono::steady_clock::now() + 15s;
+            while (!done() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(20ms);
+            }
+            return done();
+        };
+        // Shard 0's worker goes down for good (its binary's link removed), so a request sent to it is answered 503.
+        auto const shard_zero_worker = proxy.worker_pid_for_room("");
+        REQUIRE(shard_zero_worker > 0);
+        REQUIRE(std::filesystem::remove(worker_link));
+        REQUIRE(::kill(shard_zero_worker, SIGKILL) == 0);
+        REQUIRE(wait_until([&proxy]() {
+            return proxy.worker_pid_for_room("") == -1 && !proxy.healthy();
+        }));
+        std::this_thread::sleep_for(200ms);
+        // The room's first change marks it not held on every shard; only shard 1 is up to load it again.
+        proxy.notify_room_changed(room_id);
+        REQUIRE(wait_until([&proxy, &room_id]() {
+            auto const status = proxy.room_sync_status(1U, room_id);
+            return status.state == "ok" && status.held;
+        }));
+
+        WHEN("a remote server sends a transaction whose first PDU has no room_id and whose second is in the room")
+        {
+            auto const body = std::string{R"({"origin":")"} + std::string{origin} +
+                              R"(","origin_server_ts":1700000000000,"pdus":[{"type":"m.room.message"},{"room_id":")" +
+                              room_id + R"(","type":"m.room.message","sender":"@remote:)" + std::string{origin} +
+                              R"(","content":{"body":"hi"}}],"edus":[]})";
+            auto const shard_zero_copy = proxy.room_sync_status(0U, room_id);
+            auto const owner_copy = proxy.room_sync_status(room_id);
+            auto const response = proxy.handle(signed_send(config, "adr0758-malformed-first", body));
+            auto const still_down = proxy.worker_pid_for_room("") == -1;
+
+            THEN("main answers it, because shard 0 holds no copy of the room, though the room's owner does")
+            {
+                REQUIRE(still_down);
+                CHECK(proxy.shard_for_room("") == 0U);
+                CHECK(owner_copy.held);
+                CHECK_FALSE(shard_zero_copy.held);
+                CHECK(response.status == 200U);
             }
         }
     }
