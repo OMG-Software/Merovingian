@@ -26,7 +26,7 @@ binary or in the service-manager configuration that ships with the packages.
 | FORTIFY_SOURCE | `hardening_compile_flags` (`-D_FORTIFY_SOURCE=3`) when `optimization != '0'` | Checked libc wrappers. |
 | Hidden visibility | `hardening_compile_flags` (`-fvisibility=hidden`) | Limits ELF symbol exposure. |
 | Trivial auto-var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
-| Position-independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
+| Position-independent executable | `hardening_compile_flags` (`-fPIE`) and `hardening_link_flags` (`-pie`) on Linux, FreeBSD and OpenBSD | Enables ASLR. FreeBSD's clang does not link a PIE without `-pie` (ADR-0757). |
 | No-exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non-executable. |
 | RELRO + BIND_NOW | `hardening_link_flags` (`-Wl,-z,relro -Wl,-z,now`) on Linux, FreeBSD and OpenBSD | Full RELRO; dynamic relocations resolved at load time. |
 | Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position-independent musl build for Linux. |
@@ -941,7 +941,9 @@ Hardening is exercised by automated tests:
   binary's ELF headers (PIE, `PT_GNU_RELRO`, `DT_BIND_NOW`, non-executable
   `PT_GNU_STACK`) and fails closed if any is missing — the CI-time
   counterpart to the runtime ELF probe above, needing no live process so it
-  runs the same whether the job is root, non-root, or containerized. Run
+  runs the same whether the job is root, non-root, or containerized. It reads
+  both GNU binutils' and the BSDs' elftoolchain `readelf` output, which print
+  the dynamic flags differently (ADR-0757). Run
   against every shipped binary in the `ubuntu-hardened-listener-coverage`
   CI job and per-platform in `.github/workflows/release.yml` via
   `scripts/collect-release-evidence.sh`.

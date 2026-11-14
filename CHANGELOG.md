@@ -59,6 +59,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   default-summary test is skipped, not failed: the server reads that config instead of its defaults (ADR-0752).
 * `build.py vm` resends a file an interrupted sync had deleted, and a retry after a sync interrupted inside a new
   directory succeeds (ADR-0752).
+* A hardened FreeBSD or OpenBSD build links as a PIE however it is built, not only as a package, and the ELF hardening
+  check reads the BSDs' `readelf`, so FreeBSD's release evidence no longer reports PIE and BIND_NOW missing (ADR-0757).
 
 ## Release notes
 

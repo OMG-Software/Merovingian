@@ -166,6 +166,12 @@ shell = find_program('sh')
   )
 
   test(
+    'check-elf-hardening-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_check_elf_hardening.py'],
+  )
+
+  test(
     'complement-image-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_image.py', server_exe.full_path()],

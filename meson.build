@@ -88,9 +88,10 @@ hardening_compile_flags = [
   '-fcf-protection=full',
 ]
 
-# -pie is supplied per-platform by the build scripts:
-#   Alpine/musl .deb â†’ -static-pie (fully static PIE via cpp_link_args)
-#   Fedora .rpm / FreeBSD .pkg â†’ -pie (dynamic-libc PIE via cpp_link_args)
+# -pie is added below for every hardened Linux, FreeBSD and OpenBSD build; the
+# packaging scripts add their own as well:
+#   Alpine/musl .deb: -static-pie (fully static PIE via cpp_link_args)
+#   Fedora .rpm / FreeBSD .pkg: -pie (dynamic-libc PIE via cpp_link_args)
 # -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
 # both static and dynamic ELF binaries, so it applies universally.
 # -Wl,-z,relro/-z,now are requested wherever the startup self-check can pass,
@@ -101,13 +102,14 @@ noexecstack_flag = '-Wl,-z,noexecstack'
 relro_now_flags = ['-Wl,-z,relro', '-Wl,-z,now']
 
 hardening_link_flags = [noexecstack_flag]
-if host_machine.system() == 'linux'
-  # -pie makes the binary ET_DYN (PIE-linked). Combined with -fPIE on the objects
-  # this allows the ELF probe to confirm PIE at runtime. The packaging scripts
-  # (build-*.sh) may also pass -pie or -static-pie; the linker tolerates duplicates.
-  hardening_link_flags += ['-pie']
-endif
 if host_machine.system() in ['linux', 'freebsd', 'openbsd']
+  # -pie makes the binary ET_DYN (PIE-linked). Combined with -fPIE on the objects
+  # this allows the ELF probe to confirm PIE at runtime. FreeBSD's clang does not
+  # link PIE by default, so a hardened BSD build that only the packaging script
+  # made PIE was ET_EXEC everywhere else, release evidence included (ADR-0757).
+  # The packaging scripts (build-*.sh) may also pass -pie or -static-pie; the
+  # linker tolerates duplicates.
+  hardening_link_flags += ['-pie']
   hardening_link_flags += relro_now_flags
 endif
 
