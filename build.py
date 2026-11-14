@@ -10,6 +10,7 @@ import hashlib
 import io
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -17,7 +18,7 @@ import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Mapping
+from typing import BinaryIO, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -34,6 +35,13 @@ VM_DEFAULT_BUILDDIR = "build-vm"
 # C++26 translation unit here can take more than 1 GiB to compile.
 VM_MEMORY_PER_JOB_KIB = 1_572_864
 VM_TESTLOGS = ("testlog.txt", "testlog.json")
+# The remote script exits with this status, and leaves VM_BASELINE_MARKER in its
+# run directory, when the VM's manifest changed between build.py reading it and
+# the script taking the lock; build.py then reads it again and resends.
+VM_BASELINE_CHANGED = 75
+VM_BASELINE_MARKER = "baseline-changed"
+VM_SYNC_ATTEMPTS = 3
+_VM_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 VM_SETTING_NAMES = ("host", "user", "port", "identity", "jobs")
 _VM_HOST_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]*$")
 _VM_USER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -382,7 +390,9 @@ def vm_local_files(repo_root: Path) -> dict[str, tuple[int, int, int]]:
             raise VmError(f"cannot sync {path!r}: git mode {git_mode} is not a regular file")
         _check_vm_path(path)
         try:
-            status = (repo_root / path).stat()
+            # lstat, not stat: a tracked file replaced on disk by a symbolic link
+            # must be refused, not followed to a target outside the checkout.
+            status = (repo_root / path).lstat()
         except FileNotFoundError:
             continue
         if not stat.S_ISREG(status.st_mode):
@@ -430,6 +440,17 @@ def plan_vm_sync(local: Mapping[str, tuple[int, int, int]],
     return [path for path in sorted(local) if remote.get(path) != local[path]]
 
 
+def plan_vm_stale(local: Mapping[str, tuple[int, int, int]],
+                  remote: Mapping[str, tuple[int, int, int]]) -> list[str]:
+    """The paths the VM last received that this checkout no longer has."""
+    return sorted(path for path in remote if path not in local)
+
+
+def vm_manifest_digest(manifest: bytes) -> str:
+    """The SHA-256 the remote script compares the VM's manifest against, under its lock."""
+    return hashlib.sha256(manifest).hexdigest()
+
+
 def write_vm_sync_archive(stream: BinaryIO, repo_root: Path,
                           local: Mapping[str, tuple[int, int, int]],
                           send: list[str]) -> None:
@@ -451,23 +472,48 @@ def write_vm_sync_archive(stream: BinaryIO, repo_root: Path,
         archive.addfile(info, io.BytesIO(manifest))
 
 
-def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
-                     clean: bool = False, size_jobs: bool = False) -> str:
+def vm_run_dir(token: str) -> str:
+    """The directory, relative to the VM checkout, that holds one run's own files:
+    its log snapshot and, when its baseline was stale, VM_BASELINE_MARKER."""
+    if not _VM_TOKEN_PATTERN.match(token):
+        raise VmError(f"bad run token {token!r}")
+    return f".vm-sync/run-{token}"
+
+
+def vm_remote_script(checkout: str, run_line: str, *, token: str, baseline_sha256: str,
+                     stale: Sequence[str] = (), builddir: str = "", clean: bool = False,
+                     size_jobs: bool = False) -> str:
     """The POSIX sh script the remote host runs for one build.py vm call.
 
     It sets $os from uname and $build_script to build-linux.sh on Linux or
     build-bsd.sh on FreeBSD, OpenBSD, NetBSD or DragonFly, refusing any other
     system. It takes the ssh user's lock, so a second run as that user (from any
-    checkout) waits, then unpacks the archive on stdin into
-    ~/merovingian-vm/<checkout>, deletes the files the previous manifest listed
-    and the new one does not, and installs the new manifest. With builddir it
-    removes that build's old test logs (and the whole directory with clean) so a
-    failed build cannot leave a stale testlog behind. With size_jobs it sets
-    $jobs from the host's memory. Then it runs run_line, still holding the lock.
+    checkout) waits; everything after that happens under the lock:
+
+    1. The VM's manifest must still hash to baseline_sha256, the manifest
+       build.py planned the sync against. If another run changed it meanwhile,
+       the script leaves VM_BASELINE_MARKER in the run directory and exits
+       VM_BASELINE_CHANGED without touching the checkout, and build.py retries.
+    2. With builddir it removes that build's old test logs (and the whole
+       directory with clean), before anything can fail.
+    3. It deletes the stale paths, files this checkout no longer has, and any
+       directory that leaves empty, before unpacking, so a file that became a
+       directory (or the reverse) never blocks the archive.
+    4. It unpacks the archive on stdin into ~/merovingian-vm/<checkout> and
+       installs the new manifest, which arrives last, only after that succeeds.
+    5. With size_jobs it sets $jobs from the host's memory, runs run_line, and
+       with builddir copies the test logs into the run directory, so build.py
+       fetches this run's logs even after a later run has replaced the build's.
 
     The lock is flock(2) on fd 9, taken through Python's fcntl because FreeBSD,
     OpenBSD and NetBSD ship no flock(1). A flock lock belongs to the open file,
     so this shell's fd 9 keeps holding it after Python exits."""
+    run_dir = vm_run_dir(token)
+    if not re.fullmatch(r"[0-9a-f]{64}", baseline_sha256):
+        raise VmError(f"bad manifest digest {baseline_sha256!r}")
+    stale_end = f"VM_STALE_{token}"
+    if stale_end in stale:
+        raise VmError(f"cannot sync a path named {stale_end!r}")
     lines = [
         "set -eu",
         "os=$(uname -s)",
@@ -493,28 +539,43 @@ def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
         """    "$py" -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)'""",
         "fi",
         'cd "$checkout"',
-        f"rm -f {VM_MANIFEST_NEXT}",
-        "tar -xf -",
-        f"if [ ! -f {VM_MANIFEST_NEXT} ]; then",
-        "    echo 'build.py vm: the archive carried no manifest' >&2",
-        "    exit 2",
+        f"run_dir={run_dir}",
+        'mkdir -p "$run_dir"',
+        f"baseline=$(cat {VM_MANIFEST} 2>/dev/null | "
+        """"$py" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')""",
+        f'if [ "$baseline" != {baseline_sha256} ]; then',
+        "    echo 'build.py vm: another run changed the VM checkout since this one read it' >&2",
+        f'    : > "$run_dir/{VM_BASELINE_MARKER}"',
+        f"    exit {VM_BASELINE_CHANGED}",
         "fi",
-        f"touch {VM_MANIFEST}",
-        f"LC_ALL=C cut -f4- {VM_MANIFEST} | LC_ALL=C sort > .vm-sync/old.list",
-        f"LC_ALL=C cut -f4- {VM_MANIFEST_NEXT} | LC_ALL=C sort > .vm-sync/new.list",
-        "LC_ALL=C comm -23 .vm-sync/old.list .vm-sync/new.list | while IFS= read -r stale; do",
-        "    case \"$stale\" in",
-        "        ''|/*|..|../*|*/..|*/../*) continue ;;",
-        "    esac",
-        "    rm -f -- \"$stale\"",
-        "done",
-        f"mv -f {VM_MANIFEST_NEXT} {VM_MANIFEST}",
     ]
     if builddir:
         quoted = quote_bash(builddir)
         if clean:
             lines.append(f"rm -rf -- {quoted}")
         lines += [f"rm -f -- {quoted}/meson-logs/{name}" for name in VM_TESTLOGS]
+    if stale:
+        lines += [
+            "while IFS= read -r stale; do",
+            '    case "$stale" in',
+            "        ''|/*|..|../*|*/..|*/../*) continue ;;",
+            "    esac",
+            '    rm -f -- "$stale"',
+            '    parent=$(dirname -- "$stale")',
+            '    if [ "$parent" != . ]; then rmdir -p -- "$parent" 2>/dev/null || true; fi',
+            f"done <<'{stale_end}'",
+            *stale,
+            stale_end,
+        ]
+    lines += [
+        f"rm -f {VM_MANIFEST_NEXT}",
+        "tar -xf -",
+        f"if [ ! -f {VM_MANIFEST_NEXT} ]; then",
+        "    echo 'build.py vm: the archive carried no manifest' >&2",
+        "    exit 2",
+        "fi",
+        f"mv -f {VM_MANIFEST_NEXT} {VM_MANIFEST}",
+    ]
     if size_jobs:
         lines += [
             'if [ "$os" = Linux ]; then',
@@ -529,7 +590,12 @@ def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
             '[ "$jobs" -le "$cpus" ] || jobs=$cpus',
             'echo "build.py vm: $jobs parallel jobs ($cpus CPUs, $((mem_kib / 1024)) MiB memory)" >&2',
         ]
-    lines.append(run_line)
+    lines += ["set +e", f"( {run_line} )", "status=$?", "set -e"]
+    if builddir:
+        lines += [f'if [ -f {quoted}/meson-logs/{name} ]; then '
+                  f'cp -- {quoted}/meson-logs/{name} "$run_dir/{name}"; fi'
+                  for name in VM_TESTLOGS]
+    lines.append('exit "$status"')
     return "\n".join(lines) + "\n"
 
 
@@ -593,69 +659,91 @@ def build_vm(args: argparse.Namespace) -> int:
     ssh = vm_ssh_command(settings)
     checkout = vm_checkout_name(REPO_ROOT)
     remote_dir = f"{VM_REMOTE_ROOT}/{checkout}"
-    probe = subprocess.run(ssh + [f"cat -- {quote_bash(remote_dir + '/' + VM_MANIFEST)} 2>/dev/null || true"],
-                           capture_output=True)
-    if probe.returncode != 0:
-        sys.stderr.write(probe.stderr.decode("utf-8", "replace"))
-        print(f"error: cannot reach the VM at {ssh[-1]} (ssh exit {probe.returncode})",
-              file=sys.stderr)
-        return 2
-    send = plan_vm_sync(local, parse_vm_manifest(probe.stdout.decode("utf-8", "replace")))
-
     runs_tests = args.exec_command is None and not (args.no_tests or args.setup_only
                                                     or args.compile_only)
     if args.exec_command is not None:
         run_line = ("exec env MEROVINGIAN_TEST_DISABLE_HARDENING=1 "
                     + " ".join(quote_bash(arg) for arg in args.exec_command))
-        script = vm_remote_script(checkout, run_line)
+        script_options = {}
     else:
-        script = vm_remote_script(checkout, _vm_build_line(args, builddir, settings.jobs),
-                                  builddir=builddir, clean=args.clean,
-                                  size_jobs=settings.jobs is None)
-
-    print(f"build.py vm: sending {len(send)} of {len(local)} files to "
-          f"{ssh[-1]}:~/{remote_dir}", file=sys.stderr)
-    if args.dry_run:
-        print(script)
-        return 0
+        run_line = _vm_build_line(args, builddir, settings.jobs)
+        script_options = {"builddir": builddir, "clean": args.clean,
+                          "size_jobs": settings.jobs is None}
 
     local_logs = REPO_ROOT / builddir / "meson-logs"
-    if runs_tests:
+    if runs_tests and not args.dry_run:
         for name in VM_TESTLOGS:
             (local_logs / name).unlink(missing_ok=True)
 
-    process = subprocess.Popen(ssh + ["sh -c " + quote_bash(script)], stdin=subprocess.PIPE)
-    try:
-        write_vm_sync_archive(process.stdin, REPO_ROOT, local, send)
-    except BrokenPipeError:
-        pass
-    finally:
+    for _attempt in range(VM_SYNC_ATTEMPTS):
+        probe = subprocess.run(
+            ssh + [f"cat -- {quote_bash(remote_dir + '/' + VM_MANIFEST)} 2>/dev/null || true"],
+            capture_output=True)
+        if probe.returncode != 0:
+            sys.stderr.write(probe.stderr.decode("utf-8", "replace"))
+            print(f"error: cannot reach the VM at {ssh[-1]} (ssh exit {probe.returncode})",
+                  file=sys.stderr)
+            return 2
+        remote = parse_vm_manifest(probe.stdout.decode("utf-8", "replace"))
+        send = plan_vm_sync(local, remote)
+        token = secrets.token_hex(8)
+        run_dir = f"{remote_dir}/{vm_run_dir(token)}"
         try:
-            process.stdin.close()
+            script = vm_remote_script(checkout, run_line, token=token,
+                                      baseline_sha256=vm_manifest_digest(probe.stdout),
+                                      stale=plan_vm_stale(local, remote), **script_options)
+        except VmError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+
+        print(f"build.py vm: sending {len(send)} of {len(local)} files to "
+              f"{ssh[-1]}:~/{remote_dir}", file=sys.stderr)
+        if args.dry_run:
+            print(script)
+            return 0
+
+        process = subprocess.Popen(ssh + ["sh -c " + quote_bash(script)], stdin=subprocess.PIPE)
+        try:
+            write_vm_sync_archive(process.stdin, REPO_ROOT, local, send)
         except BrokenPipeError:
             pass
-    status = process.wait()
+        finally:
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        status = process.wait()
+        try:
+            retry = (status == VM_BASELINE_CHANGED
+                     and vm_fetch(ssh, f"{run_dir}/{VM_BASELINE_MARKER}") is not None)
+            logs = {}
+            if not retry and runs_tests:
+                logs = {name: vm_fetch(ssh, f"{run_dir}/{name}") for name in VM_TESTLOGS}
+        except VmError as error:
+            # The run may well have written its log; say so rather than "no testlog",
+            # and never exit 0 without a log the result can be read from.
+            print(f"error: {error}", file=sys.stderr)
+            print(f"build.py vm: the build exited {status}; its logs are still on the VM "
+                  f"under ~/{run_dir}/", file=sys.stderr)
+            return status or 2
+        subprocess.run(ssh + [f"rm -rf -- {quote_bash(run_dir)}"], capture_output=True)
+        if not retry:
+            break
+        print("build.py vm: reading the VM's manifest again and resending", file=sys.stderr)
+    else:
+        print(f"error: the VM checkout kept changing under {VM_SYNC_ATTEMPTS} attempts",
+              file=sys.stderr)
+        return 2
 
     if runs_tests:
         local_logs.mkdir(parents=True, exist_ok=True)
         ignore_file = REPO_ROOT / builddir / ".gitignore"
         if not ignore_file.exists():
             ignore_file.write_text("*\n", encoding="utf-8")
-        fetched = False
-        try:
-            for name in VM_TESTLOGS:
-                data = vm_fetch(ssh, f"{remote_dir}/{builddir}/meson-logs/{name}")
-                if data is not None:
-                    (local_logs / name).write_bytes(data)
-                    fetched = fetched or name == "testlog.txt"
-        except VmError as error:
-            # The run may well have written its log; say so rather than "no testlog",
-            # and never exit 0 without a log the result can be read from.
-            print(f"error: {error}", file=sys.stderr)
-            print(f"build.py vm: the build exited {status}; its logs are still on the VM "
-                  f"under ~/{remote_dir}/{builddir}/meson-logs/", file=sys.stderr)
-            return status or 2
-        if fetched:
+        for name, data in logs.items():
+            if data is not None:
+                (local_logs / name).write_bytes(data)
+        if logs.get("testlog.txt") is not None:
             summary = [line for line in (local_logs / "testlog.txt").read_text(
                 encoding="utf-8", errors="replace").splitlines()
                 if _TESTLOG_SUMMARY_PATTERN.match(line)]

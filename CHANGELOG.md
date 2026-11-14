@@ -9,9 +9,6 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * `server.http.client_outbound_max_per_client` sets how many remote calls one client address may have in flight,
   1..128, never above `request_threads / 2`. The default is 3, up from a fixed 1 (ADR-0751).
-* `python build.py vm` builds and tests on a Linux VM over ssh, sending only changed files; it copies `testlog.txt`
-  back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
-* `build-linux.sh --jobs <n>` (and `build.py linux --jobs`) caps compile jobs and tests run at once.
 * Agents review changes with `.agent/skills/merovingian-review/`, which checks module invariants, past defect classes,
   tests and the CHANGELOG, docs, ADR and version obligations, citing the binding docs (ADR-0754).
 * `python build.py vm` builds and tests on a Linux or FreeBSD VM over ssh, sending only changed files; it copies
@@ -45,9 +42,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   same machine no longer reads another run's leftover appservice registration and fails (ADR-0753, ADR-0755).
 * Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
   `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
-* Two Complement tests whose expectations contradict the spec are recorded as expected failures in the skip list.
 * `build.py linux --hardening` and `build.py bsd --hardening` work: both build scripts used to refuse the option they
   were passed.
+* The live-binary startup test runs as a non-root user on the BSDs too: off Linux it accepts the unsandboxed worker,
+  as the startup hardening gate does (ADR-0041). It used to fail there.
+* The default-summary smoke test is skipped, not failed, on a host with an installed system config, which the server
+  reads instead of its defaults.
 
 ## Release notes
 

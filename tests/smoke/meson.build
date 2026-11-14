@@ -232,12 +232,17 @@ test(
   ],
 )
 
+# Without --config the server reads the packaged system config when one exists,
+# so on a host with merovingian installed there are no defaults to report: skip
+# (exit 77) rather than fail there.
 test(
   'server-default-summary-smoke-test',
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run 2>&1 | grep -q "Configuration source: defaults"',
+    'if [ -e "' + _sysconfdir + '/merovingian/merovingian.conf" ]; then'
+      + ' echo "skipped: an installed system config is read instead of the defaults"; exit 77; fi; '
+      + server_executable + ' --dry-run 2>&1 | grep -q "Configuration source: defaults"',
   ],
 )
 

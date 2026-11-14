@@ -220,8 +220,9 @@ Claims about tests are worth only what they were checked against. The rules come
   is not a result. The VM runs one suite at a time, and a second run from any worktree waits for its lock. The
   VM builds the tree of the worktree you run it from, so run it from the worktree under review.
 - `build.py`'s exit code is not evidence. Read the `Ok:`, `Fail:` and `Timeout:` counts at the end of
-  `build-vm/meson-logs/testlog.txt`. `build.py vm` deletes the old copy first, so a missing file means the run
-  never reached the tests. **A timeout is a failure.**
+  `build-vm/meson-logs/testlog.txt` (`build-vm-<name>/` for `--vm <name>`). `build.py vm` deletes the old copy
+  first, so a missing file is no result, never a pass; its output says whether the run never reached the tests
+  or the log could not be copied back. **A timeout is a failure.**
 - `testlog.txt` holds output only for failing tests, so it cannot prove a passing scenario ran. Run the binary
   with a tag filter: `python build.py vm --exec ./build-vm/tests/merovingian-unit-tests "[push]"` (`--exec` sets
   the hardening opt-out). Catch2 registers `SCENARIO("x")` as `Scenario: x`, so filter by tag, not by name.

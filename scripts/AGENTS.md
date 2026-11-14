@@ -59,7 +59,7 @@ called by it rather than directly.
 ## Rules
 
 - **Do not call build scripts directly** unless you know what you are doing.
-  Use `python build.py` (on Windows, `python build.py vm` for the Linux VM, `python build.py vm --vm freebsd` for the FreeBSD VM, or `python build.py wsl`) — it handles ordering, flags, and test runs.
+  Use `python build.py` (on Windows, `python build.py vm` for the Linux VM and `python build.py vm --vm freebsd` for the FreeBSD VM; build and test there, not in WSL) — it handles ordering, flags, and test runs.
 - All scripts must be idempotent — running them twice must not cause errors or duplicate work.
 - Scripts that modify the working tree (format, rewrite) must print what they changed.
 - `reject-unsafe.sh` runs as a pre-commit gate. If it blocks you, fix the code — do not

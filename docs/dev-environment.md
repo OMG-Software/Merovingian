@@ -158,7 +158,11 @@ Each run:
    not ignore, except under a top-level name starting with `build` or `.`.
 2. Reads the manifest the VM kept from the last run and sends, as one tar stream
    over ssh, only the files whose mode, size or modification time differ. Files
-   the last manifest listed and this one does not are deleted on the VM.
+   the last manifest listed and this one does not are deleted on the VM before
+   the archive is unpacked, so a file that became a directory, or the reverse,
+   never blocks it. If another run changed the manifest between this run reading
+   it and taking the lock, the VM touches nothing and `build.py vm` reads the
+   manifest again and resends (three attempts).
 3. Takes the ssh user's lock (`~/merovingian-vm/.lock`, through `python3`'s
    `fcntl.flock`, since the BSDs have no `flock` command), so a second run as
    that user, from any checkout, waits ("another run holds the VM lock"), then
@@ -171,11 +175,14 @@ Each run:
    unrelated tests.
 4. Copies `meson-logs/testlog.txt` and `testlog.json` back to the same build
    directory locally, `build-vm/meson-logs/` by default (`build-vm-<name>/` for
-   a named VM), and prints the `Ok:`,
-   `Fail:` and `Timeout:` counts. It deletes the local and the VM's previous logs
-   first, so a build that fails before testing leaves no log, never an old one.
-   If the logs cannot be copied back (ssh refuses the key, say), it says so,
-   names where they are on the VM, and exits non-zero even when the build passed.
+   a named VM), and prints the `Ok:`, `Fail:` and `Timeout:` counts. It deletes
+   the local and the VM's previous logs before anything is unpacked, so a run
+   that fails before testing leaves no log, never an old one. Each run copies
+   its logs, still under the lock, into a directory of its own on the VM
+   (`.vm-sync/run-<token>/`) and fetches them from there, so a run that starts
+   the moment this one ends cannot replace them first. If the logs cannot be
+   copied back (ssh refuses the key, say), it says so, names where they are on
+   the VM, and exits non-zero even when the build passed.
 
 The exit status is the build's. Because the VM-side build directory and the
 local one share a name, `build-vm/meson-logs/testlog.txt` is read the same way

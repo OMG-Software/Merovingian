@@ -136,9 +136,11 @@ because each one has already cost this project real time.
   finish. A second run as the same VM user, from any worktree, waits for its lock rather than
   competing; never run the suite there as a second user at the same time.
 - **Read the real summary** from `build-vm/meson-logs/testlog.txt`, which `build.py vm`
-  copies back (it deletes the old one first, so a missing file means the run never
-  reached the tests) — the `Ok:` / `Fail:` / `Timeout:` counts at the end. Report
-  those numbers, not an impression.
+  copies back — the `Ok:` / `Fail:` / `Timeout:` counts at the end. Report those
+  numbers, not an impression. It deletes the old log first, so a missing file means no
+  result, never a pass: when `build.py vm` printed "the run wrote no testlog.txt" the
+  run never reached the tests, and when it printed "cannot copy ... back" the log is
+  still on the VM where it says; read it there before reporting anything.
 - **A TIMEOUT is a FAILURE.** "48 Ok, 0 Fail, 1 Timeout" is a failing suite. A hang is
   usually a deadlock, and a deadlock in a background task is a production shutdown bug,
   not a flaky test.

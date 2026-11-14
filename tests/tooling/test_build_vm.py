@@ -129,6 +129,24 @@ class VmSettingsTests(unittest.TestCase):
         with self.assertRaises(build.VmError):
             build.load_vm_settings(vm_args(vm="freebsd"), {}, self.dir / "absent.ini")
 
+    def test_build_options_reach_the_remote_build_script(self) -> None:
+        # GIVEN build.py vm options, including --hardening, which both build scripts accept.
+        args = argparse.Namespace(cc="clang", cxx="clang++", wrap_mode="forcefallback", profile="",
+                                  buildtype="", sanitize="", coverage=False, build_fuzz=False,
+                                  hardening=True, no_tests=False, setup_only=False,
+                                  compile_only=False)
+
+        # WHEN the remote build command is formed, with and without a fixed job count.
+        sized = build._vm_build_line(args, "build-vm-freebsd", None)
+        fixed = build._vm_build_line(args, "build-vm", 3)
+
+        # THEN it runs the host's own build script with the options and the right job count.
+        self.assertIn('sh "./scripts/$build_script"', sized)
+        self.assertIn("'--hardening'", sized)
+        self.assertIn("'build-vm-freebsd'", sized)
+        self.assertTrue(sized.endswith('--jobs "$jobs"'))
+        self.assertTrue(fixed.endswith("--jobs '3'") or fixed.endswith("--jobs 3"))
+
     def test_ssh_never_prompts_and_refuses_unknown_host_keys(self) -> None:
         # GIVEN settings with a key file.
         settings = build.VmSettings("vm.example", "builder", 2200, str(self.key), None)
@@ -204,6 +222,23 @@ class VmLocalFilesTests(unittest.TestCase):
         self.assertEqual(0o644, files["src/a.cpp"][0])
         self.assertEqual(len(b"int a;\n"), files["src/a.cpp"][1])
 
+    def test_a_tracked_file_replaced_on_disk_by_a_symbolic_link_is_refused(self) -> None:
+        # GIVEN a tracked regular file replaced, uncommitted, by a link to a file outside the checkout.
+        outside_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_dir.cleanup)
+        outside = Path(outside_dir.name) / "secret.txt"
+        outside.write_text("secret\n", encoding="utf-8")
+        (self.repo / "src" / "a.cpp").unlink()
+        try:
+            os.symlink(outside, self.repo / "src" / "a.cpp")
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create a symbolic link here: {error}")
+
+        # WHEN the files to send are listed.
+        # THEN the link is refused rather than followed to its target.
+        with self.assertRaisesRegex(build.VmError, "src/a.cpp"):
+            build.vm_local_files(self.repo)
+
     def test_a_tracked_symbolic_link_is_refused(self) -> None:
         # GIVEN a symbolic link recorded in the index.
         blob = subprocess.run(["git", "-C", str(self.repo), "hash-object", "-w", "--stdin"],
@@ -278,18 +313,28 @@ class VmRemoteScriptTests(unittest.TestCase):
         script.chmod(0o755)
         self.path = f"{self.stubs}{os.pathsep}{os.environ.get('PATH', '')}"
 
+    TOKEN = "0123456789abcdef"
+
     def prepare(self, files: dict[str, bytes], run_line: str, **options) -> tuple[str, bytes]:
+        """The script and archive build_vm would send, planned against the VM's manifest now."""
         local = {}
         for path, data in files.items():
             (self.source / path).parent.mkdir(parents=True, exist_ok=True)
             (self.source / path).write_bytes(data)
             local[path] = (0o644, len(data), 1_700_000_000 + len(data))
-        remote = build.parse_vm_manifest(
-            (self.checkout / build.VM_MANIFEST).read_text(encoding="utf-8")
-            if (self.checkout / build.VM_MANIFEST).exists() else "")
+        manifest = self.checkout / build.VM_MANIFEST
+        baseline = manifest.read_bytes() if manifest.exists() else b""
+        remote = build.parse_vm_manifest(baseline.decode("utf-8"))
         archive = io.BytesIO()
         build.write_vm_sync_archive(archive, self.source, local, build.plan_vm_sync(local, remote))
-        return build.vm_remote_script("co", run_line, **options), archive.getvalue()
+        script = build.vm_remote_script("co", run_line, token=self.TOKEN,
+                                        baseline_sha256=build.vm_manifest_digest(baseline),
+                                        stale=build.plan_vm_stale(local, remote), **options)
+        return script, archive.getvalue()
+
+    @property
+    def run_dir(self) -> Path:
+        return self.checkout / build.vm_run_dir(self.TOKEN)
 
     def environment(self) -> dict[str, str]:
         return {**os.environ, "HOME": str(self.home), "PATH": self.path}
@@ -343,6 +388,72 @@ class VmRemoteScriptTests(unittest.TestCase):
         # WHEN a clean run follows THEN the build directory is gone before the command runs.
         cleaned = self.sync({"a": b"a"}, "test ! -e build-vm", builddir="build-vm", clean=True)
         self.assertEqual(0, cleaned.returncode, cleaned.stderr)
+
+    def test_old_logs_are_gone_even_when_unpacking_fails(self) -> None:
+        # GIVEN a checkout with a previous build's test log.
+        self.assertEqual(0, self.sync({"a": b"a"}, "true").returncode)
+        logs = self.checkout / "build-vm" / "meson-logs"
+        logs.mkdir(parents=True)
+        (logs / "testlog.txt").write_text("Ok: 99\n", encoding="utf-8")
+        script, _ = self.prepare({"a": b"a"}, "true", builddir="build-vm")
+
+        # WHEN the archive that arrives is not a tar archive, as when the stream breaks.
+        result = subprocess.run(["sh", "-c", script], input=b"not a tar archive" * 64,
+                                capture_output=True, env=self.environment())
+
+        # THEN the run fails, and neither the build's log nor a snapshot of it is left to fetch.
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse((logs / "testlog.txt").exists())
+        self.assertFalse((self.run_dir / "testlog.txt").exists())
+
+    def test_a_file_that_becomes_a_directory_and_back_syncs(self) -> None:
+        # GIVEN a synced file x.
+        self.assertEqual(0, self.sync({"x": b"file"}, "true").returncode)
+        shutil.rmtree(self.source)
+        self.source.mkdir()
+
+        # WHEN x becomes a directory holding x/y, and then a file again.
+        to_directory = self.sync({"x/y": b"nested"}, "true")
+        self.assertEqual(0, to_directory.returncode, to_directory.stderr)
+        self.assertEqual(b"nested", (self.checkout / "x" / "y").read_bytes())
+        shutil.rmtree(self.source)
+        self.source.mkdir()
+        to_file = self.sync({"x": b"file again"}, "true")
+
+        # THEN each sync unpacks, because the stale path is removed before unpacking.
+        self.assertEqual(0, to_file.returncode, to_file.stderr)
+        self.assertEqual(b"file again", (self.checkout / "x").read_bytes())
+
+    def test_a_manifest_changed_since_planning_stops_the_run_untouched(self) -> None:
+        # GIVEN a run planned against the VM's manifest.
+        self.assertEqual(0, self.sync({"a": b"a"}, "true").returncode)
+        script, archive = self.prepare({"a": b"a-changed", "b": b"b"}, "touch ran")
+
+        # WHEN another run replaces that manifest before this one takes the lock.
+        manifest = self.checkout / build.VM_MANIFEST
+        manifest.write_text(manifest.read_text(encoding="utf-8") + "644\t1\t1\tother\n",
+                            encoding="utf-8")
+        result = subprocess.run(["sh", "-c", script], input=archive, capture_output=True,
+                                env=self.environment())
+
+        # THEN it exits for build.py to retry, marks why, and neither unpacks nor runs anything.
+        self.assertEqual(build.VM_BASELINE_CHANGED, result.returncode, result.stderr)
+        self.assertTrue((self.run_dir / build.VM_BASELINE_MARKER).exists())
+        self.assertEqual(b"a", (self.checkout / "a").read_bytes())
+        self.assertFalse((self.checkout / "b").exists())
+        self.assertFalse((self.checkout / "ran").exists())
+
+    def test_a_run_keeps_its_own_log_snapshot_and_exit_status(self) -> None:
+        # GIVEN a build run whose command writes a test log and fails.
+        run_line = "mkdir -p build-vm/meson-logs && echo 'Ok: 7' > build-vm/meson-logs/testlog.txt && exit 4"
+
+        # WHEN it runs.
+        result = self.sync({"a": b"a"}, run_line, builddir="build-vm")
+
+        # THEN its status comes back and its log is copied where only this run's token reaches it.
+        self.assertEqual(4, result.returncode, result.stderr)
+        self.assertEqual(b"Ok: 7\n", (self.run_dir / "testlog.txt").read_bytes())
+        self.assertFalse((self.run_dir / "testlog.json").exists())
 
     def test_jobs_are_sized_from_memory_and_capped_at_the_cpu_count(self) -> None:
         # GIVEN a build run that sizes its jobs.

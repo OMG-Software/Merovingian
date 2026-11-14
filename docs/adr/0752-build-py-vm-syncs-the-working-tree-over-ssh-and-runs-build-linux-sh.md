@@ -43,9 +43,16 @@ The rules this sets, each of which the code depends on:
   except under a top-level name starting with `build` or `.`. The `--builddir` must therefore start with `build`, so
   the logs copied back are never sent. A symbolic link or submodule is refused, not followed.
 * **Incremental sync.** The VM keeps `.vm-sync/manifest` (mode, size, mtime, path). Only files that differ are sent;
-  files the old manifest lists and the new one does not are deleted, never a path that is absolute or contains `..`.
-  The new manifest arrives last in the archive and is installed only after extraction succeeds, so an interrupted
-  sync resends what it missed.
+  files the old manifest lists and the new one does not are deleted before the archive is unpacked (so a file that
+  became a directory, or the reverse, cannot block it), never a path that is absolute or contains `..`, and any
+  directory that leaves empty goes too. The new manifest arrives last in the archive and is installed only after
+  extraction succeeds, so an interrupted sync resends what it missed.
+* **The baseline is checked under the lock.** `build.py` reads the manifest, plans against it, and sends its SHA-256
+  with the run; the remote script compares it once it holds the lock. If another run changed the manifest in between,
+  the script touches nothing, leaves a marker in its run directory and exits 75, and `build.py` reads the manifest
+  again and resends, three times at most. Reading the manifest inside the locked session instead was rejected: the
+  archive would have to be planned mid-session over one ssh channel, a framing protocol the hash check does not need.
+  The marker, not the exit status alone, says to retry, so an `--exec` command that exits 75 is not run again.
 * **Isolation.** One VM-side checkout per local checkout, named after its directory and a hash of its full path, and
   one lock (`~/merovingian-vm/.lock`) held across sync, build and test for every run from every checkout.
   The lock is in the ssh user's home, so it orders the runs of one VM user; every developer and agent using a VM
@@ -56,8 +63,11 @@ The rules this sets, each of which the code depends on:
   older `flock(1)` script and a run with this one still exclude each other.
 * **Results.** `build-linux.sh`, not `build-wsl.sh`, runs on a Linux VM: the NTFS workarounds have nothing to work
   around there. The remote host picks its build script from `uname -s`: `build-linux.sh` on Linux, `build-bsd.sh` on
-  FreeBSD, OpenBSD, NetBSD and DragonFly, and any other system is refused, never built with a guessed script. Before a run that tests, both the local and the VM's `testlog.txt` and `testlog.json` are deleted,
-  then copied back after it, so a build that fails before testing leaves no log. The exit status is the build's.
+  FreeBSD, OpenBSD, NetBSD and DragonFly, and any other system is refused, never built with a guessed script.
+  Before a run that tests, both the local and the VM's `testlog.txt` and `testlog.json` are deleted, the VM's before
+  anything is unpacked, so a run that fails before testing leaves no log. Still under the lock, the run copies its logs into `.vm-sync/run-<token>/`, a directory named by a random token of its own, and `build.py`
+  fetches them from there and then deletes it: a run that takes the lock as soon as this one releases it cannot
+  replace or delete them first. The exit status is the build's.
 * **Host identity.** ssh runs with `StrictHostKeyChecking=yes` and `BatchMode=yes`: an unknown or changed host key
   stops the run, and nothing prompts. Settings come from flags, then `MEROVINGIAN_VM_*`, then
   `~/.config/merovingian/vm.ini`, outside the repository, so no host address is committed. A host or user that ssh
