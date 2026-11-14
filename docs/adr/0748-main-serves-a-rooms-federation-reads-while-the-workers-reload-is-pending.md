@@ -70,3 +70,5 @@ A failed one stays at warning level.
 * Builds on [ADR-0733](0733-the-federation-worker-opens-no-database-main-sends-it-what-it-reads.md) and
   [ADR-0735](0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)
 * Uses [ADR-0711](0711-the-federation-read-providers-read-main-s-store-under-the-runtime-lock.md)
+* Refined by [ADR-0756](0756-main-serves-every-request-for-a-room-the-worker-has-never-loaded.md): a room the worker
+  has never loaded is served by main in full, writes included

@@ -879,3 +879,46 @@ SCENARIO("A room read is served by main while the worker's reload of the room is
         }
     }
 }
+
+// ADR-0756: Complement TestKnockingInMSC3787Room created a room and had a remote server join it at once. The worker had
+// not loaded the room yet, so it took room version 12, computed another event ID than the join's and answered 400
+// "membership event does not match endpoint, path or origin". A room the worker holds no copy of is served by main.
+SCENARIO("Every request for a room the worker has never loaded is served by main",
+         "[federation][routing][room-sync][adr0756]")
+{
+    using merovingian::homeserver::federation_room_request_served_by_main;
+    using merovingian::homeserver::RoomSyncStatus;
+
+    GIVEN("a send_join, a transaction and a read for a room")
+    {
+        auto send_join = make_request("/_matrix/federation/v2/send_join/%21room%3Aexample.org/%24join");
+        send_join.method = "PUT";
+        auto transaction = make_request("/_matrix/federation/v1/send/txn1");
+        transaction.method = "PUT";
+        auto const event_auth = make_request("/_matrix/federation/v1/event_auth/%21room%3Aexample.org/%24event");
+
+        WHEN("main has just created the room and the worker's first load of it is pending")
+        {
+            auto const first_load = RoomSyncStatus{"pending", 1U, false};
+
+            THEN("main serves the writes as well as the read")
+            {
+                REQUIRE(federation_room_request_served_by_main(send_join, first_load));
+                REQUIRE(federation_room_request_served_by_main(transaction, first_load));
+                REQUIRE(federation_room_request_served_by_main(event_auth, first_load));
+            }
+        }
+
+        WHEN("the worker holds the room and a later reload of it is pending")
+        {
+            auto const reload = RoomSyncStatus{"pending", 2U, true};
+
+            THEN("the writes still go to the worker, as ADR-0748 has them")
+            {
+                REQUIRE_FALSE(federation_room_request_served_by_main(send_join, reload));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, reload));
+                REQUIRE(federation_room_request_served_by_main(event_auth, reload));
+            }
+        }
+    }
+}

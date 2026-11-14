@@ -1792,7 +1792,11 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
     auto const generation = [this, room_id]() {
         auto guard = std::lock_guard{room_sync_mu_};
         auto const next = ++room_sync_generations_[std::string{room_id}];
-        room_sync_status_[std::string{room_id}] = RoomSyncStatus{"pending", next};
+        auto& status = room_sync_status_[std::string{room_id}];
+        // A first notification may be for a room created after the worker's fill, which it has never loaded: that
+        // room is held only once a reload of it succeeds (ADR-0756). A room the worker had already loaded stays held.
+        auto const held = !status.state.empty() && status.held;
+        status = RoomSyncStatus{"pending", next, held};
         return next;
     }();
 
@@ -1864,9 +1868,16 @@ auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_v
         // Stale or unmatched result for a room we no longer track; ignore it.
         return;
     }
+    auto& status = room_sync_status_[std::string{room_id}];
+    // Any successful reload, even of an older generation, means the worker now holds a copy of the room (ADR-0756).
+    if (state == "ok")
+    {
+        status.held = true;
+    }
     if (generation == it->second)
     {
-        room_sync_status_[std::string{room_id}] = RoomSyncStatus{std::string{state}, generation};
+        status.state = std::string{state};
+        status.generation = generation;
     }
     // An older generation is also ignored; the pending entry for the latest
     // generation remains until its own result arrives or the room is re-synced.

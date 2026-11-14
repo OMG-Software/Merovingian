@@ -41,7 +41,8 @@ namespace merovingian::homeserver
 // stale, so every request for the room goes to main. While a reload is "pending", main has changed the room and the
 // worker has not yet reloaded it. A read main can serve (federation_worker_room_read_may_fallback_to_main) then goes
 // to main. Otherwise a server asking about an event this server has just sent is told it does not exist. Writes
-// still go to the worker (ADR-0748).
+// still go to the worker (ADR-0748), unless the worker has never loaded the room (`held` false): then every request
+// for it goes to main, as after a failed reload (ADR-0756).
 [[nodiscard]] auto federation_room_request_served_by_main(LocalHttpRequest const& request,
                                                           RoomSyncStatus const& status) noexcept -> bool;
 

@@ -70,7 +70,8 @@ public:
     // trusted for room-scoped reads; room-scoped federation requests then fall back
     // to the main process's authoritative in-memory state. While a reload is
     // "pending", the room's reads fall back the same way and its writes still go to
-    // the worker (federation_room_request_served_by_main, ADR-0748).
+    // the worker (federation_room_request_served_by_main, ADR-0748). A room the worker has never loaded is served
+    // by main whatever its state (`held`, ADR-0756).
     [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
 
 private:

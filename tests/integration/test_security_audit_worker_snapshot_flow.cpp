@@ -432,3 +432,82 @@ SCENARIO("A federation read of an event sent a moment ago is answered while the 
         }
     }
 }
+
+// ADR-0756: Complement TestKnockingInMSC3787Room created a room and had a remote server join it at once. The worker had
+// never loaded the room, took room version 12, computed another event ID than the join's and refused it. A room main
+// notifies for the first time is not held by the worker until a reload of it succeeds, and main serves it until then.
+SCENARIO("A room created after the worker started is held by the worker only once it has loaded it",
+         "[security_audit_worker_snapshot][federation][integration][adr0756]")
+{
+    GIVEN("a real federation worker started before a room is created")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [listed_room_id, admin_token, ignored_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        std::ignore = ignored_acl_event_id;
+
+        auto proxy = merovingian::homeserver::FederationProxy{
+            config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
+        REQUIRE(wait_for_proxy(proxy, 15s));
+
+        auto const create = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", admin_token, R"({"room_version":"10"})"});
+        REQUIRE(create.status == 200U);
+        auto const new_room_id = create.body;
+
+        auto const wait_for_state = [&proxy, &new_room_id](std::string_view wanted) {
+            auto const deadline = std::chrono::steady_clock::now() + 5s;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                auto const status = proxy.room_sync_status(new_room_id);
+                if (status.state == wanted)
+                {
+                    return status;
+                }
+                std::this_thread::sleep_for(20ms);
+            }
+            return proxy.room_sync_status(new_room_id);
+        };
+
+        WHEN("main notifies the worker of the new room and the worker's first load of it fails")
+        {
+            // Test-only fault injection, as in the failed-reload scenario: hide a table main's snapshot reads.
+            auto database_table = SqliteTableHider{config.database().sqlite_path};
+            REQUIRE(database_table.hide());
+            proxy.notify_room_changed(new_room_id);
+            auto const first = wait_for_state("failed");
+            REQUIRE(database_table.restore());
+
+            AND_WHEN("a later change is loaded")
+            {
+                proxy.notify_room_changed(new_room_id);
+                auto const second = wait_for_state("ok");
+
+                THEN("the room was not held before its first load and is held after it")
+                {
+                    CHECK(proxy.room_sync_status(listed_room_id).held);
+                    CHECK(first.state == "failed");
+                    CHECK_FALSE(first.held);
+                    CHECK(second.state == "ok");
+                    CHECK(second.held);
+                    CHECK(second.generation > first.generation);
+                }
+            }
+        }
+    }
+}

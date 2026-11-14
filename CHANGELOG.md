@@ -34,6 +34,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   local member has left; strangers are still refused (ADR-0747).
 * A federation read of a room, such as `/event_auth`, is answered by main while the worker is reloading the room, so
   an event sent a moment ago is no longer reported as missing (ADR-0748).
+* A remote server's join, knock, leave or PDU for a room created a moment ago is served by main until the
+  federation worker has loaded the room, so it is no longer refused under a guessed room version (ADR-0756).
 * Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
   first retry after it comes back, including after this server restarts (ADR-0749).
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;

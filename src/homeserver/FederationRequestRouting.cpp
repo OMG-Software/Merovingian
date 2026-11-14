@@ -255,7 +255,9 @@ auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& re
 auto federation_room_request_served_by_main(LocalHttpRequest const& request, RoomSyncStatus const& status) noexcept
     -> bool
 {
-    if (status.state == "failed")
+    // A worker with no copy of the room judges it as unknown: it takes room version 12, so it computes another event ID
+    // than the sender's and refuses its send_join or PDU (ADR-0756). Main serves such a room as it does a failed one.
+    if (status.state == "failed" || !status.held)
     {
         return true;
     }
