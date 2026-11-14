@@ -24,9 +24,10 @@ threat needs. How many calls may one address have in flight, and who decides?
 
 * ADR-0079's threat: a client naming a peer that never answers must not pin the request pool. The global cap of half
   the pool is what keeps the other half free.
-* The per-client cap stops one address from taking the whole global budget at its default. An operator may set it as
-  high as the global cap, which lets one address fill the budget; that is an explicit choice, for example for a
-  test harness that sends every request from one address.
+* The per-client cap stops one address from taking the whole global budget only while it is lower than the global
+  cap. With the minimum pool of 4 threads the global cap is 2, so the default of 3 is clamped to 2 and one address
+  can fill the budget. An operator may also set it as high as the global cap on purpose, for example for a test
+  harness that sends every request from one address.
 * Legitimate clients do more than one remote call at once, and addresses are shared.
 
 ## Considered Options
