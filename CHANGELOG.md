@@ -51,9 +51,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   the server's own rule and default are unchanged (ADR-0750).
 * Tests name their scratch files uniquely and check each write, so a second account or a concurrent run on the
   same machine no longer reads another run's leftover appservice registration and fails (ADR-0753, ADR-0755).
-* Unit tests cover the cases where a relation chain stops short of the thread root (no relation, a parent not held
-  in the room or not JSON, a fourth hop; ADR-0746), and `/send` bodies that name no room (ADR-0756), which only the
-  successful cases covered before.
+* Unit tests now cover a relation chain that stops short of the thread root (ADR-0746) and a `/send` body that names
+  no room (ADR-0756); only the cases that succeed were covered before.
 * Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
   `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
 * `build.py linux --hardening` and `build.py bsd --hardening` work: both build scripts used to refuse the option they
