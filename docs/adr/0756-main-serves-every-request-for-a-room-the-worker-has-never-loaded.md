@@ -52,6 +52,9 @@ Three more ways a worker can lack a room are covered the same way:
   `failed` at generation 0, which main never assigns. Main records the room as not held
   (`record_room_left_out_of_fill`). It takes the report only for a room in the listing it sent that channel, once
   (`WorkerSnapshotService::consume_fill_omission`), so a worker cannot make main record rooms main never named.
+  Every worker's fill lists every room, but requests for a room go only to the shard that owns it, so main takes a
+  `room_sync_result` of any generation only from that shard. Another shard's failed copy would otherwise mark a room
+  its owner holds as not held.
 * A `/send` transaction goes whole to the shard its first PDU picks, so the proxy checks the status of every room the
   transaction names (`federation_request_room_ids`) and serves the whole transaction from main if any of them must be.
 

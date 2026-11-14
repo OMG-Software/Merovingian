@@ -22,6 +22,7 @@
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
@@ -33,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <signal.h>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -402,6 +404,28 @@ SCENARIO("A federation read of an event sent a moment ago is answered while the 
         auto proxy = merovingian::homeserver::FederationProxy{
             config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
         REQUIRE(wait_for_proxy(proxy, 15s));
+        auto const wait_until = [](auto const& done) {
+            auto const deadline = std::chrono::steady_clock::now() + 15s;
+            while (!done() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(20ms);
+            }
+            return done();
+        };
+        // One reload the worker completes, so the room is one it holds and only a pending reload sends it to main.
+        proxy.notify_room_changed(room_id);
+        REQUIRE(wait_until([&proxy, &room_id]() {
+            return proxy.room_sync_status(room_id).state == "ok";
+        }));
+        REQUIRE(proxy.room_sync_status(room_id).held);
+        // The reload the next change starts must not finish before the read, or the read would pass without the
+        // pending fallback. Killing the room's worker keeps it pending: the supervisor restarts it only after a second.
+        auto const worker = proxy.worker_pid_for_room(room_id);
+        REQUIRE(worker > 0);
+        REQUIRE(::kill(worker, SIGKILL) == 0);
+        REQUIRE(wait_until([&proxy, &room_id]() {
+            return proxy.worker_pid_for_room(room_id) == -1 && !proxy.healthy();
+        }));
 
         WHEN("a client sends a state event and a remote server asks for its auth events at once")
         {
@@ -423,9 +447,15 @@ SCENARIO("A federation read of an event sent a moment ago is answered while the 
             request.access_token = x_matrix_authorization(config.server().server_name, target);
             request.remote_addr = "198.51.100.27";
             auto const response = proxy.handle(request);
+            auto const status = proxy.room_sync_status(room_id);
+            // A restart records the new worker's PID before it installs the new channel.
+            auto const still_down = proxy.worker_pid_for_room(room_id) == -1;
 
-            THEN("the auth chain is returned, never 404")
+            THEN("the auth chain is returned while the reload is pending, never 404")
             {
+                REQUIRE(still_down);
+                CHECK(status.state == "pending");
+                CHECK(status.held);
                 CHECK(response.status == 200U);
                 CHECK(response.body.find("auth_chain") != std::string::npos);
             }
@@ -457,13 +487,34 @@ SCENARIO("A room created after the worker started is held by the worker only onc
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         runtime.federation.remote_key_resolver = make_remote_key_resolver();
-        auto const [listed_room_id, admin_token, ignored_acl_event_id] =
+        auto const [listed_room_id, admin_token, listed_acl_event_id] =
             create_room_and_set_acl(runtime, config.server().server_name);
-        std::ignore = ignored_acl_event_id;
 
         auto proxy = merovingian::homeserver::FederationProxy{
             config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
         REQUIRE(wait_for_proxy(proxy, 15s));
+        // A healthy channel is not a finished start-up copy. Wait until the worker that owns the listed room serves
+        // it, so the table hidden below cannot fail that copy.
+        auto const listed_target =
+            "/_matrix/federation/v1/state_ids/" + listed_room_id + "?event_id=" + listed_acl_event_id;
+        auto const listed_served = [&proxy, &config, &listed_target]() {
+            auto const deadline = std::chrono::steady_clock::now() + 15s;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                auto request = merovingian::homeserver::LocalHttpRequest{};
+                request.method = "GET";
+                request.target = listed_target;
+                request.access_token = x_matrix_authorization(config.server().server_name, listed_target);
+                request.remote_addr = "198.51.100.27";
+                if (proxy.handle(request).status == 200U)
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(20ms);
+            }
+            return false;
+        }();
+        REQUIRE(listed_served);
 
         auto const create = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", admin_token, R"({"room_version":"10"})"});
@@ -585,18 +636,107 @@ SCENARIO("A room the worker's start-up copy left out is served by main until the
     }
 }
 
+// ADR-0756: every worker's start-up copy lists every room, and the sync status is kept per room, so a shard that failed
+// to copy a room another shard owns marked that room as not held although its owner had loaded it.
+SCENARIO("A shard's failed start-up copy of a room another shard owns leaves that room held",
+         "[security_audit_worker_snapshot][federation][integration][adr0756]")
+{
+    GIVEN("a pool of two workers, one room owned by each, and the listed room served by its owner")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        REQUIRE(config.federation_worker().shards == 2U);
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [listed_room_id, admin_token, listed_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        auto const owner = merovingian::homeserver::federation_worker_shard_for(listed_room_id, 2U);
+        auto const other = owner == 0U ? std::size_t{1U} : std::size_t{0U};
+        auto other_room_id = std::string{};
+        for (auto attempt = 0; attempt < 64 && other_room_id.empty(); ++attempt)
+        {
+            auto const create = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", admin_token, R"({"room_version":"10"})"});
+            REQUIRE(create.status == 200U);
+            if (merovingian::homeserver::federation_worker_shard_for(create.body, 2U) == other)
+            {
+                other_room_id = create.body;
+            }
+        }
+        REQUIRE_FALSE(other_room_id.empty());
+
+        auto pool = merovingian::homeserver::WorkerPool{config.federation_worker(), runtime,
+                                                        std::string{test_worker_binary()}, worker_config_path.string()};
+        auto const wait_until = [](auto const& done) {
+            auto const deadline = std::chrono::steady_clock::now() + 15s;
+            while (!done() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(20ms);
+            }
+            return done();
+        };
+        auto const listed_target =
+            "/_matrix/federation/v1/state_ids/" + listed_room_id + "?event_id=" + listed_acl_event_id;
+        REQUIRE(wait_until([&pool, &config, &listed_target, &listed_room_id]() {
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "GET";
+            request.target = listed_target;
+            request.access_token = x_matrix_authorization(config.server().server_name, listed_target);
+            request.remote_addr = "198.51.100.27";
+            return pool.healthy() && pool.handle(request, listed_room_id).status == 200U;
+        }));
+
+        WHEN("the other shard's worker restarts and its start-up copy fails both rooms")
+        {
+            // Test-only fault injection, as in the scenarios above: hide a table main's snapshot reads.
+            auto database_table = SqliteTableHider{config.database().sqlite_path};
+            REQUIRE(database_table.hide());
+            auto const killed = pool.worker_pid(other);
+            REQUIRE(killed > 0);
+            REQUIRE(::kill(killed, SIGKILL) == 0);
+            // The restarted worker reports both rooms as left out; its own room's report is the one main records.
+            auto const own_room_dropped = wait_until([&pool, &other_room_id]() {
+                return !pool.room_sync_status(other_room_id).held;
+            });
+            // Its reports arrive together; give the one for the listed room time to be handled as well.
+            std::this_thread::sleep_for(200ms);
+            auto const listed = pool.room_sync_status(listed_room_id);
+            REQUIRE(database_table.restore());
+
+            THEN("only the room the restarted shard owns stops being held")
+            {
+                CHECK(own_room_dropped);
+                CHECK(pool.worker_pid(other) != killed);
+                CHECK(listed.held);
+            }
+        }
+    }
+}
+
 // ADR-0756: notify_room_changed returned before recording anything when the worker's channel was down, so a room
 // first changed then read as held by a worker that may never have loaded it.
 SCENARIO("A room first notified while the worker's channel is down is not held by the worker",
          "[security_audit_worker_snapshot][federation][integration][adr0756]")
 {
-    GIVEN("a worker pool whose worker exits as soon as it is started")
+    GIVEN("a worker pool whose worker for the room has just been killed")
     {
-        // A missing binary makes the first spawn throw; false(1) spawns and exits, so its channel fails at once.
-        auto const exiting_worker = std::filesystem::path{"/usr/bin/false"};
-        if (!std::filesystem::exists(exiting_worker))
+        // The first spawn exchanges keys before the pool is built, so a worker that exits at once makes the pool
+        // throw. Killing a started worker instead leaves its shard down for the supervisor's restart backoff.
+        if (test_worker_binary().empty())
         {
-            SKIP("/usr/bin/false is not present");
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
         }
         REQUIRE(sodium_init() >= 0);
 
@@ -608,24 +748,43 @@ SCENARIO("A room first notified while the worker's channel is down is not held b
         auto started = merovingian::homeserver::start_runtime(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto proxy = merovingian::homeserver::FederationProxy{config.federation_worker(), runtime,
-                                                              exiting_worker.string(), worker_config_path.string()};
-        auto const deadline = std::chrono::steady_clock::now() + 5s;
-        while (proxy.healthy() && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(20ms);
-        }
-        REQUIRE_FALSE(proxy.healthy());
+        auto pool = merovingian::homeserver::WorkerPool{config.federation_worker(), runtime,
+                                                        std::string{test_worker_binary()}, worker_config_path.string()};
+        auto const wait_until = [](auto const& done) {
+            auto const deadline = std::chrono::steady_clock::now() + 15s;
+            while (!done() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(20ms);
+            }
+            return done();
+        };
+        REQUIRE(wait_until([&pool]() {
+            return pool.healthy();
+        }));
+
+        auto const room_id = std::string{"!created-while-down:example.org"};
+        auto const shard = pool.shard_for(room_id);
+        auto const worker = pool.worker_pid(shard);
+        REQUIRE(worker > 0);
+        REQUIRE(::kill(worker, SIGKILL) == 0);
+        REQUIRE(wait_until([&pool, shard]() {
+            return pool.worker_pid(shard) == -1 && !pool.healthy();
+        }));
+        // The supervisor drops the dead channel just after marking itself unhealthy, and restarts the worker only
+        // after a backoff of a second.
+        std::this_thread::sleep_for(100ms);
 
         WHEN("main notifies a room the worker has never loaded")
         {
-            auto const room_id = std::string{"!created-while-down:example.org"};
-            auto const before = proxy.room_sync_status(room_id);
-            proxy.notify_room_changed(room_id);
-            auto const after = proxy.room_sync_status(room_id);
+            auto const before = pool.room_sync_status(room_id);
+            pool.notify_room_changed(room_id);
+            auto const after = pool.room_sync_status(room_id);
+            // A restart records the new worker's PID before it installs the new channel.
+            auto const still_down = pool.worker_pid(shard) == -1;
 
             THEN("the room was held only by default before, and is pending and not held after")
             {
+                REQUIRE(still_down);
                 CHECK(before.held);
                 CHECK(after.state == "pending");
                 CHECK(after.generation == 1U);

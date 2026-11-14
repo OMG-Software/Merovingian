@@ -41,6 +41,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   federation worker has loaded the room, so it is no longer refused under a guessed room version (ADR-0756).
 * So is a room the worker's start-up copy left out, a room first changed while the worker's channel was down, and a
   whole `/send` transaction when any room it names is one of these, not only its first (ADR-0756).
+* A room is marked as missing from a worker only on a report from the shard that owns it, so another shard's failed
+  start-up copy no longer sends that room's requests to main (ADR-0756).
 * Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
   first retry after it comes back, including after this server restarts (ADR-0749).
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;

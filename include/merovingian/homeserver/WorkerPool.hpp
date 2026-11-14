@@ -16,6 +16,8 @@
 #include "merovingian/ipc/IpcChannel.hpp"
 #include "merovingian/net/ThreadPool.hpp"
 
+#include <sys/types.h>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -261,6 +263,9 @@ public:
 
     // Exposed for unit tests: which shard index would handle this room_id?
     [[nodiscard]] auto shard_for(std::string_view room_id) const noexcept -> std::size_t;
+
+    // Exposed for tests: the process ID of the worker serving a shard, or -1 when it has none.
+    [[nodiscard]] auto worker_pid(std::size_t shard) const noexcept -> pid_t;
 
     // Returns the last observed room-sync status for the shard that owns room_id.
     // See FederationProxy::room_sync_status for semantics.

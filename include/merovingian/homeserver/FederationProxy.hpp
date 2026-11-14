@@ -10,6 +10,8 @@
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 
+#include <sys/types.h>
+
 #include <chrono>
 #include <memory>
 #include <string>
@@ -73,6 +75,9 @@ public:
     // the worker (federation_room_request_served_by_main, ADR-0748). A room the worker has never loaded is served
     // by main whatever its state (`held`, ADR-0756).
     [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
+
+    // Exposed for tests: the process ID of the worker that owns room_id, or -1 when that shard has none.
+    [[nodiscard]] auto worker_pid_for_room(std::string_view room_id) const noexcept -> pid_t;
 
 private:
     HomeserverRuntime& runtime_;

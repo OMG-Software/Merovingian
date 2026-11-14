@@ -1697,8 +1697,18 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
                     // Main never sends generation 0: the worker uses it to report a room its start-up fill left out
                     // (ADR-0756). It is taken only for a room main listed to this channel, once, so a worker cannot
-                    // grow main's status map with rooms main never named.
-                    if (result_generation == 0U)
+                    // grow main's status map with rooms main never named. Every worker's fill lists every room, and
+                    // the status is kept per room, so only the shard that owns a room reports on it: another shard's
+                    // failed copy says nothing about the copy requests for that room are routed to.
+                    if (shard_for(result_room_id) != std::size_t{shard_index})
+                    {
+                        if (result_generation != 0U)
+                        {
+                            LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
+                                        ": ignoring a room_sync_result for a room another shard owns");
+                        }
+                    }
+                    else if (result_generation == 0U)
                     {
                         if (result_state == "failed" && snapshot_service_->consume_fill_omission(ch, result_room_id))
                         {
@@ -1860,6 +1870,15 @@ auto WorkerPool::stop() noexcept -> void
 auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size_t
 {
     return federation_worker_shard_for(room_id, cfg_.shards);
+}
+
+auto WorkerPool::worker_pid(std::size_t shard) const noexcept -> pid_t
+{
+    if (shard >= workers_.size() || !workers_[shard])
+    {
+        return -1;
+    }
+    return workers_[shard]->worker_pid();
 }
 
 auto WorkerPool::room_sync_status(std::string_view room_id) const -> RoomSyncStatus

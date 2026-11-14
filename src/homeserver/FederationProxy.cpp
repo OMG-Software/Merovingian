@@ -282,6 +282,15 @@ auto FederationProxy::healthy() const noexcept -> bool
     return pool_ != nullptr && pool_->healthy();
 }
 
+auto FederationProxy::worker_pid_for_room(std::string_view room_id) const noexcept -> pid_t
+{
+    if (pool_ == nullptr)
+    {
+        return -1;
+    }
+    return pool_->worker_pid(pool_->shard_for(room_id));
+}
+
 auto FederationProxy::room_sync_status(std::string_view room_id) const -> RoomSyncStatus
 {
     if (pool_ == nullptr)
