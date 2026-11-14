@@ -472,6 +472,45 @@ def write_vm_sync_archive(stream: BinaryIO, repo_root: Path,
         archive.addfile(info, io.BytesIO(manifest))
 
 
+def vm_incoming_list(send: Sequence[str]) -> bytes:
+    """The list of the paths the archive will bring, as the VM reads it before the archive:
+    its length in bytes and a newline, then one path per line."""
+    listing = "".join(f"{path}\n" for path in send).encode("utf-8")
+    return f"{len(listing)}\n".encode("ascii") + listing
+
+
+def write_vm_sync_stream(stream: BinaryIO, repo_root: Path,
+                         local: Mapping[str, tuple[int, int, int]],
+                         send: list[str]) -> None:
+    """What build.py vm sends on the remote script's stdin: vm_incoming_list(send), then the archive."""
+    stream.write(vm_incoming_list(send))
+    write_vm_sync_archive(stream, repo_root, local, send)
+
+
+# Run on the VM with python3 -c: copies the incoming list (vm_incoming_list) from stdin to stdout. os.read never
+# returns more than it is asked for, so the archive that follows stays on stdin for tar.
+_VM_READ_INCOMING = """import os, sys
+def take(count):
+    data = b""
+    while len(data) < count:
+        chunk = os.read(0, count - len(data))
+        if not chunk:
+            sys.exit("build.py vm: the stream ended inside the list of incoming files")
+        data += chunk
+    return data
+header = b""
+while not header.endswith(b"\\n"):
+    if len(header) > 20:
+        sys.exit("build.py vm: the stream does not start with a list of incoming files")
+    header += take(1)
+try:
+    size = int(header)
+except ValueError:
+    sys.exit("build.py vm: the stream does not start with a list of incoming files")
+sys.stdout.buffer.write(take(size))
+"""
+
+
 def vm_run_dir(token: str) -> str:
     """The directory, relative to the VM checkout, that holds one run's own files:
     its log snapshot and, when its baseline was stale, VM_BASELINE_MARKER."""
@@ -499,8 +538,11 @@ def vm_remote_script(checkout: str, run_line: str, *, token: str, baseline_sha25
     3. It deletes the stale paths, files this checkout no longer has, and any
        directory that leaves empty, before unpacking, so a file that became a
        directory (or the reverse) never blocks the archive.
-    4. It unpacks the archive on stdin into ~/merovingian-vm/<checkout> and
-       installs the new manifest, which arrives last, only after that succeeds.
+    4. It reads the list of incoming paths that precedes the archive on stdin
+       (vm_incoming_list) and adds them, zeroed, to the manifest, so an unpack
+       cut off part-way leaves nothing the next run does not know to delete.
+       Then it unpacks the archive into ~/merovingian-vm/<checkout> and installs
+       the new manifest, which arrives last, only after that succeeds.
     5. With size_jobs it sets $jobs from the host's memory, runs run_line, and
        with builddir copies the test logs into the run directory, so build.py
        fetches this run's logs even after a later run has replaced the build's.
@@ -581,6 +623,18 @@ def vm_remote_script(checkout: str, run_line: str, *, token: str, baseline_sha25
             stale_end,
         ]
     lines += [
+        # Before unpacking, add every path the archive will bring to the zeroed
+        # manifest. An unpack cut off part-way then leaves no file the manifest
+        # does not name, so the next run deletes those the checkout no longer has,
+        # whatever changed locally in between.
+        f"[ -f {VM_MANIFEST} ] || : > {VM_MANIFEST}",
+        f""""$py" -c '{_VM_READ_INCOMING}' > .vm-sync/incoming""",
+        """awk 'BEGIN { FS = "\\t"; OFS = "\\t" } """
+        """FILENAME == ARGV[1] { if (NF >= 4) { seen[$4] = 1; print } next } """
+        """!($0 in seen) { seen[$0] = 1; print 0, 0, 0, $0 }' """
+        f"{VM_MANIFEST} .vm-sync/incoming > .vm-sync/manifest.dirty",
+        f"mv -f .vm-sync/manifest.dirty {VM_MANIFEST}",
+        "rm -f .vm-sync/incoming",
         f"rm -f {VM_MANIFEST_NEXT}",
         "tar -xf -",
         f"if [ ! -f {VM_MANIFEST_NEXT} ]; then",
@@ -717,7 +771,7 @@ def build_vm(args: argparse.Namespace) -> int:
 
         process = subprocess.Popen(ssh + ["sh -c " + quote_bash(script)], stdin=subprocess.PIPE)
         try:
-            write_vm_sync_archive(process.stdin, REPO_ROOT, local, send)
+            write_vm_sync_stream(process.stdin, REPO_ROOT, local, send)
         except BrokenPipeError:
             pass
         finally:

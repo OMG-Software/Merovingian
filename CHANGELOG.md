@@ -39,6 +39,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   an event sent a moment ago is no longer reported as missing (ADR-0748).
 * A remote server's join, knock, leave or PDU for a room created a moment ago is served by main until the
   federation worker has loaded the room, so it is no longer refused under a guessed room version (ADR-0756).
+* So is a room the worker's start-up copy left out, a room first changed while the worker's channel was down, and a
+  whole `/send` transaction when any room it names is one of these, not only its first (ADR-0756).
 * Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
   first retry after it comes back, including after this server restarts (ADR-0749).
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;
@@ -56,7 +58,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * On a host with an installed system config, the `--dry-run` smoke tests read the example config and the
   default-summary test is skipped, not failed: the server reads that config instead of its defaults (ADR-0752).
 * `build.py vm` resends a file an interrupted sync had deleted, and a retry after a sync interrupted inside a new
-  directory succeeds (ADR-0752).
+  directory succeeds, even when the local files changed in between (ADR-0752).
+* The VM setup steps in `docs/dev-environment.md` pass the setup key to `scp` and `ssh`, which do not read `vm.ini`.
 * A hardened FreeBSD or OpenBSD build links as a PIE however it is built, not only as a package, and the ELF hardening
   check reads the BSDs' `readelf`, so FreeBSD's release evidence no longer reports PIE and BIND_NOW missing (ADR-0757).
 

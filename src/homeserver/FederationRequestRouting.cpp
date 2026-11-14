@@ -10,6 +10,7 @@
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -151,6 +152,40 @@ namespace
         return *room_id;
     }
 
+    // Every distinct room_id the PDUs of a /send body name, in the order they first appear. A PDU without a string
+    // room_id names none: the worker refuses it on its own. At most max_federation_transaction_pdus are collected,
+    // the most a transaction the worker accepts can carry.
+    [[nodiscard]] auto room_ids_from_send_body(std::string_view body) -> std::vector<std::string>
+    {
+        auto room_ids = std::vector<std::string>{};
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return room_ids;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* pdus = root == nullptr ? nullptr : array_member(*root, "pdus");
+        if (pdus == nullptr)
+        {
+            return room_ids;
+        }
+        for (auto const& pdu : *pdus)
+        {
+            auto const* object = std::get_if<canonicaljson::Object>(&pdu.storage());
+            auto const* room_id = object == nullptr ? nullptr : string_member(*object, "room_id");
+            if (room_id == nullptr || std::ranges::find(room_ids, *room_id) != room_ids.end())
+            {
+                continue;
+            }
+            if (room_ids.size() == federation::max_federation_transaction_pdus)
+            {
+                break;
+            }
+            room_ids.push_back(*room_id);
+        }
+        return room_ids;
+    }
+
     [[nodiscard]] auto room_id_from_path_target(std::string_view target) -> std::string
     {
         for (auto const prefix : room_endpoint_prefixes())
@@ -193,6 +228,20 @@ auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> 
         return room_id_from_send_body(request.body);
     }
     return room_id_from_path_target(request.target);
+}
+
+auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector<std::string>
+{
+    if (is_federation_send_target(request.target))
+    {
+        return room_ids_from_send_body(request.body);
+    }
+    auto room_id = room_id_from_path_target(request.target);
+    if (room_id.empty())
+    {
+        return {};
+    }
+    return {std::move(room_id)};
 }
 
 auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool

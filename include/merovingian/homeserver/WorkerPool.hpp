@@ -295,6 +295,11 @@ private:
     // Updates the tracked status for a room_id.  Called on the IPC dispatch
     // thread when a room_sync_result notification arrives from a worker.
     auto record_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation) -> void;
+
+    // Records that a worker's start-up fill left room_id out, so the worker holds no copy of it and main serves it
+    // until a reload of it succeeds (ADR-0756). A pending reload keeps its state and decides when its result arrives.
+    // The caller has checked the room against the channel's listing (WorkerSnapshotService::consume_fill_omission).
+    auto record_room_left_out_of_fill(std::string_view room_id) -> void;
 };
 
 } // namespace merovingian::homeserver

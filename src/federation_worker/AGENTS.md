@@ -52,7 +52,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    until the runtime exists, and `RuntimeStartOptions::fill_store` asks main for the room list (`room_list_request`)
    and then each room (`room_snapshot_request`, page by page through `ipc::RoomSnapshotAssembler`), one room at a
    time, before hydration. A room list main refuses stops the worker (the supervisor restarts it); a room main
-   cannot send is logged and left out until its next `room_sync`. Main answers only under a permit it issued
+   cannot send is logged and left out until its next `room_sync`, and reported to main as a `failed`
+   `room_sync_result` of generation 0, so main serves the room meanwhile (ADR-0756). Main answers only under a permit it issued
    ([ADR-0735](../../docs/adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)).
    Never give the worker a database path, URI, descriptor or Landlock grant again, and never add a worker read that
    does not come through main. `RuntimeStartOptions::database_load_profile` stays

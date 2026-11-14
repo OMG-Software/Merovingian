@@ -163,8 +163,9 @@ Each run:
    never blocks it. If another run changed the manifest between this run reading
    it and taking the lock, the VM touches nothing and `build.py vm` reads the
    manifest again and resends (three attempts). A sync cut off part-way leaves
-   the manifest listing every path with no metadata, so the next run resends
-   each file and still deletes what it no longer has.
+   the manifest listing every path it had and every path it was sending, with
+   no metadata, so the next run resends each file and still deletes what it no
+   longer has.
 3. Takes the ssh user's lock (`~/merovingian-vm/.lock`, through `python3`'s
    `fcntl.flock`, since the BSDs have no `flock` command), so a second run as
    that user, from any checkout, waits ("another run holds the VM lock"), then
@@ -237,11 +238,12 @@ One-time setup:
 4. Install the packages on the VM before the first sync, as root or a user who
    can use `sudo` or `doas`. `build.py vm` takes its lock through `python3`, so
    a VM without it cannot be synced yet: copy the setup script over on its own,
-   run it there, then sync once to check:
+   run it there, then sync once to check. `scp` and `ssh` do not read `vm.ini`,
+   so name the key created above:
 
    ```sh
-   scp scripts/remote-host-setup.sh builder@192.0.2.10:
-   ssh -t builder@192.0.2.10 sh remote-host-setup.sh
+   scp -i ~/.ssh/merovingian_vm_ed25519 scripts/remote-host-setup.sh builder@192.0.2.10:
+   ssh -i ~/.ssh/merovingian_vm_ed25519 -t builder@192.0.2.10 sh remote-host-setup.sh
    python build.py vm --exec true
    ```
 

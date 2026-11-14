@@ -655,7 +655,8 @@ namespace
     }
 
     // The start-up fill. False only when main will not list its rooms: the worker then does not start, and the
-    // supervisor restarts it. A room main cannot send is logged and left out; its next room_sync fills it.
+    // supervisor restarts it. A room main cannot send is logged and left out, and reported to main as a failed result
+    // of generation 0, which main never assigns, so main serves the room until its next room_sync fills it (ADR-0756).
     [[nodiscard]] auto fill_store_from_main(ipc::IpcChannel& channel, database::PersistentStore& store) -> bool
     {
         auto const room_ids = room_ids_from_main(channel);
@@ -672,6 +673,11 @@ namespace
             if (!snapshot.has_value())
             {
                 LOG_ERROR("Federation worker: room_id=" + room_id + " left out of the start-up copy");
+                if (!channel.send_notification(ipc::serialize_room_sync_result(room_id, "failed", 0U)))
+                {
+                    LOG_WARNING("Federation worker: could not tell main that room_id=" + room_id +
+                                " was left out of the start-up copy");
+                }
                 continue;
             }
             snapshots.push_back(std::move(*snapshot));

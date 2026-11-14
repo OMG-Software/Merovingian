@@ -44,6 +44,17 @@ Chosen option: the first. `WorkerPool::notify_room_changed` and `record_room_syn
 `federation_room_request_served_by_main` returns true while it is false. Main already serves a room whose reload failed
 in full, so this adds no path main does not have.
 
+Three more ways a worker can lack a room are covered the same way:
+
+* `notify_room_changed` writes the room's status before it checks the worker's channel, so a room first changed while
+  the channel is down is not held either.
+* The worker's start-up fill leaves out a room main cannot send it, and it reports each one as a `room_sync_result` of
+  `failed` at generation 0, which main never assigns. Main records the room as not held
+  (`record_room_left_out_of_fill`). It takes the report only for a room in the listing it sent that channel, once
+  (`WorkerSnapshotService::consume_fill_omission`), so a worker cannot make main record rooms main never named.
+* A `/send` transaction goes whole to the shard its first PDU picks, so the proxy checks the status of every room the
+  transaction names (`federation_request_room_ids`) and serves the whole transaction from main if any of them must be.
+
 The flag is conservative: main does not record which rooms the startup listing held, so a room that existed at startup
 is also not held from its first notification until that reload succeeds. Main serves it for that one reload, once per
 room per main process. Recording the listing would avoid that, at the cost of a second copy of the room list.
@@ -59,7 +70,9 @@ room per main process. Recording the listing would avoid that, at the cost of a 
 * Main serves a room's requests in full during its first reload, including the first change of each room that existed
   when the worker started.
 * A room whose first reload's result never arrives, because the worker restarted, stays with main until its next change
-  is loaded.
+  is loaded. So does a room first changed while the worker's channel was down, even when the restarted worker's fill
+  copied it: the fill reports only the rooms it left out.
+* A transaction naming one room the worker does not hold is served by main in full, its other rooms included.
 
 ## Pros and Cons of the Options
 

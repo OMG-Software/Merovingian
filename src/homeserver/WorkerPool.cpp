@@ -1695,7 +1695,20 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     auto const result_room_id = json_get_str(json, "room_id");
                     auto const result_state = json_get_str(json, "state");
                     auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
-                    record_room_sync_result(result_room_id, result_state, result_generation);
+                    // Main never sends generation 0: the worker uses it to report a room its start-up fill left out
+                    // (ADR-0756). It is taken only for a room main listed to this channel, once, so a worker cannot
+                    // grow main's status map with rooms main never named.
+                    if (result_generation == 0U)
+                    {
+                        if (result_state == "failed" && snapshot_service_->consume_fill_omission(ch, result_room_id))
+                        {
+                            record_room_left_out_of_fill(result_room_id);
+                        }
+                    }
+                    else
+                    {
+                        record_room_sync_result(result_room_id, result_state, result_generation);
+                    }
                 }
                 else
                 {
@@ -1783,12 +1796,8 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
     {
         return;
     }
-    auto const ch = workers_[index]->channel_snapshot();
-    if (!ch || !ch->healthy())
-    {
-        return;
-    }
-
+    // The status is written even when the notification cannot be sent: a room first notified while the worker's
+    // channel is down is one the worker may never have loaded, and main serves it until a reload of it succeeds.
     auto const generation = [this, room_id]() {
         auto guard = std::lock_guard{room_sync_mu_};
         auto const next = ++room_sync_generations_[std::string{room_id}];
@@ -1799,6 +1808,12 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
         status = RoomSyncStatus{"pending", next, held};
         return next;
     }();
+
+    auto const ch = workers_[index]->channel_snapshot();
+    if (!ch || !ch->healthy())
+    {
+        return;
+    }
 
     // The permit is recorded before the notification is sent, so a worker that reloads at once finds it (ADR-0735).
     snapshot_service_->permit_reload(ch, room_id, generation);
@@ -1881,6 +1896,17 @@ auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_v
     }
     // An older generation is also ignored; the pending entry for the latest
     // generation remains until its own result arrives or the room is re-synced.
+}
+
+auto WorkerPool::record_room_left_out_of_fill(std::string_view room_id) -> void
+{
+    auto guard = std::lock_guard{room_sync_mu_};
+    auto& status = room_sync_status_[std::string{room_id}];
+    status.held = false;
+    if (status.state != "pending")
+    {
+        status.state = "failed";
+    }
 }
 
 auto validate_worker_outbound_reply(http::OutboundRequest const& request, http::OutboundResult reply)

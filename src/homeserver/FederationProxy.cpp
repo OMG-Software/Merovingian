@@ -219,11 +219,12 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     }
 
     auto const room_id = federation_worker_room_id_from_request(request);
-    if (!room_id.empty())
+    // A failed reload leaves the worker's copy of the room stale; a pending one has not yet taken in a change main
+    // made, such as an event a client just sent. Main answers then (ADR-0748), and for a room the worker has never
+    // loaded (ADR-0756). A /send goes whole to the shard its first PDU picks, so every room it names is checked.
+    for (auto const& concerned_room_id : federation_request_room_ids(request))
     {
-        // A failed reload leaves the worker's copy of the room stale; a pending one has not yet taken in a change main
-        // made, such as an event a client just sent. Main answers then (ADR-0748).
-        auto const status = pool_->room_sync_status(room_id);
+        auto const status = pool_->room_sync_status(concerned_room_id);
         if (federation_room_request_served_by_main(verified_request, status))
         {
             auto const failed = status.state == "failed";
@@ -232,7 +233,7 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
                 failed ? "federation_proxy.room_sync_failed_fallback" : "federation_proxy.room_sync_pending_main",
                 {
                     {"target",     observability::sanitized_http_target(request.target), false},
-                    {"room_id",    std::string{room_id},                                 false},
+                    {"room_id",    concerned_room_id,                                    false},
                     {"generation", std::to_string(status.generation),                    false},
             },
                 failed ? observability::LogEventSeverity::warning : observability::LogEventSeverity::debug);

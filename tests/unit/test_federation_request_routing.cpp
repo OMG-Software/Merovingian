@@ -12,6 +12,7 @@
 namespace
 {
 
+using merovingian::homeserver::federation_request_room_ids;
 using merovingian::homeserver::federation_request_should_bypass_worker;
 using merovingian::homeserver::federation_worker_room_id_from_request;
 using merovingian::homeserver::is_federation_key_server_endpoint;
@@ -918,6 +919,73 @@ SCENARIO("Every request for a room the worker has never loaded is served by main
                 REQUIRE_FALSE(federation_room_request_served_by_main(send_join, reload));
                 REQUIRE_FALSE(federation_room_request_served_by_main(transaction, reload));
                 REQUIRE(federation_room_request_served_by_main(event_auth, reload));
+            }
+        }
+    }
+}
+
+// ADR-0756: a /send goes whole to the shard its first PDU picks, so main checks every room it names. A later PDU for a
+// room the worker has never loaded would otherwise reach a worker that takes room version 12 for it.
+SCENARIO("Every room a federation request concerns is listed for the sync status check",
+         "[federation][routing][room-id][adr0756]")
+{
+    GIVEN("a /send transaction whose PDUs name two rooms, one of them twice, and one PDU without a room_id")
+    {
+        auto const body = std::string{R"({"origin":"remote.example","origin_server_ts":1,"pdus":[)"
+                                      R"({"room_id":"!first:example.com","type":"m.room.message"},)"
+                                      R"({"room_id":"!second:example.com","type":"m.room.message"},)"
+                                      R"({"type":"m.room.message"},)"
+                                      R"({"room_id":"!first:example.com","type":"m.room.message"}]})"};
+        auto request = make_request("/_matrix/federation/v1/send/txn-rooms", body);
+        request.method = "PUT";
+
+        WHEN("the rooms it concerns are listed")
+        {
+            auto const room_ids = federation_request_room_ids(request);
+
+            THEN("each named room appears once, in the order it first appears, and the shard key is the first")
+            {
+                REQUIRE(room_ids == std::vector<std::string>{"!first:example.com", "!second:example.com"});
+                REQUIRE(federation_worker_room_id_from_request(request) == room_ids.front());
+            }
+        }
+    }
+
+    GIVEN("a /send transaction naming more distinct rooms than a transaction may carry PDUs")
+    {
+        auto body = std::string{R"({"origin":"remote.example","origin_server_ts":1,"pdus":[)"};
+        auto const count = merovingian::federation::max_federation_transaction_pdus + 5U;
+        for (auto index = 0U; index < count; ++index)
+        {
+            body += (index == 0U ? "" : ",");
+            body += R"({"room_id":"!room)" + std::to_string(index) + R"(:example.com"})";
+        }
+        body += "]}";
+        auto request = make_request("/_matrix/federation/v1/send/txn-many", body);
+        request.method = "PUT";
+
+        WHEN("the rooms it concerns are listed")
+        {
+            auto const room_ids = federation_request_room_ids(request);
+
+            THEN("no more are listed than a transaction the worker accepts can carry")
+            {
+                REQUIRE(room_ids.size() == merovingian::federation::max_federation_transaction_pdus);
+            }
+        }
+    }
+
+    GIVEN("a room-scoped path request and a request that names no room")
+    {
+        auto const state = make_request("/_matrix/federation/v1/state/%21pathroom%3Aexample.com?event_id=%24e");
+        auto const version = make_request("/_matrix/federation/v1/version");
+
+        WHEN("the rooms each concerns are listed")
+        {
+            THEN("the path request lists its decoded room, and the other lists none")
+            {
+                REQUIRE(federation_request_room_ids(state) == std::vector<std::string>{"!pathroom:example.com"});
+                REQUIRE(federation_request_room_ids(version).empty());
             }
         }
     }

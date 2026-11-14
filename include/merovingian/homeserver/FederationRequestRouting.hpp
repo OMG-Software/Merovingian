@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -22,6 +23,12 @@ namespace merovingian::homeserver
 // (key server, profile queries, directory queries, etc.) return an empty
 // string, which the caller routes to shard 0.
 [[nodiscard]] auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> std::string;
+
+// Every distinct room a request concerns: for PUT /send/{txnId}, the room_id of each PDU in the body, in the order
+// they first appear (at most federation::max_federation_transaction_pdus); otherwise the room ID in the path, if any.
+// The shard the first PDU picks receives the whole transaction, so main checks the sync status of every room in it
+// before forwarding it to a worker (ADR-0756).
+[[nodiscard]] auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector<std::string>;
 
 // Returns true when a verified inbound federation request should stay in the
 // main process even while the worker pool is active.

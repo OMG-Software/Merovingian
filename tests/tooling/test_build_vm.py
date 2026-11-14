@@ -316,7 +316,7 @@ class VmRemoteScriptTests(unittest.TestCase):
     TOKEN = "0123456789abcdef"
 
     def prepare(self, files: dict[str, bytes], run_line: str, **options) -> tuple[str, bytes]:
-        """The script and archive build_vm would send, planned against the VM's manifest now."""
+        """The script and stream build_vm would send, planned against the VM's manifest now."""
         local = {}
         for path, data in files.items():
             (self.source / path).parent.mkdir(parents=True, exist_ok=True)
@@ -326,7 +326,7 @@ class VmRemoteScriptTests(unittest.TestCase):
         baseline = manifest.read_bytes() if manifest.exists() else b""
         remote = build.parse_vm_manifest(baseline.decode("utf-8"))
         archive = io.BytesIO()
-        build.write_vm_sync_archive(archive, self.source, local, build.plan_vm_sync(local, remote))
+        build.write_vm_sync_stream(archive, self.source, local, build.plan_vm_sync(local, remote))
         script = build.vm_remote_script("co", run_line, token=self.TOKEN,
                                         baseline_sha256=build.vm_manifest_digest(baseline),
                                         stale=build.plan_vm_stale(local, remote), **options)
@@ -457,7 +457,8 @@ class VmRemoteScriptTests(unittest.TestCase):
             info.size = len(b"nested")
             info.mode = 0o644
             archive.addfile(info, io.BytesIO(b"nested"))
-        cut_off = subprocess.run(["sh", "-c", script], input=partial.getvalue(),
+        cut_off = subprocess.run(["sh", "-c", script],
+                                 input=build.vm_incoming_list(["x/y"]) + partial.getvalue(),
                                  capture_output=True, env=self.environment())
         self.assertNotEqual(0, cut_off.returncode)
         self.assertTrue((self.checkout / "x").is_dir())
@@ -466,6 +467,52 @@ class VmRemoteScriptTests(unittest.TestCase):
         retry = self.sync({"x/y": b"nested"}, "true")
         self.assertEqual(0, retry.returncode, retry.stderr)
         self.assertEqual(b"nested", (self.checkout / "x" / "y").read_bytes())
+
+    def cut_off_after_unpacking_x_y(self) -> None:
+        """Sync file x, make it the directory x/y locally, and cut that sync off just after
+        x/y was unpacked, before the manifest arrived."""
+        self.assertEqual(0, self.sync({"x": b"file"}, "true").returncode)
+        shutil.rmtree(self.source)
+        self.source.mkdir()
+        script, _ = self.prepare({"x/y": b"nested"}, "true")
+        partial = io.BytesIO()
+        with tarfile.open(fileobj=partial, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+            info = tarfile.TarInfo("x/y")
+            info.size = len(b"nested")
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(b"nested"))
+        cut_off = subprocess.run(["sh", "-c", script],
+                                 input=build.vm_incoming_list(["x/y"]) + partial.getvalue(),
+                                 capture_output=True, env=self.environment())
+        self.assertNotEqual(0, cut_off.returncode)
+        self.assertTrue((self.checkout / "x").is_dir())
+        shutil.rmtree(self.source)
+        self.source.mkdir()
+
+    def test_a_file_restored_after_an_unpack_interrupted_inside_its_directory_syncs(self) -> None:
+        # GIVEN a sync of x/y over the file x, cut off once x/y was unpacked.
+        self.cut_off_after_unpacking_x_y()
+
+        # WHEN x is a file again locally and the next sync runs.
+        retry = self.sync({"x": b"file again"}, "true")
+
+        # THEN x/y, which only the cut-off sync brought, is removed, so the file x unpacks.
+        self.assertEqual(0, retry.returncode, retry.stderr)
+        self.assertEqual(b"file again", (self.checkout / "x").read_bytes())
+        manifest = build.parse_vm_manifest((self.checkout / build.VM_MANIFEST).read_text(encoding="utf-8"))
+        self.assertEqual({"x"}, set(manifest))
+
+    def test_a_path_dropped_after_an_unpack_interrupted_is_deleted_on_the_retry(self) -> None:
+        # GIVEN a sync of x/y over the file x, cut off once x/y was unpacked.
+        self.cut_off_after_unpacking_x_y()
+
+        # WHEN x/y becomes x/z locally and the next sync runs.
+        retry = self.sync({"x/z": b"other"}, "true")
+
+        # THEN x/z arrives and x/y, which no manifest had named, is gone.
+        self.assertEqual(0, retry.returncode, retry.stderr)
+        self.assertEqual(b"other", (self.checkout / "x" / "z").read_bytes())
+        self.assertFalse((self.checkout / "x" / "y").exists())
 
     def test_a_manifest_changed_since_planning_stops_the_run_untouched(self) -> None:
         # GIVEN a run planned against the VM's manifest.

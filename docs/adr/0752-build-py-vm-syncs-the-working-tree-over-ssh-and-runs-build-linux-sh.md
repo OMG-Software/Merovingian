@@ -50,8 +50,12 @@ The rules this sets, each of which the code depends on:
   or unpacked, the run zeroes the mode, size and mtime of every manifest line but keeps its path, so after an
   interruption no file is listed as present and current, yet the stale list the next run plans still names
   everything an earlier run sent. Deleting the manifest instead was rejected: a later run would then never delete
-  the files the interrupted run had left. The new manifest arrives last in the archive and is installed only after
-  extraction succeeds, so an interrupted sync resends what it missed.
+  the files the interrupted run had left. Before unpacking, the run also adds every path the archive will bring, zeroed,
+  which `build.py` sends on stdin ahead of the archive as a length-prefixed list read with `os.read`, so a run cut off
+  part-way leaves no file the manifest does not name, and the next run deletes those its checkout no longer has, even
+  when the local files changed in between. Sending that list in the remote script was rejected: the script is one
+  ssh argument, which a first sync's list could make longer than the system allows. The new manifest arrives last
+  in the archive and is installed only after extraction succeeds, so an interrupted sync resends what it missed.
 * **The baseline is checked under the lock.** `build.py` reads the manifest, plans against it, and sends its SHA-256
   with the run; the remote script compares it once it holds the lock. If another run changed the manifest in between,
   the script touches nothing, leaves a marker in its run directory and exits 75, and `build.py` reads the manifest

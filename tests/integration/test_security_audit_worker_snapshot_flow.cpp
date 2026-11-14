@@ -511,3 +511,126 @@ SCENARIO("A room created after the worker started is held by the worker only onc
         }
     }
 }
+
+// ADR-0756: a room the worker's start-up copy left out was reported as held, because main had never notified it, so
+// every request for it went to a worker that had no copy of it. The worker reports each room it leaves out, and main
+// serves that room until a reload of it succeeds.
+SCENARIO("A room the worker's start-up copy left out is served by main until the worker loads it",
+         "[security_audit_worker_snapshot][federation][integration][adr0756]")
+{
+    GIVEN("a room that exists before a worker starts, whose start-up copy fails")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [room_id, admin_token, ignored_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        std::ignore = admin_token;
+        std::ignore = ignored_acl_event_id;
+
+        // Test-only fault injection: main lists its rooms from `rooms`, but each room's snapshot also reads `invites`.
+        auto database_table = SqliteTableHider{config.database().sqlite_path};
+        REQUIRE(database_table.hide());
+        auto proxy = merovingian::homeserver::FederationProxy{
+            config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
+        REQUIRE(wait_for_proxy(proxy, 15s));
+
+        auto const wait_for_state = [&proxy, &room_id](std::string_view wanted) {
+            auto const deadline = std::chrono::steady_clock::now() + 10s;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                auto const status = proxy.room_sync_status(room_id);
+                if (status.state == wanted)
+                {
+                    return status;
+                }
+                std::this_thread::sleep_for(20ms);
+            }
+            return proxy.room_sync_status(room_id);
+        };
+
+        WHEN("the worker reports the room it left out")
+        {
+            auto const left_out = wait_for_state("failed");
+            REQUIRE(database_table.restore());
+
+            AND_WHEN("a later change is loaded")
+            {
+                proxy.notify_room_changed(room_id);
+                auto const loaded = wait_for_state("ok");
+
+                THEN("main served the room until the worker loaded it, and the worker holds it after")
+                {
+                    CHECK(left_out.state == "failed");
+                    CHECK_FALSE(left_out.held);
+                    CHECK(left_out.generation == 0U);
+                    CHECK(loaded.state == "ok");
+                    CHECK(loaded.held);
+                }
+            }
+        }
+    }
+}
+
+// ADR-0756: notify_room_changed returned before recording anything when the worker's channel was down, so a room
+// first changed then read as held by a worker that may never have loaded it.
+SCENARIO("A room first notified while the worker's channel is down is not held by the worker",
+         "[security_audit_worker_snapshot][federation][integration][adr0756]")
+{
+    GIVEN("a worker pool whose worker exits as soon as it is started")
+    {
+        // A missing binary makes the first spawn throw; false(1) spawns and exits, so its channel fails at once.
+        auto const exiting_worker = std::filesystem::path{"/usr/bin/false"};
+        if (!std::filesystem::exists(exiting_worker))
+        {
+            SKIP("/usr/bin/false is not present");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto proxy = merovingian::homeserver::FederationProxy{config.federation_worker(), runtime,
+                                                              exiting_worker.string(), worker_config_path.string()};
+        auto const deadline = std::chrono::steady_clock::now() + 5s;
+        while (proxy.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(20ms);
+        }
+        REQUIRE_FALSE(proxy.healthy());
+
+        WHEN("main notifies a room the worker has never loaded")
+        {
+            auto const room_id = std::string{"!created-while-down:example.org"};
+            auto const before = proxy.room_sync_status(room_id);
+            proxy.notify_room_changed(room_id);
+            auto const after = proxy.room_sync_status(room_id);
+
+            THEN("the room was held only by default before, and is pending and not held after")
+            {
+                CHECK(before.held);
+                CHECK(after.state == "pending");
+                CHECK(after.generation == 1U);
+                CHECK_FALSE(after.held);
+            }
+        }
+    }
+}
