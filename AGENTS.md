@@ -131,7 +131,8 @@ because each one has already cost this project real time.
   [Building on a Linux VM](docs/dev-environment.md#building-on-a-linux-vm) and
   [ADR-0752](docs/adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
   It exceeds a 10-minute foreground limit: run it in the background and wait for it to
-  finish. A second run, from any worktree, waits for the VM lock rather than competing.
+  finish. A second run as the same VM user, from any worktree, waits for its lock rather than
+  competing; never run the suite there as a second user at the same time.
 - **Read the real summary** from `build-vm/meson-logs/testlog.txt`, which `build.py vm`
   copies back (it deletes the old one first, so a missing file means the run never
   reached the tests) — the `Ok:` / `Fail:` / `Timeout:` counts at the end. Report

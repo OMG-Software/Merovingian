@@ -432,7 +432,7 @@ def vm_remote_script(checkout: str, run_line: str, *, builddir: str = "",
                      clean: bool = False, size_jobs: bool = False) -> str:
     """The POSIX sh script the VM runs for one build.py vm call.
 
-    It takes the VM-wide lock, so a second run (from any checkout) waits, then
+    It takes the ssh user's lock, so a second run as that user (from any checkout) waits, then
     unpacks the archive on stdin into ~/merovingian-vm/<checkout>, deletes the
     files the previous manifest listed and the new one does not, and installs
     the new manifest. With builddir it removes that build's old test logs (and
@@ -507,11 +507,25 @@ def _vm_build_line(args: argparse.Namespace, jobs: int | None) -> str:
             f"{quoted} --jobs {jobs_arg}")
 
 
-def _vm_fetch(ssh: list[str], remote_path: str) -> bytes | None:
-    """Read a file under the VM checkout; None when it does not exist."""
-    result = subprocess.run(ssh + [f"cat -- {quote_bash(remote_path)} 2>/dev/null"],
-                            capture_output=True)
-    return result.stdout if result.returncode == 0 else None
+_VM_FETCH_MISSING = 3
+
+
+def vm_fetch(ssh: list[str], remote_path: str) -> bytes | None:
+    """Read a file on the VM, relative to the ssh user's home.
+
+    Returns None only when the file does not exist there. Raises VmError when
+    the file could not be read for any other reason, such as ssh refusing the
+    key, so a log that was written is never reported as missing."""
+    quoted = quote_bash(remote_path)
+    script = f"cd && if [ -f {quoted} ]; then exec cat -- {quoted}; fi; exit {_VM_FETCH_MISSING}"
+    result = subprocess.run(ssh + ["sh -c " + quote_bash(script)], capture_output=True)
+    if result.returncode == _VM_FETCH_MISSING:
+        return None
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise VmError(f"cannot copy {remote_path} back from the VM "
+                      f"(exit {result.returncode}): {detail}")
+    return result.stdout
 
 
 def build_vm(args: argparse.Namespace) -> int:
@@ -579,11 +593,19 @@ def build_vm(args: argparse.Namespace) -> int:
         if not ignore_file.exists():
             ignore_file.write_text("*\n", encoding="utf-8")
         fetched = False
-        for name in VM_TESTLOGS:
-            data = _vm_fetch(ssh, f"{remote_dir}/{builddir}/meson-logs/{name}")
-            if data is not None:
-                (local_logs / name).write_bytes(data)
-                fetched = fetched or name == "testlog.txt"
+        try:
+            for name in VM_TESTLOGS:
+                data = vm_fetch(ssh, f"{remote_dir}/{builddir}/meson-logs/{name}")
+                if data is not None:
+                    (local_logs / name).write_bytes(data)
+                    fetched = fetched or name == "testlog.txt"
+        except VmError as error:
+            # The run may well have written its log; say so rather than "no testlog",
+            # and never exit 0 without a log the result can be read from.
+            print(f"error: {error}", file=sys.stderr)
+            print(f"build.py vm: the build exited {status}; its logs are still on the VM "
+                  f"under ~/{remote_dir}/{builddir}/meson-logs/", file=sys.stderr)
+            return status or 2
         if fetched:
             summary = [line for line in (local_logs / "testlog.txt").read_text(
                 encoding="utf-8", errors="replace").splitlines()

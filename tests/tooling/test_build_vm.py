@@ -302,6 +302,42 @@ class VmRemoteScriptTests(unittest.TestCase):
         self.assertLessEqual(jobs, os.cpu_count())
 
 
+@unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "needs a POSIX sh")
+class VmFetchTests(unittest.TestCase):
+    """vm_fetch appends one shell command line to the ssh command, so ["sh", "-c"]
+    stands in for ssh here and runs that line locally."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.environ = os.environ.copy()
+        os.environ["HOME"] = str(self.home)
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self.environ)
+        self.temp.cleanup()
+
+    def test_a_present_file_is_read_and_a_missing_one_is_none(self) -> None:
+        # GIVEN a log under the remote user's home and a path with no file.
+        (self.home / "co" / "meson-logs").mkdir(parents=True)
+        (self.home / "co" / "meson-logs" / "testlog.txt").write_bytes(b"Ok: 84\n")
+
+        # WHEN both are fetched.
+        # THEN the log's bytes come back, and the missing file is None.
+        self.assertEqual(b"Ok: 84\n", build.vm_fetch(["sh", "-c"], "co/meson-logs/testlog.txt"))
+        self.assertIsNone(build.vm_fetch(["sh", "-c"], "co/meson-logs/testlog.json"))
+
+    def test_an_ssh_failure_is_an_error_not_a_missing_file(self) -> None:
+        # GIVEN an ssh that fails as it does when the VM refuses the key (exit 255).
+        refused = ["sh", "-c", "echo 'Permission denied (publickey)' >&2; exit 255", "ssh"]
+
+        # WHEN a log is fetched through it.
+        # THEN the failure is raised with its exit status, never reported as "no log".
+        with self.assertRaisesRegex(build.VmError, r"exit 255.*Permission denied"):
+            build.vm_fetch(refused, "co/meson-logs/testlog.txt")
+
+
 @unittest.skipUnless(shutil.which("sh"), "needs sh")
 class BuildLinuxJobsTests(unittest.TestCase):
     def run_wrapper(self, *args: str) -> subprocess.CompletedProcess:

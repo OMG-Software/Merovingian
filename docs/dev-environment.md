@@ -159,14 +159,18 @@ Each run:
 2. Reads the manifest the VM kept from the last run and sends, as one tar stream
    over ssh, only the files whose mode, size or modification time differ. Files
    the last manifest listed and this one does not are deleted on the VM.
-3. Takes one lock for the whole VM, so a second run from any checkout waits
-   ("another run holds the VM lock"), then runs `scripts/build-linux.sh` in
+3. Takes the ssh user's lock (`~/merovingian-vm/.lock`), so a second run as
+   that user, from any checkout, waits ("another run holds the VM lock"), then
+   runs `scripts/build-linux.sh` in
    `~/merovingian-vm/<checkout name>-<hash of its path>`, one directory per local
-   checkout or worktree.
+   checkout or worktree. The lock does not cover other users on the VM: use one
+   VM user for every run, since two suites at once time out unrelated tests.
 4. Copies `meson-logs/testlog.txt` and `testlog.json` back to the same build
    directory locally, `build-vm/meson-logs/` by default, and prints the `Ok:`,
    `Fail:` and `Timeout:` counts. It deletes the local and the VM's previous logs
    first, so a build that fails before testing leaves no log, never an old one.
+   If the logs cannot be copied back (ssh refuses the key, say), it says so,
+   names where they are on the VM, and exits non-zero even when the build passed.
 
 The exit status is the build's. Because the VM-side build directory and the
 local one share a name, `build-vm/meson-logs/testlog.txt` is read the same way

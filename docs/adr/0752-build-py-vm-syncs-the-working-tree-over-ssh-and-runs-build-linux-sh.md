@@ -48,6 +48,8 @@ The rules this sets, each of which the code depends on:
   sync resends what it missed.
 * **Isolation.** One VM-side checkout per local checkout, named after its directory and a hash of its full path, and
   one lock (`~/merovingian-vm/.lock`, `flock`) held across sync, build and test for every run from every checkout.
+  The lock is in the ssh user's home, so it orders the runs of one VM user; every developer and agent using a VM
+  shares one VM user. A shared lock in `/tmp` was rejected: another local user could pre-create or replace it.
 * **Results.** `build-linux.sh`, not `build-wsl.sh`, runs on the VM: the NTFS workarounds have nothing to work
   around there. Before a run that tests, both the local and the VM's `testlog.txt` and `testlog.json` are deleted,
   then copied back after it, so a build that fails before testing leaves no log. The exit status is the build's.
