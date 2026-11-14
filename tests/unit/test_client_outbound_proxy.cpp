@@ -7,10 +7,10 @@
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/MasterKey.hpp"
 #include "merovingian/config/Config.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,20 +23,23 @@
 
 using namespace merovingian::homeserver;
 
-SCENARIO("The client outbound proxy caps are derived from the main request pool size", "[http-2][out-7][homeserver]")
+SCENARIO("The client outbound proxy caps are derived from the main request pool size",
+         "[http-2][out-7][homeserver][adr0751]")
 {
     GIVEN("the shipped pool size")
     {
         auto const policy = default_client_outbound_proxy_policy();
 
-        THEN("the global cap is half the default pool of sixteen and each client may hold one call")
+        THEN("the global cap is half the default pool of sixteen and each client may hold three calls")
         {
             // HTTP-1 made the pool configurable (server.http.request_threads,
             // default 16); the default policy follows the default pool.
             REQUIRE(default_main_request_pool_threads == 16U);
             REQUIRE(policy.global_cap == default_main_request_pool_threads / 2U);
             REQUIRE(policy.global_cap == 8U);
-            REQUIRE(policy.per_client_cap == 1U);
+            // ADR-0751: three, the default of server.http.client_outbound_max_per_client.
+            REQUIRE(default_client_outbound_max_per_client == 3U);
+            REQUIRE(policy.per_client_cap == 3U);
         }
 
         THEN("directory lookups get at most ten seconds and remote media at most thirty")
@@ -59,6 +62,16 @@ SCENARIO("The client outbound proxy caps are derived from the main request pool 
             REQUIRE(client_outbound_proxy_policy_for_pool(1U).global_cap == 1U);
             REQUIRE(client_outbound_proxy_policy_for_pool(0U).global_cap == 1U);
         }
+
+        THEN("the per-client cap is the configured one, never zero and never above the global cap (ADR-0751)")
+        {
+            REQUIRE(client_outbound_proxy_policy_for_pool(32U, 5U).per_client_cap == 5U);
+            REQUIRE(client_outbound_proxy_policy_for_pool(32U, 16U).per_client_cap == 16U);
+            REQUIRE(client_outbound_proxy_policy_for_pool(32U, 200U).per_client_cap == 16U);
+            REQUIRE(client_outbound_proxy_policy_for_pool(4U).per_client_cap == 2U);
+            REQUIRE(client_outbound_proxy_policy_for_pool(32U, 0U).per_client_cap == 1U);
+            REQUIRE(client_outbound_proxy_policy_for_pool(0U, 3U).per_client_cap == 1U);
+        }
     }
 }
 
@@ -79,18 +92,25 @@ SCENARIO("A runtime starts with the default client outbound proxy policy and an 
     }
 }
 
-SCENARIO("Admission to client outbound proxying honours the runtime policy", "[http-2][out-7][homeserver]")
+SCENARIO("Admission to client outbound proxying honours the runtime policy", "[http-2][out-7][homeserver][adr0751]")
 {
     GIVEN("a runtime with the default policy")
     {
         auto runtime = HomeserverRuntime{};
 
-        WHEN("one client holds a slot")
+        WHEN("one client holds as many slots as the per-client cap, three by default (ADR-0751)")
         {
-            auto const held = admit_client_outbound_proxy(runtime, "192.0.2.1");
-            REQUIRE(held.has_value());
+            REQUIRE(runtime.client_outbound_proxy_policy.per_client_cap == 3U);
+            auto held = std::vector<std::optional<merovingian::http::InFlightBudget::Slot>>{};
+            auto all_admitted = true;
+            for (auto index = 0U; index < runtime.client_outbound_proxy_policy.per_client_cap; ++index)
+            {
+                held.push_back(admit_client_outbound_proxy(runtime, "192.0.2.1"));
+                all_admitted = all_admitted && held.back().has_value();
+            }
+            REQUIRE(all_admitted);
 
-            THEN("the same client is refused and another is admitted")
+            THEN("the same client is refused one more and another is admitted")
             {
                 REQUIRE_FALSE(admit_client_outbound_proxy(runtime, "192.0.2.1").has_value());
                 REQUIRE(admit_client_outbound_proxy(runtime, "192.0.2.2").has_value());

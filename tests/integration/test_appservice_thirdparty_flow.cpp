@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/TempDirectory.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |          THIRD-PARTY LOOKUPS — END-TO-END APPSERVICE INTEGRATION        |
@@ -23,12 +24,12 @@
 // |  can still answer.                                                     |
 // +-------------------------------------------------------------------------+
 
-#include "../support/MockAppservice.hpp"
-#include "../support/ScopedThreadJoin.hpp"
 #include "../support/AppserviceTestConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/MockAppservice.hpp"
 #include "../support/RegistrationToken.hpp"
+#include "../support/ScopedThreadJoin.hpp"
 #include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -36,9 +37,9 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -159,6 +160,8 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
             "protocols": )"
             << protocols_json << R"(
         })";
+        out.close();
+        REQUIRE(out.good());
     }
     auto config = thirdparty_test_config();
     config.appservice().registration_files = {registration_path.string()};
@@ -176,7 +179,7 @@ SCENARIO("GET /thirdparty/protocol/{protocol} returns the appservice's Protocol 
 {
     GIVEN("an appservice registered for 'irc' and a mock server that answers its protocol query")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-protocol.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-thirdparty-protocol", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -250,7 +253,7 @@ SCENARIO("GET /thirdparty/protocols aggregates protocols across every registered
 {
     GIVEN("one appservice registered for 'irc' with a mock server behind it")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-protocols.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-thirdparty-protocols", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -301,7 +304,7 @@ SCENARIO("GET /thirdparty/location aggregates Location results for a room alias"
 {
     GIVEN("an appservice whose mock server answers an alias lookup")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-location-alias.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-thirdparty-location-alias", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -360,7 +363,7 @@ SCENARIO("an unreachable appservice degrades to 404 instead of failing or hangin
 {
     GIVEN("an appservice registered for 'irc' whose URL points at a closed local port")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-unreachable.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-thirdparty-unreachable", ".json");
         // Reserve a loopback port, then let the acceptor close before any
         // client connects — the port refuses connections, standing in for
         // an unreachable appservice.
@@ -416,8 +419,10 @@ SCENARIO("one appservice being unreachable does not suppress another appservice'
 {
     GIVEN("two appservices both declaring 'irc': one unreachable, one backed by a real mock server")
     {
-        auto const unreachable_path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-multi-a.json";
-        auto const reachable_path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-multi-b.json";
+        auto const unreachable_path =
+            merovingian::tests::unique_temporary_path("merovingian-thirdparty-multi-a", ".json");
+        auto const reachable_path =
+            merovingian::tests::unique_temporary_path("merovingian-thirdparty-multi-b", ".json");
 
         auto closed_port = std::uint16_t{0U};
         {
@@ -438,6 +443,8 @@ SCENARIO("one appservice being unreachable does not suppress another appservice'
                 << R"(","as_token":"irc-a-as-token","hs_token":"irc-a-hs-token",)"
                 << R"("sender_localpart":"_irc_a_bot","namespaces":{"users":[],"aliases":[],"rooms":[]},)"
                 << R"("protocols":["irc"]})";
+            out.close();
+            REQUIRE(out.good());
         }
         {
             auto out = std::ofstream{reachable_path, std::ios::binary};
@@ -445,6 +452,8 @@ SCENARIO("one appservice being unreachable does not suppress another appservice'
                 << R"(","as_token":"irc-b-as-token","hs_token":"irc-b-hs-token",)"
                 << R"("sender_localpart":"_irc_b_bot","namespaces":{"users":[],"aliases":[],"rooms":[]},)"
                 << R"("protocols":["irc"]})";
+            out.close();
+            REQUIRE(out.good());
         }
         auto config = thirdparty_test_config();
         config.appservice().registration_files = {unreachable_path.string(), reachable_path.string()};
@@ -493,7 +502,7 @@ SCENARIO("Third-party lookups that call an appservice take a client outbound pro
 {
     GIVEN("a registered appservice and a client outbound budget whose only slot another client holds")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-budget.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-thirdparty-budget", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();

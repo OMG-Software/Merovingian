@@ -52,7 +52,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    until the runtime exists, and `RuntimeStartOptions::fill_store` asks main for the room list (`room_list_request`)
    and then each room (`room_snapshot_request`, page by page through `ipc::RoomSnapshotAssembler`), one room at a
    time, before hydration. A room list main refuses stops the worker (the supervisor restarts it); a room main
-   cannot send is logged and left out until its next `room_sync`. Main answers only under a permit it issued
+   cannot send is logged and left out until its next `room_sync`, and reported to main as a `failed`
+   `room_sync_result` of generation 0, so main serves the room meanwhile (ADR-0756). Main answers only under a permit it issued
    ([ADR-0735](../../docs/adr/0735-a-worker-may-have-main-read-a-room-only-under-a-permit-main-issued-and-only-once.md)).
    Never give the worker a database path, URI, descriptor or Landlock grant again, and never add a worker read that
    does not come through main. `RuntimeStartOptions::database_load_profile` stays
@@ -127,8 +128,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
     client. Do not move another call onto the tunnel here, and do not add a worker-to-main frame whose content main
     would act on without a signature check. The reply is validated in `WorkerPool::send_outbound_request`.
 10. **The worker's ACL and policy view is advisory (F-21, F-24, ADR-0358, ADR-0359).** It holds no
-   policy rules on either backend (ADR-0733), and learns of a room only when it owns
-   its shard. Main judges the origin's rule and the room's ACL again on everything relayed, and the
+   policy rules on either backend (ADR-0733), and its copy of a room lags main's until
+   that room's reload lands (every shard reloads every changed room, ADR-0758). Main judges the origin's rule and the room's ACL again on everything relayed, and the
    worker does not run the policy-server hook: the proxy asked it once before forwarding.
 
 11. **A relayed EDU must be the one main verified in the request body (F-74, ADR-0395).** The `edu_sink` override
@@ -160,11 +161,13 @@ anything that does, above the hardening calls in `main.cpp`.
 Before the event loop opens the database or starts threads, `main.cpp` first calls
 `platform::apply_worker_landlock()` (ADR-0062 part 3; see Rules item 3 above), then
 `platform::apply_worker_hardening()` (gated by `federation.worker.apply_hardening`, default
-`true`): `PR_SET_NO_NEW_PRIVS`, capability drop, and a worker seccomp profile that denies
-`execve`/`execveat` (`clone`/`clone3` stay allowed because the worker runs thread pools). On
-platforms with no in-process equivalent this fails closed — the worker refuses to start rather
-than run unsandboxed (ADR-0041). ASan builds disable exit-time LeakSanitizer in the worker because
-the seccomp profile denies the `ptrace` it needs.
+`true`), which applies in order, each fail-closed: the core-dump policy (`RLIMIT_CORE` 0 and
+`PR_SET_DUMPABLE` 0), `PR_SET_NO_NEW_PRIVS`, the capability-bounding-set drop, and a worker seccomp profile that
+denies `execve`/`execveat` (`clone`/`clone3` stay allowed because the worker runs thread pools).
+`apply_worker_landlock()` sets `PR_SET_NO_NEW_PRIVS` on its own before `landlock_restrict_self()`, because it runs
+whether or not `apply_hardening` is on. On platforms with no in-process equivalent,
+`apply_worker_hardening()` fails closed — the worker refuses to start rather than run unsandboxed (ADR-0041).
+ASan builds disable exit-time LeakSanitizer in the worker because the seccomp profile denies the `ptrace` it needs.
 
 The worker filter also denies `kill`, `tkill` and `setrlimit`, allows `tgkill` only on the worker's
 own thread group and `prlimit64` only to read its own limits (ISO-2,

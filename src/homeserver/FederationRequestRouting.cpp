@@ -4,12 +4,13 @@
 #include "merovingian/homeserver/FederationRequestRouting.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -151,6 +152,40 @@ namespace
         return *room_id;
     }
 
+    // Every distinct room_id the PDUs of a /send body name, in the order they first appear. A PDU without a string
+    // room_id names none: the worker refuses it on its own. At most max_federation_transaction_pdus are collected,
+    // the most a transaction the worker accepts can carry.
+    [[nodiscard]] auto room_ids_from_send_body(std::string_view body) -> std::vector<std::string>
+    {
+        auto room_ids = std::vector<std::string>{};
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return room_ids;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* pdus = root == nullptr ? nullptr : array_member(*root, "pdus");
+        if (pdus == nullptr)
+        {
+            return room_ids;
+        }
+        for (auto const& pdu : *pdus)
+        {
+            auto const* object = std::get_if<canonicaljson::Object>(&pdu.storage());
+            auto const* room_id = object == nullptr ? nullptr : string_member(*object, "room_id");
+            if (room_id == nullptr || std::ranges::find(room_ids, *room_id) != room_ids.end())
+            {
+                continue;
+            }
+            if (room_ids.size() == federation::max_federation_transaction_pdus)
+            {
+                break;
+            }
+            room_ids.push_back(*room_id);
+        }
+        return room_ids;
+    }
+
     [[nodiscard]] auto room_id_from_path_target(std::string_view target) -> std::string
     {
         for (auto const prefix : room_endpoint_prefixes())
@@ -195,6 +230,20 @@ auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> 
     return room_id_from_path_target(request.target);
 }
 
+auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector<std::string>
+{
+    if (is_federation_send_target(request.target))
+    {
+        return room_ids_from_send_body(request.body);
+    }
+    auto room_id = room_id_from_path_target(request.target);
+    if (room_id.empty())
+    {
+        return {};
+    }
+    return {std::move(room_id)};
+}
+
 auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool
 {
     // EDU-only /send transactions relay back to main's edu_sink anyway.
@@ -230,19 +279,38 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
 
 auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool
 {
+    auto const path = request.target.substr(0U, request.target.find('?'));
+    // v1.19 defines get_missing_events as POST, though it only reads: its body names the events the asker has.
+    if (request.method == "POST")
+    {
+        return path.starts_with("/_matrix/federation/v1/get_missing_events/");
+    }
     if (request.method != "GET")
     {
         return false;
     }
-    auto const path = request.target.substr(0U, request.target.find('?'));
     static auto const prefixes = std::vector<std::string_view>{
-        "/_matrix/federation/v1/state/",      "/_matrix/federation/v1/state_ids/",
-        "/_matrix/federation/v1/backfill/",   "/_matrix/federation/v1/get_missing_events/",
-        "/_matrix/federation/v1/event_auth/", "/_matrix/federation/v1/timestamp_to_event/",
+        "/_matrix/federation/v1/state/",
+        "/_matrix/federation/v1/state_ids/",
+        "/_matrix/federation/v1/backfill/",
+        "/_matrix/federation/v1/event_auth/",
+        "/_matrix/federation/v1/timestamp_to_event/",
     };
     return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
         return path.starts_with(prefix);
     });
+}
+
+auto federation_room_request_served_by_main(LocalHttpRequest const& request, RoomSyncStatus const& status) noexcept
+    -> bool
+{
+    // A worker with no copy of the room judges it as unknown: it takes room version 12, so it computes another event ID
+    // than the sender's and refuses its send_join or PDU (ADR-0756). Main serves such a room as it does a failed one.
+    if (status.state == "failed" || !status.held)
+    {
+        return true;
+    }
+    return status.state == "pending" && federation_worker_room_read_may_fallback_to_main(request);
 }
 
 auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool

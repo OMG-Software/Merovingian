@@ -1,6 +1,6 @@
 # Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool
 
-* Status: accepted; superseded for remote media by [ADR-0121](0121-remote-media-fetches-run-on-their-own-pool.md) (2026-10-07)
+* Status: accepted; superseded for remote media by [ADR-0121](0121-remote-media-fetches-run-on-their-own-pool.md) (2026-10-07); per-client cap of one amended by [ADR-0751](0751-the-per-client-outbound-call-cap-is-configurable-and-defaults-to-three.md) (2026-11-14)
 * Date: 2026-09-30
 
 Technical Story: 2026-09-29 security audit, findings HTTP-2 (unauthenticated

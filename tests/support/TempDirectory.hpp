@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <unistd.h>
+
+#include <array>
+#include <atomic>
+#include <charconv>
+#include <cstdint>
 #include <filesystem>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace merovingian::tests
 {
@@ -66,6 +74,29 @@ namespace merovingian::tests
     }
 
     throw std::runtime_error{"merovingian::tests::temporary_directory: no usable temporary directory found"};
+}
+
+// Return a path under temporary_directory() that no other test, process or
+// account uses: <stem>-<pid>-<counter>-<random><extension>. The file is not
+// created. A fixed name in the shared temporary directory is not safe: a file
+// another account left there cannot be overwritten (sticky /tmp), so the write
+// fails and the test reads that run's stale file, and two suites running at
+// once overwrite each other's files (ADR-0753).
+[[nodiscard]] inline auto unique_temporary_path(std::string_view stem, std::string_view extension)
+    -> std::filesystem::path
+{
+    static auto counter = std::atomic<std::uint64_t>{0U};
+    auto device = std::random_device{};
+    auto const random_bits = (static_cast<std::uint64_t>(device()) << 32U) | static_cast<std::uint64_t>(device());
+    auto const sequence = counter.fetch_add(1U, std::memory_order_relaxed);
+    // std::to_chars, not std::format: the libc++ of the NetBSD build has no <format>.
+    auto random_hex = std::array<char, 16>{};
+    auto const converted = std::to_chars(random_hex.data(), random_hex.data() + random_hex.size(), random_bits, 16);
+    auto name = std::string{stem};
+    name += "-" + std::to_string(::getpid()) + "-" + std::to_string(sequence) + "-";
+    name.append(random_hex.data(), converted.ptr);
+    name += extension;
+    return temporary_directory() / name;
 }
 
 } // namespace merovingian::tests

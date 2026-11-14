@@ -538,6 +538,14 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        // ADR-0751: client-triggered outbound calls one client address may have in flight.
+        else if (key == "server.http.client_outbound_max_per_client")
+        {
+            if (!parse_u32_value(value, server.http.client_outbound_max_per_client))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         // Request-framing limits applied before any body is read.
         else if (key == "server.http.max_start_line_bytes")
         {

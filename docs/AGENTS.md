@@ -36,6 +36,7 @@ new documents.
 | `todos/capability-gaps.md` / `todos/production-milestone.md` | A tracked gap is closed or a new one is found |
 | `../AGENTS.md` and the module's own `AGENTS.md` | A module is added: give it an `AGENTS.md`, a `CLAUDE.md` containing `@AGENTS.md`, and a row in the root `AGENTS.md` layout and index tables |
 | `../mkdocs.yml` | A document under `docs/` is added, removed, or renamed: add, remove, or update its `nav` entry (or its `exclude_docs` pattern if it should not be published). `docs-site-tooling` fails on a published document with no nav entry. See [dev-environment.md](dev-environment.md#documentation-site) |
+| `../.agent/skills/merovingian-review/` | A rule, heading, ADR, test convention or obligation the review skill cites is added, changed, renamed, or removed. The skill points at the binding text and does not restate it ([ADR-0754](adr/0754-agent-skills-are-committed-under-agent-skills-and-cite-the-binding-docs.md)) |
 | `adr/index.md` | A design decision is made whose consequences outlive the change that prompted it — a constraint the code depends on but does not state locally, a rejected alternative that looks better in isolation, or a rule about how to write future code. Add a new ADR under `adr/`, and a line in `adr/index.md`. See [ADR-0000](adr/0000-record-architecture-decisions.md). |
 
 ## Do NOT create new documents for

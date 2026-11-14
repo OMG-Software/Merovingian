@@ -655,7 +655,8 @@ namespace
     }
 
     // The start-up fill. False only when main will not list its rooms: the worker then does not start, and the
-    // supervisor restarts it. A room main cannot send is logged and left out; its next room_sync fills it.
+    // supervisor restarts it. A room main cannot send is logged and left out, and reported to main as a failed result
+    // of generation 0, which main never assigns, so main serves the room until its next room_sync fills it (ADR-0756).
     [[nodiscard]] auto fill_store_from_main(ipc::IpcChannel& channel, database::PersistentStore& store) -> bool
     {
         auto const room_ids = room_ids_from_main(channel);
@@ -672,6 +673,11 @@ namespace
             if (!snapshot.has_value())
             {
                 LOG_ERROR("Federation worker: room_id=" + room_id + " left out of the start-up copy");
+                if (!channel.send_notification(ipc::serialize_room_sync_result(room_id, "failed", 0U)))
+                {
+                    LOG_WARNING("Federation worker: could not tell main that room_id=" + room_id +
+                                " was left out of the start-up copy");
+                }
                 continue;
             }
             snapshots.push_back(std::move(*snapshot));
@@ -932,7 +938,7 @@ auto WorkerEventLoop::run() -> void
     // ADR-0185). In a restricted room the template names an authorising user
     // only after the allow conditions are checked, and those conditions name
     // OTHER rooms, whose state this shard's snapshot may not hold or may hold
-    // stale (room_sync refreshes only the shard that owns a room). Main holds
+    // stale (a room_sync reload lags behind main's commit). Main holds
     // every room, so it builds the template. make_leave and make_knock need
     // nothing outside the room being left or knocked on, so they stay local.
     runtime.federation.membership_template_provider =

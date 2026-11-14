@@ -3,14 +3,17 @@
 #pragma once
 
 #include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 
+#include <sys/types.h>
+
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -57,19 +60,32 @@ public:
                                              std::chrono::seconds ipc_margin = default_worker_ipc_margin)
         -> http::OutboundResult;
 
-    // Tells the worker shard that owns room_id to refresh its otherwise-stale
-    // copy of that room from the database. See WorkerPool::notify_room_changed.
+    // Tells every worker shard to refresh its otherwise-stale copy of room_id
+    // from main (ADR-0758). See WorkerPool::notify_room_changed.
     auto notify_room_changed(std::string_view room_id) -> void;
 
     // True when the underlying worker pool is up and all shards are healthy.
     // Exposed for tests that need to poll readiness instead of sleeping.
     [[nodiscard]] auto healthy() const noexcept -> bool;
 
-    // Returns the last observed room-sync status for the shard that owns room_id.
+    // Returns the last observed room-sync status of room_id on the shard that owns it.
     // A "failed" status means the worker's room snapshot is stale and must not be
     // trusted for room-scoped reads; room-scoped federation requests then fall back
-    // to the main process's authoritative in-memory state.
+    // to the main process's authoritative in-memory state. While a reload is
+    // "pending", the room's reads fall back the same way and its writes still go to
+    // the worker (federation_room_request_served_by_main, ADR-0748). A room the worker has never loaded is served
+    // by main whatever its state (`held`, ADR-0756).
     [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
+
+    // The same for room_id on one shard: what that shard's worker holds of the room. A request is judged on the copy
+    // of the shard it is sent to, which for a /send may not own every room it names (ADR-0758).
+    [[nodiscard]] auto room_sync_status(std::size_t shard, std::string_view room_id) const -> RoomSyncStatus;
+
+    // Exposed for tests: the shard a request whose first room is room_id is sent to.
+    [[nodiscard]] auto shard_for_room(std::string_view room_id) const noexcept -> std::size_t;
+
+    // Exposed for tests: the process ID of the worker that owns room_id, or -1 when that shard has none.
+    [[nodiscard]] auto worker_pid_for_room(std::string_view room_id) const noexcept -> pid_t;
 
 private:
     HomeserverRuntime& runtime_;

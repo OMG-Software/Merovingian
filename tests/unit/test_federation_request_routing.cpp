@@ -12,6 +12,7 @@
 namespace
 {
 
+using merovingian::homeserver::federation_request_room_ids;
 using merovingian::homeserver::federation_request_should_bypass_worker;
 using merovingian::homeserver::federation_worker_room_id_from_request;
 using merovingian::homeserver::is_federation_key_server_endpoint;
@@ -811,6 +812,180 @@ SCENARIO("A space hierarchy request is answered by main, not by the shard 0 work
             THEN("it still goes to the owning worker")
             {
                 REQUIRE_FALSE(federation_request_should_bypass_worker(state));
+            }
+        }
+    }
+}
+
+// ADR-0748: Complement TestEventAuth asked GET /event_auth for an event a client had just sent and got 404 from a
+// worker whose reload of the room was still pending. A pending reload sends a read main can serve to main; writes stay
+// with the worker, and a failed reload sends every request for the room to main.
+SCENARIO("A room read is served by main while the worker's reload of the room is pending",
+         "[federation][routing][room-sync][adr0748]")
+{
+    using merovingian::homeserver::federation_room_request_served_by_main;
+    using merovingian::homeserver::RoomSyncStatus;
+
+    GIVEN("a read of a room's event auth, its state IDs, and a transaction for the room")
+    {
+        auto const event_auth = make_request("/_matrix/federation/v1/event_auth/%21room%3Aexample.org/%24event");
+        auto const state_ids = make_request("/_matrix/federation/v1/state_ids/%21room%3Aexample.org?event_id=%24e");
+        auto transaction = make_request("/_matrix/federation/v1/send/txn1");
+        transaction.method = "PUT";
+        // v1.19 defines get_missing_events as POST; it reads, so it falls back with the GET reads.
+        auto missing_events = make_request("/_matrix/federation/v1/get_missing_events/%21room%3Aexample.org");
+        missing_events.method = "POST";
+        // A GET of it is no route the spec defines, and send_join is a write, so neither falls back while pending.
+        auto const missing_events_get = make_request("/_matrix/federation/v1/get_missing_events/%21room%3Aexample.org");
+        auto send_join = make_request("/_matrix/federation/v2/send_join/%21room%3Aexample.org/%24join");
+        send_join.method = "PUT";
+
+        WHEN("the worker's copy of the room is current")
+        {
+            auto const ok = RoomSyncStatus{"ok", 3U};
+
+            THEN("the worker serves all of them")
+            {
+                REQUIRE_FALSE(federation_room_request_served_by_main(event_auth, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(state_ids, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, ok));
+            }
+        }
+
+        WHEN("main has changed the room and the worker has not reloaded it yet")
+        {
+            auto const pending = RoomSyncStatus{"pending", 4U};
+
+            THEN("main serves the reads and the worker still takes the transaction")
+            {
+                REQUIRE(federation_room_request_served_by_main(event_auth, pending));
+                REQUIRE(federation_room_request_served_by_main(state_ids, pending));
+                REQUIRE(federation_room_request_served_by_main(missing_events, pending));
+                REQUIRE_FALSE(federation_room_request_served_by_main(missing_events_get, pending));
+                REQUIRE_FALSE(federation_room_request_served_by_main(send_join, pending));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, pending));
+            }
+        }
+
+        WHEN("the worker failed to reload the room")
+        {
+            auto const failed = RoomSyncStatus{"failed", 4U};
+
+            THEN("main serves every request for the room")
+            {
+                REQUIRE(federation_room_request_served_by_main(event_auth, failed));
+                REQUIRE(federation_room_request_served_by_main(state_ids, failed));
+                REQUIRE(federation_room_request_served_by_main(transaction, failed));
+            }
+        }
+    }
+}
+
+// ADR-0756: Complement TestKnockingInMSC3787Room created a room and had a remote server join it at once. The worker had
+// not loaded the room yet, so it took room version 12, computed another event ID than the join's and answered 400
+// "membership event does not match endpoint, path or origin". A room the worker holds no copy of is served by main.
+SCENARIO("Every request for a room the worker has never loaded is served by main",
+         "[federation][routing][room-sync][adr0756]")
+{
+    using merovingian::homeserver::federation_room_request_served_by_main;
+    using merovingian::homeserver::RoomSyncStatus;
+
+    GIVEN("a send_join, a transaction and a read for a room")
+    {
+        auto send_join = make_request("/_matrix/federation/v2/send_join/%21room%3Aexample.org/%24join");
+        send_join.method = "PUT";
+        auto transaction = make_request("/_matrix/federation/v1/send/txn1");
+        transaction.method = "PUT";
+        auto const event_auth = make_request("/_matrix/federation/v1/event_auth/%21room%3Aexample.org/%24event");
+
+        WHEN("main has just created the room and the worker's first load of it is pending")
+        {
+            auto const first_load = RoomSyncStatus{"pending", 1U, false};
+
+            THEN("main serves the writes as well as the read")
+            {
+                REQUIRE(federation_room_request_served_by_main(send_join, first_load));
+                REQUIRE(federation_room_request_served_by_main(transaction, first_load));
+                REQUIRE(federation_room_request_served_by_main(event_auth, first_load));
+            }
+        }
+
+        WHEN("the worker holds the room and a later reload of it is pending")
+        {
+            auto const reload = RoomSyncStatus{"pending", 2U, true};
+
+            THEN("the writes still go to the worker, as ADR-0748 has them")
+            {
+                REQUIRE_FALSE(federation_room_request_served_by_main(send_join, reload));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, reload));
+                REQUIRE(federation_room_request_served_by_main(event_auth, reload));
+            }
+        }
+    }
+}
+
+// ADR-0756: a /send goes whole to the shard its first PDU picks, so main checks every room it names. A later PDU for a
+// room the worker has never loaded would otherwise reach a worker that takes room version 12 for it.
+SCENARIO("Every room a federation request concerns is listed for the sync status check",
+         "[federation][routing][room-id][adr0756]")
+{
+    GIVEN("a /send transaction whose PDUs name two rooms, one of them twice, and one PDU without a room_id")
+    {
+        auto const body = std::string{R"({"origin":"remote.example","origin_server_ts":1,"pdus":[)"
+                                      R"({"room_id":"!first:example.com","type":"m.room.message"},)"
+                                      R"({"room_id":"!second:example.com","type":"m.room.message"},)"
+                                      R"({"type":"m.room.message"},)"
+                                      R"({"room_id":"!first:example.com","type":"m.room.message"}]})"};
+        auto request = make_request("/_matrix/federation/v1/send/txn-rooms", body);
+        request.method = "PUT";
+
+        WHEN("the rooms it concerns are listed")
+        {
+            auto const room_ids = federation_request_room_ids(request);
+
+            THEN("each named room appears once, in the order it first appears, and the shard key is the first")
+            {
+                REQUIRE(room_ids == std::vector<std::string>{"!first:example.com", "!second:example.com"});
+                REQUIRE(federation_worker_room_id_from_request(request) == room_ids.front());
+            }
+        }
+    }
+
+    GIVEN("a /send transaction naming more distinct rooms than a transaction may carry PDUs")
+    {
+        auto body = std::string{R"({"origin":"remote.example","origin_server_ts":1,"pdus":[)"};
+        auto const count = merovingian::federation::max_federation_transaction_pdus + 5U;
+        for (auto index = 0U; index < count; ++index)
+        {
+            body += (index == 0U ? "" : ",");
+            body += R"({"room_id":"!room)" + std::to_string(index) + R"(:example.com"})";
+        }
+        body += "]}";
+        auto request = make_request("/_matrix/federation/v1/send/txn-many", body);
+        request.method = "PUT";
+
+        WHEN("the rooms it concerns are listed")
+        {
+            auto const room_ids = federation_request_room_ids(request);
+
+            THEN("no more are listed than a transaction the worker accepts can carry")
+            {
+                REQUIRE(room_ids.size() == merovingian::federation::max_federation_transaction_pdus);
+            }
+        }
+    }
+
+    GIVEN("a room-scoped path request and a request that names no room")
+    {
+        auto const state = make_request("/_matrix/federation/v1/state/%21pathroom%3Aexample.com?event_id=%24e");
+        auto const version = make_request("/_matrix/federation/v1/version");
+
+        WHEN("the rooms each concerns are listed")
+        {
+            THEN("the path request lists its decoded room, and the other lists none")
+            {
+                REQUIRE(federation_request_room_ids(state) == std::vector<std::string>{"!pathroom:example.com"});
+                REQUIRE(federation_request_room_ids(version).empty());
             }
         }
     }

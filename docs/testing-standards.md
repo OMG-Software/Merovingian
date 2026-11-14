@@ -23,6 +23,10 @@ This rule applies to:
 - Avoid implementation-detail-oriented naming.
 - Prefer one behavioral assertion group per test.
 - Security-sensitive code requires negative-path tests.
+- A scratch file or directory a test creates gets a unique name from `merovingian::tests::unique_temporary_path()`
+  (`tests/support/TempDirectory.hpp`), never a fixed name in the shared temporary directory, and a test that writes
+  one checks the write succeeded before using it: another account's leftover file cannot be replaced, and a
+  concurrent run would overwrite it (ADR-0753).
 
 ## Unit or integration
 
@@ -321,8 +325,8 @@ would pass with the test silently not run. Each CI job that runs Catch2 therefor
   name mapped to the groups it combines). `test` is the scenario name without the `Scenario: ` prefix;
   `message` is an optional substring the SKIP message must contain; `reason` says why this runner skips it.
 - `<name>` is a key of the `jobs` object in `tests/expected_skips.json`. The build scripts take
-  `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`); `build-wsl.sh` has no `--skip-job`, so WSL runs are not
-  skip-gated. They set
+  `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`); `build-wsl.sh` has no `--skip-job`, and `build.py vm` passes none, so
+  WSL and VM runs are not skip-gated. They set
   `MEROVINGIAN_CATCH_REPORT_DIR`, so every test binary also writes an XML report there, and run
   `scripts/check_expected_skips.py` after the suite. A skip that is not listed for the job fails the job and is
   printed with the test name, message and source line. No report, a truncated report or a bad list also fails.

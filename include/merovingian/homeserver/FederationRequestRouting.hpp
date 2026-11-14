@@ -4,10 +4,12 @@
 
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RoomSyncStatus.hpp"
 
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -22,16 +24,34 @@ namespace merovingian::homeserver
 // string, which the caller routes to shard 0.
 [[nodiscard]] auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> std::string;
 
+// Every distinct room a request concerns: for PUT /send/{txnId}, the room_id of each PDU in the body, in the order
+// they first appear (at most federation::max_federation_transaction_pdus); otherwise the room ID in the path, if any.
+// The shard the first PDU picks receives the whole transaction, so main checks that shard's sync status of every
+// room in it before forwarding it to a worker (ADR-0756, ADR-0758).
+[[nodiscard]] auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector<std::string>;
+
 // Returns true when a verified inbound federation request should stay in the
 // main process even while the worker pool is active.
 [[nodiscard]] auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool;
 
 // Returns true for room-scoped federation reads that the main process can
 // serve authoritatively when the worker's room snapshot is known to be stale.
-// Only GET endpoints that consume room state (state, state_ids, backfill,
-// get_missing_events, event_auth) qualify; writes must still reach the worker
-// because they may trigger main-side relays and side effects.
+// Only the reads that consume room state qualify: GET state, state_ids,
+// backfill, event_auth and timestamp_to_event, and POST get_missing_events,
+// which v1.19 defines as POST though it only reads (ADR-0748). Writes must
+// still reach the worker because they may trigger main-side relays and side
+// effects.
 [[nodiscard]] auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool;
+
+// Returns true when a request for a room must be served by the main process instead of the worker shard that holds
+// the room, given that shard's room-sync status for it. After a "failed" reload the worker's copy of the room is
+// stale, so every request for the room goes to main. While a reload is "pending", main has changed the room and the
+// worker has not yet reloaded it. A read main can serve (federation_worker_room_read_may_fallback_to_main) then goes
+// to main. Otherwise a server asking about an event this server has just sent is told it does not exist. Writes
+// still go to the worker (ADR-0748), unless the worker has never loaded the room (`held` false): then every request
+// for it goes to main, as after a failed reload (ADR-0756).
+[[nodiscard]] auto federation_room_request_served_by_main(LocalHttpRequest const& request,
+                                                          RoomSyncStatus const& status) noexcept -> bool;
 
 // Returns true when the request target is exactly `/_matrix/key/v2/server`
 // (optionally followed by a query string). The key server endpoint must be

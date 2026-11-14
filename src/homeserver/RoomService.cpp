@@ -5289,6 +5289,8 @@ namespace
     {
         std::string json{};
         std::string refusal{};
+        // The verified combined event `json` serializes.
+        canonicaljson::Value value{};
     };
 
     [[nodiscard]] auto verify_resident_signed_join(HomeserverRuntime& runtime, canonicaljson::Object const& answer,
@@ -5348,7 +5350,7 @@ namespace
         {
             return {{}, "the signed join event could not be serialized"};
         }
-        return {std::move(serialized.output), {}};
+        return {std::move(serialized.output), {}, verified.front()};
     }
 
     [[nodiscard]] auto federated_join_failure(std::string reason, std::uint16_t status) -> FederatedJoinOutcome
@@ -5717,6 +5719,18 @@ namespace
             });
             return federated_join_failure("event_id computation failed", 500U);
         }
+        // The join is stored with signature rows parsed from it (join_room). One that does not parse is refused before
+        // it is sent, so this server never sends a join it could not store whole.
+        if (auto const parsed_join = events::parse_event_envelope(signed_value.value); !parsed_join.error.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   user_id,              false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  parsed_join.error,    false}
+            });
+            return federated_join_failure("make_join template refused: " + parsed_join.error, 502U);
+        }
         // Send the signed join event via send_join.
         auto send_join_tx = federation::make_outbound_send_membership(
             federation::FederationEndpoint::send_join, remote_server, our_server, room_id, event_id_result.event_id,
@@ -5776,8 +5790,9 @@ namespace
             });
             return federated_join_failure("malformed send_join response", 502U);
         }
-        if (purpose == FederatedJoinPurpose::join_through_resident)
-        {
+        // The resident's co-signed copy of this server's join, verified; a refusal is logged here and answered 502 by
+        // the caller. Shared by a join through another resident and a first restricted join (ADR-0745).
+        auto const verify_resident_join = [&]() {
             auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
                                                              event_id_result.event_id, signed_value.value);
             if (!resident_join.refusal.empty())
@@ -5791,6 +5806,14 @@ namespace
                                    {"reason",        resident_join.refusal, false}
                 },
                                observability::LogEventSeverity::warning);
+            }
+            return resident_join;
+        };
+        if (purpose == FederatedJoinPurpose::join_through_resident)
+        {
+            auto resident_join = verify_resident_join();
+            if (!resident_join.refusal.empty())
+            {
                 return federated_join_failure(resident_join.refusal, 502U);
             }
             auto outcome = FederatedJoinOutcome{};
@@ -5801,6 +5824,26 @@ namespace
             outcome.event_id_result = event_id_result;
             outcome.resident_signed_event_json = std::move(resident_join.json);
             return outcome;
+        }
+        // ADR-0745: a join into a restricted room this server holds nothing of names an authorising user of the
+        // resident's server, and the auth rules require that server's signature on the join (rooms/v10.md 4.2.1).
+        // The resident adds it to the copy it returns as the answer's `event` (send_join v2, "event": "Required if
+        // the room is restricted and the joining user is authorised by one of the conditions"). The co-signature is
+        // taken exactly as for a join through another resident: only the authorising server's verified signatures
+        // are merged into this server's own signed join, and the combined event must verify. That combined event is
+        // the one the answer is authorised against and the one stored. A missing, altered or unverifiable copy is
+        // refused: a join no checked signature authorises is never stored.
+        auto join_signed_event = std::move(signed_event);
+        auto join_value = signed_value.value;
+        if (!join_authorising_user_of(signed_value.value).empty())
+        {
+            auto resident_join = verify_resident_join();
+            if (!resident_join.refusal.empty())
+            {
+                return federated_join_failure(resident_join.refusal, 502U);
+            }
+            join_signed_event.event_json = std::move(resident_join.json);
+            join_value = std::move(resident_join.value);
         }
         // ADR-0241: the whole state array — other members' m.room.member events
         // included — is verified here and persisted by join_room before the join
@@ -5871,7 +5914,7 @@ namespace
                 : canonicaljson::Array{};
         // Step 4 of the receipt checks, with runtime.mutex still released (F-45, ADR-0369).
         auto authorized_answer =
-            authorize_send_join_answer(verified_state, verified_auth_chain, signed_value.value, *policy, room_id);
+            authorize_send_join_answer(verified_state, verified_auth_chain, join_value, *policy, room_id);
         if (authorized_answer.dropped > 0U || !authorized_answer.refusal.empty())
         {
             log_diagnostic("room.join.answer_checked",
@@ -5894,8 +5937,8 @@ namespace
         auto outcome = FederatedJoinOutcome{};
         outcome.policy = *policy;
         outcome.remote_server = std::move(remote_server);
-        outcome.signed_event = std::move(signed_event);
-        outcome.signed_event_value = signed_value.value;
+        outcome.signed_event = std::move(join_signed_event);
+        outcome.signed_event_value = std::move(join_value);
         outcome.event_id_result = event_id_result;
         outcome.verified_state = std::move(verified_state);
         outcome.verified_auth_chain = std::move(verified_auth_chain);
@@ -6514,6 +6557,13 @@ namespace
             join_pe.room_id = std::string{room_id};
             join_pe.sender_user_id = *user_id;
             join_pe.json = signed_event.event_json;
+            // The event_signatures rows come from this list, not from the JSON: give them every signature the stored
+            // join carries, this server's own and, for a restricted room, the resident's verified co-signature
+            // (ADR-0745), as the snapshot and auth-chain writers do for theirs.
+            if (auto const parsed_join = events::parse_event_envelope(signed_event_value); parsed_join.error.empty())
+            {
+                join_pe.signatures = parsed_join.event.signatures;
+            }
             join_pe.depth = join_depth;
             join_pe.stream_ordering = membership_stream;
             join_pe.prev_event_ids = std::move(join_prev_ids);
@@ -10779,9 +10829,12 @@ auto claim_membership_event_template(canonicaljson::Object& event, std::string_v
                                      std::int64_t now_ms) -> void
 {
     // The resident's template is signed and stored as this server's own event, so an `unsigned` it carries
-    // (covered by no signature) is dropped with the `event_id` (ADR-0402).
+    // (covered by no signature) is dropped with the `event_id` (ADR-0402). So are its `hashes` and `signatures`: a
+    // template is unsigned, signing adds to whatever `signatures` the event holds, and this server's join must carry
+    // only the signatures it adds itself and those it verified (ADR-0745).
     std::erase_if(event, [](canonicaljson::ObjectMember const& member) {
-        return member.key == "event_id" || member.key == "unsigned";
+        return member.key == "event_id" || member.key == "unsigned" || member.key == "hashes" ||
+               member.key == "signatures";
     });
     replace_or_add_member(event, "origin", canonicaljson::Value{std::string{our_server_name}});
     replace_or_add_member(event, "origin_server_ts", canonicaljson::Value{now_ms});

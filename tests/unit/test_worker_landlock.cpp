@@ -619,7 +619,7 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
 {
     GIVEN("an allowed directory and a separate, unrelated directory holding a secret file")
     {
-        auto const base = merovingian::tests::temporary_directory() / "merovingian-landlock-test";
+        auto const base = merovingian::tests::unique_temporary_path("merovingian-landlock-test", "");
         auto const allowed_dir = base / "allowed";
         auto const denied_dir = base / "denied";
         std::filesystem::create_directories(allowed_dir);
@@ -630,10 +630,14 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
         {
             auto out = std::ofstream{allowed_file};
             out << "not secret";
+            out.close();
+            REQUIRE(out.good());
         }
         {
             auto out = std::ofstream{denied_file};
             out << "secret";
+            out.close();
+            REQUIRE(out.good());
         }
 
         WHEN("a forked child restricts itself to only the allowed directory and probes both files")

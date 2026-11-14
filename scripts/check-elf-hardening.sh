@@ -118,7 +118,13 @@ if [ "$static_binary" -eq 1 ]; then
     pass "BIND_NOW: skipped (--static binary has no PT_DYNAMIC section)"
 else
     dynamic_flags=$(readelf -d "$binary" 2>/dev/null || true)
-    if printf '%s\n' "$dynamic_flags" | grep -qE '\(BIND_NOW\)|Flags:.*\bNOW\b'; then
+    # Immediate binding is a DT_BIND_NOW entry, DF_BIND_NOW in DT_FLAGS or
+    # DF_1_NOW in DT_FLAGS_1. GNU readelf prints the last as "(FLAGS_1) Flags: NOW",
+    # the elftoolchain readelf of the BSDs as "(FLAGS_1) NOW" and DT_FLAGS as
+    # "(FLAGS) BIND_NOW", so match each tool's form. POSIX ERE only: no \b, which
+    # not every BSD grep supports (ADR-0757).
+    if printf '%s\n' "$dynamic_flags" |
+        grep -qE '\(BIND_NOW\)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$)'; then
         pass "BIND_NOW: dynamic section advertises immediate binding"
     else
         fail "BIND_NOW: no BIND_NOW flag in the dynamic section; rebuild with -Wl,-z,now"

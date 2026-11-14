@@ -2292,7 +2292,7 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
 {
     GIVEN("a temporary migration file with explicit statement names")
     {
-        auto const directory = merovingian::tests::temporary_directory() / "merovingian-migration-file-test";
+        auto const directory = merovingian::tests::unique_temporary_path("merovingian-migration-file-test", "");
         std::filesystem::create_directories(directory);
         auto const file = directory / "003_policy_rules.sql";
         {
@@ -2300,6 +2300,8 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
             output << "-- merovingian-migration version=3 name=policy_rules direction=upgrade\n";
             output << "-- statement create_policy_rules_extra\n";
             output << "CREATE TABLE policy_rules_extra (rule_id TEXT PRIMARY KEY)\n";
+            output.close();
+            REQUIRE(output.good());
         }
 
         WHEN("the migration directory is loaded")

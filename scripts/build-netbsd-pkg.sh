@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 1.0.1.
+# Build for merovingian 1.0.2.
 #
 # The checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for
 # downstream porters.  This script generates a framework-free package so CI
@@ -11,7 +11,7 @@
 # a staged tree using tar, which produces a package that pkg_add can install.
 set -e
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 

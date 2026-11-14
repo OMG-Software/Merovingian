@@ -100,7 +100,7 @@ not hypothetical — each has already produced a "complete, all tests passing"
 report over work that was broken:
 
 - **"Tests pass" from a run the agent never read.** Read the `Ok:` / `Fail:` /
-  `Timeout:` counts out of `build-wsl/meson-logs/testlog.txt` yourself.
+  `Timeout:` counts out of `build-vm/meson-logs/testlog.txt` yourself.
 - **A green suite that never ran the new tests.** Confirm with a tag filter
   against the test binary — see "Verifying Work" below.
 - **A sanitizer or tool run that aborted at startup** and was reported as clean
@@ -126,10 +126,21 @@ because each one has already cost this project real time.
   running, and never say you will "follow up with results later" — a session that ends
   does not follow up, and the work lands unverified. Run the suite, wait for it, read
   the outcome, *then* report.
-- **`python build.py wsl` exceeds a 10-minute foreground limit.** Run it in the
-  background and wait for it to finish.
-- **Read the real summary** from `build-wsl/meson-logs/testlog.txt` — the `Ok:` /
-  `Fail:` / `Timeout:` counts at the end. Report those numbers, not an impression.
+- **Build and test on the Linux VM with `python build.py vm`, not WSL.** It syncs the
+  working tree, uncommitted edits included, and runs the suite on the VM; see
+  [Building on a VM](docs/dev-environment.md#building-on-a-vm) and
+  [ADR-0752](docs/adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
+  `python build.py vm --vm freebsd` does the same on the FreeBSD VM (its `[vm.freebsd]`
+  settings), with its logs in `build-vm-freebsd/`.
+  It exceeds a 10-minute foreground limit: run it in the background and wait for it to
+  finish. A second run as the same VM user, from any worktree, waits for its lock rather than
+  competing; never run the suite there as a second user at the same time.
+- **Read the real summary** from `build-vm/meson-logs/testlog.txt`, which `build.py vm`
+  copies back — the `Ok:` / `Fail:` / `Timeout:` counts at the end. Report those
+  numbers, not an impression. It deletes the old log first, so a missing file means no
+  result, never a pass: when `build.py vm` printed "the run wrote no testlog.txt" the
+  run never reached the tests, and when it printed "cannot copy ... back" the log is
+  still on the VM where it says; read it there before reporting anything.
 - **A TIMEOUT is a FAILURE.** "48 Ok, 0 Fail, 1 Timeout" is a failing suite. A hang is
   usually a deadlock, and a deadlock in a background task is a production shutdown bug,
   not a flaky test.
@@ -137,13 +148,25 @@ because each one has already cost this project real time.
   name therefore cannot prove that scenario ran. To confirm a passing test executed, run
   the binary directly with a filter.
 - **Catch2 registers `SCENARIO("x")` as `"Scenario: x"`**, so filtering on the raw
-  scenario string matches nothing. Filter by tag instead:
-  `./build-wsl/tests/merovingian-unit-tests "[push]"`.
+  scenario string matches nothing. Filter by tag instead; the binaries are on the VM:
+  `python build.py vm --exec ./build-vm/tests/merovingian-unit-tests "[push]"`.
 - **Do not poll with `pgrep -f "meson test"` in a shell loop.** The loop's own command
   line contains that string, so it matches itself and spins forever. Bracket the first
   character (`pgrep -f "[m]eson test"`) or poll the log file's modification time.
 - **Verify delegated work yourself.** When a subagent reports green, confirm it from the
   log before committing. Trust the change, check the claim.
+
+## Reviewing Changes
+
+Review a pull request, branch or diff, including delegated work and your own
+change before reporting it complete, with
+[.agent/skills/merovingian-review/SKILL.md](.agent/skills/merovingian-review/SKILL.md).
+It checks the change against the coding rules, the module `AGENTS.md`
+invariants, the spec, and the CHANGELOG, docs, ADR and version obligations. It
+cites those documents rather than copying them
+([ADR-0754](docs/adr/0754-agent-skills-are-committed-under-agent-skills-and-cite-the-binding-docs.md)).
+Tools that load skills only from `.claude/skills/` do not find it on their own,
+so read it directly.
 
 ## Ignore list
 Ignore these dirs:
@@ -214,7 +237,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 ├── meson.build            #   Root build definition
 ├── meson.options           #   Build options
 ├── mkdocs.yml             #   Documentation site (GitHub Pages); hooks in scripts/mkdocs_site_hooks.py
-└── build.py               #   Unified build CLI (Linux, BSD, WSL)
+└── build.py               #   Unified build CLI (Linux, BSD, WSL, remote Linux or BSD VM)
 ```
 
 ### Key entry points
@@ -326,11 +349,17 @@ Base: docs/matrix-v1.19-spec/index.md
 ## Build & Test Commands
 ```bash
 
-# Build and test Windows
+# Build and test from Windows, on the Linux VM (docs/dev-environment.md#building-on-a-vm)
+python build.py vm
+
+# The same on the FreeBSD VM
+python build.py vm --vm freebsd
+
+# Build and test inside WSL instead
 python build.py wsl
 
 # Development build via the unified CLI; a target is required
-# (linux, bsd, wsl, deb, rpm, pkg, static)
+# (linux, bsd, wsl, vm, deb, rpm, pkg, static)
 python build.py linux
 
 # Documentation site (see docs/dev-environment.md#documentation-site)

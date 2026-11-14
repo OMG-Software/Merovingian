@@ -13,6 +13,7 @@
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/appservice/AppserviceRegistration.hpp"
 #include "merovingian/appservice/AppserviceRegistry.hpp"
 #include "merovingian/appservice/EventInterestFacts.hpp"
@@ -214,11 +215,13 @@ SCENARIO("loading a registration file from disk", "[appservice][registration]")
 {
     GIVEN("a registration file written to a temp path")
     {
-        auto const dir = std::filesystem::temp_directory_path();
-        auto const path = dir / "merovingian-test-appservice-registration.json";
+        auto const path =
+            merovingian::tests::unique_temporary_path("merovingian-test-appservice-registration", ".json");
         {
             auto out = std::ofstream{path, std::ios::binary};
             out << irc_bridge_registration_json();
+            out.close();
+            REQUIRE(out.good());
         }
 
         WHEN("load_registration_file reads it")
@@ -543,11 +546,12 @@ SCENARIO("AppserviceRegistry lookup and exclusivity checks", "[appservice][regis
 {
     GIVEN("a registry loaded from a single registration file")
     {
-        auto const dir = std::filesystem::temp_directory_path();
-        auto const path = dir / "merovingian-test-appservice-registry.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-test-appservice-registry", ".json");
         {
             auto out = std::ofstream{path, std::ios::binary};
             out << irc_bridge_registration_json();
+            out.close();
+            REQUIRE(out.good());
         }
         auto const loaded = load_registrations({path.string()});
         REQUIRE(loaded.findings.empty());
@@ -1155,7 +1159,7 @@ SCENARIO("A registration in the form Complement writes is loaded", "[appservice]
 {
     GIVEN("a registration file written exactly as Complement writes one")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-test-complement-appservice.yaml";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-test-complement-appservice", ".yaml");
         {
             auto out = std::ofstream{path, std::ios::binary};
             out << "id: my_as_id\n"
@@ -1173,6 +1177,8 @@ SCENARIO("A registration in the form Complement writes is loaded", "[appservice]
                    "      regex: .*\n"
                    "  rooms: []\n"
                    "  aliases: []\n";
+            out.close();
+            REQUIRE(out.good());
         }
 
         WHEN("it is loaded")
@@ -1207,7 +1213,7 @@ SCENARIO("A registration with an unknown plain key is still refused", "[appservi
 {
     GIVEN("an otherwise valid registration with a mistyped top-level key")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-test-unknown-key-appservice.yaml";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-test-unknown-key-appservice", ".yaml");
         {
             auto out = std::ofstream{path, std::ios::binary};
             out << "id: typo_bridge\n"
@@ -1220,6 +1226,8 @@ SCENARIO("A registration with an unknown plain key is still refused", "[appservi
                    "  users: []\n"
                    "  rooms: []\n"
                    "  aliases: []\n";
+            out.close();
+            REQUIRE(out.good());
         }
 
         WHEN("it is loaded")
@@ -1247,13 +1255,15 @@ namespace
 [[nodiscard]] auto load_with_url(std::string const& url_json, std::vector<std::string> const& allowed_hosts = {})
     -> merovingian::appservice::LoadRegistrationsResult
 {
-    auto const path = std::filesystem::temp_directory_path() / "merovingian-test-appservice-cleartext.json";
+    auto const path = merovingian::tests::unique_temporary_path("merovingian-test-appservice-cleartext", ".json");
     {
         auto out = std::ofstream{path, std::ios::binary};
         out << R"({"id": "cleartext-bridge", "url": )" << url_json
             << R"(, "as_token": "as-token-cleartext-secret", "hs_token": "hs-token-cleartext-secret",
                 "sender_localpart": "_cleartext_bot",
                 "namespaces": {"users": [{"exclusive": true, "regex": "@_cleartext_.*"}], "aliases": [], "rooms": []}})";
+        out.close();
+        REQUIRE(out.good());
     }
     auto loaded = load_registrations({path.string()}, "example.org", allowed_hosts);
     std::filesystem::remove(path);

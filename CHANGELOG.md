@@ -3,6 +3,76 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.0.2
+
+## Features
+
+* `server.http.client_outbound_max_per_client` sets how many remote calls one client address may have in flight,
+  1..128, never above `request_threads / 2`. The default is 3, up from a fixed 1 (ADR-0751).
+* Agents review changes with `.agent/skills/merovingian-review/`, which checks module invariants, past defect classes,
+  tests and the CHANGELOG, docs, ADR and version obligations, citing the binding docs (ADR-0754).
+* `python build.py vm` builds and tests on a Linux or FreeBSD VM over ssh, sending only changed files; it copies
+  `testlog.txt` back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
+* `python build.py vm --vm <name>` uses the `[vm.<name>]` settings and `build-vm-<name>/`, so one machine can drive a
+  Linux VM and a FreeBSD VM (ADR-0752).
+* `--jobs <n>` on `build-linux.sh`, `build-bsd.sh`, `build.py linux` and `build.py bsd` caps compile jobs and tests
+  (ADR-0752).
+
+## Security Fixes
+
+* A resident's make_join, make_leave or make_knock template can no longer put signatures or hashes of its choosing
+  into this server's membership event; they are dropped before signing, and an unparseable join is refused (ADR-0745).
+* Every fix under Bug fixes keeps the audit fix it touches. Each one is narrowed to the case the spec requires, and is
+  covered by tests that cover the refusal as well (ADR-0745 to ADR-0751).
+
+## Bug fixes
+
+* A first join into a restricted room stores the resident's co-signature, verified exactly as for a join through
+  another resident, so it is no longer refused as unauthorised; an invalid one is still refused (ADR-0745).
+* A first federated join stores the join's signatures in its `event_signatures` rows as well as its JSON, the
+  co-signature of a restricted join included; they were left empty, so a worker's snapshot had none (ADR-0745).
+* A threaded receipt is accepted for an event whose relation chain reaches the thread root within 3 hops, such as a
+  reaction to a reference of the root (ADR-0746).
+* A remote user who is joined, invited or knocking can leave, or reject an invite, through this server after its last
+  local member has left; strangers are still refused (ADR-0747).
+* A federation read of a room, such as `/event_auth`, is answered by main while the worker is reloading the room, so
+  an event sent a moment ago is no longer reported as missing (ADR-0748).
+* A remote server's join, knock, leave or PDU for a room created a moment ago is served by main until the
+  federation worker has loaded the room, so it is no longer refused under a guessed room version (ADR-0756).
+* So is a room the worker's start-up copy left out, a room first changed while the worker's channel was down, and a
+  whole `/send` transaction when any room it names is one of these, not only its first (ADR-0756).
+* Every worker shard now reloads every changed room, and main tracks each shard's copy, so a `/send` naming rooms
+  of several shards is judged by one worker on current copies, never sent to main for that (ADR-0758).
+* Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
+  first retry after it comes back, including after this server restarts (ADR-0749).
+* The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;
+  the server's own rule and default are unchanged (ADR-0750).
+* Tests name their scratch files uniquely and check each write, so a second account or a concurrent run on the
+  same machine no longer reads another run's leftover appservice registration and fails (ADR-0753, ADR-0755).
+* Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
+  `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
+* `build.py linux --hardening` and `build.py bsd --hardening` work: both build scripts used to refuse the option they
+  were passed (ADR-0752).
+* The live-binary startup test runs as a non-root user on the BSDs too: off Linux it accepts the unsandboxed worker,
+  as the startup hardening gate does (ADR-0041). It used to fail there.
+* `docs/hardening.md` said `federation.worker.apply_hardening=false` alone runs the worker on FreeBSD and OpenBSD;
+  it needs `federation.worker.allow_without_landlock=true` too. It now lists the worker's hardening steps in order.
+* On a host with an installed system config, the `--dry-run` smoke tests read the example config and the
+  default-summary test is skipped, not failed: the server reads that config instead of its defaults (ADR-0752).
+* `build.py vm` resends a file an interrupted sync had deleted, and a retry after a sync interrupted inside a new
+  directory succeeds, even when the local files changed in between (ADR-0752).
+* The VM setup steps in `docs/dev-environment.md` pass the setup key to `scp` and `ssh`, which do not read `vm.ini`.
+* A hardened FreeBSD or OpenBSD build links as a PIE however it is built, not only as a package, and the ELF hardening
+  check reads the BSDs' `readelf`, so FreeBSD's release evidence no longer reports PIE and BIND_NOW missing (ADR-0757).
+
+## Release notes
+
+1.0.2 fixes the Complement regressions that followed the 1.0.1 security audit fixes. No configuration change is
+needed. A remote member's own leave is now admitted in a room with no local member, which ADR-0591 had refused.
+One client address may now have three remote calls in flight instead of one; set
+`server.http.client_outbound_max_per_client=1` to keep the old limit. Windows developers can build and test on a
+Linux or FreeBSD VM with `python build.py vm` instead of WSL.
+
 # Version 1.0.1
 
 ## Features

@@ -141,7 +141,7 @@ than the others.
   nothing is added to ([ADR-0740](adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 - `tests/tooling/test_packages_workflow.py` enforces that every file in the table
   above carries the current `meson.build` version. Run it (or `python build.py
-  wsl`) after a bump to catch any location that was missed.
+  vm`) after a bump to catch any location that was missed.
 
 ## Release process
 
