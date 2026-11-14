@@ -6545,6 +6545,13 @@ namespace
             join_pe.room_id = std::string{room_id};
             join_pe.sender_user_id = *user_id;
             join_pe.json = signed_event.event_json;
+            // The event_signatures rows come from this list, not from the JSON: give them every signature the stored
+            // join carries, this server's own and, for a restricted room, the resident's verified co-signature
+            // (ADR-0745), as the snapshot and auth-chain writers do for theirs.
+            if (auto const parsed_join = events::parse_event_envelope(signed_event_value); parsed_join.error.empty())
+            {
+                join_pe.signatures = parsed_join.event.signatures;
+            }
             join_pe.depth = join_depth;
             join_pe.stream_ordering = membership_stream;
             join_pe.prev_event_ids = std::move(join_prev_ids);

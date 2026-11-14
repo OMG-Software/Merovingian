@@ -630,10 +630,14 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
         {
             auto out = std::ofstream{allowed_file};
             out << "not secret";
+            out.close();
+            REQUIRE(out.good());
         }
         {
             auto out = std::ofstream{denied_file};
             out << "secret";
+            out.close();
+            REQUIRE(out.good());
         }
 
         WHEN("a forked child restricts itself to only the allowed directory and probes both files")

@@ -24,6 +24,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * A first join into a restricted room stores the resident's co-signature, verified exactly as for a join through
   another resident, so it is no longer refused as unauthorised; an invalid one is still refused (ADR-0745).
+* A first federated join stores the join's signatures in its `event_signatures` rows as well as its JSON, the
+  co-signature of a restricted join included; they were left empty, so a worker's snapshot had none (ADR-0745).
 * A threaded receipt is accepted for an event whose relation chain reaches the thread root within 3 hops, such as a
   reaction to a reference of the root (ADR-0746).
 * A remote user who is joined, invited or knocking can leave, or reject an invite, through this server after its last

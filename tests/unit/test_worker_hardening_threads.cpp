@@ -254,7 +254,12 @@ SCENARIO("Logging before hardening starts no thread, so Landlock and seccomp cov
         std::filesystem::create_directories(allowed_dir);
         std::filesystem::create_directories(secret_dir);
         auto const master_key = secret_dir / "master.key";
-        std::ofstream{master_key} << "not a real key";
+        {
+            auto out = std::ofstream{master_key};
+            out << "not a real key";
+            out.close();
+            REQUIRE(out.good());
+        }
 
         WHEN("a process logs, applies Landlock and worker seccomp, and only then starts the logger's writers")
         {

@@ -2300,6 +2300,8 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
             output << "-- merovingian-migration version=3 name=policy_rules direction=upgrade\n";
             output << "-- statement create_policy_rules_extra\n";
             output << "CREATE TABLE policy_rules_extra (rule_id TEXT PRIMARY KEY)\n";
+            output.close();
+            REQUIRE(output.good());
         }
 
         WHEN("the migration directory is loaded")
