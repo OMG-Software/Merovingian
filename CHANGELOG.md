@@ -51,8 +51,6 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   were passed (ADR-0752).
 * The live-binary startup test runs as a non-root user on the BSDs too: off Linux it accepts the unsandboxed worker,
   as the startup hardening gate does (ADR-0041). It used to fail there.
-* The default-summary smoke test is skipped, not failed, on a host with an installed system config, which the server
-  reads instead of its defaults.
 * `docs/hardening.md` said `federation.worker.apply_hardening=false` alone runs the worker on FreeBSD and OpenBSD;
   it needs `federation.worker.allow_without_landlock=true` too. It now lists the worker's hardening steps in order.
 * On a host with an installed system config, the `--dry-run` smoke tests read the example config and the
