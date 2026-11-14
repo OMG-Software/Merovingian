@@ -6,6 +6,7 @@
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,13 @@ namespace merovingian::homeserver
 // The shard the first PDU picks receives the whole transaction, so main checks the sync status of every room in it
 // before forwarding it to a worker (ADR-0756).
 [[nodiscard]] auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector<std::string>;
+
+// True when the rooms a request concerns belong to more than one of `shards` worker shards. A /send goes whole to one
+// worker, and only a room's owning shard is told of its changes, so that worker's copy of a room another shard owns
+// is its start-up snapshot, or nothing for a room created since. Main serves such a transaction (ADR-0756), as it
+// serves a hierarchy for the same reason (ADR-0712).
+[[nodiscard]] auto federation_request_spans_worker_shards(std::vector<std::string> const& room_ids,
+                                                          std::uint32_t shards) -> bool;
 
 // Returns true when a verified inbound federation request should stay in the
 // main process even while the worker pool is active.

@@ -9,6 +9,7 @@
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/WorkerPool.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -242,6 +243,18 @@ auto federation_request_room_ids(LocalHttpRequest const& request) -> std::vector
         return {};
     }
     return {std::move(room_id)};
+}
+
+auto federation_request_spans_worker_shards(std::vector<std::string> const& room_ids, std::uint32_t shards) -> bool
+{
+    if (room_ids.size() < 2U)
+    {
+        return false;
+    }
+    auto const first_shard = federation_worker_shard_for(room_ids.front(), shards);
+    return std::ranges::any_of(room_ids, [first_shard, shards](std::string const& room_id) {
+        return federation_worker_shard_for(room_id, shards) != first_shard;
+    });
 }
 
 auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool

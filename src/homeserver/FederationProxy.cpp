@@ -222,7 +222,19 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     // A failed reload leaves the worker's copy of the room stale; a pending one has not yet taken in a change main
     // made, such as an event a client just sent. Main answers then (ADR-0748), and for a room the worker has never
     // loaded (ADR-0756). A /send goes whole to the shard its first PDU picks, so every room it names is checked.
-    for (auto const& concerned_room_id : federation_request_room_ids(request))
+    auto const concerned_room_ids = federation_request_room_ids(request);
+    // Only a room's owning shard reloads it, so a transaction whose rooms span shards would reach a worker holding a
+    // start-up copy, or none, of some of them (ADR-0756).
+    if (federation_request_spans_worker_shards(concerned_room_ids, pool_->shard_count()))
+    {
+        observability::log_diagnostic("federation_proxy", "federation_proxy.cross_shard_send_main",
+                                      {
+                                          {"target", observability::sanitized_http_target(request.target), false},
+                                          {"rooms",  std::to_string(concerned_room_ids.size()),            false},
+        });
+        return handle_federation_http_request(runtime_, verified_request);
+    }
+    for (auto const& concerned_room_id : concerned_room_ids)
     {
         auto const status = pool_->room_sync_status(concerned_room_id);
         if (federation_room_request_served_by_main(verified_request, status))

@@ -264,6 +264,9 @@ public:
     // Exposed for unit tests: which shard index would handle this room_id?
     [[nodiscard]] auto shard_for(std::string_view room_id) const noexcept -> std::size_t;
 
+    // The number of worker shards, at least 1.
+    [[nodiscard]] auto shard_count() const noexcept -> std::uint32_t;
+
     // Exposed for tests: the process ID of the worker serving a shard, or -1 when it has none.
     [[nodiscard]] auto worker_pid(std::size_t shard) const noexcept -> pid_t;
 

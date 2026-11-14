@@ -1872,6 +1872,11 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
+auto WorkerPool::shard_count() const noexcept -> std::uint32_t
+{
+    return cfg_.shards > 0U ? cfg_.shards : 1U;
+}
+
 auto WorkerPool::worker_pid(std::size_t shard) const noexcept -> pid_t
 {
     if (shard >= workers_.size() || !workers_[shard])

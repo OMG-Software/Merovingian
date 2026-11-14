@@ -43,6 +43,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   whole `/send` transaction when any room it names is one of these, not only its first (ADR-0756).
 * A room is marked as missing from a worker only on a report from the shard that owns it, so another shard's failed
   start-up copy no longer sends that room's requests to main (ADR-0756).
+* A `/send` transaction whose rooms belong to more than one worker shard is served by main, since a worker's copy
+  of a room another shard owns is never reloaded (ADR-0756).
 * Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
   first retry after it comes back, including after this server restarts (ADR-0749).
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;

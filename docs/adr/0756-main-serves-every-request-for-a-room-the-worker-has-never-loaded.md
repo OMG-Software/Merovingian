@@ -57,6 +57,11 @@ Three more ways a worker can lack a room are covered the same way:
   its owner holds as not held.
 * A `/send` transaction goes whole to the shard its first PDU picks, so the proxy checks the status of every room the
   transaction names (`federation_request_room_ids`) and serves the whole transaction from main if any of them must be.
+  Only a room's owning shard reloads it, so another shard's copy of that room is its start-up snapshot, or nothing for
+  a room created since, whatever the room's status. A transaction whose rooms belong to more than one shard is
+  therefore served by main in full (`federation_request_spans_worker_shards`), as a space hierarchy is for the same
+  reason ([ADR-0712](0712-a-space-hierarchy-request-is-answered-by-main-not-by-a-worker-snapshot.md)). Splitting the
+  transaction across shards was rejected: one transaction ID would then be answered piecemeal by several workers.
 
 The flag is conservative: main does not record which rooms the startup listing held, so a room that existed at startup
 is also not held from its first notification until that reload succeeds. Main serves it for that one reload, once per
@@ -76,6 +81,7 @@ room per main process. Recording the listing would avoid that, at the cost of a 
   is loaded. So does a room first changed while the worker's channel was down, even when the restarted worker's fill
   copied it: the fill reports only the rooms it left out.
 * A transaction naming one room the worker does not hold is served by main in full, its other rooms included.
+* With more than one shard, every transaction that names rooms of two shards is served by main, not a worker.
 
 ## Pros and Cons of the Options
 
