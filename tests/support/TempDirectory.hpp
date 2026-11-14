@@ -3,10 +3,11 @@
 
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
-#include <format>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -88,8 +89,14 @@ namespace merovingian::tests
     auto device = std::random_device{};
     auto const random_bits = (static_cast<std::uint64_t>(device()) << 32U) | static_cast<std::uint64_t>(device());
     auto const sequence = counter.fetch_add(1U, std::memory_order_relaxed);
-    return temporary_directory() /
-           std::format("{}-{}-{}-{:016x}{}", stem, ::getpid(), sequence, random_bits, extension);
+    // std::to_chars, not std::format: the libc++ of the NetBSD build has no <format>.
+    auto random_hex = std::array<char, 16>{};
+    auto const converted = std::to_chars(random_hex.data(), random_hex.data() + random_hex.size(), random_bits, 16);
+    auto name = std::string{stem};
+    name += "-" + std::to_string(::getpid()) + "-" + std::to_string(sequence) + "-";
+    name.append(random_hex.data(), converted.ptr);
+    name += extension;
+    return temporary_directory() / name;
 }
 
 } // namespace merovingian::tests

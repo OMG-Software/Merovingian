@@ -184,6 +184,10 @@ See the [header guidance](../include/merovingian/AGENTS.md) and
   `tests/support/JoiningThreads.hpp` as appropriate. The supported BSD standard
   libraries do not all provide these facilities. See
   [ADR-0167](adr/0167-no-jthread-or-stop-token-use-std-thread-and-stop-flag.md).
+- Do not include `<format>` (`std::format`, `std::format_to`, `std::print`) in production
+  code or tests: the NetBSD libc++ does not ship it. Build strings with `std::to_string`,
+  `std::to_chars` and concatenation. See
+  [ADR-0755](adr/0755-no-std-format-the-netbsd-libc-has-no-format-header.md).
 - Use `core::PortableSemaphore`, not `std::counting_semaphore`. Use
   `core::run_bounded_parallel` for work that completes within the call. For work
   that outlives the call, take a `core::SemaphorePermit` immediately after

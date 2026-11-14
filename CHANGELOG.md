@@ -37,7 +37,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;
   the server's own rule and default are unchanged (ADR-0750).
 * Tests name their scratch files uniquely and check each write, so a second account or a concurrent run on the
-  same machine no longer reads another run's leftover appservice registration and fails (ADR-0753).
+  same machine no longer reads another run's leftover appservice registration and fails (ADR-0753, ADR-0755).
 * Two Complement tests whose expectations contradict the spec are expected failures in the skip list: an MXC-only
   `avatar_url` (F-63, ADR-0406) and an omitted `end` at the start of a room (ADR-0470).
 
