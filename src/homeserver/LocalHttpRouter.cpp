@@ -1326,20 +1326,29 @@ namespace
                                    });
     }
 
-    // ADR-0747: whether `user_id`, a user of another server, holds a membership in `room_id` that a leave of their
-    // own ends: `join`, `invite` or `knock`. One leave turns the row into `leave`, so each such row admits one
-    // stored leave, never one per request.
+    // ADR-0747: whether the sender of `envelope`, a user of another server, holds a membership in `room_id` that a
+    // leave of their own ends: `join`, `invite` or `knock`. One leave turns the row into `leave`, so each such row
+    // admits one stored leave, never one per request. The leave that did so is admitted again while it is still the
+    // sender's current membership, so a retry after a lost answer reaches the resend branch, which answers it without
+    // storing anything (ADR-0591 point 3); any other leave is refused here.
     [[nodiscard]] auto remote_member_may_leave(HomeserverRuntime const& runtime, std::string_view room_id,
-                                               std::string_view user_id) -> bool
+                                               federation::InboundPduEnvelope const& envelope) -> bool
     {
+        auto const& user_id = envelope.sender;
         if (user_id.empty() || server_name_from_user_id(user_id) == runtime.config.server().server_name)
         {
             return false;
         }
-        auto const* const membership =
-            database::find_membership_row(runtime.database.persistent_store, room_id, user_id);
-        return membership != nullptr && (membership->membership == "join" || membership->membership == "invite" ||
-                                         membership->membership == "knock");
+        auto const& store = runtime.database.persistent_store;
+        auto const* const membership = database::find_membership_row(store, room_id, user_id);
+        if (membership != nullptr && (membership->membership == "join" || membership->membership == "invite" ||
+                                      membership->membership == "knock"))
+        {
+            return true;
+        }
+        auto const current_membership_id =
+            database::find_current_state_event_id(store, room_id, "m.room.member", user_id);
+        return current_membership_id.has_value() && *current_membership_id == envelope.event_id;
     }
 
     // F-12 (ADR-0591): the admission gate of send_join, send_leave and send_knock, before anything is stored or any
@@ -1363,7 +1372,7 @@ namespace
             return std::nullopt;
         }
         if (endpoint == federation::FederationEndpoint::send_leave &&
-            remote_member_may_leave(runtime, room_id, envelope.sender))
+            remote_member_may_leave(runtime, room_id, envelope))
         {
             return std::nullopt;
         }

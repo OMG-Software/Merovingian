@@ -39,7 +39,9 @@ Chosen option: the first. `membership_admission_refusal` lets a `send_leave` thr
 holds for the envelope's sender. The agreement gate (an `m.room.member` leave about its own sender, from a user of
 the origin) and the outcome gate (auth must accept it against current state) still run, in that order, before
 anything is stored. The leave turns the row into `leave`, so a second leave is refused: each row admits one stored
-event, not one per request. `send_leave` carries no state, so F-10 is not affected. `send_join` and `send_knock` keep
+event, not one per request. The leave that ended the row is admitted again while it is still the sender's current
+membership, so a retry after a lost answer reaches the resend branch (ADR-0591 point 3), which answers it `200` and
+stores nothing. `send_leave` carries no state, so F-10 is not affected. `send_join` and `send_knock` keep
 the gate unchanged.
 
 ### Positive Consequences

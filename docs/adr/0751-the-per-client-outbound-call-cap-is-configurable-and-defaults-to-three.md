@@ -24,7 +24,9 @@ threat needs. How many calls may one address have in flight, and who decides?
 
 * ADR-0079's threat: a client naming a peer that never answers must not pin the request pool. The global cap of half
   the pool is what keeps the other half free.
-* The per-client cap stops one address from taking the whole global budget.
+* The per-client cap stops one address from taking the whole global budget at its default. An operator may set it as
+  high as the global cap, which lets one address fill the budget; that is an explicit choice, for example for a
+  test harness that sends every request from one address.
 * Legitimate clients do more than one remote call at once, and addresses are shared.
 
 ## Considered Options
@@ -53,9 +55,9 @@ Chosen option: the configuration key, default 3. The owner chose the default.
 
 ### Negative Consequences
 
-* One address may now hold three slots of the global budget instead of one, so it takes more addresses to fill the
-  budget with calls to a peer that never answers. The global cap, the deadlines and the per-address connection share
-  (ADR-0072) still bound it.
+* One address may now hold three slots of the global budget instead of one, so it takes fewer addresses to fill the
+  budget with calls to a peer that never answers: 6 rather than 16 for the default global cap of 16. The global cap,
+  the deadlines and the per-address connection share (ADR-0072) still bound what they can hold.
 
 ## Pros and Cons of the Options
 

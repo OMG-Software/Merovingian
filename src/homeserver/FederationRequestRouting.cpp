@@ -230,15 +230,22 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
 
 auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool
 {
+    auto const path = request.target.substr(0U, request.target.find('?'));
+    // v1.19 defines get_missing_events as POST, though it only reads: its body names the events the asker has.
+    if (request.method == "POST")
+    {
+        return path.starts_with("/_matrix/federation/v1/get_missing_events/");
+    }
     if (request.method != "GET")
     {
         return false;
     }
-    auto const path = request.target.substr(0U, request.target.find('?'));
     static auto const prefixes = std::vector<std::string_view>{
-        "/_matrix/federation/v1/state/",      "/_matrix/federation/v1/state_ids/",
-        "/_matrix/federation/v1/backfill/",   "/_matrix/federation/v1/get_missing_events/",
-        "/_matrix/federation/v1/event_auth/", "/_matrix/federation/v1/timestamp_to_event/",
+        "/_matrix/federation/v1/state/",
+        "/_matrix/federation/v1/state_ids/",
+        "/_matrix/federation/v1/backfill/",
+        "/_matrix/federation/v1/event_auth/",
+        "/_matrix/federation/v1/timestamp_to_event/",
     };
     return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
         return path.starts_with(prefix);

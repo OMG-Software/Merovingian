@@ -29,8 +29,8 @@ How should a request be served while a reload is pending?
 ## Considered Options
 
 * While a reload is `pending`, main serves the room reads that `federation_worker_room_read_may_fallback_to_main` lists
-  (GET `state`, `state_ids`, `backfill`, `get_missing_events`, `event_auth`, `timestamp_to_event`), and writes go to the
-  worker.
+  (GET `state`, `state_ids`, `backfill`, `event_auth` and `timestamp_to_event`, and POST `get_missing_events`, which
+  v1.19 defines as POST though it only reads), and writes go to the worker.
 * Hold the request until the worker reports the reload, up to a timeout.
 * Leave it as it is, since a remote server retries a 404.
 
@@ -50,8 +50,7 @@ A failed one stays at warning level.
 ### Negative Consequences
 
 * In a busy room every change sets `pending`, so more of the room's reads are answered by main and fewer by the
-  sandboxed worker. They are read-only GETs from verified origins, which main already answers when no worker is
-  configured.
+  sandboxed worker. They are reads from verified origins, which main already answers when no worker is configured.
 * `GET /event/{eventId}` names no room, so it is not covered and is still answered from shard 0's snapshot.
 
 ## Pros and Cons of the Options

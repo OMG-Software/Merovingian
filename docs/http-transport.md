@@ -1174,13 +1174,14 @@ Rules:
 - **Lock.** The slot is taken while the runtime lock is held and before it is
   released for the call (`RuntimeLockRelease`); it is dropped on every exit path
   by its destructor.
-- **Constants, not configuration.** The caps and deadlines live in
+- **What is configurable.** The caps and deadlines live in
   `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/ClientOutboundProxyPolicy.hpp`),
-  derived from the main request pool size (`client_outbound_proxy_policy_for_pool` in
-  `ClientOutboundProxy.hpp`,
-  applied by `start_runtime` from `server.http.request_threads`, ADR-0077). A
-  separate configuration key would let an operator raise the caps above the
-  pool size, which is the defect. Tests lower the deadline through
+  built by `client_outbound_proxy_policy_for_pool` in `ClientOutboundProxy.hpp` and applied
+  by `start_runtime`. The global cap is derived from `server.http.request_threads`
+  (ADR-0077) and has no key of its own: a key that could raise it above half the pool would
+  be the defect. The per-client cap is `server.http.client_outbound_max_per_client`, which
+  the policy clamps to the global cap, so it can share out that budget but never enlarge
+  it (ADR-0751). The deadlines are constants. Tests lower them through
   `runtime.client_outbound_proxy_policy`.
 - **Appservice query hooks.** `GET /profile/{userId}` and
   `GET /directory/room/{roomAlias}` take one slot for the whole loop over the

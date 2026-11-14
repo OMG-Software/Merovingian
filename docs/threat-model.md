@@ -2381,17 +2381,21 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     local part of the answer is still returned. A join by remote alias takes a slot (`429` when none is
     free) and runs under the 10 s directory deadline. Tests: `[f-17]` in
     `tests/integration/test_client_outbound_proxy_flow.cpp`.
-- **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
-  (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
-  botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4
-  threads stay available to everything that does not leave this server. Threads are still
+- **Residual risk:** an attacker holding every slot of the global cap (half the pool) costs the
+  pool that half for up to 10 s (30 s for media) at a time. One address holds up to the
+  per-client cap, 3 by default (ADR-0751), so filling a global cap of 16 takes 6 addresses
+  rather than 16; an operator who sets the per-client cap equal to the global cap lets one
+  address fill it. A botnet can keep the slots busy and lock legitimate remote lookups out
+  with 429; the other half of the pool stays available to everything that does not leave
+  this server. Threads are still
   blocked while a call is in flight: the fix bounds how many, and a separate pool or an
   asynchronous proxy path was rejected for now. Outbound calls to operator-configured
   destinations that an unauthenticated client can trigger (identity-server `requestToken`)
   are not under the budget; the appservice `query_user` and `query_room_alias` hooks of
   `GET /profile` and `GET /directory/room` are, one slot per request (ADR-0417). DNS lookups
   inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
-  shared address that is not a configured trusted proxy share one per-client slot.
+  shared address that is not a configured trusted proxy share that address's per-client slots
+  (3 by default).
 
 ### Outbound destination agreement (OUT-1, OUT-2)
 
