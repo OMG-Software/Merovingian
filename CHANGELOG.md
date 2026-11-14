@@ -12,6 +12,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * `python build.py vm` builds and tests on a Linux VM over ssh, sending only changed files; it copies `testlog.txt`
   back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
 * `build-linux.sh --jobs <n>` (and `build.py linux --jobs`) caps compile jobs and tests run at once.
+* Agents review changes with `.agent/skills/merovingian-review/`, which checks module invariants, past defect classes,
+  tests and the CHANGELOG, docs, ADR and version obligations, citing the binding docs (ADR-0754).
 
 ## Security Fixes
 

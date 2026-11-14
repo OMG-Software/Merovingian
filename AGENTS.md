@@ -151,6 +151,18 @@ because each one has already cost this project real time.
 - **Verify delegated work yourself.** When a subagent reports green, confirm it from the
   log before committing. Trust the change, check the claim.
 
+## Reviewing Changes
+
+Review a pull request, branch or diff, including delegated work and your own
+change before reporting it complete, with
+[.agent/skills/merovingian-review/SKILL.md](.agent/skills/merovingian-review/SKILL.md).
+It checks the change against the coding rules, the module `AGENTS.md`
+invariants, the spec, and the CHANGELOG, docs, ADR and version obligations. It
+cites those documents rather than copying them
+([ADR-0754](docs/adr/0754-agent-skills-are-committed-under-agent-skills-and-cite-the-binding-docs.md)).
+Tools that load skills only from `.claude/skills/` do not find it on their own,
+so read it directly.
+
 ## Ignore list
 Ignore these dirs:
 - .claude/

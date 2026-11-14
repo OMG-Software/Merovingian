@@ -635,3 +635,4 @@
 * [0751 - The per-client outbound call cap is configurable and defaults to three](0751-the-per-client-outbound-call-cap-is-configurable-and-defaults-to-three.md)
 * [0752 - build.py vm syncs the working tree over ssh and runs build-linux.sh](0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md)
 * [0753 - Tests never write a fixed name in the shared temporary directory](0753-tests-never-write-a-fixed-name-in-the-shared-temporary-directory.md)
+* [0754 - Agent skills are committed under .agent/skills and cite the binding docs](0754-agent-skills-are-committed-under-agent-skills-and-cite-the-binding-docs.md)
