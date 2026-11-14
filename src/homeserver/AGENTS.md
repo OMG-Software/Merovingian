@@ -56,7 +56,7 @@ This is the largest and most complex module — read this file carefully before 
 | `TurnCredentials.cpp` | `make_turn_credentials`: the coturn REST API username and password for `GET /voip/turnServer` (ADR-0480) |
 | `EmailPush.cpp` | Kind `"email"` pushers (ADR-0219, ADR-0220): `owned_email_pusher_address` (the pushkey must be the account's own email 3PID), `remove_email_pushers_for_address`, and `EmailPushJob`, the one thread that sends due digests through `send_due_email_notifications`. It re-reads the pusher, the 3PID, the account and the badge count under `runtime.mutex` (one hold, one `PushBadgeBudget`: rows and glob steps bounded together, ADR-0722), then sends with the mutex released |
 | `RuntimeSigningKeyStore.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
-| `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
+| `FederationProxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local. A room whose reload failed is served by main, and so are its reads while a reload is pending (`federation_room_request_served_by_main`, ADR-0748) |
 | `FederationRequestRouting.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
 | `WorkerPool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
 | `WorkerSnapshotService.cpp` | Main's answers to a federation worker's store requests (room list, room snapshot pages, public server keys; ADR-0733). A room is read only under a permit main issued on that channel, consumed once (ADR-0735); no lock and never `runtime.mutex` across a read. It reads through `database::SnapshotReaderPool`, whose readers `WorkerPool` opens before `cap_enter` (ADR-0739) |
@@ -474,6 +474,14 @@ other servers with joined members; never this server), offering only the room's 
   and the membership is `join`. Any other stored copy leaves the join failed.
 - If no candidate succeeds the client gets the original 403, not an upstream error.
 
+### A first restricted join takes the resident's co-signature the same way (ADR-0745)
+
+When this server holds nothing of the room, `perform_federated_join`'s join names an authorising user of the resident's
+server whenever the make_join template did. It then calls `verify_resident_signed_join` on the answer's `event`, and the
+verified combined event is what `authorize_send_join_answer` judges and what `join_room` stores. A missing, unsigned or
+wrongly signed `event` is 502 with nothing stored. Never authorise or store this server's own copy of such a join: it
+lacks the signature rule 4.3.5 requires, and every other server rejects it.
+
 ## A resident's answer to our send_join is a receipt (F-45, ADR-0369)
 
 `perform_federated_join` runs the answer through `filter_verified_send_join_events` (room, signatures, then the content
@@ -509,7 +517,8 @@ answered again from current state (`resent_send_join_state`, ADR-0372), never fr
 date from `make_join` and may predate a ban, but only while it is stored `accepted` and is the sender's current
 `m.room.member` state, otherwise 403 with no state (F-10, ADR-0591); it is never stored or sent on a second time. The same
 test covers a resent leave and knock. Before any of this the acceptor refuses a room with no local member
-(`membership_admission_refusal`: `send_knock` 404, the others 403), then an event that is not the endpoint's membership
+(`membership_admission_refusal`: `send_knock` 404, the others 403), except a `send_leave` from a remote user who holds a
+`join`, `invite` or `knock` row there (`remote_member_may_leave`, ADR-0747: one stored leave per row), then an event that is not the endpoint's membership
 about its own sender from a user of the origin (`membership_agreement_refusal`, 400 `M_INVALID_PARAM`; it runs before the
 resend answer, so a stored leave relayed as `send_knock` is never answered), and an event that auth rejects or soft-fails is refused
 (`membership_outcome_refusal`, 403) and never stored (F-12). Both run in the acceptor, which the direct path and the worker relay share. `servers_in_room` is "before the join", so it counts the joiner only if the answer's state has them joined. Without `omit_members` the auth chain still repeats the state events; the spec allows the

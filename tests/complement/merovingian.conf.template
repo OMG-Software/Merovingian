@@ -99,8 +99,12 @@ server.http.sync_max_per_device=16
 # entrypoint installs them beside the master key and adds the key
 # (install-appservices.sh).
 # Complement registers appservices at http://host.docker.internal:<port>, which is
-# not a loopback literal; plain http to it is allowed by name (ADR-0515).
-appservice.allow_cleartext_hosts=host.docker.internal
+# not a loopback literal; plain http to it is allowed by name (ADR-0515). The
+# hs_with_application_service blueprint registers http://localhost:9000, and
+# `localhost` is a name, not a loopback literal, so it is listed too. Without it
+# the registration is refused at start and its as_token answers 401
+# (TestJoinFederatedRoomFromApplicationServiceBridgeUser, TestJumpToDateEndpoint).
+appservice.allow_cleartext_hosts=host.docker.internal,localhost
 security.federation.per_origin_transaction_rate=1000000000/1s
 security.federation.per_origin_pdu_rate=1000000000/1s
 security.federation.per_origin_edu_rate=1000000000/1s

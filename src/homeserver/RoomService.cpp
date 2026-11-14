@@ -5289,6 +5289,8 @@ namespace
     {
         std::string json{};
         std::string refusal{};
+        // The verified combined event `json` serializes.
+        canonicaljson::Value value{};
     };
 
     [[nodiscard]] auto verify_resident_signed_join(HomeserverRuntime& runtime, canonicaljson::Object const& answer,
@@ -5348,7 +5350,7 @@ namespace
         {
             return {{}, "the signed join event could not be serialized"};
         }
-        return {std::move(serialized.output), {}};
+        return {std::move(serialized.output), {}, verified.front()};
     }
 
     [[nodiscard]] auto federated_join_failure(std::string reason, std::uint16_t status) -> FederatedJoinOutcome
@@ -5802,6 +5804,36 @@ namespace
             outcome.resident_signed_event_json = std::move(resident_join.json);
             return outcome;
         }
+        // ADR-0745: a join into a restricted room this server holds nothing of names an authorising user of the
+        // resident's server, and the auth rules require that server's signature on the join (rooms/v10.md 4.2.1).
+        // The resident adds it to the copy it returns as the answer's `event` (send_join v2, "event": "Required if
+        // the room is restricted and the joining user is authorised by one of the conditions"). The co-signature is
+        // taken exactly as for a join through another resident: only the authorising server's verified signatures
+        // are merged into this server's own signed join, and the combined event must verify. That combined event is
+        // the one the answer is authorised against and the one stored. A missing, altered or unverifiable copy is
+        // refused: a join no checked signature authorises is never stored.
+        auto join_signed_event = std::move(signed_event);
+        auto join_value = signed_value.value;
+        if (!join_authorising_user_of(signed_value.value).empty())
+        {
+            auto resident_join = verify_resident_signed_join(runtime, *send_obj, *policy, our_server,
+                                                             event_id_result.event_id, signed_value.value);
+            if (!resident_join.refusal.empty())
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",         user_id,               false},
+                                   {"room_id",       std::string{room_id},  false},
+                                   {"status",        "502",                 false},
+                                   {"remote_server", remote_server,         false},
+                                   {"reason",        resident_join.refusal, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return federated_join_failure(resident_join.refusal, 502U);
+            }
+            join_signed_event.event_json = std::move(resident_join.json);
+            join_value = std::move(resident_join.value);
+        }
         // ADR-0241: the whole state array — other members' m.room.member events
         // included — is verified here and persisted by join_room before the join
         // returns. The join event's after-state group is built from it, and the
@@ -5871,7 +5903,7 @@ namespace
                 : canonicaljson::Array{};
         // Step 4 of the receipt checks, with runtime.mutex still released (F-45, ADR-0369).
         auto authorized_answer =
-            authorize_send_join_answer(verified_state, verified_auth_chain, signed_value.value, *policy, room_id);
+            authorize_send_join_answer(verified_state, verified_auth_chain, join_value, *policy, room_id);
         if (authorized_answer.dropped > 0U || !authorized_answer.refusal.empty())
         {
             log_diagnostic("room.join.answer_checked",
@@ -5894,8 +5926,8 @@ namespace
         auto outcome = FederatedJoinOutcome{};
         outcome.policy = *policy;
         outcome.remote_server = std::move(remote_server);
-        outcome.signed_event = std::move(signed_event);
-        outcome.signed_event_value = signed_value.value;
+        outcome.signed_event = std::move(join_signed_event);
+        outcome.signed_event_value = std::move(join_value);
         outcome.event_id_result = event_id_result;
         outcome.verified_state = std::move(verified_state);
         outcome.verified_auth_chain = std::move(verified_auth_chain);

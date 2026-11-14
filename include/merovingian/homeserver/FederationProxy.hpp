@@ -3,10 +3,10 @@
 #pragma once
 
 #include "merovingian/config/FederationWorkerConfig.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 
@@ -68,7 +68,9 @@ public:
     // Returns the last observed room-sync status for the shard that owns room_id.
     // A "failed" status means the worker's room snapshot is stale and must not be
     // trusted for room-scoped reads; room-scoped federation requests then fall back
-    // to the main process's authoritative in-memory state.
+    // to the main process's authoritative in-memory state. While a reload is
+    // "pending", the room's reads fall back the same way and its writes still go to
+    // the worker (federation_room_request_served_by_main, ADR-0748).
     [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
 
 private:

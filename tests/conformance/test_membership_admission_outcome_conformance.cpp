@@ -18,8 +18,8 @@
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/MembershipAcceptResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
-#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -612,6 +612,76 @@ SCENARIO("send_join, send_leave and send_knock for a room with no local member s
             {
                 // Spec: a rejected event is not taken into the DAG when the request is refused.
                 REQUIRE(statuses == std::vector<std::uint16_t>(5U, std::uint16_t{403U}));
+                REQUIRE(store_shape(fixture.runtime()) == before);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: "Leaving Rooms (Rejecting Invites)"; PUT /_matrix/federation/v2/send_leave/{roomId}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#leaving-rooms-rejecting-invites
+//
+// A leave is sent to "a resident server", which "may be the server which sent the invite", and send_leave lists no
+// refusal for a room whose last member of the receiving server has left. A remote user this server holds as joined,
+// invited or knocking can therefore still leave through it (ADR-0747). Each such membership admits one stored leave:
+// the leave ends it, and a stranger is refused as before (F-12).
+SCENARIO("A remote member can leave through a server whose last local member has left",
+         "[federation][conformance][membership][f12][adr0747]")
+{
+    GIVEN("a room this server holds with no local member, in which a remote user is joined")
+    {
+        auto fixture = Fixture{"!adr0747:local.example.org", "@admin:remote.example.org"};
+        auto const& genesis = fixture.genesis();
+        auto const join_id = std::string{"$adr0747join:remote.example.org"};
+        auto const join = fixture.member_event(join_id, bob, "join", {genesis.join_rules_id}, join_auth(genesis), 4);
+        seed_accepted_event(fixture.runtime(), fixture.room_id(), join_id, "m.room.member", bob, bob, join.json,
+                            {genesis.join_rules_id}, 4U);
+        auto const leave_auth = std::vector<std::string>{genesis.create_id, genesis.pl_id, join_id};
+
+        WHEN("the joined user's server sends their leave, and then another leave for them")
+        {
+            auto const leave_id = std::string{"$adr0747leave:remote.example.org"};
+            auto const leave = fixture.member_event(leave_id, bob, "leave", {join_id}, leave_auth, 5);
+            auto const first = fixture.accept(FederationEndpoint::send_leave, leave);
+            auto const after_first = store_shape(fixture.runtime());
+            auto const again =
+                fixture.member_event("$adr0747again:remote.example.org", bob, "leave", {join_id}, leave_auth, 6);
+            auto const second = fixture.accept(FederationEndpoint::send_leave, again);
+
+            THEN("the leave is accepted and stored, and the next one is refused with nothing stored")
+            {
+                // Spec MUST: 200 when the leave "was accepted into the graph".
+                CAPTURE(first.reason);
+                REQUIRE(first.accepted);
+                REQUIRE(first.status == 200U);
+                REQUIRE(fixture.event_stored(leave_id));
+                // Spec: the leave ends the membership; the row no longer admits a leave.
+                REQUIRE_FALSE(second.accepted);
+                REQUIRE(second.status == 403U);
+                REQUIRE(store_shape(fixture.runtime()) == after_first);
+            }
+        }
+
+        WHEN("a user this server holds no membership for sends a leave, and a send_join and send_knock arrive")
+        {
+            auto const before = store_shape(fixture.runtime());
+            auto const stranger =
+                fixture.member_event("$adr0747stranger:other.example.net", "@eve:other.example.net", "leave",
+                                     {genesis.join_rules_id}, {genesis.create_id, genesis.pl_id}, 5);
+            auto const rejoin = fixture.member_event("$adr0747rejoin:remote.example.org", bob, "join", {join_id},
+                                                     join_auth(genesis), 5);
+            auto const leave_result = fixture.accept(FederationEndpoint::send_leave, stranger);
+            auto const join_result = fixture.accept(FederationEndpoint::send_join, rejoin);
+
+            THEN("each is refused 403 and nothing is stored")
+            {
+                // Spec MUST: send_leave and send_join list no code for a room the server is not in: 403.
+                REQUIRE_FALSE(leave_result.accepted);
+                REQUIRE(leave_result.status == 403U);
+                REQUIRE_FALSE(join_result.accepted);
+                REQUIRE(join_result.status == 403U);
+                REQUIRE(join_result.state_json.empty());
                 REQUIRE(store_shape(fixture.runtime()) == before);
             }
         }

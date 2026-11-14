@@ -46,7 +46,7 @@ namespace hs = merovingian::homeserver;
 
 } // namespace
 
-SCENARIO("a threaded receipt must name an event related to its thread", "[receipts][c23][threads]")
+SCENARIO("a threaded receipt must name an event related to its thread", "[receipts][c23][threads][adr0746]")
 {
     GIVEN("a room with a thread root, a reply in the thread, and two unrelated messages")
     {
@@ -74,6 +74,32 @@ SCENARIO("a threaded receipt must name an event related to its thread", "[receip
                 auto const rows = db::receipts_of_user_in_room(store, room_id, "@alice:example.org");
                 REQUIRE(rows.size() == 1U);
                 REQUIRE(rows.front()->event_id == reply);
+                REQUIRE(rows.front()->thread_id == root);
+            }
+        }
+
+        // ADR-0746: "related" is the relation chain, whatever its types, within the 3 hops of the thread rule.
+        // Complement TestThreadedReceipts marks a thread read through an annotation of a reference to its root.
+        WHEN("receipts are posted under the thread for events whose relation chain reaches the root in 3 hops or more")
+        {
+            auto const relation = [](std::string const& rel_type, std::string const& parent) {
+                return R"(,"m.relates_to":{"rel_type":")" + rel_type + R"(","event_id":")" + parent + R"("})";
+            };
+            auto const reference = send_event(runtime, token, room_id, "r1", relation("m.reference", root));
+            auto const annotation = send_event(runtime, token, room_id, "r2", relation("m.annotation", reference));
+            auto const third_hop = send_event(runtime, token, room_id, "r3", relation("m.reference", annotation));
+            auto const fourth_hop = send_event(runtime, token, room_id, "r4", relation("m.reference", third_hop));
+
+            THEN("an event within 3 hops is accepted and one further away is refused")
+            {
+                REQUIRE(post_receipt(runtime, token, room_id, annotation, root).status == 200U);
+                REQUIRE(post_receipt(runtime, token, room_id, third_hop, root).status == 200U);
+                auto const too_far = post_receipt(runtime, token, room_id, fourth_hop, root);
+                REQUIRE(too_far.status == 400U);
+                REQUIRE(too_far.body.find("M_INVALID_PARAM") != std::string::npos);
+                auto const rows = db::receipts_of_user_in_room(store, room_id, "@alice:example.org");
+                REQUIRE(rows.size() == 1U);
+                REQUIRE(rows.front()->event_id == third_hop);
                 REQUIRE(rows.front()->thread_id == root);
             }
         }

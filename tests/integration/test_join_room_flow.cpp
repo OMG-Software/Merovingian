@@ -58,7 +58,6 @@
 #include "merovingian/federation/PduIngestionResult.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -130,7 +129,8 @@ namespace
 auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
                          merovingian::homeserver::TlsServerContext& tls_context, std::string const& make_join_response,
                          std::string const& send_join_response, std::vector<std::string>& captured_requests,
-                         std::function<void(std::string const&)> const& before_send = {})
+                         std::function<void(std::string const&)> const& before_send = {},
+                         std::function<std::string(std::string const&)> const& send_response_for = {})
 {
     for (auto request_index = 0; request_index < 2; ++request_index)
     {
@@ -201,7 +201,11 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         {
             before_send(request_bytes);
         }
-        std::ignore = connection.write(is_send ? send_join_response : make_join_response);
+        // `send_response_for`, when given, answers the send request from the event the joining server sent: a
+        // resident that co-signs a restricted join must answer with the very event it received.
+        std::ignore = connection.write(!is_send            ? make_join_response
+                                       : send_response_for ? send_response_for(request_bytes)
+                                                           : send_join_response);
     }
 }
 
@@ -1829,7 +1833,6 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                                room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
-
         // The state array is the room's state BEFORE the join — create and
         // power_levels only, no join event and no other members, matching
         // spec (server-server-api.md#joining-rooms).
@@ -2194,7 +2197,6 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                                    R"("content":{"membership":"join"}})",
                                room_chain.member_auth());
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
-
 
         // The state array is the room's state BEFORE the join — create and
         // power_levels only, no join event and no other members, matching
@@ -2994,6 +2996,175 @@ SCENARIO("A joining server applies the receipt checks to a resident's send_join 
                 REQUIRE_FALSE(std::ranges::any_of(store.memberships, [&](auto const& row) {
                     return row.room_id == room_id && row.user_id == alice && row.membership == "join";
                 }));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19, PUT /_matrix/federation/v2/send_join, 200 response, `event`: "The membership
+// event sent to other servers by the resident server including a signature from the resident server. Required if the
+// room is restricted and the joining user is authorised by one of the conditions."
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// rooms/v10.md, authorisation rule 4.3.5.2 (restricted): the event must be "signed by the server of the user ID in
+// join_authorised_via_users_server". A first join into a restricted room this server holds nothing of stores this
+// server's own join with only the resident's verified co-signature merged in, and refuses a join no checked
+// signature authorises (ADR-0745).
+SCENARIO("A first join into a restricted room stores the resident's verified co-signature",
+         "[adr0745][security][homeserver][federation][join][restricted][integration]")
+{
+    GIVEN("a resident server whose restricted room names its creator as the authorising user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!restricted745:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto chain = resident_room_chain(room_id, creator, policy);
+        auto const quoted = [](std::string const& id) {
+            return "\"" + id + "\"";
+        };
+        // The public join rules of the shared chain, replaced by restricted ones naming a room on the resident.
+        chain.join_rules = sign_test_event(
+            naming_auth_events(
+                std::string{R"({"type":"m.room.join_rules","state_key":"","sender":")"} + creator + R"(","room_id":")" +
+                    room_id + R"(","depth":4,"origin_server_ts":900,"prev_events":[)" + quoted(chain.power_levels_id) +
+                    R"(],"auth_events":[],"content":{"join_rule":"restricted","allow":[)"
+                    R"({"type":"m.room_membership","room_id":"!allowed:resident.example.org"}]}})",
+                quoted(chain.create_id) + "," + quoted(chain.creator_join_id) + "," + quoted(chain.power_levels_id)),
+            policy, resident_server, resident_key_id, resident_key_seed);
+        chain.join_rules_id = reference_event_id(chain.join_rules, policy);
+        auto const make_join_event = naming_auth_events(
+            std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
+                R"(","sender":")" + alice + R"(","depth":5,"origin_server_ts":1000,"prev_events":[)" +
+                quoted(chain.join_rules_id) + R"(],"auth_events":[],"content":{"join_authorised_via_users_server":")" +
+                creator + R"(","membership":"join"}})",
+            chain.member_auth() + "," + quoted(chain.creator_join_id));
+        auto const make_join_response =
+            json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + make_join_event + "}");
+
+        // Answers send_join with the room's state and, as `event`, `event_for` applied to the join it received.
+        auto const answer_with = [&](std::function<std::string(merovingian::canonicaljson::Value const&)> event_for) {
+            return [&chain, event_for = std::move(event_for)](std::string const& request) {
+                auto const received = event_from_send_request(request);
+                auto const event = event_for(received);
+                return json_http_response("200 OK", std::string{R"({"state":)"} +
+                                                        canonicaljson_array_to_string(chain.events()) +
+                                                        R"(,"auth_chain":[])" +
+                                                        (event.empty() ? std::string{} : R"(,"event":)" + event) + "}");
+            };
+        };
+        auto const serialized = [](merovingian::canonicaljson::Value const& value) {
+            auto const out = merovingian::canonicaljson::serialize_canonical(value);
+            REQUIRE(out.error == merovingian::canonicaljson::CanonicalJsonError::none);
+            return out.output;
+        };
+        auto const co_signed_with = [&](std::string const& seed) {
+            return [&policy, &serialized, seed](merovingian::canonicaljson::Value const& received) {
+                return serialized(
+                    sign_test_event(serialized(received), policy, resident_server, resident_key_id, seed));
+            };
+        };
+        auto const join_answered = [&](std::function<std::string(std::string const&)> const& send_response_for) {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, std::string{},
+                                    captured_requests, {}, send_response_for);
+            }};
+            auto result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            return result;
+        };
+        auto const alice_joined = [&] {
+            auto const lock = std::lock_guard{runtime.mutex};
+            return std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& row) {
+                return row.room_id == room_id && row.user_id == alice && row.membership == "join";
+            });
+        };
+
+        WHEN("the resident answers with the join it received, co-signed with its key")
+        {
+            auto const result = join_answered(answer_with(co_signed_with(resident_key_seed)));
+
+            THEN("the join succeeds and the stored join carries both this server's and the resident's signature")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(alice_joined());
+                auto const lock = std::lock_guard{runtime.mutex};
+                auto const& store = runtime.database.persistent_store;
+                auto const join_id =
+                    merovingian::database::find_current_state_event_id(store, room_id, "m.room.member", alice);
+                REQUIRE(join_id.has_value());
+                auto const stored = store.events.find_in_room(room_id, *join_id);
+                REQUIRE(stored != store.events.end());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(stored->json);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const& event = std::get<merovingian::canonicaljson::Object>(parsed.value.storage());
+                auto const signatures = std::ranges::find_if(event, [](auto const& member) {
+                    return member.key == "signatures";
+                });
+                REQUIRE(signatures != event.end());
+                auto const& by_server = std::get<merovingian::canonicaljson::Object>(signatures->value->storage());
+                REQUIRE(object_member_count(*signatures->value, local_server) == 1U);
+                REQUIRE(object_member_count(*signatures->value, resident_server) == 1U);
+                REQUIRE(by_server.size() == 2U);
+            }
+        }
+
+        WHEN("the resident answers without the event, with the join as it was sent, or co-signed with another key")
+        {
+            auto const answer = GENERATE(as<std::string>{}, "omitted", "unsigned", "impostor");
+            auto const result = join_answered(answer_with([&](merovingian::canonicaljson::Value const& received) {
+                if (answer == "omitted")
+                {
+                    return std::string{};
+                }
+                if (answer == "unsigned")
+                {
+                    return serialized(received);
+                }
+                return co_signed_with("restricted-join-745-impostor-seed")(received);
+            }));
+
+            THEN("the join is refused and the user is not joined")
+            {
+                CAPTURE(answer, result.reason);
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+                REQUIRE_FALSE(alice_joined());
             }
         }
     }

@@ -70,4 +70,12 @@ struct ReadMarkers final
 [[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event,
                                    std::size_t* bytes_left = nullptr) -> std::string;
 
+// Whether `event` relates to `target_event_id` through its `m.relates_to` chain, of any `rel_type`, within the same
+// 3 hops as `event_thread_id`: its own relation, its parent's and its grandparent's. Parents are looked up in
+// `room_id` only; one this store does not hold ends the chain. An event has one relation, so the chain is a single
+// path and an event relates to at most three events. Spec (POST /receipt, 400): "The event_id is not related to the
+// thread_id" (ADR-0746).
+[[nodiscard]] auto event_relates_to(database::PersistentStore const& store, std::string_view room_id,
+                                    canonicaljson::Object const& event, std::string_view target_event_id) -> bool;
+
 } // namespace merovingian::sync

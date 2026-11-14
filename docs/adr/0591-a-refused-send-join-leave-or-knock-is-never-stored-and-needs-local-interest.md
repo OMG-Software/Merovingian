@@ -1,6 +1,6 @@
 # A refused send_join, send_leave or send_knock is never stored, and is asked for only in a room with a local member
 
-* Status: accepted (supersedes the part of [ADR-0372](0372-a-resent-send-join-is-answered-from-current-state.md) that answers a soft-failed join with state)
+* Status: accepted (supersedes the part of [ADR-0372](0372-a-resent-send-join-is-answered-from-current-state.md) that answers a soft-failed join with state; the "no exception" sentence of point 1 is superseded by [ADR-0747](0747-a-remote-member-may-leave-through-a-server-whose-local-members-have-left.md))
 * Deciders: James Chapman
 * Date: 2026-11-09
 

@@ -298,13 +298,14 @@ class RenderedConfigTests(unittest.TestCase):
                 # THEN none is low enough for a Complement run to meet.
                 self.assert_out_of_reach(key)
 
-    def test_appservice_cleartext_http_is_allowed_to_the_docker_host_alone(self) -> None:
+    def test_appservice_cleartext_http_is_allowed_to_the_complement_hosts_alone(self) -> None:
         # GIVEN the rendered config.
         # WHEN the appservice cleartext host list is read.
         hosts = self.config.get("appservice.allow_cleartext_hosts")
         # THEN it names host.docker.internal, where Complement registers its appservices,
-        # and nothing else (ADR-0515).
-        self.assertEqual(hosts, "host.docker.internal")
+        # and localhost, where the hs_with_application_service blueprint registers one,
+        # and nothing else (ADR-0515, ADR-0750).
+        self.assertEqual(hosts, "host.docker.internal,localhost")
 
     def test_password_hashing_admits_complements_parallel_logins(self) -> None:
         # GIVEN the rendered config.

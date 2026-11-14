@@ -815,3 +815,57 @@ SCENARIO("A space hierarchy request is answered by main, not by the shard 0 work
         }
     }
 }
+
+// ADR-0748: Complement TestEventAuth asked GET /event_auth for an event a client had just sent and got 404 from a
+// worker whose reload of the room was still pending. A pending reload sends a read main can serve to main; writes stay
+// with the worker, and a failed reload sends every request for the room to main.
+SCENARIO("A room read is served by main while the worker's reload of the room is pending",
+         "[federation][routing][room-sync][adr0748]")
+{
+    using merovingian::homeserver::federation_room_request_served_by_main;
+    using merovingian::homeserver::RoomSyncStatus;
+
+    GIVEN("a read of a room's event auth, its state IDs, and a transaction for the room")
+    {
+        auto const event_auth = make_request("/_matrix/federation/v1/event_auth/%21room%3Aexample.org/%24event");
+        auto const state_ids = make_request("/_matrix/federation/v1/state_ids/%21room%3Aexample.org?event_id=%24e");
+        auto transaction = make_request("/_matrix/federation/v1/send/txn1");
+        transaction.method = "PUT";
+
+        WHEN("the worker's copy of the room is current")
+        {
+            auto const ok = RoomSyncStatus{"ok", 3U};
+
+            THEN("the worker serves all of them")
+            {
+                REQUIRE_FALSE(federation_room_request_served_by_main(event_auth, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(state_ids, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, ok));
+            }
+        }
+
+        WHEN("main has changed the room and the worker has not reloaded it yet")
+        {
+            auto const pending = RoomSyncStatus{"pending", 4U};
+
+            THEN("main serves the reads and the worker still takes the transaction")
+            {
+                REQUIRE(federation_room_request_served_by_main(event_auth, pending));
+                REQUIRE(federation_room_request_served_by_main(state_ids, pending));
+                REQUIRE_FALSE(federation_room_request_served_by_main(transaction, pending));
+            }
+        }
+
+        WHEN("the worker failed to reload the room")
+        {
+            auto const failed = RoomSyncStatus{"failed", 4U};
+
+            THEN("main serves every request for the room")
+            {
+                REQUIRE(federation_room_request_served_by_main(event_auth, failed));
+                REQUIRE(federation_room_request_served_by_main(state_ids, failed));
+                REQUIRE(federation_room_request_served_by_main(transaction, failed));
+            }
+        }
+    }
+}

@@ -4,17 +4,17 @@
 #include "merovingian/homeserver/FederationProxy.hpp"
 
 #include "merovingian/core/QueryParams.hpp"
-#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/SignedFederationRequest.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/FederationRequestRouting.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/RoomSyncStatus.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
-#include "merovingian/homeserver/FederationRequestRouting.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -221,16 +221,21 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     auto const room_id = federation_worker_room_id_from_request(request);
     if (!room_id.empty())
     {
+        // A failed reload leaves the worker's copy of the room stale; a pending one has not yet taken in a change main
+        // made, such as an event a client just sent. Main answers then (ADR-0748).
         auto const status = pool_->room_sync_status(room_id);
-        if (status.state == "failed")
+        if (federation_room_request_served_by_main(verified_request, status))
         {
-            observability::log_diagnostic("federation_proxy", "federation_proxy.room_sync_failed_fallback",
-                                          {
-                                              {"target",     observability::sanitized_http_target(request.target), false},
-                                              {"room_id",    std::string{room_id},                                 false},
-                                              {"generation", std::to_string(status.generation),                    false},
+            auto const failed = status.state == "failed";
+            observability::log_diagnostic(
+                "federation_proxy",
+                failed ? "federation_proxy.room_sync_failed_fallback" : "federation_proxy.room_sync_pending_main",
+                {
+                    {"target",     observability::sanitized_http_target(request.target), false},
+                    {"room_id",    std::string{room_id},                                 false},
+                    {"generation", std::to_string(status.generation),                    false},
             },
-                                          observability::LogEventSeverity::warning);
+                failed ? observability::LogEventSeverity::warning : observability::LogEventSeverity::debug);
             return handle_federation_http_request(runtime_, verified_request);
         }
     }

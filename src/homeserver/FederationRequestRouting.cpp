@@ -4,8 +4,8 @@
 #include "merovingian/homeserver/FederationRequestRouting.hpp"
 
 #include "merovingian/canonicaljson/ParseError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/federation/Transactions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -243,6 +243,16 @@ auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& re
     return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
         return path.starts_with(prefix);
     });
+}
+
+auto federation_room_request_served_by_main(LocalHttpRequest const& request, RoomSyncStatus const& status) noexcept
+    -> bool
+{
+    if (status.state == "failed")
+    {
+        return true;
+    }
+    return status.state == "pending" && federation_worker_room_read_may_fallback_to_main(request);
 }
 
 auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool

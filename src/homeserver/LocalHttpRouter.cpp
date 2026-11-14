@@ -1326,17 +1326,44 @@ namespace
                                    });
     }
 
+    // ADR-0747: whether `user_id`, a user of another server, holds a membership in `room_id` that a leave of their
+    // own ends: `join`, `invite` or `knock`. One leave turns the row into `leave`, so each such row admits one
+    // stored leave, never one per request.
+    [[nodiscard]] auto remote_member_may_leave(HomeserverRuntime const& runtime, std::string_view room_id,
+                                               std::string_view user_id) -> bool
+    {
+        if (user_id.empty() || server_name_from_user_id(user_id) == runtime.config.server().server_name)
+        {
+            return false;
+        }
+        auto const* const membership =
+            database::find_membership_row(runtime.database.persistent_store, room_id, user_id);
+        return membership != nullptr && (membership->membership == "join" || membership->membership == "invite" ||
+                                         membership->membership == "knock");
+    }
+
     // F-12 (ADR-0591): the admission gate of send_join, send_leave and send_knock, before anything is stored or any
     // state is read for an answer. A room this server has no current local interest in is not one it can act as the
     // resident of, so a request for it is refused with nothing written, as the /send path refuses an unsolicited
     // room. Spec "Knocking upon a room" lists 404 for "the room ... is unknown to the receiving server"; send_join and
     // send_leave list no code for this case, so those are 403 M_FORBIDDEN. The membership acceptor is the one place
     // this runs, and it is the callback both the direct path and main's side of the worker relay call.
+    // The one exception (ADR-0747, superseding part of ADR-0591 point 1): a send_leave whose sender this server holds
+    // as joined, invited or knocking. This server is still the resident other servers name for that user (it sent
+    // the invite, or the room ID names it), the spec lists no refusal for a room its last member left ("Leaving Rooms
+    // (Rejecting Invites)"), and refusing left the user unable to leave at all. The row bounds what is stored, the
+    // agreement and outcome gates still run, and send_leave carries no state, so F-10 and F-12 stay closed.
     [[nodiscard]] auto membership_admission_refusal(HomeserverRuntime const& runtime,
-                                                    federation::FederationEndpoint endpoint, std::string_view room_id)
+                                                    federation::FederationEndpoint endpoint, std::string_view room_id,
+                                                    federation::InboundPduEnvelope const& envelope)
         -> std::optional<federation::MembershipAcceptResult>
     {
         if (room_has_current_local_interest(runtime, room_id))
+        {
+            return std::nullopt;
+        }
+        if (endpoint == federation::FederationEndpoint::send_leave &&
+            remote_member_may_leave(runtime, room_id, envelope.sender))
         {
             return std::nullopt;
         }
@@ -2455,7 +2482,8 @@ namespace
             }
             // F-12 (ADR-0591): admission first, before anything is stored or any state is read for an
             // answer. The one gate the direct path and main's side of the worker relay share.
-            if (auto const refusal = membership_admission_refusal(*rt, endpoint, room_id); refusal.has_value())
+            if (auto const refusal = membership_admission_refusal(*rt, endpoint, room_id, envelope);
+                refusal.has_value())
             {
                 return *refusal;
             }
@@ -3554,22 +3582,10 @@ namespace
             // SecretBuffer rather than an unpinned std::string. The runtime
             // retains its own SecretBuffer; both are wiped independently.
             dispatch_config.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
-            auto* discovery_ptr = discovery;
-            auto* cached_ptr = cached;
             auto const discovery_timeout =
                 std::min(timeout > 0U ? timeout : 30U, federation::dispatch_discovery_timeout_seconds);
-            auto resolver = [discovery_ptr, cached_ptr, discovery_timeout](
-                                std::string_view server_name) -> std::optional<federation::ServerDiscoveryResult> {
-                // Prefer the TTL cache; fall back to the raw network for tests.
-                auto result = cached_ptr != nullptr
-                                  ? cached_ptr->discover(server_name, discovery_timeout)
-                                  : federation::discover_server(server_name, *discovery_ptr, discovery_timeout);
-                if (!result.discovery_allowed)
-                {
-                    return std::nullopt;
-                }
-                return result;
-            };
+            // A remembered discovery failure is never served to the dispatch worker (ADR-0749).
+            auto resolver = federation::make_dispatch_resolver(discovery, cached, discovery_timeout);
             auto clock = []() -> std::uint64_t {
                 return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                       std::chrono::system_clock::now().time_since_epoch())

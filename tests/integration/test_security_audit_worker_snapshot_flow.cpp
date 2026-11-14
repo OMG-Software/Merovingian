@@ -16,12 +16,12 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
-#include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sodium.h>
@@ -366,6 +366,68 @@ SCENARIO("A failed worker room reload cannot serve federation reads with stale A
                 CHECK(response.body.find("M_FORBIDDEN") != std::string::npos);
                 CHECK(proxy.room_sync_status(room_id).generation == failed_generation);
                 CHECK(proxy.room_sync_status(room_id).state == "failed");
+            }
+        }
+    }
+}
+
+// ADR-0748: Complement TestEventAuth sent a state event, saw it in /sync, and at once asked GET /event_auth for it.
+// The worker that owns the room had not reloaded it yet and answered 404. While a reload is pending, main serves the
+// room's reads.
+SCENARIO("A federation read of an event sent a moment ago is answered while the worker reloads the room",
+         "[security_audit_worker_snapshot][federation][integration][adr0748]")
+{
+    GIVEN("a real federation worker that loaded a world-readable room")
+    {
+        if (test_worker_binary().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+        REQUIRE(sodium_init() >= 0);
+
+        auto const temporary = TemporaryDirectory{};
+        auto const config = make_config(temporary.path());
+        auto const worker_config_path = temporary.path() / "merovingian.conf";
+        write_worker_config(worker_config_path, config);
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver = make_remote_key_resolver();
+        auto const [room_id, admin_token, ignored_acl_event_id] =
+            create_room_and_set_acl(runtime, config.server().server_name);
+        std::ignore = ignored_acl_event_id;
+
+        auto proxy = merovingian::homeserver::FederationProxy{
+            config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
+        REQUIRE(wait_for_proxy(proxy, 15s));
+
+        WHEN("a client sends a state event and a remote server asks for its auth events at once")
+        {
+            auto const topic = merovingian::homeserver::handle_local_http_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic", admin_token,
+                          R"({"topic":"just sent"})"});
+            REQUIRE(topic.status == 200U);
+            auto const topic_state =
+                std::ranges::find_if(runtime.database.persistent_store.state, [&room_id](auto const& state) {
+                    return state.room_id == room_id && state.event_type == "m.room.topic" && state.state_key.empty();
+                });
+            REQUIRE(topic_state != runtime.database.persistent_store.state.end());
+            // What send_event_as_user does for the proxy main owns; this test's proxy is its own.
+            proxy.notify_room_changed(room_id);
+            auto const target = "/_matrix/federation/v1/event_auth/" + room_id + "/" + topic_state->event_id;
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "GET";
+            request.target = target;
+            request.access_token = x_matrix_authorization(config.server().server_name, target);
+            request.remote_addr = "198.51.100.27";
+            auto const response = proxy.handle(request);
+
+            THEN("the auth chain is returned, never 404")
+            {
+                CHECK(response.status == 200U);
+                CHECK(response.body.find("auth_chain") != std::string::npos);
             }
         }
     }

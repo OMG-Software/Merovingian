@@ -3,6 +3,38 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.0.2
+
+## Features
+
+* None.
+
+## Security Fixes
+
+* None: every fix below keeps the audit fix it touches. Each one is narrowed to the case the spec requires, and is
+  covered by tests that cover the refusal as well (ADR-0745 to ADR-0750).
+
+## Bug fixes
+
+* A first join into a restricted room stores the resident's verified co-signature, so it is no longer refused as
+  unauthorised; an answer without a valid co-signature is still refused (ADR-0745).
+* A threaded receipt is accepted for an event whose relation chain reaches the thread root within 3 hops, such as a
+  reaction to a reference of the root (ADR-0746).
+* A remote user who is joined, invited or knocking can leave, or reject an invite, through this server after its last
+  local member has left; strangers are still refused (ADR-0747).
+* A federation read of a room, such as `/event_auth`, is answered by main while the worker is reloading the room, so
+  an event sent a moment ago is no longer reported as missing (ADR-0748).
+* Outbound federation delivery never reuses a cached discovery failure, so a queued message reaches a server at the
+  first retry after it comes back, including after this server restarts (ADR-0749).
+* The Complement image allows cleartext appservice URLs on `localhost`, where a Complement blueprint registers one;
+  the server's own rule and default are unchanged (ADR-0750).
+* Two Complement tests whose expectations contradict the spec are recorded as expected failures in the skip list.
+
+## Release notes
+
+1.0.2 fixes the Complement regressions that followed the 1.0.1 security audit fixes. No configuration change is
+needed. A remote member's own leave is now admitted in a room with no local member, which ADR-0591 had refused.
+
 # Version 1.0.1
 
 ## Features

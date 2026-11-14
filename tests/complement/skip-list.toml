@@ -651,3 +651,22 @@ mode = "expect-fail"
 category = "non-spec"
 spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync"
 reason = "Also requires unsigned.prev_sender, which v1.19's ClientEvent unsigned does not define; unsigned.prev_content (the invite's content, is_direct included) and replaces_state are returned (ADR-0304)."
+
+# The two entries below fail since an audit fix made this server follow the spec where the
+# pinned Complement test does not (1.0.2).
+
+[[entry]]
+test = "TestAvatarUrlUpdate"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseridkeyname"
+reason = "Sets avatar_url to the string \"LemurLover\"; v1.19 says \"For avatar_url, the value MUST be an MXC URI string\", so it is refused 400 M_INVALID_PARAM (audit run-2 F-63, ADR-0406). The displayname case passes."
+
+[[entry]]
+test = "TestRoomImageRoundtrip"
+package = "tests/csapi"
+mode = "expect-fail"
+category = "spec"
+spec = "docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages"
+reason = "Requires `end` on a dir=b page that reaches the start of the room; v1.19 says that when no further events are available \"this property is omitted from the response\" (ADR-0470). The page holds the image event."

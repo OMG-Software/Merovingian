@@ -4,6 +4,7 @@
 
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/RoomSyncStatus.hpp"
 
 #include <optional>
 #include <string>
@@ -32,6 +33,15 @@ namespace merovingian::homeserver
 // get_missing_events, event_auth) qualify; writes must still reach the worker
 // because they may trigger main-side relays and side effects.
 [[nodiscard]] auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool;
+
+// Returns true when a request for a room must be served by the main process instead of the worker shard that holds
+// the room, given that shard's room-sync status for it. After a "failed" reload the worker's copy of the room is
+// stale, so every request for the room goes to main. While a reload is "pending", main has changed the room and the
+// worker has not yet reloaded it. A read main can serve (federation_worker_room_read_may_fallback_to_main) then goes
+// to main. Otherwise a server asking about an event this server has just sent is told it does not exist. Writes
+// still go to the worker (ADR-0748).
+[[nodiscard]] auto federation_room_request_served_by_main(LocalHttpRequest const& request,
+                                                          RoomSyncStatus const& status) noexcept -> bool;
 
 // Returns true when the request target is exactly `/_matrix/key/v2/server`
 // (optionally followed by a query string). The key server endpoint must be

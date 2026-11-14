@@ -1,6 +1,6 @@
 # Receipts are read through room and user indexes, and a threaded receipt must be related to its thread
 
-* Status: Accepted
+* Status: Accepted (its admission rule for a threaded receipt is amended by [ADR-0746](0746-a-threaded-receipt-may-name-any-event-whose-relation-chain-reaches-the-root.md))
 * Date: 2026-11-12
 
 Technical Story: run-3 audit finding C23 (receipt rows grow without bound and every reader scans the whole table).
