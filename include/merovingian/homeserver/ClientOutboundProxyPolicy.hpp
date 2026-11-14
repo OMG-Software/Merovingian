@@ -12,6 +12,8 @@ namespace merovingian::homeserver
 // from the configured value; this default is what a runtime built without a
 // configuration uses.
 inline constexpr std::uint32_t default_main_request_pool_threads{16U};
+// The default of server.http.client_outbound_max_per_client (ADR-0751).
+inline constexpr std::uint32_t default_client_outbound_max_per_client{3U};
 
 // Client-triggered outbound proxying (ADR-0079).
 //
@@ -29,8 +31,12 @@ struct ClientOutboundProxyPolicy final
     // server.
     std::uint32_t global_cap{default_main_request_pool_threads / 2U};
     // Calls in flight for one client address (rate_limit_client_key, which
-    // honours trusted_proxies and groups IPv6 by prefix).
-    std::uint32_t per_client_cap{1U};
+    // honours trusted_proxies and groups IPv6 by prefix). Three, so a client
+    // joining two remote rooms while it looks one up is not refused, and
+    // clients behind one NAT address are not limited to a single call; set by
+    // server.http.client_outbound_max_per_client, never above global_cap
+    // (ADR-0751).
+    std::uint32_t per_client_cap{default_client_outbound_max_per_client};
     // Total wall-clock budget for a directory lookup (publicRooms, alias):
     // server discovery plus the request.
     std::uint32_t directory_deadline_seconds{10U};

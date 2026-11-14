@@ -25,11 +25,11 @@
 //       (`via`: "The servers to attempt to request the summary from when the local server cannot
 //       generate it")
 
-#include "../support/TlsTestCertificate.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TlsMockServer.hpp"
+#include "../support/TlsTestCertificate.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -37,14 +37,14 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
-#include "merovingian/homeserver/TlsServerContextResult.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/Tls.hpp"
+#include "merovingian/homeserver/TlsServerContextResult.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -452,6 +452,8 @@ SCENARIO("A remote server that cannot or will not answer leaves the rest of the 
         auto const alice = register_user(runtime, "alice");
         auto const space = create_space(runtime, alice);
         link_child(runtime, alice, space, "!remoteroom:remote.example.org");
+        // One call per client, so the slot held here is the client's whole share (ADR-0751's default is three).
+        runtime.homeserver.client_outbound_proxy_policy.per_client_cap = 1U;
         auto const held =
             merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, std::string{client_address});
         REQUIRE(held.has_value());
@@ -738,6 +740,8 @@ SCENARIO("A room summary request that calls another server is bounded", "[integr
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const alice = register_user(runtime, "alice");
+        // One call per client, so the slot held here is the client's whole share (ADR-0751's default is three).
+        runtime.homeserver.client_outbound_proxy_policy.per_client_cap = 1U;
         auto const held =
             merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, std::string{client_address});
         REQUIRE(held.has_value());

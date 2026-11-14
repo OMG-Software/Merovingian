@@ -632,3 +632,4 @@
 * [0748 - Main serves a room's federation reads while the worker's reload of the room is pending](0748-main-serves-a-rooms-federation-reads-while-the-workers-reload-is-pending.md)
 * [0749 - Outbound delivery never serves a remembered discovery failure](0749-outbound-delivery-never-serves-a-remembered-discovery-failure.md)
 * [0750 - Complement's image also lists localhost as a cleartext appservice host](0750-complements-image-also-lists-localhost-as-a-cleartext-appservice-host.md)
+* [0751 - The per-client outbound call cap is configurable and defaults to three](0751-the-per-client-outbound-call-cap-is-configurable-and-defaults-to-three.md)

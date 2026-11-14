@@ -531,6 +531,7 @@ its own requests finishes, while other clients are served.
 | Key | Default | When to change |
 |---|---|---|
 | `server.http.request_threads` | `32` | Threads in the main request pool that serves every listener, 4..256. Raise for a busy server with many cores; each client address may use a quarter of them, and remote directory and media proxying at most half. |
+| `server.http.client_outbound_max_per_client` | `3` | Remote calls one client address may have in flight at once (directory, profile and key lookups, remote media without the fetch pool, and federated joins, knocks and leaves), 1..128, never more than `request_threads / 2`. A call over it is answered `429 M_LIMIT_EXCEEDED` with `retry_after_ms`. Raise when many users share one address and no `server.trusted_proxies` entry tells them apart (ADR-0751). |
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to close idle connections sooner. |
 | `server.http.keep_alive_max_connections` | `256` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. A parked connection holds no worker thread, so this bounds open descriptors and memory and need not match `request_threads`; raise it to let more clients re-use their connections. |
@@ -1251,13 +1252,14 @@ and direct rooms with `default_for_new_rooms`.
 Remote lookups that a client triggers (`GET`/`POST /publicRooms?server=` and a
 room-alias lookup for a remote alias) are not governed by
 `remote_timeout` alone: they are limited to 4 in flight at once across all
-clients and 1 per client address, and end after at most 10 s,
+clients and 3 per client address (`server.http.client_outbound_max_per_client`), and end after at most 10 s,
 whichever of that and `remote_timeout` is shorter. A request over the limit is
 answered `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 and a `Retry-After`
-header; a lookup that runs out of time is answered `502`. These limits are
-fixed, not configuration keys: they exist to keep half of the request
-pool free for requests that never leave this server. Behind a reverse proxy set
-`server.trusted_proxies`, or every client shares one address and so one slot.
+header; a lookup that runs out of time is answered `502`. The overall limit is
+half of `server.http.request_threads`, not a key of its own: it exists to keep half
+of the request pool free for requests that never leave this server. Behind a reverse
+proxy set `server.trusted_proxies`, or every client shares one address and so one
+client's slots.
 
 #### Federation join/leave budget — `security.federation.join_*`
 

@@ -307,6 +307,15 @@ class RenderedConfigTests(unittest.TestCase):
         # and nothing else (ADR-0515, ADR-0750).
         self.assertEqual(hosts, "host.docker.internal,localhost")
 
+    def test_parallel_remote_joins_from_one_address_are_not_refused(self) -> None:
+        # GIVEN the rendered config.
+        # WHEN the per-client outbound call cap is read.
+        cap = self.config.get("server.http.client_outbound_max_per_client")
+        # THEN it is the global cap of the default request pool: Complement sends every
+        # request from one address and does not retry a 429, and at the default of three
+        # its parallel subtests' remote joins refused each other (ADR-0751).
+        self.assertEqual(cap, "16")
+
     def test_password_hashing_admits_complements_parallel_logins(self) -> None:
         # GIVEN the rendered config.
         # WHEN the concurrent password hashing cap is read.

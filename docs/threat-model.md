@@ -2359,7 +2359,8 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     call. The answer is `404 M_NOT_FOUND`.
   - HTTP-2: every client-triggered outbound call (the routes above plus remote media when
     enabled) takes a slot in `http::InFlightBudget` before it leaves: 4 in flight overall (half
-    the pool) and 1 per client address (`rate_limit_client_key`, so `trusted_proxies` applies).
+    the pool) and 3 per client address by default (`server.http.client_outbound_max_per_client`,
+    ADR-0751; keyed by `rate_limit_client_key`, so `trusted_proxies` applies).
     Over either cap the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000, at once. The
     total deadline, discovery included, is 10 s for directory lookups and 30 s for media, and
     the federation-worker round trip may exceed it by at most 2 s. The slot is an RAII object

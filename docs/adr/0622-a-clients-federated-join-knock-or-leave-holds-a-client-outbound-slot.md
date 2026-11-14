@@ -1,6 +1,6 @@
 # A client's federated join, knock or leave holds a client-outbound slot
 
-* Status: accepted
+* Status: accepted; the per-client cap its slot is counted against is configurable since [ADR-0751](0751-the-per-client-outbound-call-cap-is-configurable-and-defaults-to-three.md)
 * Date: 2026-11-11
 
 Technical Story: release-gate audit, resource-exhaustion.client-membership-exchange.federated-join-and-knock-hold-pool-threads-without-outbound-slot

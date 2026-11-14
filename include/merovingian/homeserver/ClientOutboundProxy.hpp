@@ -24,13 +24,16 @@ struct HomeserverRuntime;
 // a result after its transport has timed out.
 inline constexpr std::chrono::seconds default_worker_ipc_margin{10};
 
-// The policy for a request pool of `pool_threads` threads.
-[[nodiscard]] constexpr auto client_outbound_proxy_policy_for_pool(std::uint32_t pool_threads) noexcept
+// The policy for a request pool of `pool_threads` threads, with `max_per_client` calls for one client address. The
+// per-client cap is never zero and never above the global cap (ADR-0751).
+[[nodiscard]] constexpr auto client_outbound_proxy_policy_for_pool(
+    std::uint32_t pool_threads, std::uint32_t max_per_client = default_client_outbound_max_per_client) noexcept
     -> ClientOutboundProxyPolicy
 {
     auto policy = ClientOutboundProxyPolicy{};
     // Never zero: a zero cap would refuse every remote lookup on a tiny pool.
     policy.global_cap = std::max(1U, pool_threads / 2U);
+    policy.per_client_cap = std::clamp(max_per_client, 1U, policy.global_cap);
     policy.policy_server_global_cap = std::max(2U, pool_threads / 4U);
     policy.policy_server_per_surface_cap = std::max(1U, policy.policy_server_global_cap / 2U);
     return policy;
@@ -55,8 +58,7 @@ inline constexpr std::chrono::seconds default_worker_ipc_margin{10};
 // authenticated request: the thread it holds while waiting is bounded by the client's connection share
 // (ADR-0077) and by the deadline.
 [[nodiscard]] auto admit_client_outbound_proxy_waiting(HomeserverRuntime& runtime, std::string const& client_key,
-                                                       RuntimeLock& guard,
-                                                       OutboundDeadline const& deadline)
+                                                       RuntimeLock& guard, OutboundDeadline const& deadline)
     -> std::optional<http::InFlightBudget::Slot>;
 
 // The budget for offering remote invites (ADR-0307): one `POST /invite`, or all of a createRoom's. The

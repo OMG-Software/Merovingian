@@ -218,6 +218,7 @@ Configuration (`server.http.*`, restart required — read when listeners start):
 | `server.http.max_connections_per_ip` | `256` | Open connections one client key may hold, 1..65535 (see below). |
 | `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by, 1..128. |
 | `server.http.request_threads` | `32` | Threads in the main request pool, 4..256. One client address may hold at most a quarter of them; client-triggered outbound proxying at most half (ADR-0079). |
+| `server.http.client_outbound_max_per_client` | `3` | Client-triggered outbound calls one client address may have in flight, 1..128, clamped to the global cap (ADR-0751). |
 
 ### Per-client connection cap (ADR-0072)
 
@@ -1143,7 +1144,8 @@ Rules:
   held by `HomeserverRuntime::client_outbound_budget`. Global cap half of the
   main request pool (`server.http.request_threads / 2`, so 16 by default; the
   other half of the pool always serves requests that never leave this
-  server); per-client cap 1, keyed by
+  server); per-client cap `server.http.client_outbound_max_per_client`, 3 by default
+  and never above the global cap (ADR-0751), keyed by
   `rate_limit_client_key` (the same key the rate limiter uses, so
   `trusted_proxies` and the IPv6 prefix grouping apply). Authenticated callers
   count too. Local `publicRooms`, local aliases and local media never take a slot.

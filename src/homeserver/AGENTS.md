@@ -320,9 +320,9 @@ that swaps the network falls back to the raw network), and it must never serve a
 (a retried join after the peer recovers is not refused). Keep the lookup inside the
 `RuntimeLockRelease` scope.
 
-The caps derive from the main request pool size (`server.http.request_threads`, applied by
-`start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their
-own. A new
+The global cap derives from the main request pool size (`server.http.request_threads`) and the
+per-client cap is `server.http.client_outbound_max_per_client` (default 3), clamped to the global cap;
+`start_runtime` applies both through `client_outbound_proxy_policy_for_pool` (ADR-0751). A new
 route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
 `docs/http-transport.md` "Client-triggered outbound proxying".
 

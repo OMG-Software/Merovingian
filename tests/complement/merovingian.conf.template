@@ -105,6 +105,11 @@ server.http.sync_max_per_device=16
 # the registration is refused at start and its as_token answers 401
 # (TestJoinFederatedRoomFromApplicationServiceBridgeUser, TestJumpToDateEndpoint).
 appservice.allow_cleartext_hosts=host.docker.internal,localhost
+# Complement sends every request from one address and does not retry a 429, so
+# its parallel subtests' remote joins would refuse each other at the default of
+# three remote calls per client address (ADR-0751). Sixteen is the global cap of
+# the default request pool.
+server.http.client_outbound_max_per_client=16
 security.federation.per_origin_transaction_rate=1000000000/1s
 security.federation.per_origin_pdu_rate=1000000000/1s
 security.federation.per_origin_edu_rate=1000000000/1s
