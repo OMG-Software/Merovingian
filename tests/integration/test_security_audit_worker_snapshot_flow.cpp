@@ -677,8 +677,8 @@ SCENARIO("A shard's failed start-up copy of a room another shard owns leaves tha
         }
         REQUIRE_FALSE(other_room_id.empty());
 
-        auto pool = merovingian::homeserver::WorkerPool{config.federation_worker(), runtime,
-                                                        std::string{test_worker_binary()}, worker_config_path.string()};
+        auto proxy = merovingian::homeserver::FederationProxy{
+            config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
         auto const wait_until = [](auto const& done) {
             auto const deadline = std::chrono::steady_clock::now() + 15s;
             while (!done() && std::chrono::steady_clock::now() < deadline)
@@ -689,13 +689,13 @@ SCENARIO("A shard's failed start-up copy of a room another shard owns leaves tha
         };
         auto const listed_target =
             "/_matrix/federation/v1/state_ids/" + listed_room_id + "?event_id=" + listed_acl_event_id;
-        REQUIRE(wait_until([&pool, &config, &listed_target, &listed_room_id]() {
+        REQUIRE(wait_until([&proxy, &config, &listed_target]() {
             auto request = merovingian::homeserver::LocalHttpRequest{};
             request.method = "GET";
             request.target = listed_target;
             request.access_token = x_matrix_authorization(config.server().server_name, listed_target);
             request.remote_addr = "198.51.100.27";
-            return pool.healthy() && pool.handle(request, listed_room_id).status == 200U;
+            return proxy.healthy() && proxy.handle(request).status == 200U;
         }));
 
         WHEN("the other shard's worker restarts and its start-up copy fails both rooms")
@@ -703,22 +703,22 @@ SCENARIO("A shard's failed start-up copy of a room another shard owns leaves tha
             // Test-only fault injection, as in the scenarios above: hide a table main's snapshot reads.
             auto database_table = SqliteTableHider{config.database().sqlite_path};
             REQUIRE(database_table.hide());
-            auto const killed = pool.worker_pid(other);
+            auto const killed = proxy.worker_pid_for_room(other_room_id);
             REQUIRE(killed > 0);
             REQUIRE(::kill(killed, SIGKILL) == 0);
             // The restarted worker reports both rooms as left out; its own room's report is the one main records.
-            auto const own_room_dropped = wait_until([&pool, &other_room_id]() {
-                return !pool.room_sync_status(other_room_id).held;
+            auto const own_room_dropped = wait_until([&proxy, &other_room_id]() {
+                return !proxy.room_sync_status(other_room_id).held;
             });
             // Its reports arrive together; give the one for the listed room time to be handled as well.
             std::this_thread::sleep_for(200ms);
-            auto const listed = pool.room_sync_status(listed_room_id);
+            auto const listed = proxy.room_sync_status(listed_room_id);
             REQUIRE(database_table.restore());
 
             THEN("only the room the restarted shard owns stops being held")
             {
                 CHECK(own_room_dropped);
-                CHECK(pool.worker_pid(other) != killed);
+                CHECK(proxy.worker_pid_for_room(other_room_id) != killed);
                 CHECK(listed.held);
             }
         }
