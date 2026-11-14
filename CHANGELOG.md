@@ -9,6 +9,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * `server.http.client_outbound_max_per_client` sets how many remote calls one client address may have in flight,
   1..128, never above `request_threads / 2`. The default is 3, up from a fixed 1 (ADR-0751).
+* `python build.py vm` builds and tests on a Linux VM over ssh, sending only changed files; it copies `testlog.txt`
+  back to `build-vm/`. `scripts/remote-host-setup.sh` prepares the VM (ADR-0752).
+* `build-linux.sh --jobs <n>` (and `build.py linux --jobs`) caps compile jobs and tests run at once.
 
 ## Security Fixes
 
@@ -37,7 +40,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 1.0.2 fixes the Complement regressions that followed the 1.0.1 security audit fixes. No configuration change is
 needed. A remote member's own leave is now admitted in a room with no local member, which ADR-0591 had refused.
 One client address may now have three remote calls in flight instead of one; set
-`server.http.client_outbound_max_per_client=1` to keep the old limit.
+`server.http.client_outbound_max_per_client=1` to keep the old limit. Windows developers can build and test on a
+Linux VM with `python build.py vm` instead of WSL.
 
 # Version 1.0.1
 

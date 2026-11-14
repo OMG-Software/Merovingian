@@ -100,7 +100,7 @@ not hypothetical — each has already produced a "complete, all tests passing"
 report over work that was broken:
 
 - **"Tests pass" from a run the agent never read.** Read the `Ok:` / `Fail:` /
-  `Timeout:` counts out of `build-wsl/meson-logs/testlog.txt` yourself.
+  `Timeout:` counts out of `build-vm/meson-logs/testlog.txt` yourself.
 - **A green suite that never ran the new tests.** Confirm with a tag filter
   against the test binary — see "Verifying Work" below.
 - **A sanitizer or tool run that aborted at startup** and was reported as clean
@@ -126,10 +126,16 @@ because each one has already cost this project real time.
   running, and never say you will "follow up with results later" — a session that ends
   does not follow up, and the work lands unverified. Run the suite, wait for it, read
   the outcome, *then* report.
-- **`python build.py wsl` exceeds a 10-minute foreground limit.** Run it in the
-  background and wait for it to finish.
-- **Read the real summary** from `build-wsl/meson-logs/testlog.txt` — the `Ok:` /
-  `Fail:` / `Timeout:` counts at the end. Report those numbers, not an impression.
+- **Build and test on the Linux VM with `python build.py vm`, not WSL.** It syncs the
+  working tree, uncommitted edits included, and runs the suite on the VM; see
+  [Building on a Linux VM](docs/dev-environment.md#building-on-a-linux-vm) and
+  [ADR-0752](docs/adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
+  It exceeds a 10-minute foreground limit: run it in the background and wait for it to
+  finish. A second run, from any worktree, waits for the VM lock rather than competing.
+- **Read the real summary** from `build-vm/meson-logs/testlog.txt`, which `build.py vm`
+  copies back (it deletes the old one first, so a missing file means the run never
+  reached the tests) — the `Ok:` / `Fail:` / `Timeout:` counts at the end. Report
+  those numbers, not an impression.
 - **A TIMEOUT is a FAILURE.** "48 Ok, 0 Fail, 1 Timeout" is a failing suite. A hang is
   usually a deadlock, and a deadlock in a background task is a production shutdown bug,
   not a flaky test.
@@ -137,8 +143,8 @@ because each one has already cost this project real time.
   name therefore cannot prove that scenario ran. To confirm a passing test executed, run
   the binary directly with a filter.
 - **Catch2 registers `SCENARIO("x")` as `"Scenario: x"`**, so filtering on the raw
-  scenario string matches nothing. Filter by tag instead:
-  `./build-wsl/tests/merovingian-unit-tests "[push]"`.
+  scenario string matches nothing. Filter by tag instead; the binaries are on the VM:
+  `python build.py vm --exec ./build-vm/tests/merovingian-unit-tests "[push]"`.
 - **Do not poll with `pgrep -f "meson test"` in a shell loop.** The loop's own command
   line contains that string, so it matches itself and spins forever. Bracket the first
   character (`pgrep -f "[m]eson test"`) or poll the log file's modification time.
@@ -214,7 +220,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 ├── meson.build            #   Root build definition
 ├── meson.options           #   Build options
 ├── mkdocs.yml             #   Documentation site (GitHub Pages); hooks in scripts/mkdocs_site_hooks.py
-└── build.py               #   Unified build CLI (Linux, BSD, WSL)
+└── build.py               #   Unified build CLI (Linux, BSD, WSL, remote Linux VM)
 ```
 
 ### Key entry points
@@ -326,11 +332,14 @@ Base: docs/matrix-v1.19-spec/index.md
 ## Build & Test Commands
 ```bash
 
-# Build and test Windows
+# Build and test from Windows, on the Linux VM (docs/dev-environment.md#building-on-a-linux-vm)
+python build.py vm
+
+# Build and test inside WSL instead
 python build.py wsl
 
 # Development build via the unified CLI; a target is required
-# (linux, bsd, wsl, deb, rpm, pkg, static)
+# (linux, bsd, wsl, vm, deb, rpm, pkg, static)
 python build.py linux
 
 # Documentation site (see docs/dev-environment.md#documentation-site)

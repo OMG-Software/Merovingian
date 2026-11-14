@@ -286,7 +286,7 @@ The unified build script configures, compiles, and tests in one step:
 
 ```sh
 sh scripts/setup-dev-env.sh      # install toolchain and configure build dir
-python build.py linux             # or `python build.py wsl` on Windows
+python build.py linux             # on Windows: `python build.py vm` (Linux VM) or `python build.py wsl`
 ```
 
 After a successful build, the binaries are at:

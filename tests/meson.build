@@ -216,6 +216,12 @@ shell = find_program('sh')
   )
 
   test(
+    'build-vm-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_build_vm.py'],
+  )
+
+  test(
     'security-workflow-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_security_workflows.py'],

@@ -321,8 +321,8 @@ would pass with the test silently not run. Each CI job that runs Catch2 therefor
   name mapped to the groups it combines). `test` is the scenario name without the `Scenario: ` prefix;
   `message` is an optional substring the SKIP message must contain; `reason` says why this runner skips it.
 - `<name>` is a key of the `jobs` object in `tests/expected_skips.json`. The build scripts take
-  `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`); `build-wsl.sh` has no `--skip-job`, so WSL runs are not
-  skip-gated. They set
+  `--skip-job <name>` (`build-linux.sh`, `build-bsd.sh`); `build-wsl.sh` has no `--skip-job`, and `build.py vm` passes none, so
+  WSL and VM runs are not skip-gated. They set
   `MEROVINGIAN_CATCH_REPORT_DIR`, so every test binary also writes an XML report there, and run
   `scripts/check_expected_skips.py` after the suite. A skip that is not listed for the job fails the job and is
   printed with the test name, message and source line. No report, a truncated report or a bad list also fails.

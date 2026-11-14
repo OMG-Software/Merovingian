@@ -143,6 +143,112 @@ client headers, Catch2, clang tooling, cppcheck, and a current Meson/Ninja
 virtual environment. The virtual environment is used because the distribution
 Meson in Ubuntu 24.04 is too old to configure the repo's C++26 build.
 
+### Building on a Linux VM
+
+`python build.py vm` builds and tests on a Linux virtual machine (or any Linux
+host) over ssh, from Windows or any other host with Python, Git and OpenSSH.
+The VM's native ext4 file system avoids every NTFS workaround above, and a
+build there does not compete with the editor for the Windows host's memory.
+See [ADR-0752](adr/0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md).
+
+Each run:
+
+1. Lists the files to send: every tracked file as it is on disk (uncommitted
+   edits included, with Git's executable bit), and every untracked file Git does
+   not ignore, except under a top-level name starting with `build` or `.`.
+2. Reads the manifest the VM kept from the last run and sends, as one tar stream
+   over ssh, only the files whose mode, size or modification time differ. Files
+   the last manifest listed and this one does not are deleted on the VM.
+3. Takes one lock for the whole VM, so a second run from any checkout waits
+   ("another run holds the VM lock"), then runs `scripts/build-linux.sh` in
+   `~/merovingian-vm/<checkout name>-<hash of its path>`, one directory per local
+   checkout or worktree.
+4. Copies `meson-logs/testlog.txt` and `testlog.json` back to the same build
+   directory locally, `build-vm/meson-logs/` by default, and prints the `Ok:`,
+   `Fail:` and `Timeout:` counts. It deletes the local and the VM's previous logs
+   first, so a build that fails before testing leaves no log, never an old one.
+
+The exit status is the build's. Because the VM-side build directory and the
+local one share a name, `build-vm/meson-logs/testlog.txt` is read the same way
+as any other build's log.
+
+One-time setup:
+
+1. Create a key for the build only and add its public half to the VM user's
+   `~/.ssh/authorized_keys`:
+
+   ```sh
+   ssh-keygen -t ed25519 -N '' -C merovingian-vm-build -f ~/.ssh/merovingian_vm_ed25519
+   ```
+
+2. Connect once with `ssh` and check the host key fingerprint against the VM's
+   console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). `build.py vm`
+   runs ssh with `StrictHostKeyChecking=yes` and `BatchMode=yes`: it never
+   accepts an unknown or changed host key and never prompts.
+3. Write the settings to `~/.config/merovingian/vm.ini` (or the file
+   `MEROVINGIAN_VM_CONFIG` names). The file lives outside the repository, so
+   every worktree reads it and no address is committed:
+
+   ```ini
+   [vm]
+   host = 192.0.2.10
+   user = builder
+   identity = ~/.ssh/merovingian_vm_ed25519
+   # port = 22
+   # jobs = 4
+   ```
+
+   `--host`, `--user`, `--port`, `--identity` and `--jobs` override the file, and
+   `MEROVINGIAN_VM_HOST`, `MEROVINGIAN_VM_USER`, `MEROVINGIAN_VM_PORT`,
+   `MEROVINGIAN_VM_IDENTITY` and `MEROVINGIAN_VM_JOBS` override it when no flag
+   is given. An unknown key in `[vm]` is an error.
+4. Sync once and install the packages on the VM, as a user who can `sudo`:
+
+   ```sh
+   python build.py vm --exec true
+   # then, on the VM:
+   cd ~/merovingian-vm/<checkout directory> && sh scripts/remote-host-setup.sh
+   ```
+
+   `scripts/remote-host-setup.sh` prepares a remote build host, the VM or
+   another Linux machine (`scripts/wsl-setup.sh` is for WSL only). It accepts Ubuntu, Debian and distributions whose
+   `ID_LIKE` names either, such as Linux Mint; installs with `apt-get` the
+   compiler, linker and every library `build-linux.sh` checks for, including
+   libcurl, libpng and libjpeg-turbo; and installs Meson 1.11 or later and
+   Ninja in a virtual environment linked into `~/.local/bin`, because Ubuntu
+   24.04's Meson is too old for the C++26 build. `build.py vm` puts
+   `~/.local/bin` first on `PATH` for the build. `--dry-run` prints the
+   commands; re-running it is safe.
+
+Usage:
+
+```sh
+# Full build and test suite in build-vm
+python build.py vm
+
+# Other build-linux.sh options work as they do for linux
+python build.py vm --builddir build-vm-asan --profile sanitizer
+python build.py vm --clean --compile-only
+
+# Sync, then run one command in the VM checkout instead of building; --exec comes last
+python build.py vm --exec ./build-vm/tests/merovingian-unit-tests "[push]"
+```
+
+`--exec` runs with `MEROVINGIAN_TEST_DISABLE_HARDENING=1`, as `meson test` does,
+under the same lock. `--dry-run` reads the VM's manifest and prints the number of
+files it would send and the script the VM would run, without sending anything.
+
+Without `--jobs`, a run compiles and tests with one job per 1.5 GiB of the VM's
+memory, never more than its CPUs: a C++26 translation unit here can take over
+1 GiB to compile, and Meson's default of one job per CPU runs a small VM out of
+memory. Give the VM memory rather than lowering `--jobs` where you can.
+
+The `--builddir` must be a relative path whose first part starts with `build`,
+so the sync never sends it. PostgreSQL integration tests run only when
+`MEROVINGIAN_TEST_POSTGRESQL_URI` is set on the VM, as on any other host. If
+ssh drops mid-run, the build keeps running on the VM and holds the lock until it
+ends; the next run waits for it.
+
 Project-owned headers should use quoted includes. Use the rewrite helper to
 convert angle-bracket Merovingian includes in source trees:
 
@@ -203,6 +309,9 @@ python build.py bsd
 
 # WSL (Windows Subsystem for Linux)
 python build.py wsl
+
+# A Linux VM over ssh (see "Building on a Linux VM")
+python build.py vm
 
 # AddressSanitizer + UBSan through WSL
 python build.py wsl --builddir build-asan --buildtype debug --sanitize address,undefined
@@ -277,7 +386,9 @@ sh scripts/build-linux.sh
 ```
 
 The default build directory is `build`, with `CC=clang` and `CXX=clang++`.
-Override these when using another compiler:
+`--jobs <n>` caps both the compile jobs and the tests run at once (`build.py
+linux --jobs` and `build.py vm` pass it on); without it Meson picks its own.
+Override the compiler when using another one:
 
 ```sh
 sh scripts/build-linux.sh --builddir build-dev --cc clang-22 --cxx clang++-22
