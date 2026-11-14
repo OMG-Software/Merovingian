@@ -975,6 +975,31 @@ SCENARIO("Every room a federation request concerns is listed for the sync status
         }
     }
 
+    GIVEN("/send bodies that name no room: not JSON, an array, an object without pdus, and pdus that are not objects")
+    {
+        auto const bodies = std::vector<std::string>{
+            R"({"pdus":[)",
+            R"([{"room_id":"!array:example.com"}])",
+            R"({"origin":"remote.example","edus":[]})",
+            R"({"pdus":[1,"!text:example.com",[{"room_id":"!nested:example.com"}],{"room_id":7}]})",
+        };
+
+        WHEN("the rooms each concerns are listed")
+        {
+            THEN("none is listed, and the request has no shard key")
+            {
+                for (auto const& body : bodies)
+                {
+                    auto request = make_request("/_matrix/federation/v1/send/txn-none", body);
+                    request.method = "PUT";
+                    INFO(body);
+                    REQUIRE(federation_request_room_ids(request).empty());
+                    REQUIRE(federation_worker_room_id_from_request(request).empty());
+                }
+            }
+        }
+    }
+
     GIVEN("a room-scoped path request and a request that names no room")
     {
         auto const state = make_request("/_matrix/federation/v1/state/%21pathroom%3Aexample.com?event_id=%24e");

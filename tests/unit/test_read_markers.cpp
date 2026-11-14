@@ -6,9 +6,9 @@
 #include "merovingian/database/PersistentReceipt.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/sync/ReadMarkers.hpp"
+#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 #include "merovingian/sync/UnreadEventClassifier.hpp"
 #include "merovingian/sync/UnreadEventOutcome.hpp"
-#include "merovingian/sync/SlidingSyncRoomBuilder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -296,6 +296,66 @@ SCENARIO("Unread counts and read markers read only the room they are asked about
                 REQUIRE_FALSE(classifier.asked.contains("$b2"));
                 REQUIRE_FALSE(classifier.asked.contains("$a-rejected"));
                 REQUIRE_FALSE(classifier.asked.contains("$a-outlier"));
+            }
+        }
+    }
+}
+
+// Spec: Client-Server API, POST /rooms/{roomId}/receipt/{receiptType}/{eventId}, 400: "The event_id is not related to
+// the thread_id". The chain is followed for at most 3 hops, as for event_thread_id (ADR-0746).
+SCENARIO("event_relates_to follows an event's relation chain to the target within three hops",
+         "[sync][read-markers][adr0746]")
+{
+    GIVEN("a root, a reply to it, an edit of the reply, an edit of that edit, a parent that is not JSON, and a parent "
+          "held in another room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        add_event(store, "$root", R"({"type":"m.room.message","content":{"body":"root"}})", 1U);
+        add_event(store, "$reply", relates_to("m.thread", "$root"), 2U);
+        add_event(store, "$edit", relates_to("m.replace", "$reply"), 3U);
+        add_event(store, "$edit2", relates_to("m.replace", "$edit"), 4U);
+        add_event(store, "$broken", "not json", 5U);
+        auto elsewhere = merovingian::database::PersistentEvent{};
+        elsewhere.event_id = "$elsewhere";
+        elsewhere.room_id = "!other:example.org";
+        elsewhere.sender_user_id = "@bob:example.org";
+        elsewhere.json = relates_to("m.thread", "$root");
+        elsewhere.stream_ordering = 6U;
+        store.events.push_back(std::move(elsewhere));
+
+        auto const relates = [&](std::string const& json, std::string_view target) {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+            auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+            REQUIRE(object != nullptr);
+            return merovingian::sync::event_relates_to(store, "!room:example.org", *object, target);
+        };
+
+        WHEN("events are judged against the root")
+        {
+            THEN("an event reaching it in one, two or three hops relates to it")
+            {
+                REQUIRE(relates(relates_to("m.thread", "$root"), "$root"));
+                REQUIRE(relates(relates_to("m.replace", "$reply"), "$root"));
+                REQUIRE(relates(relates_to("m.replace", "$edit"), "$root"));
+            }
+            THEN("one that needs a fourth hop does not")
+            {
+                REQUIRE_FALSE(relates(relates_to("m.replace", "$edit2"), "$root"));
+            }
+            THEN("one with no relation, an empty related event ID, or a related event ID that is not a string does "
+                 "not")
+            {
+                REQUIRE_FALSE(relates(R"({"type":"m.room.message","content":{"body":"x"}})", "$root"));
+                REQUIRE_FALSE(relates(relates_to("m.thread", ""), "$root"));
+                REQUIRE_FALSE(
+                    relates(R"({"type":"m.room.message","content":{"m.relates_to":{"event_id":7}}})", "$root"));
+            }
+            THEN("a chain through a parent the room does not hold, one that is not JSON, or one held only in another "
+                 "room ends without relating")
+            {
+                REQUIRE_FALSE(relates(relates_to("m.replace", "$missing"), "$root"));
+                REQUIRE_FALSE(relates(relates_to("m.replace", "$broken"), "$root"));
+                REQUIRE_FALSE(relates(relates_to("m.replace", "$elsewhere"), "$root"));
             }
         }
     }
