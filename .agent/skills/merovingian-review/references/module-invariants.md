@@ -149,12 +149,14 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   `src/federation_worker/AGENTS.md#Rules — non-negotiable`
 - The worker opens no database, on either backend. Its store is filled from main under one-use permits
   (ADR-0733, ADR-0735).
-- Landlock, then the seccomp filter, before any thread (ADR-0082). Without them the worker refuses to start
-  (ADR-0041): on a kernel without Landlock, and on FreeBSD and OpenBSD, which have no in-process sandbox for it
-  (the server exits 80, `docs/user-manual.md#Install from a distro package (recommended)`). The only ways round
-  are the documented opt-outs, `federation.worker.allow_without_landlock=true` and
-  `federation.worker.apply_hardening=false`, for an operator who confines the worker another way. A change that
-  adds another way to run unsandboxed, or skips the refusal, is a finding. `#Hardening`
+- Landlock, then the seccomp filter, before any thread (ADR-0082). The two are separate controls with separate
+  opt-outs. Landlock is applied whatever `federation.worker.apply_hardening` says; only
+  `federation.worker.allow_without_landlock=true` lets the worker start where Landlock is unavailable, with a
+  CRITICAL log on every start (`#Rules — non-negotiable` item 3). `federation.worker.apply_hardening=false`
+  skips only the seccomp, no-new-privs and capability step (ADR-0041). On FreeBSD and OpenBSD neither exists, so
+  the default refuses to start (the server exits 80) and an operator who confines the worker another way must
+  set **both** (`docs/user-manual.md#Install from a distro package (recommended)`). A change that adds another
+  way to run unsandboxed, folds one opt-out into the other, or skips a refusal is a finding. `#Hardening`
 - `local_pool` and `relay_pool` stay separate, routed by `federation_endpoint_requires_main_relay`.
 - `room_sync` runs on `reload_pool` through `RoomReloadCoalescer` and `StoreReadGuard`. Hold no lock across IPC,
   and copy what a table lends before releasing (ADR-0623).
