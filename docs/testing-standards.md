@@ -23,6 +23,10 @@ This rule applies to:
 - Avoid implementation-detail-oriented naming.
 - Prefer one behavioral assertion group per test.
 - Security-sensitive code requires negative-path tests.
+- A scratch file or directory a test creates gets a unique name from `merovingian::tests::unique_temporary_path()`
+  (`tests/support/TempDirectory.hpp`), never a fixed name in the shared temporary directory, and a test that writes
+  one checks the write succeeded before using it: another account's leftover file cannot be replaced, and a
+  concurrent run would overwrite it (ADR-0753).
 
 ## Unit or integration
 

@@ -17,9 +17,10 @@
 // |  the outbound half existed as dead code before and still compiled.      |
 // +-------------------------------------------------------------------------+
 
-#include "../support/ScopedThreadJoin.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
+#include "../support/ScopedThreadJoin.hpp"
+#include "../support/TempDirectory.hpp"
 #include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
@@ -103,6 +104,8 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
             },
             "protocols": []
         })";
+        out.close();
+        REQUIRE(out.good());
     }
     auto security = merovingian::config::SecurityConfig{};
     // A runtime refuses to mint a signing secret it cannot encrypt at rest
@@ -143,7 +146,7 @@ SCENARIO("an unknown room alias inside an appservice namespace is queried before
 {
     GIVEN("an appservice claiming #_bridge_.* and a mock server that declines the alias")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-queryhook-alias.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-queryhook-alias", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -197,7 +200,7 @@ SCENARIO("A lookup naming an identifier over 255 bytes is refused before any app
 {
     GIVEN("an appservice claiming #_bridge_.* and @_bridge_.*, and a mock server")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-queryhook-long.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-queryhook-long", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -276,7 +279,7 @@ SCENARIO("an unknown alias outside every appservice namespace is not sent to any
 {
     GIVEN("the same appservice, claiming only #_bridge_.*")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-queryhook-alias-outside.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-queryhook-alias-outside", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();
@@ -322,7 +325,7 @@ SCENARIO("an unknown user inside an appservice namespace is queried before 404",
 {
     GIVEN("an appservice claiming @_bridge_.* and a mock server that declines the user")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-queryhook-user.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-queryhook-user", ".json");
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
         auto const port = acceptor.bound_port();

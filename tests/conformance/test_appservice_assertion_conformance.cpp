@@ -15,6 +15,7 @@
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
 #include "../support/RegistrationToken.hpp"
+#include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -64,6 +65,8 @@ auto write_overlapping_registrations(std::filesystem::path const& path_a, std::f
                 "rooms": []
             }
         })";
+        out.close();
+        REQUIRE(out.good());
     }
     {
         auto out = std::ofstream{path_b, std::ios::binary};
@@ -79,6 +82,8 @@ auto write_overlapping_registrations(std::filesystem::path const& path_a, std::f
                 "rooms": []
             }
         })";
+        out.close();
+        REQUIRE(out.good());
     }
 }
 
@@ -159,8 +164,8 @@ SCENARIO("an appservice cannot register, log in as, or assert a user in another 
     // application service."
     GIVEN("service A (non-exclusive @.*) and service B (exclusive @_b_.*)")
     {
-        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-auth7-a.json";
-        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-auth7-b.json";
+        auto const path_a = merovingian::tests::unique_temporary_path("merovingian-conformance-auth7-a", ".json");
+        auto const path_b = merovingian::tests::unique_temporary_path("merovingian-conformance-auth7-b", ".json");
         auto const config = overlapping_services_config(path_a, path_b);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -271,8 +276,8 @@ SCENARIO("an appservice cannot assert a user that does not exist or is deactivat
     // unregistered or deactivated user with 403 M_FORBIDDEN.
     GIVEN("service A (non-exclusive @.*) on a freshly started server")
     {
-        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-auth12-a.json";
-        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-auth12-b.json";
+        auto const path_a = merovingian::tests::unique_temporary_path("merovingian-conformance-auth12-a", ".json");
+        auto const path_b = merovingian::tests::unique_temporary_path("merovingian-conformance-auth12-b", ".json");
         auto const config = overlapping_services_config(path_a, path_b);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -354,8 +359,8 @@ SCENARIO("identity assertion does not apply to Account Management", "[appservice
     // ?user_id=, so whoami stays assertable.
     GIVEN("service A with a registered virtual user, and an ordinary human user")
     {
-        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-auth8-a.json";
-        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-auth8-b.json";
+        auto const path_a = merovingian::tests::unique_temporary_path("merovingian-conformance-auth8-a", ".json");
+        auto const path_b = merovingian::tests::unique_temporary_path("merovingian-conformance-auth8-b", ".json");
         auto const config = overlapping_services_config(path_a, path_b);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -477,8 +482,8 @@ SCENARIO("an appservice asserts a user on an endpoint matched by its whole path"
 {
     GIVEN("service A with a registered virtual user")
     {
-        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-qs-a.json";
-        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-qs-b.json";
+        auto const path_a = merovingian::tests::unique_temporary_path("merovingian-conformance-qs-a", ".json");
+        auto const path_b = merovingian::tests::unique_temporary_path("merovingian-conformance-qs-b", ".json");
         auto const config = overlapping_services_config(path_a, path_b);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -529,8 +534,8 @@ SCENARIO("an appservice's device_id assertion reads the device table under the r
 {
     GIVEN("service A with a registered user, and this thread holding the runtime lock")
     {
-        auto const path_a = std::filesystem::temp_directory_path() / "merovingian-conformance-f66-a.json";
-        auto const path_b = std::filesystem::temp_directory_path() / "merovingian-conformance-f66-b.json";
+        auto const path_a = merovingian::tests::unique_temporary_path("merovingian-conformance-f66-a", ".json");
+        auto const path_b = merovingian::tests::unique_temporary_path("merovingian-conformance-f66-b", ".json");
         auto const config = overlapping_services_config(path_a, path_b);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);

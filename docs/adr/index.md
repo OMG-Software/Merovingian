@@ -634,3 +634,4 @@
 * [0750 - Complement's image also lists localhost as a cleartext appservice host](0750-complements-image-also-lists-localhost-as-a-cleartext-appservice-host.md)
 * [0751 - The per-client outbound call cap is configurable and defaults to three](0751-the-per-client-outbound-call-cap-is-configurable-and-defaults-to-three.md)
 * [0752 - build.py vm syncs the working tree over ssh and runs build-linux.sh](0752-build-py-vm-syncs-the-working-tree-over-ssh-and-runs-build-linux-sh.md)
+* [0753 - Tests never write a fixed name in the shared temporary directory](0753-tests-never-write-a-fixed-name-in-the-shared-temporary-directory.md)

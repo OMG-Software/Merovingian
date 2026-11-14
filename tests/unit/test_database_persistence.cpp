@@ -2292,7 +2292,7 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
 {
     GIVEN("a temporary migration file with explicit statement names")
     {
-        auto const directory = merovingian::tests::temporary_directory() / "merovingian-migration-file-test";
+        auto const directory = merovingian::tests::unique_temporary_path("merovingian-migration-file-test", "");
         std::filesystem::create_directories(directory);
         auto const file = directory / "003_policy_rules.sql";
         {

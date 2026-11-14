@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/TempDirectory.hpp"
 
 // Security audit run-4 F-03 (ADR-0581): a room alias is created only while its creator is under
 // max_room_aliases_per_user and its room under max_room_aliases_per_room, so the alias listing
@@ -82,6 +83,8 @@ struct Reply final
             "rooms": []
         }
     })";
+    out.close();
+    REQUIRE(out.good());
     return path.string();
 }
 
@@ -349,7 +352,7 @@ SCENARIO("An application service is exempt from the per-user alias cap but not t
 {
     GIVEN("a bridge and a server that allows one alias per user and three per room")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-f03-alias-bridge.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-f03-alias-bridge", ".json");
         auto const registration = write_bridge_registration(path);
         auto started = merovingian::homeserver::start_client_server(caps_config(1U, 3U, registration));
         REQUIRE(started.started);
@@ -448,7 +451,7 @@ SCENARIO("Only the owning application service deletes an alias in its exclusive 
 {
     GIVEN("a bridge with an exclusive alias namespace and a user who is the recorded creator of an alias in it")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-c40-alias-bridge.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-c40-alias-bridge", ".json");
         auto const registration = write_bridge_registration(path);
         auto started = merovingian::homeserver::start_client_server(caps_config(100U, 100U, registration));
         REQUIRE(started.started);

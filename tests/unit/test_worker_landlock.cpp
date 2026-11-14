@@ -619,7 +619,7 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
 {
     GIVEN("an allowed directory and a separate, unrelated directory holding a secret file")
     {
-        auto const base = merovingian::tests::temporary_directory() / "merovingian-landlock-test";
+        auto const base = merovingian::tests::unique_temporary_path("merovingian-landlock-test", "");
         auto const allowed_dir = base / "allowed";
         auto const denied_dir = base / "denied";
         std::filesystem::create_directories(allowed_dir);
