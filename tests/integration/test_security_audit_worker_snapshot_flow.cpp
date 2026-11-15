@@ -238,9 +238,16 @@ auto write_worker_config(std::filesystem::path const& path, merovingian::config:
            R"(",sig=")" + signature + R"(",destination=")" + std::string{destination} + R"(")";
 }
 
+// A room create_room_and_set_acl made: its ID, the access token of the admin who created it, and its ACL event's ID.
+struct AclRoom
+{
+    std::string room_id;
+    std::string admin_token;
+    std::string acl_event_id;
+};
+
 [[nodiscard]] auto create_room_and_set_acl(merovingian::homeserver::HomeserverRuntime& runtime,
-                                           std::string_view local_server_name)
-    -> std::tuple<std::string, std::string, std::string>
+                                           std::string_view local_server_name) -> AclRoom
 {
     auto const admin_user = std::string{"worker_snapshot_admin"};
     auto const registration = merovingian::homeserver::bootstrap_admin_user(runtime, admin_user, "CorrectHorse7!");
@@ -438,9 +445,9 @@ SCENARIO("A federation read of an event sent a moment ago is answered while the 
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         runtime.federation.remote_key_resolver = make_remote_key_resolver();
-        auto const [room_id, admin_token, ignored_acl_event_id] =
-            create_room_and_set_acl(runtime, config.server().server_name);
-        std::ignore = ignored_acl_event_id;
+        auto const room = create_room_and_set_acl(runtime, config.server().server_name);
+        auto const& room_id = room.room_id;
+        auto const& admin_token = room.admin_token;
 
         auto const worker_link = link_worker_binary(temporary.path());
         auto proxy = merovingian::homeserver::FederationProxy{config.federation_worker(), runtime, worker_link.string(),
@@ -622,8 +629,9 @@ SCENARIO("A room the worker's start-up copy left out is served by main until the
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         runtime.federation.remote_key_resolver = make_remote_key_resolver();
-        auto const [room_id, admin_token, acl_event_id] = create_room_and_set_acl(runtime, config.server().server_name);
-        std::ignore = admin_token;
+        auto const room = create_room_and_set_acl(runtime, config.server().server_name);
+        auto const& room_id = room.room_id;
+        auto const& acl_event_id = room.acl_event_id;
 
         // Test-only fault injection: main lists its rooms from `rooms`, but each room's snapshot also reads `invites`.
         auto database_table = SqliteTableHider{config.database().sqlite_path};
@@ -781,9 +789,9 @@ SCENARIO("A room created after the workers started is loaded and held by every s
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         runtime.federation.remote_key_resolver = make_remote_key_resolver();
-        auto const [listed_room_id, admin_token, listed_acl_event_id] =
-            create_room_and_set_acl(runtime, config.server().server_name);
-        std::ignore = listed_acl_event_id;
+        // Only the admin's token is used: the helper's room exists before the workers start, and this scenario is about
+        // a room created after them.
+        auto const admin_token = create_room_and_set_acl(runtime, config.server().server_name).admin_token;
 
         auto proxy = merovingian::homeserver::FederationProxy{
             config.federation_worker(), runtime, std::string{test_worker_binary()}, worker_config_path.string()};
@@ -852,9 +860,9 @@ SCENARIO("A /send whose first PDU has no room is judged on shard 0's copy of eve
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         runtime.federation.remote_key_resolver = make_remote_key_resolver();
-        auto const [first_room_id, admin_token, first_acl_event_id] =
-            create_room_and_set_acl(runtime, config.server().server_name);
-        std::ignore = first_acl_event_id;
+        auto const first_room = create_room_and_set_acl(runtime, config.server().server_name);
+        auto const& first_room_id = first_room.room_id;
+        auto const& admin_token = first_room.admin_token;
         auto room_id = merovingian::homeserver::federation_worker_shard_for(first_room_id, 2U) == 1U
                            ? std::string{first_room_id}
                            : std::string{};

@@ -3048,6 +3048,8 @@ SCENARIO("A first join into a restricted room stores the resident's verified co-
             return resident_remote_runtime();
         };
 
+        // This server holds nothing of the room, so the join is a first join that no stored state can vouch for. Only
+        // the resident's key resolves, so a co-signature made with any other key cannot verify.
         auto const room_id = std::string{"!restricted745:"} + resident_server;
         auto const creator = std::string{"@creator:"} + resident_server;
         auto const policy = *merovingian::rooms::find_room_version_policy("10");
@@ -3065,6 +3067,7 @@ SCENARIO("A first join into a restricted room stores the resident's verified co-
                 quoted(chain.create_id) + "," + quoted(chain.creator_join_id) + "," + quoted(chain.power_levels_id)),
             policy, resident_server, resident_key_id, resident_key_seed);
         chain.join_rules_id = reference_event_id(chain.join_rules, policy);
+        // make_join's template names the creator as the authorising user, so only the resident can sign for it.
         auto const make_join_event = naming_auth_events(
             std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
                 R"(","sender":")" + alice + R"(","depth":5,"origin_server_ts":1000,"prev_events":[)" +
@@ -3090,12 +3093,14 @@ SCENARIO("A first join into a restricted room stores the resident's verified co-
             REQUIRE(out.error == merovingian::canonicaljson::CanonicalJsonError::none);
             return out.output;
         };
+        // The join this server sent, signed again under the resident's server name with the key `seed` derives.
         auto const co_signed_with = [&](std::string const& seed) {
             return [&policy, &serialized, seed](merovingian::canonicaljson::Value const& received) {
                 return serialized(
                     sign_test_event(serialized(received), policy, resident_server, resident_key_id, seed));
             };
         };
+        // Runs one join against the resident, which answers make_join with the template and send_join as told.
         auto const join_answered = [&](std::function<std::string(std::string const&)> const& send_response_for) {
             auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
