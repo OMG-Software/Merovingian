@@ -3,6 +3,27 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.0
+
+## Features
+
+* The plan for a built-in OAuth 2.0 API, which Element X needs to create accounts, is in
+  `docs/todos/oauth-2-0-api.md`. Nothing the server does has changed yet (ADR-0760 to ADR-0764).
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* None.
+
+## Release notes
+
+1.1.0 is in development and so far holds only the plan for the OAuth 2.0 API and the decisions behind it. When the
+feature lands, a configuration that sets any `server.oidc.*` key will be refused at start-up: remove those keys and
+set `server.oauth.enabled` instead.
+
 # Version 1.0.2
 
 ## Features

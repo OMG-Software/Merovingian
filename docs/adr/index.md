@@ -641,3 +641,8 @@
 * [0757 - Hardened BSD builds link -pie, and the ELF gate reads elftoolchain readelf](0757-hardened-bsd-builds-link-pie-and-the-elf-gate-reads-elftoolchain-readelf.md)
 * [0758 - Every worker shard reloads every changed room, and main tracks each shard's copy](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)
 * [0759 - Main builds make_leave and make_knock templates while the worker's reload of the room is pending](0759-main-builds-make-leave-and-make-knock-templates-while-the-workers-reload-is-pending.md)
+* [0760 - The OAuth 2.0 API is built into the homeserver](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)
+* [0761 - The legacy authentication API stays on by default, and a config key turns it off](0761-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md)
+* [0762 - The registration page applies the legacy registration settings](0762-the-registration-page-applies-the-legacy-registration-settings.md)
+* [0763 - The authentication pages are built into the binary, without JavaScript](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md)
+* [0764 - `server.oauth.*` replaces `server.oidc.*`, and the old keys are refused](0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)
