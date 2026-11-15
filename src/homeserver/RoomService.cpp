@@ -2828,6 +2828,30 @@ namespace
         return federation::pdu_format_violation(canonicaljson::Value{completed_event}, policy);
     }
 
+    // ADR-0761: the transport failures in which the destination gave no answer. A redirect or an oversized body is
+    // an answer, and a request refused before any I/O (bad URL, method or header) says nothing about the destination.
+    [[nodiscard]] auto destination_gave_no_answer(http::OutboundError error) noexcept -> bool
+    {
+        switch (error)
+        {
+        case http::OutboundError::unresolved_host:
+        case http::OutboundError::tls_verification_failed:
+        case http::OutboundError::connection_failed:
+        case http::OutboundError::timeout:
+        case http::OutboundError::network_error:
+            return true;
+        case http::OutboundError::none:
+        case http::OutboundError::invalid_url:
+        case http::OutboundError::invalid_method:
+        case http::OutboundError::https_required:
+        case http::OutboundError::redirect_rejected:
+        case http::OutboundError::response_too_large:
+        case http::OutboundError::invalid_header:
+            return false;
+        }
+        return false;
+    }
+
 } // namespace
 
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
@@ -2912,7 +2936,7 @@ namespace
                                                  {"destination", transaction.destination,   false},
                                                  {"reason",      "server discovery failed", false}
             });
-            return {false, "server discovery failed"};
+            return {false, "server discovery failed", 0U, {}, true};
         }
         resolved_host = resolution.resolved_host;
         tls_server_name = resolution.tls_server_name;
@@ -3019,7 +3043,8 @@ namespace
                 outcome.error_detail.empty() ? "remote server returned " + std::to_string(outcome.response.status)
                                              : outcome.error_detail,
                 outcome.ok ? outcome.response.status : std::uint16_t{0U},
-                outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{}};
+                outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{},
+                !outcome.ok && destination_gave_no_answer(outcome.error)};
     }
     return {true, outcome.response.body, outcome.response.status};
 }

@@ -107,6 +107,7 @@
 #include "merovingian/homeserver/PresenceService.hpp"
 #include "merovingian/homeserver/PublicRooms.hpp"
 #include "merovingian/homeserver/PushRuleUnreadClassifier.hpp"
+#include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
 #include "merovingian/homeserver/RegistrationValidationSession.hpp"
 #include "merovingian/homeserver/RemoteDeviceListScope.hpp"
 #include "merovingian/homeserver/RemoteInviteResult.hpp"
@@ -12381,6 +12382,15 @@ namespace
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
         }
+        auto const destination = std::string{server_name_from_user_id(target_user)};
+        // ADR-0761: a server that gave no answer moments ago is not asked again until the record expires. Clients
+        // look profiles up by themselves (member lists, invite dialogs), so each would otherwise wait out the deadline.
+        if (rt.homeserver.profile_unreachable_servers.contains(destination, RecentlyUnreachableServers::Clock::now()))
+        {
+            LOG_DEBUG("event=profile.proxy destination=" + destination +
+                      " reason=gave no answer recently; not asked again yet");
+            return dispatch_err(req, rt, 502U, "M_UNKNOWN", "The remote server did not answer a recent request");
+        }
         auto const proxy_deadline = effective_client_outbound_deadline(
             rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
         wire_federation_callbacks(rt.homeserver);
@@ -12394,8 +12404,7 @@ namespace
         {
             target += "&field=" + std::string{field};
         }
-        auto const tx = federation::make_outbound_transaction(std::string{server_name_from_user_id(target_user)}, "GET",
-                                                              target, our_server, {});
+        auto const tx = federation::make_outbound_transaction(destination, "GET", target, our_server, {});
         auto const result = [&] {
             // Re-acquire before returning: dispatch_resp/dispatch_err read reloadable runtime state.
             auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
@@ -12403,6 +12412,14 @@ namespace
                                                              key_id, std::move(secret), "profile.proxy",
                                                              proxy_deadline);
         }();
+        if (result.remote_unreachable)
+        {
+            rt.homeserver.profile_unreachable_servers.remember(destination, RecentlyUnreachableServers::Clock::now());
+        }
+        else if (result.ok || result.remote_status != 0U)
+        {
+            rt.homeserver.profile_unreachable_servers.forget(destination);
+        }
         if (result.remote_status == 404U)
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile not found");

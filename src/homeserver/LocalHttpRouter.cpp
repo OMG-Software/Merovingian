@@ -3651,6 +3651,17 @@ namespace
         std::size_t max_calls{};
         std::chrono::steady_clock::time_point deadline{};
         bool key_resolution_locally_denied{};
+        // ADR-0760: state events a /state_ids snapshot listed that the origin, asked with GET /event during this
+        // recovery, did not supply (refused, missing, unusable or no answer). A later snapshot in the same recovery
+        // that lists one of them cannot be completed, so it ends without asking again. Only listed state events are
+        // recorded: the per-reference fetch and a snapshot's own target are asked for separately, as before. Never
+        // outlives the recovery; the next deferred retry asks again.
+        std::unordered_set<std::string> unsupplied_events{};
+
+        [[nodiscard]] auto origin_did_not_supply(std::string_view event_id) const -> bool
+        {
+            return unsupplied_events.contains(std::string{event_id});
+        }
 
         [[nodiscard]] auto within_deadline() const noexcept -> bool
         {
@@ -4792,10 +4803,21 @@ namespace
                 {
                     return false;
                 }
+                // ADR-0760: the origin already failed to supply this event during this recovery and its answer
+                // was logged then, so this snapshot cannot be completed and the event is not asked for again.
+                if (budget.origin_did_not_supply(id))
+                {
+                    LOG_DEBUG("backfill_state_ids_snapshot: a listed event was already not supplied in this "
+                              "recovery; room_id=" +
+                              std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
+                              " event_id=" + id);
+                    return false;
+                }
                 auto supplied =
                     fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls, budget);
                 if (!supplied.has_value())
                 {
+                    budget.unsupplied_events.emplace(id);
                     LOG_WARNING("backfill_state_ids_snapshot: a listed event could not be fetched with /event; "
                                 "room_id=" +
                                 std::string{room_id} + " target_event_id=" + std::string{target_event_id} +

@@ -14,6 +14,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentStateEvent.hpp"
@@ -43,6 +44,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1124,6 +1126,113 @@ SCENARIO("GET /profile/{userId} for a user of another server asks that server ov
             {
                 REQUIRE(response.response.status == 404U);
                 REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ADR-0761: clients look remote profiles up by themselves, from member lists and invite dialogs, so a server that
+// gives no answer would otherwise cost one outbound slot and the whole deadline per lookup. Once it has given no
+// answer it is not asked again for a minute; a server that answers, even 404, is asked every time.
+SCENARIO("GET /profile/{userId} does not ask again a server that just gave no answer",
+         "[homeserver][client-server][profile][fed-endpoints][adr0761]")
+{
+    GIVEN("a remote server that accepts each connection and closes it without a TLS session or an answer")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["silent.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto connections = std::atomic<std::size_t>{0U};
+        auto stop = std::atomic<bool>{false};
+        auto server_thread = std::thread{[&]() {
+            while (!stop.load())
+            {
+                auto const fd = merovingian::tests::tls_mock::accept_loopback(acceptor, 50);
+                if (fd >= 0)
+                {
+                    auto const closed_at_once = merovingian::core::SocketHandle{fd};
+                    connections.fetch_add(1U);
+                }
+            }
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+        struct StopOnExit final
+        {
+            std::atomic<bool>& flag;
+            ~StopOnExit() noexcept
+            {
+                flag.store(true);
+            }
+        };
+        auto const stop_on_exit = StopOnExit{stop};
+
+        WHEN("a client reads profiles of that server's users twice in a row")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40bob%3Asilent.example.net", {}, {}});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40carol%3Asilent.example.net/displayname", {}, {}});
+
+            THEN("both are answered 502, and only the first reached the server")
+            {
+                REQUIRE(first.response.status == 502U);
+                REQUIRE(second.response.status == 502U);
+                REQUIRE(second.response.body.find("M_UNKNOWN") != std::string::npos);
+                REQUIRE(connections.load() == 1U);
+            }
+        }
+    }
+
+    GIVEN("a remote server that answers each profile query with 404")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["remote.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+        auto const not_found = merovingian::tests::tls_mock::json_http_response(
+            "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"no such user"})");
+        auto const responses = std::vector<std::pair<std::string, std::string>>{
+            {"user_id=%40nobody%3Aremote.example.net", not_found},
+            {"user_id=%40nobody%3Aremote.example.net", not_found},
+        };
+        auto captured = std::vector<std::string>{};
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("a client reads the same missing profile twice")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aremote.example.net", {}, {}});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aremote.example.net", {}, {}});
+
+            THEN("both are 404 and both were asked of the server")
+            {
+                REQUIRE(first.response.status == 404U);
+                REQUIRE(second.response.status == 404U);
+                REQUIRE(captured.size() == 2U);
             }
         }
     }

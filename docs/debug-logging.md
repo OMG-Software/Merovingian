@@ -38,6 +38,22 @@ when a gateway answered after more than half the total timeout and was counted a
 deadline and queued a pusher unattempted. `account.deactivated.pusher_removal_failed` (warning,
 `user_id`) is logged when a pusher of a deactivated account could not be deleted.
 
+## Repeated remote failures logged once (1.0.3)
+
+Two remote failures are logged at warning when they happen and at debug when this
+server declines to repeat them:
+
+- Backfill: `federation.backfill.snapshot_event_fetch_failed` (module `rooms`) and the
+  `backfill_state_ids_snapshot: a listed event could not be fetched` warning are
+  written once per event and recovery. A later state snapshot in the same recovery
+  that lists the same event ends without a request and logs the debug line
+  `a listed event was already not supplied in this recovery` (ADR-0760). The
+  deferred retry runs a new recovery, which asks, and warns, again.
+- Remote profile lookups: `profile.proxy` with `http_status=0` is a warning when a
+  server gives no answer. For the next 60 s, lookups for that server's users are
+  answered 502 without a call and log the debug line `event=profile.proxy ...
+  reason=gave no answer recently` (ADR-0761).
+
 ## Room creation failures
 
 `room.create.failed` (module `rooms`) is an error, not debug-only. It is
