@@ -44,8 +44,10 @@ Should a recovery ask the origin again for a listed state event it has already f
 
 Chosen option: the first. `BackfillBudget::unsupplied_events` holds the IDs. `backfill_state_ids_snapshot` records a
 listed state event whenever its fetch brought back no usable PDU (refused, missing, another event, or no answer),
-and ends a later snapshot that lists a recorded ID without a request, logging at DEBUG, since the failure itself was
-logged at WARNING when it happened. `fetch_event_by_id` and `fetch_snapshot_event_by_id` neither record nor consult
+and ends a later snapshot that lists a recorded ID, neither held nor stored since, before it fetches any of its listed
+events, logging at DEBUG, since the failure itself was logged at WARNING when it happened. The check comes first
+because phase 1 stores nothing until every event is in hand: a snapshot that fetched the events listed before the
+refused one would fetch them again only to discard them. `fetch_event_by_id` and `fetch_snapshot_event_by_id` neither record nor consult
 the set. The set belongs to one `BackfillBudget`, so it never outlives the recovery, and the next deferred retry asks
 again.
 

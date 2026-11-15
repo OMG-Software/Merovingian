@@ -614,7 +614,7 @@ only endpoints the spec requires and the origin may be asked for:
   nothing stored.
 - A recovery asks the origin for a listed state event at most once (ADR-0760). A state event a `/state_ids` snapshot
   listed and the origin did not supply is kept in `BackfillBudget::unsupplied_events`, and a later snapshot that lists
-  it ends without a request. Only `backfill_state_ids_snapshot`'s listed-event fetch records or consults the set: the
+  it (neither held nor stored since) ends before it fetches any of its events. Only `backfill_state_ids_snapshot`'s listed-event fetch records or consults the set: the
   per-reference fetch and a snapshot's target fetch ask as before, since the target is fetched again once its state is
   known (ADR-0069). The set lives only as long as the recovery's `BackfillBudget`; the deferred retry asks again.
 - `verify_and_store_backfilled_event` is called with `runtime.mutex` released. It takes the room stripe and then

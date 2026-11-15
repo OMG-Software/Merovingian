@@ -12416,7 +12416,7 @@ namespace
         {
             rt.homeserver.profile_unreachable_servers.remember(destination, RecentlyUnreachableServers::Clock::now());
         }
-        else if (result.ok || result.remote_status != 0U)
+        else if (result.remote_answered)
         {
             rt.homeserver.profile_unreachable_servers.forget(destination);
         }

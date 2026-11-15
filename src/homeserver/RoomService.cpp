@@ -2852,6 +2852,13 @@ namespace
         return false;
     }
 
+    // ADR-0761: the transport failures that still mean the destination sent an HTTP response: a redirect this server
+    // will not follow, and a response too large to accept.
+    [[nodiscard]] auto destination_sent_a_response(http::OutboundError error) noexcept -> bool
+    {
+        return error == http::OutboundError::redirect_rejected || error == http::OutboundError::response_too_large;
+    }
+
 } // namespace
 
 [[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, OutboundAnswerTrust trust,
@@ -3044,9 +3051,10 @@ namespace
                                              : outcome.error_detail,
                 outcome.ok ? outcome.response.status : std::uint16_t{0U},
                 outcome.ok ? remote_invite_blocked_errcode(outcome.response.body) : std::string{},
-                !outcome.ok && destination_gave_no_answer(outcome.error)};
+                !outcome.ok && destination_gave_no_answer(outcome.error),
+                outcome.ok || destination_sent_a_response(outcome.error)};
     }
-    return {true, outcome.response.body, outcome.response.status};
+    return {true, outcome.response.body, outcome.response.status, {}, false, true};
 }
 
 // How long a published signing key advertises itself as valid. Federation peers

@@ -26,6 +26,7 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
 #include "merovingian/homeserver/RemoteTimestampEvent.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -1233,6 +1234,53 @@ SCENARIO("GET /profile/{userId} does not ask again a server that just gave no an
                 REQUIRE(first.response.status == 404U);
                 REQUIRE(second.response.status == 404U);
                 REQUIRE(captured.size() == 2U);
+            }
+        }
+    }
+
+    GIVEN("a server still in the record, its entry expired, that now answers with a redirect")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto tls_context = std::move(*tls.context);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        rt.homeserver.test_forced_outbound_resolution["moved.example.net"] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+        // An entry that has expired but not been dropped, as an overlapping lookup's failure leaves while this one
+        // is in flight: the lookup goes out, and only the answer can remove the entry.
+        rt.homeserver.profile_unreachable_servers.remember(
+            "moved.example.net",
+            merovingian::homeserver::RecentlyUnreachableServers::Clock::now() - std::chrono::minutes{2});
+        REQUIRE(rt.homeserver.profile_unreachable_servers.size() == 1U);
+        auto const responses = std::vector<std::pair<std::string, std::string>>{
+            {"user_id=%40dave%3Amoved.example.net",
+             merovingian::tests::tls_mock::json_http_response("302 Found", R"({})")},
+        };
+        auto captured = std::vector<std::string>{};
+        auto server_thread = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, tls_context, responses, &captured);
+        }};
+        auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("a client reads a profile of that server's user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40dave%3Amoved.example.net", {}, {}});
+
+            THEN("the redirect is not followed, but the server answered, so it is forgotten")
+            {
+                REQUIRE(response.response.status != 200U);
+                REQUIRE(captured.size() == 1U);
+                REQUIRE(rt.homeserver.profile_unreachable_servers.size() == 0U);
             }
         }
     }

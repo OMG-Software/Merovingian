@@ -46,7 +46,7 @@ server declines to repeat them:
 - Backfill: `federation.backfill.snapshot_event_fetch_failed` (module `rooms`) and the
   `backfill_state_ids_snapshot: a listed event could not be fetched` warning are
   written once per event and recovery. A later state snapshot in the same recovery
-  that lists the same event ends without a request and logs the debug line
+  that lists the same event ends before fetching any of its events and logs the debug line
   `a listed event was already not supplied in this recovery` (ADR-0760). The
   deferred retry runs a new recovery, which asks, and warns, again.
 - Remote profile lookups: `profile.proxy` with `http_status=0` is a warning when a

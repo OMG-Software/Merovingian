@@ -24,6 +24,10 @@ struct OutboundCallResult final
     // connection, no verified TLS session or no response in time. False on success, on any HTTP answer (including a
     // redirect or an oversized body) and on a refusal made here before anything was sent (policy, deadline, key).
     bool remote_unreachable{false};
+    // ADR-0761: true when the destination sent an HTTP response, whatever this server then made of it: a success, any
+    // other status, a redirect it refused to follow or a body too large to accept. `remote_status` is 0 for the last
+    // two, so it cannot stand in for this.
+    bool remote_answered{false};
 };
 
 } // namespace merovingian::homeserver

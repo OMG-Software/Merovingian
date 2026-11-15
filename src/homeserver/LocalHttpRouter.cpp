@@ -4764,6 +4764,34 @@ namespace
         // event the origin cannot supply (a gap in the auth chain, a state event
         // it will not serve) ends the attempt with nothing stored. The fetches
         // are bounded by max_snapshot_outbound_calls and the shared budget.
+        // ADR-0760: a listed state event the origin already failed to supply in this recovery, and that is neither
+        // held nor stored since, means this snapshot cannot be completed. End it before fetching any of the others,
+        // which phase 1 would fetch only to discard. The failure itself was logged when it happened.
+        if (!budget.unsupplied_events.empty())
+        {
+            auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+            for (auto const& id : needed_ids)
+            {
+                if (!budget.origin_did_not_supply(id) || held.find(id) != held.end())
+                {
+                    continue;
+                }
+                {
+                    auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+                    auto global_guard = RuntimeLock{runtime.mutex};
+                    if (runtime.database.persistent_store.events.contains(id))
+                    {
+                        continue;
+                    }
+                }
+                LOG_DEBUG("backfill_state_ids_snapshot: a listed event was already not supplied in this recovery; "
+                          "room_id=" +
+                          std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
+                          " event_id=" + id);
+                return false;
+            }
+        }
+
         struct SnapshotFetch final
         {
             std::string id{};
@@ -4801,16 +4829,6 @@ namespace
             {
                 if (snapshot_calls >= limits.max_snapshot_outbound_calls)
                 {
-                    return false;
-                }
-                // ADR-0760: the origin already failed to supply this event during this recovery and its answer
-                // was logged then, so this snapshot cannot be completed and the event is not asked for again.
-                if (budget.origin_did_not_supply(id))
-                {
-                    LOG_DEBUG("backfill_state_ids_snapshot: a listed event was already not supplied in this "
-                              "recovery; room_id=" +
-                              std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
-                              " event_id=" + id);
                     return false;
                 }
                 auto supplied =

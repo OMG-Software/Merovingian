@@ -43,7 +43,10 @@ found no server or the request got no connection, no verified TLS session or no 
 oversized body and an error status are answers. `remote_profile_response` records such a server in
 `HomeserverRuntime::profile_unreachable_servers` (`RecentlyUnreachableServers`: 60 s, at most 4096 servers, expired
 entries and then the oldest dropped when full). While it is recorded, a lookup for any of its users is answered 502
-`M_UNKNOWN` with no outbound call, logged at DEBUG. A server that answers at all is forgotten.
+`M_UNKNOWN` with no outbound call, logged at DEBUG. A server that answers at all is forgotten: `perform_outbound_call`
+sets `OutboundCallResult::remote_answered` for any HTTP response, a redirect it refuses to follow and an oversized
+body included. `remote_status` is 0 for those two, so it is not the test; a lookup overlapping one that failed would
+otherwise leave the server recorded although it had just answered.
 
 The record covers profile lookups only. Other client-triggered calls (public room directory, thirdparty) are made
 when a user asks for them, not automatically, so they keep asking every time.
