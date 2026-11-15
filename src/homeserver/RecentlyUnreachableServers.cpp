@@ -66,7 +66,12 @@ auto RecentlyUnreachableServers::make_room(Clock::time_point now) -> void
     auto const oldest = std::ranges::min_element(m_failed_at, {}, [](auto const& entry) {
         return entry.second;
     });
-    m_failed_at.erase(oldest);
+    // The set is not empty here (size >= capacity > 0), but GCC 16 at -O3 cannot see that and reports erasing end()
+    // as a null dereference.
+    if (oldest != m_failed_at.end())
+    {
+        m_failed_at.erase(oldest);
+    }
 }
 
 } // namespace merovingian::homeserver
