@@ -13,6 +13,8 @@ Built only when `-Dbuild_fuzz=true` is passed to Meson.
 | `fuzz_config_parser.cpp` | Key-value config parser (`parse_key_value_config`) |
 | `fuzz_stream_token.cpp` | Stream token decoder (`decode_stream_token`) |
 | `fuzz_query_params.cpp` | Query-string parser and percent-decoder |
+| `fuzz_form_fields.cpp` | Strict `application/x-www-form-urlencoded` reader (`core::FormFields::parse`) |
+| `fuzz_request_cookies.cpp` | `Cookie` header reader (`core::RequestCookies::parse`); bytes after the first NUL are the name looked up |
 | `fuzz_srv_record.cpp` | Portable DNS SRV record parser (`parse_srv_records`) |
 | `fuzz_multipart_upload.cpp` | multipart/mixed parser for a remote's federation media download (`parse_federation_media_multipart`); bytes before the first NUL are the Content-Type |
 | `fuzz_url_preview_html.cpp` | URL preview HTML/OpenGraph extractor, content-type check and reference resolver |

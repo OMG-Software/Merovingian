@@ -60,6 +60,22 @@ fuzz_targets = [
     link_with: [core_lib],
   ),
   executable(
+    'fuzz-form-fields',
+    sources: files('fuzz_form_fields.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    link_with: [core_lib],
+  ),
+  executable(
+    'fuzz-request-cookies',
+    sources: files('fuzz_request_cookies.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    link_with: [core_lib],
+  ),
+  executable(
     'fuzz-srv-record',
     sources: files('fuzz_srv_record.cpp'),
     include_directories: inc,

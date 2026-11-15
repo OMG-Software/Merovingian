@@ -1,8 +1,9 @@
+# core first: it links nothing of the project's, and canonicaljson links it (core::utf8_is_valid).
+subdir('core')
 subdir('crypto')
 # canonicaljson before auth: auth links it (Identity.cpp, OidcDiscovery.cpp).
 subdir('canonicaljson')
 subdir('auth')
-subdir('core')
 # http and platform before email, and email before config: config validation
 # calls email's address and relay-URL checks, and email sends through libcurl.
 subdir('http')

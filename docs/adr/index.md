@@ -646,3 +646,5 @@
 * [0762 - The registration page applies the legacy registration settings](0762-the-registration-page-applies-the-legacy-registration-settings.md)
 * [0763 - The authentication pages are built into the binary, without JavaScript](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md)
 * [0764 - `server.oauth.*` replaces `server.oidc.*`, and the old keys are refused](0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)
+* [0765 - A form body is read strictly and refused whole](0765-a-form-body-is-read-strictly-and-refused-whole.md)
+* [0766 - A malformed or repeated cookie makes only its own name unusable](0766-a-malformed-or-repeated-cookie-makes-only-its-own-name-unusable.md)

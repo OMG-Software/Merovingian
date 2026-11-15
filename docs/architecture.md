@@ -160,7 +160,8 @@ flowchart TB
 
 Most foundation modules use `core` (RAII utilities, `not_null`,
 `secret_buffer`); it is the leaf of the graph. `observability` and `config`
-do not use it directly. `http` and `email` link it.
+do not use it directly. `http`, `email` and `canonicaljson` link it (`canonicaljson`
+for `core::utf8_is_valid`), so `src/meson.build` builds `core` first.
 
 ## Runtime model
 
