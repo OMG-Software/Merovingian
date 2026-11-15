@@ -72,6 +72,25 @@ namespace
     };
 }
 
+[[nodiscard]] auto sso_redirect_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.sso.enabled = true;
+    server.sso.authorization_url = "https://sso.example.org/authorize";
+    server.sso.redirect_url_allowlist = {"https://client.example.com/"};
+    return {
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto connect_loopback(std::uint16_t port) -> int
 {
     auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -837,6 +856,124 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
                 REQUIRE(response.find(R"("user_id":"@tlsalice:example.org")") != std::string::npos);
                 REQUIRE(stats.accepted_connections >= 1U);
                 REQUIRE(stats.completed_requests >= 1U);
+            }
+        }
+    }
+}
+
+// A handler's status and headers reach the wire through one formatter for plain and TLS listeners alike
+// (http/ResponseHead.hpp, ADR-0767). The SSO redirect is today's one handler that answers 302 with a Location; the
+// OAuth 2.0 pages (302, 303, HTML, Set-Cookie) take the same path.
+SCENARIO("merovingian-server writes a redirect with its reason phrase and one Content-Type over plain and TLS",
+         "[homeserver][http][listener][tls][integration][response-head]")
+{
+    GIVEN("an SSO-enabled runtime and a plain and a TLS listener")
+    {
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+
+        auto const config = sso_redirect_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto plain_acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(plain_acceptor.bind("127.0.0.1", 0U).ok);
+        auto tls_acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(tls_acceptor.bind("127.0.0.1", 0U).ok);
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto plain_stats = merovingian::homeserver::HttpServeStats{};
+        auto tls_stats = merovingian::homeserver::HttpServeStats{};
+        // Declared after the runtime so the pools are destroyed first (see the first scenario in this file).
+        auto runtime = std::move(runtime_result.runtime);
+        auto plain_pool = merovingian::net::ThreadPool{2U};
+        auto tls_pool = merovingian::net::ThreadPool{2U};
+        auto const request = std::string{"GET /_matrix/client/v3/login/sso/redirect?redirectUrl="
+                                         "https%3A%2F%2Fclient.example.com%2Fdone HTTP/1.1\r\n"
+                                         "Host: localhost\r\nConnection: close\r\n\r\n"};
+
+        WHEN("a client asks each listener for the redirect")
+        {
+            auto plain_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(plain_acceptor, runtime, shutdown, plain_stats,
+                                                    merovingian::homeserver::HttpDispatchMode::client_server,
+                                                    plain_pool);
+            }};
+            auto tls_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_tls_http(
+                    *tls_context.context, tls_acceptor, runtime, shutdown, tls_stats,
+                    merovingian::homeserver::HttpDispatchMode::client_server, tls_pool);
+            }};
+            struct ServerThreadsGuard final
+            {
+                merovingian::net::ShutdownSignal& shutdown_signal;
+                std::thread& first;
+                std::thread& second;
+
+                ~ServerThreadsGuard()
+                {
+                    shutdown_signal.fire();
+                    for (auto* thread : {&first, &second})
+                    {
+                        if (thread->joinable())
+                        {
+                            thread->join();
+                        }
+                    }
+                }
+            } server_threads_guard{shutdown, plain_thread, tls_thread};
+
+            auto const plain_fd = connect_loopback(plain_acceptor.bound_port());
+            REQUIRE(plain_fd >= 0);
+            REQUIRE(send_all(plain_fd, request));
+            auto const plain_response = receive_until_close(plain_fd);
+            ::close(plain_fd);
+
+            auto client_context = std::unique_ptr<SSL_CTX, SslContextDeleter>{SSL_CTX_new(TLS_client_method())};
+            REQUIRE(client_context != nullptr);
+            SSL_CTX_set_verify(client_context.get(), SSL_VERIFY_NONE, nullptr);
+            auto const tls_fd = connect_loopback(tls_acceptor.bound_port());
+            REQUIRE(tls_fd >= 0);
+            auto client_socket = merovingian::core::SocketHandle{tls_fd};
+            auto client_tls = std::unique_ptr<SSL, SslDeleter>{SSL_new(client_context.get())};
+            REQUIRE(client_tls != nullptr);
+            REQUIRE(SSL_set_fd(client_tls.get(), client_socket.native_handle()) == 1);
+            REQUIRE(SSL_connect(client_tls.get()) == 1);
+            REQUIRE(send_all_tls(*client_tls, request));
+            auto tls_reader = TlsResponseReader{};
+            auto const tls_response = receive_tls_response(*client_tls, tls_reader);
+
+            shutdown.fire();
+            plain_thread.join();
+            tls_thread.join();
+            plain_pool.request_stop();
+            tls_pool.request_stop();
+
+            THEN("both answers are the same 302 Found head with one Location and one Content-Type")
+            {
+                auto const head_of = [](std::string const& response) {
+                    return response.substr(0U, response.find("\r\n\r\n") + 4U);
+                };
+                auto const count = [](std::string_view text, std::string_view needle) {
+                    auto found = std::size_t{0U};
+                    for (auto at = text.find(needle); at != std::string_view::npos; at = text.find(needle, at + 1U))
+                    {
+                        ++found;
+                    }
+                    return found;
+                };
+                for (auto const* response : {&plain_response, &tls_response})
+                {
+                    REQUIRE(response->starts_with("HTTP/1.1 302 Found\r\n"));
+                    auto const head = head_of(*response);
+                    REQUIRE(count(head, "\r\nLocation: https://sso.example.org/authorize?") == 1U);
+                    REQUIRE(count(head, "redirectUrl=") == 1U);
+                    REQUIRE(count(head, "\r\nContent-Type: ") == 1U);
+                    REQUIRE(count(head, "\r\nX-Content-Type-Options: nosniff") == 1U);
+                    REQUIRE(count(head, "\r\nContent-Length: 0\r\n") == 1U);
+                }
+                REQUIRE(head_of(plain_response) == head_of(tls_response));
             }
         }
     }

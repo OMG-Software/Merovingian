@@ -320,7 +320,9 @@ namespace
         }
         for (auto const& existing : headers)
         {
-            if (existing.first == name)
+            // Case-insensitive: a handler's `content-security-policy` is the same header, and a second copy would
+            // reach the wire beside it.
+            if (http::header_names_equal(existing.first, name))
             {
                 return;
             }

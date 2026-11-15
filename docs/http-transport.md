@@ -255,11 +255,47 @@ disables keep-alive and the round is answered with `Connection: close`.
 
 ## Response-header safety
 
-Runtime-generated response headers are validated with the shared HTTP header
-grammar before they are stored or written to the wire. This prevents CR/LF and
-other invalid octets from being reflected through CORS or future dynamic header
-surfaces. The wire formatter also injects `X-Content-Type-Options: nosniff`
-when the response did not already set it.
+Every listener, plain and TLS alike, writes a handler's `LocalHttpResponse` through one formatter,
+`http::format_response_head` / `http::format_response` (`http/ResponseHead.hpp`, ADR-0767). The handler's headers
+go first, in its order; then the transport's own: `X-Content-Type-Options: nosniff` unless the handler sent it,
+`Content-Length`, `Content-Type` (the handler's, else `application/json`) and `Connection` (with `Keep-Alive` on a
+kept connection). Header names are matched case-insensitively (`http::header_names_equal`), so a handler's
+`content-type: text/html; charset=utf-8` replaces the default rather than adding a second `Content-Type`.
+
+The formatter refuses, and nothing is dropped or repaired, when the status is outside 200-599, a header name is not
+an RFC 9110 token, a value holds a control character other than HTAB (so no CR or LF can start a header of its own),
+a handler sets `Content-Length`, `Transfer-Encoding`, `Connection` or `Keep-Alive`, `Content-Type` comes twice, or
+`X-Content-Type-Options` comes twice or is not `nosniff`. `HttpServer.cpp` then logs `response.head_refused` (with the
+fixed reason, never the header) at error level, sends a fixed `500 M_UNKNOWN` with no handler header and
+`Connection: close`, skips a streamed body, and closes the connection. A worker's federation answer, whose headers a
+compromised worker chooses, is held to the same rules.
+
+Runtime-generated response headers are also validated with the shared HTTP header grammar before they are stored
+(`append_header_if_missing` in `ClientServerRuntime.cpp`, which skips a header already present in any case).
+
+The reason phrase comes from `http::reason_phrase`: 200, 202, 302 `Found`, 303 `See Other`, 400, 401, 403, 404,
+405, 408, 409, 413, 415, 429, 451, 500, 501, 502, 503, 504 and 507. Any other status is written with an empty phrase
+(`HTTP/1.1 418 `), which RFC 9112 allows; it used to be `OK`.
+
+A response body is bytes: nothing between the handler and the socket reads or rewrites it, so an HTML page, a
+redirect or a JSON document travels the same way.
+
+## Form bodies and cookies
+
+`core::FormFields::parse` reads an `application/x-www-form-urlencoded` body strictly (ADR-0765): a malformed `%`
+escape, a field with no `=` or an empty name, an empty field (`&&`), a raw byte outside printable ASCII, a decoded
+NUL or invalid UTF-8, and a repeated name each refuse the whole body. `+` is a space; an empty body is an empty set.
+Caps, each refused rather than cut: 64 KiB of body, 64 fields, 64 bytes of decoded name, 8 KiB of decoded value.
+`parse_query_params` stays lenient and is not for these bodies.
+
+`core::RequestCookies::parse` reads a `Cookie` header (RFC 6265 section 4.2.1) without percent-decoding (ADR-0766).
+A sibling host under the same parent domain can add cookies to what the browser sends, so a malformed or repeated
+cookie makes only its own name unusable: `find(name)` answers only for exactly one well-formed pair. A control
+character, more than 32 KiB or more than 256 pairs refuses the header. `core::host_cookie` and
+`core::host_cookie_deletion` (`core/HostCookie.hpp`) are the only `Set-Cookie` writers: a `__Host-` name, `Secure`,
+`HttpOnly`, `Path=/`, `SameSite=Lax` or `Strict`, and a `Max-Age` of 1 second to 400 days (0 for the deletion).
+Form values and cookie values can be secrets: neither reader logs, an error never quotes input, and both wipe what they
+hold when destroyed.
 
 ## Outbound HTTP client
 
@@ -1425,6 +1461,7 @@ change needs before/after evidence.
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.
+`fuzz-form-fields` and `fuzz-request-cookies` exercise the form-body and `Cookie` header readers.
 
 ## Configurable transport budgets (0.12.18)
 

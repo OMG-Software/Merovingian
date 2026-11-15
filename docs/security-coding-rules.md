@@ -1001,6 +1001,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   less strict.
   Source: `src/http/AGENTS.md`.
 
+- **A response head that cannot be written safely is refused with a 500, never repaired or
+  trimmed** (`http::format_response_head`, ADR-0767): an invalid header name, a value with CR,
+  LF or another control character, a handler's framing header, or a second `Content-Type`.
+  Why: a dropped header can be a security control (a content security policy, a cookie
+  deletion), and a second `Content-Length` or `Content-Type`, which a federation worker could
+  supply, lets a proxy or browser read a different response than the one intended.
+  Source: `src/http/AGENTS.md`.
+
+- **Form bodies and cookies are read by the strict readers in `core`** (`FormFields`,
+  `RequestCookies`, ADR-0765, ADR-0766), and cookies are written only by `host_cookie`.
+  Why: a lenient reader that resolves a repeated parameter or cookie silently lets one value
+  be checked and another used; a cookie without the `__Host-` prefix can be overwritten by a
+  sibling host.
+  Source: `src/core/AGENTS.md`.
+
 - **Route all outbound federation requests through `OutboundClient.hpp` — no ad-hoc HTTP
   calls from other modules.**
   Why: the outbound client implements the Matrix server-discovery protocol including the
@@ -1828,7 +1843,7 @@ For finding everything a specific file contributed, without re-reading the whole
 |---|---|
 | `docs/coding-rules.md` (required by root `AGENTS.md`) | Memory safety and resource ownership |
 | `security/AGENTS.md`, `security/coding-rules.md` | Memory safety; Secrets and logging; Cryptography; Process |
-| `src/core/AGENTS.md` | Memory safety; Secrets and logging; Sync |
+| `src/core/AGENTS.md` | Memory safety; Secrets and logging; HTTP and network boundary; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
 | `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |

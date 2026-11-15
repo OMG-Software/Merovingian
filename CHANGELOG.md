@@ -9,14 +9,18 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * The plan for a built-in OAuth 2.0 API, which Element X needs to create accounts, is in
   `docs/todos/oauth-2-0-api.md`. Nothing the server does has changed yet (ADR-0760 to ADR-0764).
+* Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, for the OAuth 2.0
+  pages and endpoints; no route uses them yet (ADR-0765, ADR-0766).
 
 ## Security Fixes
 
-* None.
+* A response header that would frame the message (`Content-Length`, `Connection`, ...) or holds CR or LF now turns
+  the response into a 500 instead of being written or silently dropped (ADR-0767).
 
 ## Bug fixes
 
-* None.
+* A handler's `Content-Type` spelled in another letter case no longer adds a second `Content-Type` to the response,
+  and 302, 303, 409, 504 and other statuses now carry their reason phrase instead of `OK`.
 
 ## Release notes
 

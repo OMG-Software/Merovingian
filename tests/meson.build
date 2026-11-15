@@ -430,6 +430,7 @@ shell = find_program('sh')
       'unit/test_security_audit_log_controls.cpp',
       'unit/test_security_audit_outbound.cpp',
       'unit/test_http_request.cpp',
+      'unit/test_http_response_head.cpp',
       'unit/test_core_form_fields.cpp',
       'unit/test_core_host_cookie.cpp',
       'unit/test_core_request_cookies.cpp',

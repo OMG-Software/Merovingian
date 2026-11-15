@@ -16,6 +16,7 @@ This module has no Matrix-specific logic — it is a transport layer only.
 | `KeepAlive.cpp` | `KeepAlivePolicy` — idle timeout and the `max_connections` cap on parked keep-alive connections (held by the connection dispatcher, not by worker threads); `Connection` header handling |
 | `OutboundClient.cpp` | Performs outbound HTTPS requests against a pre-resolved, pinned address |
 | `InFlightBudget.cpp` | `InFlightBudget` — admission guard bounding work in flight process-wide and per client key; `try_acquire` answers at once, never queues; RAII `Slot` and `Waiter` (ADR-0079, ADR-0310) |
+| `ResponseHead.cpp` | `format_response_head` / `format_response` / `reason_phrase`: the response head every listener writes; refuses a head it cannot write safely (ADR-0767) |
 | `LibraryVersions.cpp` | Reports the libcurl version (running and build-time) for the start-up log |
 
 `include/merovingian/http/Server.hpp` declares an `http::Server` class that has no
@@ -41,6 +42,10 @@ implementation and no users. The listening server lives in `homeserver/HttpServe
   `request.success`, `request.error` and `request.redirect_rejected` is `loggable_url`: scheme, host,
   port and path. A query can hold an identity server's `client_secret` or a user's URL. A new log site
   in this file uses the same string.
+- **A response head is refused, never repaired (ADR-0767).** `format_response_head` matches header names
+  case-insensitively and refuses a status outside 200-599, an invalid name or value (a CR or LF), a handler's
+  `Content-Length`, `Transfer-Encoding`, `Connection` or `Keep-Alive`, and a second `Content-Type` or
+  `X-Content-Type-Options`; `HttpServer.cpp` answers a fixed 500 and closes. Do not go back to skipping a bad header.
 - Body size limits are per-endpoint; see `homeserver/AGENTS.md` for the media upload exception.
 - **Per-client limits share one key.** `client_address_key` is the key for the per-IP connection
   cap (ADR-0072), the per-client worker share (ADR-0077) and the rate limiter. The first two use the

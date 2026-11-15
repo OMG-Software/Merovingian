@@ -648,3 +648,4 @@
 * [0764 - `server.oauth.*` replaces `server.oidc.*`, and the old keys are refused](0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)
 * [0765 - A form body is read strictly and refused whole](0765-a-form-body-is-read-strictly-and-refused-whole.md)
 * [0766 - A malformed or repeated cookie makes only its own name unusable](0766-a-malformed-or-repeated-cookie-makes-only-its-own-name-unusable.md)
+* [0767 - A response head the formatter cannot write safely is refused with a 500](0767-a-response-head-the-formatter-cannot-write-safely-is-refused-with-a-500.md)

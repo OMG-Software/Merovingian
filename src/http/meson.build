@@ -9,6 +9,7 @@ http_sources = files(
   'RateLimit.cpp',
   'Request.cpp',
   'RequestLimits.cpp',
+  'ResponseHead.cpp',
 )
 
 http_lib = static_library(
