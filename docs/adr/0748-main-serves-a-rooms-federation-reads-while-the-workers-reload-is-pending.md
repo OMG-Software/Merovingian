@@ -72,3 +72,5 @@ A failed one stays at warning level.
 * Uses [ADR-0711](0711-the-federation-read-providers-read-main-s-store-under-the-runtime-lock.md)
 * Refined by [ADR-0756](0756-main-serves-every-request-for-a-room-the-worker-has-never-loaded.md): a room the worker
   has never loaded is served by main in full, writes included
+* Refined by [ADR-0759](0759-main-builds-make-leave-and-make-knock-templates-while-the-workers-reload-is-pending.md):
+  GET `make_leave` and `make_knock` are reads, built by main while a reload is pending

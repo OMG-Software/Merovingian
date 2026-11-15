@@ -37,6 +37,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   local member has left; strangers are still refused (ADR-0747).
 * A federation read of a room, such as `/event_auth`, is answered by main while the worker is reloading the room, so
   an event sent a moment ago is no longer reported as missing (ADR-0748).
+* So are a remote user's `make_leave` and `make_knock`, so rejecting an invite a moment after it arrives builds a
+  leave that names the invite, and it is no longer refused with 403 (ADR-0759).
 * A remote server's join, knock, leave or PDU for a room created a moment ago is served by main until the
   federation worker has loaded the room, so it is no longer refused under a guessed room version (ADR-0756).
 * So is a room the worker's start-up copy left out, a room first changed while the worker's channel was down, and a

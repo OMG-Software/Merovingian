@@ -839,6 +839,12 @@ SCENARIO("A room read is served by main while the worker's reload of the room is
         auto const missing_events_get = make_request("/_matrix/federation/v1/get_missing_events/%21room%3Aexample.org");
         auto send_join = make_request("/_matrix/federation/v2/send_join/%21room%3Aexample.org/%24join");
         send_join.method = "PUT";
+        // ADR-0759: the leave and knock templates name the user's current membership, so they are reads of the room.
+        auto const make_leave = make_request("/_matrix/federation/v1/make_leave/%21room%3Aexample.org/%40bob%3Ar.org");
+        auto const make_knock = make_request("/_matrix/federation/v1/make_knock/%21room%3Aexample.org/%40bob%3Ar.org");
+        // A PUT of make_leave is no route the spec defines, so it does not fall back.
+        auto make_leave_put = make_leave;
+        make_leave_put.method = "PUT";
 
         WHEN("the worker's copy of the room is current")
         {
@@ -849,6 +855,8 @@ SCENARIO("A room read is served by main while the worker's reload of the room is
                 REQUIRE_FALSE(federation_room_request_served_by_main(event_auth, ok));
                 REQUIRE_FALSE(federation_room_request_served_by_main(state_ids, ok));
                 REQUIRE_FALSE(federation_room_request_served_by_main(transaction, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(make_leave, ok));
+                REQUIRE_FALSE(federation_room_request_served_by_main(make_knock, ok));
             }
         }
 
@@ -864,6 +872,9 @@ SCENARIO("A room read is served by main while the worker's reload of the room is
                 REQUIRE_FALSE(federation_room_request_served_by_main(missing_events_get, pending));
                 REQUIRE_FALSE(federation_room_request_served_by_main(send_join, pending));
                 REQUIRE_FALSE(federation_room_request_served_by_main(transaction, pending));
+                REQUIRE(federation_room_request_served_by_main(make_leave, pending));
+                REQUIRE(federation_room_request_served_by_main(make_knock, pending));
+                REQUIRE_FALSE(federation_room_request_served_by_main(make_leave_put, pending));
             }
         }
 

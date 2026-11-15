@@ -295,6 +295,11 @@ auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& re
         "/_matrix/federation/v1/backfill/",
         "/_matrix/federation/v1/event_auth/",
         "/_matrix/federation/v1/timestamp_to_event/",
+        // A make_leave or make_knock template names the user's current membership as an auth event, so a stale copy
+        // leaves out an invite main sent a moment ago and main refuses the send_leave built on it (ADR-0759).
+        // make_join needs no entry: the worker always has main build its template (ADR-0184).
+        "/_matrix/federation/v1/make_leave/",
+        "/_matrix/federation/v1/make_knock/",
     };
     return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
         return path.starts_with(prefix);

@@ -640,3 +640,4 @@
 * [0756 - Main serves every request for a room the federation worker has never loaded](0756-main-serves-every-request-for-a-room-the-worker-has-never-loaded.md)
 * [0757 - Hardened BSD builds link -pie, and the ELF gate reads elftoolchain readelf](0757-hardened-bsd-builds-link-pie-and-the-elf-gate-reads-elftoolchain-readelf.md)
 * [0758 - Every worker shard reloads every changed room, and main tracks each shard's copy](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)
+* [0759 - Main builds make_leave and make_knock templates while the worker's reload of the room is pending](0759-main-builds-make-leave-and-make-knock-templates-while-the-workers-reload-is-pending.md)

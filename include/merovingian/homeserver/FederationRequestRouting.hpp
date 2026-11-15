@@ -38,9 +38,10 @@ namespace merovingian::homeserver
 // serve authoritatively when the worker's room snapshot is known to be stale.
 // Only the reads that consume room state qualify: GET state, state_ids,
 // backfill, event_auth and timestamp_to_event, and POST get_missing_events,
-// which v1.19 defines as POST though it only reads (ADR-0748). Writes must
-// still reach the worker because they may trigger main-side relays and side
-// effects.
+// which v1.19 defines as POST though it only reads (ADR-0748), and GET
+// make_leave and make_knock, which build a template from room state and
+// change nothing (ADR-0759). Writes must still reach the worker because they
+// may trigger main-side relays and side effects.
 [[nodiscard]] auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool;
 
 // Returns true when a request for a room must be served by the main process instead of the worker shard that holds

@@ -104,7 +104,8 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    (`StoreReadGuard::reload_room_from`) asks main for the room at the round's generation, with no lock held, and takes
    the guard's exclusive lock only to swap the room's rows in memory; every provider that reads the store
    (ACL, room version, state, state_ids, event_auth, get_missing_events, backfill, timestamp_to_event,
-   hierarchy, the local make_leave/make_knock template) is wrapped by `wrap_store_readers` and holds the
+   hierarchy, the local make_leave/make_knock template, which main builds instead while this shard's reload of the
+   room is pending, ADR-0759) is wrapped by `wrap_store_readers` and holds the
    shared lock for its own call, returning values it owns. A relay transaction does NOT hold
    `runtime.mutex` across its round trips (`handle_federation_http_request` releases it before
    dispatch), so that mutex excludes nothing here. Wrap before the overrides that relay to main, never

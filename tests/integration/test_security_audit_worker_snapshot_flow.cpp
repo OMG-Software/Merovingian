@@ -497,16 +497,25 @@ SCENARIO("A federation read of an event sent a moment ago is answered while the 
             request.access_token = x_matrix_authorization(config.server().server_name, target);
             request.remote_addr = "198.51.100.27";
             auto const response = proxy.handle(request);
+            // ADR-0759: a remote user rejecting an invite main sent a moment ago asks for a leave template at once.
+            auto const leave_target = "/_matrix/federation/v1/make_leave/" + room_id + "/@bob:" + std::string{origin};
+            auto leave_request = request;
+            leave_request.target = leave_target;
+            leave_request.access_token = x_matrix_authorization(config.server().server_name, leave_target);
+            auto const leave_response = proxy.handle(leave_request);
             auto const status = proxy.room_sync_status(room_id);
             auto const still_down = proxy.worker_pid_for_room(room_id) == -1;
 
-            THEN("the auth chain is returned while the reload is pending, never 404")
+            THEN("the auth chain and a leave template are returned while the reload is pending, never 404")
             {
                 REQUIRE(still_down);
                 CHECK(status.state == "pending");
                 CHECK(status.held);
                 CHECK(response.status == 200U);
                 CHECK(response.body.find("auth_chain") != std::string::npos);
+                CAPTURE(leave_response.body);
+                CHECK(leave_response.status == 200U);
+                CHECK(leave_response.body.find(R"("membership":"leave")") != std::string::npos);
             }
         }
     }

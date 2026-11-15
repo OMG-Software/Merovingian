@@ -940,7 +940,9 @@ auto WorkerEventLoop::run() -> void
     // OTHER rooms, whose state this shard's snapshot may not hold or may hold
     // stale (a room_sync reload lags behind main's commit). Main holds
     // every room, so it builds the template. make_leave and make_knock need
-    // nothing outside the room being left or knocked on, so they stay local.
+    // nothing outside the room being left or knocked on, so they stay local;
+    // while this shard's reload of the room is pending, main builds them
+    // instead, so they name an invite main sent a moment ago (ADR-0759).
     runtime.federation.membership_template_provider =
         [channel_ptr, local_provider = runtime.federation.membership_template_provider](
             federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view user_id,
