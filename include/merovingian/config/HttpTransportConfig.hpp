@@ -40,6 +40,13 @@ namespace merovingian::config
 //                             proxying at most request_threads / 2 in total
 //                             (ADR-0079). Range 4..256; default 16; restart
 //                             required.
+//   client_outbound_max_per_client — of those outbound calls (remote
+//                             directory, media, keys and federated joins,
+//                             knocks and leaves), how many one client address
+//                             may have in flight at once; more are answered
+//                             429 at once. Never more than the global cap of
+//                             request_threads / 2. Range 1..128; default 3;
+//                             restart required (ADR-0751).
 struct HttpTransportConfig final
 {
     bool keep_alive{true};
@@ -48,6 +55,7 @@ struct HttpTransportConfig final
     std::uint32_t max_connections_per_ip{256U};
     std::uint8_t ipv6_client_prefix_length{64U};
     std::uint32_t request_threads{32U};
+    std::uint32_t client_outbound_max_per_client{3U};
     std::uint32_t sync_threads{128U};
     std::uint32_t sync_max_in_flight{512U};
     std::uint32_t sync_max_per_user{4U};

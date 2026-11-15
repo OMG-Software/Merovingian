@@ -218,6 +218,7 @@ Configuration (`server.http.*`, restart required — read when listeners start):
 | `server.http.max_connections_per_ip` | `256` | Open connections one client key may hold, 1..65535 (see below). |
 | `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by, 1..128. |
 | `server.http.request_threads` | `32` | Threads in the main request pool, 4..256. One client address may hold at most a quarter of them; client-triggered outbound proxying at most half (ADR-0079). |
+| `server.http.client_outbound_max_per_client` | `3` | Client-triggered outbound calls one client address may have in flight, 1..128, clamped to the global cap (ADR-0751). |
 
 ### Per-client connection cap (ADR-0072)
 
@@ -1143,7 +1144,8 @@ Rules:
   held by `HomeserverRuntime::client_outbound_budget`. Global cap half of the
   main request pool (`server.http.request_threads / 2`, so 16 by default; the
   other half of the pool always serves requests that never leave this
-  server); per-client cap 1, keyed by
+  server); per-client cap `server.http.client_outbound_max_per_client`, 3 by default
+  and never above the global cap (ADR-0751), keyed by
   `rate_limit_client_key` (the same key the rate limiter uses, so
   `trusted_proxies` and the IPv6 prefix grouping apply). Authenticated callers
   count too. Local `publicRooms`, local aliases and local media never take a slot.
@@ -1172,13 +1174,14 @@ Rules:
 - **Lock.** The slot is taken while the runtime lock is held and before it is
   released for the call (`RuntimeLockRelease`); it is dropped on every exit path
   by its destructor.
-- **Constants, not configuration.** The caps and deadlines live in
+- **What is configurable.** The caps and deadlines live in
   `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/ClientOutboundProxyPolicy.hpp`),
-  derived from the main request pool size (`client_outbound_proxy_policy_for_pool` in
-  `ClientOutboundProxy.hpp`,
-  applied by `start_runtime` from `server.http.request_threads`, ADR-0077). A
-  separate configuration key would let an operator raise the caps above the
-  pool size, which is the defect. Tests lower the deadline through
+  built by `client_outbound_proxy_policy_for_pool` in `ClientOutboundProxy.hpp` and applied
+  by `start_runtime`. The global cap is derived from `server.http.request_threads`
+  (ADR-0077) and has no key of its own: a key that could raise it above half the pool would
+  be the defect. The per-client cap is `server.http.client_outbound_max_per_client`, which
+  the policy clamps to the global cap, so it can share out that budget but never enlarge
+  it (ADR-0751). The deadlines are constants. Tests lower them through
   `runtime.client_outbound_proxy_policy`.
 - **Appservice query hooks.** `GET /profile/{userId}` and
   `GET /directory/room/{roomAlias}` take one slot for the whole loop over the

@@ -2359,7 +2359,8 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     call. The answer is `404 M_NOT_FOUND`.
   - HTTP-2: every client-triggered outbound call (the routes above plus remote media when
     enabled) takes a slot in `http::InFlightBudget` before it leaves: 4 in flight overall (half
-    the pool) and 1 per client address (`rate_limit_client_key`, so `trusted_proxies` applies).
+    the pool) and 3 per client address by default (`server.http.client_outbound_max_per_client`,
+    ADR-0751; keyed by `rate_limit_client_key`, so `trusted_proxies` applies).
     Over either cap the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000, at once. The
     total deadline, discovery included, is 10 s for directory lookups and 30 s for media, and
     the federation-worker round trip may exceed it by at most 2 s. The slot is an RAII object
@@ -2380,17 +2381,21 @@ membership. No whole-finding or release acceptance is claimed. See proposed
     local part of the answer is still returned. A join by remote alias takes a slot (`429` when none is
     free) and runs under the 10 s directory deadline. Tests: `[f-17]` in
     `tests/integration/test_client_outbound_proxy_flow.cpp`.
-- **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
-  (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
-  botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4
-  threads stay available to everything that does not leave this server. Threads are still
+- **Residual risk:** an attacker holding every slot of the global cap (half the pool) costs the
+  pool that half for up to 10 s (30 s for media) at a time. One address holds up to the
+  per-client cap, 3 by default (ADR-0751), so filling a global cap of 16 takes 6 addresses
+  rather than 16; an operator who sets the per-client cap equal to the global cap lets one
+  address fill it. A botnet can keep the slots busy and lock legitimate remote lookups out
+  with 429; the other half of the pool stays available to everything that does not leave
+  this server. Threads are still
   blocked while a call is in flight: the fix bounds how many, and a separate pool or an
   asynchronous proxy path was rejected for now. Outbound calls to operator-configured
   destinations that an unauthenticated client can trigger (identity-server `requestToken`)
   are not under the budget; the appservice `query_user` and `query_room_alias` hooks of
   `GET /profile` and `GET /directory/room` are, one slot per request (ADR-0417). DNS lookups
   inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
-  shared address that is not a configured trusted proxy share one per-client slot.
+  shared address that is not a configured trusted proxy share that address's per-client slots
+  (3 by default).
 
 ### Outbound destination agreement (OUT-1, OUT-2)
 
@@ -2708,7 +2713,8 @@ nothing, all from trusting the worker's view or the hook's transport.
   `pdu_ingest`, `membership_ingest` or `invite_ingest` frame is the worker's claim; a compromised worker can name an allowed
   origin, but not change what the signed event says (below).
 - **A /send routed to a shard with a stale snapshot passed the room ACL (F-24, ADR-0359).** The shard is chosen by the
-  first PDU's room ID, which the sender picks; only the owning shard learns of later state. A denied server with a joined
+  first PDU's room ID, which the sender picks; until 1.0.2 only the owning shard learned of later state (every shard
+  reloads every changed room since, ADR-0758, and a shard's copy still lags main's until its reload lands). A denied server with a joined
   user picked a shard whose snapshot lacked the ACL, and main's relay handler did not check. Mitigated: main reads the room's
   current `m.room.server_acl` for the transport origin and for the verified sender's server on every relayed PDU,
   membership event and invite; a refused PDU is reported with an `error` entry (`PduIngestionStatus::rejected_acl`). Residual:

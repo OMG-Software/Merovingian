@@ -18,17 +18,18 @@
 #include "../FederationSigningTestSupport.hpp"
 #include "../support/RemoteRoomFixture.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/federation/InboundPduEnvelope.hpp"
 #include "merovingian/federation/PduIngestionStatus.hpp"
-#include "merovingian/federation/InboundIngestion.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/WorkerPool.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -612,17 +613,42 @@ SCENARIO("main applies the room ACL to the verified inviter of a relayed invite,
 
 // F-12 (ADR-0591): main applies the acceptor's admission to a relayed send_join, send_leave or send_knock itself,
 // whatever the worker decided: a room in which no user of this server is joined, invited or knocking is not one it
-// answers for, so nothing is stored.
+// answers for, so nothing is stored. The one exception (ADR-0747) is a leave whose sender, a remote user, still holds
+// a join, invite or knock row there: that row bounds what is stored, so a sender with no row is refused as before.
 SCENARIO("main refuses a relayed membership event for a room with no local member and stores nothing",
-         "[integration][federation-worker][worker_policy_authority][f12]")
+         "[integration][federation-worker][worker_policy_authority][f12][adr0747]")
 {
     GIVEN("a room whose only local member has left, in main's store")
     {
-        WHEN("the worker relays a valid, signed membership event of the remote user")
+        WHEN("the worker relays a valid, signed leave of a remote user who holds no membership to end there")
         {
-            THEN("main does not take it in and the store is unchanged")
+            THEN("main refuses it at the admission gate and the store is unchanged")
             {
                 auto relay_case = RelayCase{RelayPath::membership, "no-interest", 110};
+                auto& runtime = relay_case.runtime();
+                for (auto& membership : runtime.database.persistent_store.memberships)
+                {
+                    if (membership.user_id == local_admin || membership.user_id == remote_member)
+                    {
+                        membership.membership = "leave";
+                    }
+                }
+                auto const before = store_shape(runtime);
+
+                auto const frame = relay_frame(RelayPath::membership, relay_case.event().envelope, remote_server);
+                auto const response = homeserver::handle_membership_ingest_request(runtime, frame);
+                CHECK(response.find(R"("accepted":true)") == std::string::npos);
+                CHECK(response.find("this server has no local member in that room") != std::string::npos);
+                CHECK(store_shape(runtime) == before);
+                CHECK_FALSE(event_stored(runtime, relay_case.event().envelope.event_id));
+            }
+        }
+
+        WHEN("the worker relays the leave of the remote member, who is still joined there")
+        {
+            THEN("main takes it in once, and the member's row becomes leave, so it admits no second leave")
+            {
+                auto relay_case = RelayCase{RelayPath::membership, "remote-leave", 112};
                 auto& runtime = relay_case.runtime();
                 for (auto& membership : runtime.database.persistent_store.memberships)
                 {
@@ -631,11 +657,13 @@ SCENARIO("main refuses a relayed membership event for a room with no local membe
                         membership.membership = "leave";
                     }
                 }
-                auto const before = store_shape(runtime);
 
-                CHECK_FALSE(relay_once(runtime, RelayPath::membership, relay_case.event(), remote_server));
-                CHECK(store_shape(runtime) == before);
-                CHECK_FALSE(event_stored(runtime, relay_case.event().envelope.event_id));
+                CHECK(relay_once(runtime, RelayPath::membership, relay_case.event(), remote_server));
+                CHECK(event_stored(runtime, relay_case.event().envelope.event_id));
+                auto const* const row = database::find_membership_row(runtime.database.persistent_store,
+                                                                      relay_case.event().room_id, remote_member);
+                REQUIRE(row != nullptr);
+                CHECK(row->membership == "leave");
             }
         }
 

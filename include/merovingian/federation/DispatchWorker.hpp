@@ -49,6 +49,17 @@ using DispatchResolver = std::function<std::optional<ServerDiscoveryResult>(std:
 // timeout is for other callers; discovery here runs before an attempt has even started.
 inline constexpr auto dispatch_discovery_timeout_seconds = std::uint32_t{10U};
 
+class CachedServerDiscovery;
+class ServerDiscoveryNetwork;
+
+// The resolver production gives the dispatch worker: `cached` when it is given, otherwise `network`, with each lookup
+// bounded by `timeout_seconds`. A failed discovery is nullopt. A remembered failure is never served
+// (DiscoveryCachePolicy::successes_only). The worker's per-destination backoff already paces how often a failing
+// destination is looked up. A remembered failure would refuse the first retries after the destination came back for
+// the whole cache lifetime, as a sender's restart while the receiver was down showed (ADR-0749).
+[[nodiscard]] auto make_dispatch_resolver(ServerDiscoveryNetwork* network, CachedServerDiscovery* cached,
+                                          std::uint32_t timeout_seconds) -> DispatchResolver;
+
 // The per-destination bound a worker with `config` enforces: max_pending_per_destination when set,
 // otherwise a sixteenth of max_queue_depth and never below 16 (256 for the default 4096).
 [[nodiscard]] auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t;

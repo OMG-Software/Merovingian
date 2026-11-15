@@ -13,27 +13,27 @@
 // |  so no scenario sleeps and no PeriodicJob thread runs.                   |
 // +-------------------------------------------------------------------------+
 
+#include "../support/AppserviceTestConfig.hpp"
 #include "../support/JoiningThreads.hpp"
+#include "../support/JsonTestSupport.hpp"
 #include "../support/MockAppservice.hpp"
 #include "../support/TestAppservice.hpp"
-#include "../support/AppserviceTestConfig.hpp"
-#include "../support/JsonTestSupport.hpp"
-#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/federation/InviteRequest.hpp"
+#include "merovingian/homeserver/AppserviceDelivery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
+#include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/StopFlag.hpp"
-#include "merovingian/homeserver/AppserviceDelivery.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1177,6 +1177,8 @@ SCENARIO("the bare third-party lookups run under the client-outbound budget",
         auto config = merovingian::tests::appservice_test_config({bridge});
         config.appservice().connect_timeout_seconds = 1U;
         config.appservice().total_timeout_seconds = 2U;
+        // ADR-0751: one call per client, so the holder's lookup is the client's whole share.
+        config.server().http.client_outbound_max_per_client = 1U;
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;

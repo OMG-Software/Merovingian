@@ -176,6 +176,14 @@ auto write_minimal_config(std::filesystem::path const& config_path, std::filesys
           // still applied for real -- this opt-out only changes behaviour
           // when Landlock is genuinely unavailable.
           << "federation.worker.allow_without_landlock=true\n";
+#if !defined(__linux__)
+        // ADR-0041: the worker's in-process sandbox exists only on Linux, so
+        // elsewhere the worker refuses to start until the config accepts that,
+        // as scripts/check-startup-hardening-gate.sh does for the packaged
+        // server. The main process still applies its own platform hardening
+        // (Capsicum or pledge), which is what this test exercises there.
+        f << "federation.worker.apply_hardening=false\n";
+#endif
     }
     // The server rejects config files with group/other write permission.
     ::chmod(config_path.c_str(), 0644); // NOLINT(google-runtime-int)

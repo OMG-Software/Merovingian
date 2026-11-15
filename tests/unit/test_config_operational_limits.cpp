@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/ConfigParser.hpp"
+#include "merovingian/config/ReloadPlan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -520,6 +520,71 @@ SCENARIO("The joint cap on the tips of senders without power is parsed, bounded 
             auto const findings = merovingian::config::validate(parsed.config);
 
             THEN("the operator gets an error")
+            {
+                REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}
+
+// ADR-0751: how many client-triggered outbound calls one client address may have in flight. Three by default; the
+// policy never lets it exceed the global cap of request_threads / 2.
+SCENARIO("The per-client outbound call cap defaults to three and can be tuned",
+         "[config][operational-limits][client-outbound][adr0751]")
+{
+    GIVEN("a configuration that does not mention the per-client outbound cap")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("");
+
+        THEN("each client address may have three outbound calls in flight")
+        {
+            REQUIRE(parsed.config.server().http.client_outbound_max_per_client == 3U);
+            REQUIRE(merovingian::config::validate(parsed.config).empty());
+        }
+    }
+
+    GIVEN("a configuration that sets it")
+    {
+        auto const parsed =
+            merovingian::config::parse_key_value_config("server.http.client_outbound_max_per_client=16\n");
+
+        WHEN("it is parsed and validated")
+        {
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the value is applied without findings")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(findings.empty());
+                REQUIRE(parsed.config.server().http.client_outbound_max_per_client == 16U);
+            }
+        }
+
+        WHEN("a reload plan is built against the defaults")
+        {
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+
+            THEN("it is a restart-required change, because the policy is built at startup")
+            {
+                REQUIRE(plan.changes().size() == 1U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+                REQUIRE(plan.restart_required_change_count() == 1U);
+            }
+        }
+    }
+
+    GIVEN("an invalid per-client outbound cap")
+    {
+        auto const input = GENERATE(
+            "server.http.client_outbound_max_per_client=0\n", "server.http.client_outbound_max_per_client=129\n",
+            "server.http.client_outbound_max_per_client=-1\n", "server.http.client_outbound_max_per_client=many\n");
+
+        WHEN("the configuration is parsed and validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the operator gets an error instead of a cap that refuses every call or has no bound")
             {
                 REQUIRE((!parsed.findings.empty() || !findings.empty()));
             }

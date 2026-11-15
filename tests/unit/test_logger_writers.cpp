@@ -225,7 +225,7 @@ SCENARIO("A message logged before the writers start is not lost", "[observabilit
 {
     GIVEN("a logger with console and file sinks and no writers yet")
     {
-        auto const directory = merovingian::tests::temporary_directory() / "merovingian-logger-writers-test";
+        auto const directory = merovingian::tests::unique_temporary_path("merovingian-logger-writers-test", "");
         std::filesystem::create_directories(directory);
         auto const log_path = directory / "before-start.log";
 
@@ -310,7 +310,7 @@ SCENARIO("A CRITICAL log is written synchronously even after writer threads have
 {
     GIVEN("a logger whose writers are running and a file sink")
     {
-        auto const directory = merovingian::tests::temporary_directory() / "merovingian-logger-critical-test";
+        auto const directory = merovingian::tests::unique_temporary_path("merovingian-logger-critical-test", "");
         std::filesystem::create_directories(directory);
         auto const log_path = directory / "critical.log";
 

@@ -71,6 +71,16 @@ auto WorkerSnapshotService::answer(ChannelKey const& channel, std::string_view t
     return refused(type, "unknown_type");
 }
 
+auto WorkerSnapshotService::consume_fill_omission(ChannelKey const& channel, std::string_view room_id) -> bool
+{
+    if (!channel)
+    {
+        return false;
+    }
+    auto const lock = std::lock_guard{mu_};
+    return state_of(channel).fill_omissions.erase(std::string{room_id}) == 1U;
+}
+
 auto WorkerSnapshotService::channels_tracked() -> std::size_t
 {
     auto const lock = std::lock_guard{mu_};
@@ -125,6 +135,7 @@ auto WorkerSnapshotService::answer_room_list(ChannelKey const& channel, std::str
     }
     auto const lock = std::lock_guard{mu_};
     auto& state = state_of(channel);
+    state.fill_omissions.insert(room_ids->begin(), room_ids->end());
     state.fill_permits.insert(std::make_move_iterator(room_ids->begin()), std::make_move_iterator(room_ids->end()));
     auto first = std::move(pages.front());
     if (pages.size() > 1U)

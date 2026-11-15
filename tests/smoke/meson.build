@@ -15,6 +15,11 @@ secure_example_config = (
   + ' && sed "s|^security.secrets.master_key_file=.*|security.secrets.master_key_file=$master_key|" '
   + example_config + ' > "$example_config" && chmod 0644 "$example_config" && '
 )
+# Without --config the server reads the installed system config when there is
+# one, so a --dry-run probe that is not about the defaults names the example
+# config: on a host with merovingian installed it still tests the shipped
+# config, not whatever the host has (ADR-0752).
+example_dry_run = tmp_smoke_prefix + secure_example_config + server_executable + ' --dry-run --config "$example_config"'
 
 test(
   'server-help-smoke-test',
@@ -158,7 +163,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run >/dev/null 2>&1',
+    example_dry_run + ' >/dev/null 2>&1',
   ],
 )
 
@@ -167,7 +172,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run 2>&1 | grep -q "Starting merovingian-server ' + meson.project_version() + '"',
+    example_dry_run + ' 2>&1 | grep -q "Starting merovingian-server ' + meson.project_version() + '"',
   ],
 )
 
@@ -184,7 +189,8 @@ test(
   smoke_test,
   args: [
     '-c',
-    'output=$(' + server_executable + ' --dry-run 2>&1) && '
+    tmp_smoke_prefix + secure_example_config + 'output=$(' + server_executable
+      + ' --dry-run --config "$example_config" 2>&1) && '
       + ' && '.join(server_library_log_checks)
       + ' && echo "$output" | grep -qE "Thumbnail worker (library|libraries not reported)"',
   ],
@@ -228,16 +234,21 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run 2>&1 | grep -q "Configuration validation passed"',
+    example_dry_run + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
 
+# The one probe of the defaults themselves: without --config the server reads
+# the packaged system config when one exists, so on a host with merovingian
+# installed there are no defaults to report, and it skips (exit 77) (ADR-0752).
 test(
   'server-default-summary-smoke-test',
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run 2>&1 | grep -q "Configuration source: defaults"',
+    'if [ -e "' + _sysconfdir + '/merovingian/merovingian.conf" ]; then'
+      + ' echo "skipped: an installed system config is read instead of the defaults"; exit 77; fi; '
+      + server_executable + ' --dry-run 2>&1 | grep -q "Configuration source: defaults"',
   ],
 )
 
@@ -246,9 +257,11 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --dry-run 2>&1 | grep -q "Startup hardening checks:" && '
-      + server_executable + ' --dry-run 2>&1 | grep -qE "Hardening self-check: seccomp=(enabled|unknown)" && '
-      + server_executable + ' --dry-run 2>&1 | grep -qE "Hardening readiness: ready=false blockers=[0-9]+"',
+    tmp_smoke_prefix + secure_example_config + 'output=$(' + server_executable
+      + ' --dry-run --config "$example_config" 2>&1) && '
+      + 'echo "$output" | grep -q "Startup hardening checks:" && '
+      + 'echo "$output" | grep -qE "Hardening self-check: seccomp=(enabled|unknown)" && '
+      + 'echo "$output" | grep -qE "Hardening readiness: ready=false blockers=[0-9]+"',
   ],
 )
 

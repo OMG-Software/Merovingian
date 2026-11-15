@@ -20,6 +20,7 @@ sanitize=
 coverage=false
 skip_job=
 hardening=
+jobs=
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
@@ -42,8 +43,11 @@ Options:
   --sanitize <list>   Meson b_sanitize value, for example address,undefined.
   --coverage          Enable Meson coverage instrumentation.
   --build-fuzz        Enable fuzz harness targets.
+  --hardening         Enable hardening flags (-Dhardening=true).
   --skip-job <name>   After the tests, fail on any Catch2 skip that job <name> in
                       tests/expected_skips.json does not list (ADR-0546).
+  --jobs <n>          Run at most <n> compile jobs and <n> tests at once.
+                      Default: Meson's own choice, one per CPU or more.
   --no-tests          Build without running tests.
   --setup-only        Configure/reconfigure Meson and stop.
   --compile-only      Configure/reconfigure and compile, but do not test.
@@ -152,10 +156,21 @@ while [ "$#" -gt 0 ]; do
         --build-fuzz)
             build_fuzz=true
             ;;
+        --hardening)
+            hardening=true
+            ;;
         --skip-job)
             shift
             [ "$#" -gt 0 ] || fail "--skip-job requires a job name"
             skip_job=$1
+            ;;
+        --jobs)
+            shift
+            [ "$#" -gt 0 ] || fail "--jobs requires a number"
+            case "$1" in
+                ""|*[!0-9]*|0*) fail "--jobs requires a positive whole number, not '$1'" ;;
+            esac
+            jobs=$1
             ;;
         --no-tests)
             run_tests=0
@@ -240,7 +255,11 @@ if [ "$setup_only" -eq 1 ]; then
     exit 0
 fi
 
-run meson compile -C "$builddir"
+if [ -n "$jobs" ]; then
+    run meson compile -C "$builddir" -j "$jobs"
+else
+    run meson compile -C "$builddir"
+fi
 
 if [ "$compile_only" -eq 1 ] || [ "$run_tests" -eq 0 ]; then
     exit 0
@@ -265,6 +284,10 @@ meson_test_timeout_args=""
 if [ -n "$timeout_multiplier" ]; then
     meson_test_timeout_args="--timeout-multiplier ${timeout_multiplier}"
 fi
+meson_test_jobs_args=""
+if [ -n "$jobs" ]; then
+    meson_test_jobs_args="--num-processes ${jobs}"
+fi
 
 # With --skip-job each Catch2 binary also writes an XML report, and
 # scripts/check_expected_skips.py fails the build on a skipped test case the job
@@ -281,7 +304,7 @@ fi
 
 test_status=0
 # shellcheck disable=SC2086
-run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 MEROVINGIAN_CATCH_REPORT_DIR="$skip_reports" meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args} || test_status=$?
+run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 MEROVINGIAN_CATCH_REPORT_DIR="$skip_reports" meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args} ${meson_test_jobs_args} || test_status=$?
 
 gate_status=0
 if [ -n "$skip_job" ]; then

@@ -166,6 +166,12 @@ shell = find_program('sh')
   )
 
   test(
+    'check-elf-hardening-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_check_elf_hardening.py'],
+  )
+
+  test(
     'complement-image-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_complement_image.py', server_exe.full_path()],
@@ -213,6 +219,12 @@ shell = find_program('sh')
     'dependency-wrap-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_dependency_wraps.py'],
+  )
+
+  test(
+    'build-vm-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_build_vm.py'],
   )
 
   test(

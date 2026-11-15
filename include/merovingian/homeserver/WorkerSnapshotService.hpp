@@ -61,6 +61,11 @@ public:
     // no read.
     [[nodiscard]] auto answer(ChannelKey const& channel, std::string_view type, std::string_view json) -> std::string;
 
+    // Whether the worker on `channel` may report `room_id` as left out of its start-up fill: true only for a room in
+    // the listing this channel was sent, and at most once per room, so a worker cannot make main record a room main
+    // never listed to it (ADR-0756).
+    [[nodiscard]] auto consume_fill_omission(ChannelKey const& channel, std::string_view room_id) -> bool;
+
     // Channels with state held, after dropping those whose channel is gone. For tests.
     [[nodiscard]] auto channels_tracked() -> std::size_t;
 
@@ -86,6 +91,8 @@ private:
         std::vector<std::string> list_pages{};
         std::size_t next_list_page{0U};
         std::unordered_set<std::string> fill_permits{};
+        // The listed rooms the worker has not yet reported as left out of its fill (consume_fill_omission).
+        std::unordered_set<std::string> fill_omissions{};
         std::unordered_map<std::string, ReloadPermit> reload_permits{};
         std::optional<HeldPages> held{};
     };

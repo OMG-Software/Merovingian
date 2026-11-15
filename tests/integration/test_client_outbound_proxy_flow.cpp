@@ -34,21 +34,21 @@
 #include "merovingian/core/SocketHandle.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/federation/OutboundTransactionSupport.hpp"
 #include "merovingian/federation/ResolvedAddressSet.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
 #include "merovingian/federation/SrvRecord.hpp"
 #include "merovingian/federation/WellKnownServerResult.hpp"
-#include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
-#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
 #include "merovingian/http/OutboundResult.hpp"
 #include "merovingian/net/TcpAcceptor.hpp"
@@ -183,10 +183,12 @@ private:
     std::shared_ptr<std::atomic<int>> m_calls; // SHARED_PTR: reviewed — test fixture member shared with caller
 };
 
-[[nodiscard]] auto proxy_test_config(bool remote_fetch_enabled) -> merovingian::config::Config
+[[nodiscard]] auto proxy_test_config(bool remote_fetch_enabled, std::uint32_t outbound_max_per_client = 3U)
+    -> merovingian::config::Config
 {
     auto server = merovingian::config::ServerConfig{};
     server.http.request_threads = 8U;
+    server.http.client_outbound_max_per_client = outbound_max_per_client;
 
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
@@ -459,10 +461,11 @@ SCENARIO("allow_remote=false stops a remote media fetch even when remote fetchin
 SCENARIO("Remote media fetches run under the in-flight budget and the media deadline",
          "[out-7][http-2][integration][media]")
 {
-    GIVEN("a homeserver with remote fetching enabled, a one second media deadline and a peer that never answers")
+    GIVEN("a homeserver with remote fetching enabled, one outbound call per client, a one second media deadline and a "
+          "peer that never answers")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(proxy_test_config(true));
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(true, 1U));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         runtime.homeserver.client_outbound_proxy_policy.media_deadline_seconds = 1U;
@@ -611,21 +614,25 @@ SCENARIO("Twenty concurrent unauthenticated publicRooms?server= requests cannot 
     }
 }
 
-SCENARIO("One client address may hold one proxied lookup at a time", "[http-2][integration][concurrency]")
+// ADR-0751: the per-client cap is server.http.client_outbound_max_per_client, applied by start_runtime.
+SCENARIO("One client address may hold its configured number of proxied lookups at a time",
+         "[http-2][integration][concurrency][adr0751]")
 {
-    GIVEN("a peer that never answers")
+    GIVEN("a server configured for two outbound calls per client, and a peer that never answers")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false));
+        auto started = merovingian::homeserver::start_client_server(proxy_test_config(false, 2U));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        REQUIRE(runtime.homeserver.client_outbound_proxy_policy.per_client_cap == 2U);
         runtime.homeserver.client_outbound_proxy_policy.directory_deadline_seconds = 2U;
         auto const peer = SilentPeer{};
         point_at(runtime, peer);
 
-        WHEN("a lookup is in flight from one address, then the same address asks again and a different one asks")
+        WHEN("two lookups are in flight from one address, then the same address asks again and a different one asks")
         {
             auto first = Answer{};
+            auto second = Answer{};
             auto other_client = Answer{};
             auto same_client = Answer{};
             auto in_flight = false;
@@ -635,9 +642,12 @@ SCENARIO("One client address may hold one proxied lookup at a time", "[http-2][i
                 threads.emplace_back([&]() {
                     first = send(runtime, "GET", silent_rooms_target, "192.0.2.10");
                 });
+                threads.emplace_back([&]() {
+                    second = send(runtime, "GET", silent_rooms_target, "192.0.2.10");
+                });
                 in_flight = wait_until(
                     [&]() {
-                        return runtime.homeserver.client_outbound_budget->active("192.0.2.10") == 1U;
+                        return runtime.homeserver.client_outbound_budget->active("192.0.2.10") == 2U;
                     },
                     2000ms);
                 same_client = send(runtime, "GET", silent_rooms_target, "192.0.2.10");
@@ -651,7 +661,7 @@ SCENARIO("One client address may hold one proxied lookup at a time", "[http-2][i
                     2000ms);
             }
 
-            THEN("the same address is refused and the different address is admitted")
+            THEN("the same address is refused its third and the different address is admitted")
             {
                 REQUIRE(in_flight);
                 REQUIRE(same_client.status == 429U);
@@ -662,6 +672,7 @@ SCENARIO("One client address may hold one proxied lookup at a time", "[http-2][i
             THEN("the admitted lookups end in a bad gateway once the peer's silence hits the deadline")
             {
                 REQUIRE(first.status == 502U);
+                REQUIRE(second.status == 502U);
                 REQUIRE(other_client.status == 502U);
             }
         }

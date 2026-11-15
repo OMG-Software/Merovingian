@@ -27,8 +27,13 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    (`homeserver::refuse_forbidden_worker_request`, no runtime lock), and the worker's provider is
    `crypto::RefusingEd25519Provider`. Never add a generic "sign these bytes" frame; if a worker ever
    needs a signature, add a narrowly typed request where main builds the payload itself. Callers must
-   never put an access token, `Authorization` / `X-Matrix` header, or the Ed25519 secret key into a
-   frame body (`docs/hardening.md`).
+   never put the Ed25519 secret key, a client access token, or a peer's inbound `Authorization` /
+   `X-Matrix` header into a frame body: main verifies the inbound signature and sends the worker only
+   the verified identity, and `fed_request` drops those headers (`is_credential_header_name`). The one
+   exception is direction-specific: an outbound request frame (`serialize_outbound_http_request`)
+   carries this server's own `Authorization: X-Matrix` signature, bound to that one request's method,
+   URI, destination and body, which is not a reusable peer or client credential (`docs/hardening.md`,
+   `docs/security-coding-rules.md`).
 4. **Oversize frames fail the send and are logged, never silently dropped.** `max_frame_bytes`
    (`kIpcMaxFrameBytes`, 24 MiB) is derived identically on both ends from
    `security.federation.join_response_max_size` and the transport caps, by

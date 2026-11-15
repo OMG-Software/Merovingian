@@ -28,7 +28,7 @@ Spec authority:
 | `ReceiptContentBuilder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `BundledAggregations.cpp` | `BundledAggregations`: the one builder of `unsigned.m.relations` (`m.replace`, `m.thread`, `m.reference`) for an event served to a client (ADR-0430) |
 | `ViewerEventUnsigned.cpp` | `ViewerEventUnsigned`: adds the requesting user's `unsigned.membership` and, for the sending device, `unsigned.transaction_id` to a client event |
-| `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
+| `ReadMarkers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread; `event_relates_to()`: whether an event's relation chain reaches an event within 3 hops (ADR-0746) |
 | `HistoryVisibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
 | `RoomReadAccess.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
 | `SlidingSync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
@@ -428,8 +428,9 @@ call it, and `database::add_redaction_compat`).
 
 Never loop `store.receipts` in a request: use `database::receipts_in_room` (ephemeral `m.receipt` events, the sliding
 sync receipts extension and its wake check) or `database::receipts_of_user_in_room` (`read_markers_for`, the push badge
-count). A threaded receipt (`thread_id` other than `main`) is accepted by the POST handler only for the thread root or
-an event that belongs to that thread (`receipt_event_is_in_thread`), and `store_receipt` caps a user's threaded rows in
+count). A threaded receipt (`thread_id` other than `main`) is accepted by the POST handler only for the thread root,
+an event that belongs to that thread, or an event whose relation chain reaches the root within 3 hops
+(`receipt_event_is_in_thread`, `event_relates_to`, ADR-0746), and `store_receipt` caps a user's threaded rows in
 a room. A test proves cost with `receipt_rows_examined`, not time.
 
 ## Classic sync reads per-room rows through the room indexes (ADR-0654)

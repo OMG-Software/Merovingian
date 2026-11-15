@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/InMemoryDatabaseConfig.hpp"
+#include "../support/TempDirectory.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         APPLICATION SERVICE API — as_token AUTH & MASQUERADING          |
@@ -62,6 +63,8 @@ using namespace merovingian::tests;
     {
         auto out = std::ofstream{registration_path, std::ios::binary};
         out << irc_bridge_registration_json();
+        out.close();
+        REQUIRE(out.good());
     }
     auto security = merovingian::config::SecurityConfig{};
     // A runtime refuses to mint a signing secret it cannot encrypt at rest
@@ -95,7 +98,7 @@ SCENARIO("an appservice's as_token authenticates as its sender_localpart by defa
     // the sender_localpart property of the registration."
     GIVEN("a homeserver with one registered appservice")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-conformance-as-default.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-conformance-as-default", ".json");
         auto const config = conformance_config_with_appservice(path);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -128,7 +131,7 @@ SCENARIO("?user_id= masquerades as a user within the appservice's namespace", "[
     // `user` namespaces."
     GIVEN("a homeserver with one registered appservice")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-conformance-as-masquerade.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-conformance-as-masquerade", ".json");
         auto const config = conformance_config_with_appservice(path);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -187,7 +190,7 @@ SCENARIO("m.login.application_service registers and logs in a passwordless virtu
     // password."
     GIVEN("a homeserver with one registered appservice")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-conformance-as-register.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-conformance-as-register", ".json");
         auto const config = conformance_config_with_appservice(path);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -266,7 +269,7 @@ SCENARIO("m.login.application_service logs an existing virtual user in without a
 {
     GIVEN("a virtual user already registered by the appservice")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-conformance-as-login.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-conformance-as-login", ".json");
         auto const config = conformance_config_with_appservice(path);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -343,7 +346,7 @@ SCENARIO("an exclusive namespace blocks a human from registering or creating an 
     // defined the namespace as exclusive."
     GIVEN("a homeserver with an appservice owning an exclusive users and aliases namespace")
     {
-        auto const path = std::filesystem::temp_directory_path() / "merovingian-conformance-as-exclusivity.json";
+        auto const path = merovingian::tests::unique_temporary_path("merovingian-conformance-as-exclusivity", ".json");
         auto const config = conformance_config_with_appservice(path);
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);

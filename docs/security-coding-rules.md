@@ -601,7 +601,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   read the room's current `m.room.server_acl` from main's store for the transport origin and the verified sender's server.
   A new relay does the same.
   Why: a worker's store holds no policy rules (since 1.0.1 on either backend, ADR-0733), and a room's ACL only
-  after `room_sync` reaches the shard that owns it; `/send` is routed by a room ID the sender chooses. Until 0.12.70 a denied
+  after a shard's `room_sync` reload lands (every shard reloads every changed room since 1.0.2, ADR-0758); `/send` is routed by a room ID the sender chooses. Until 0.12.70 a denied
   origin or server kept federating (F-21, F-24; ADR-0358, ADR-0359).
   Source: `src/federation/AGENTS.md`, `src/federation_worker/AGENTS.md`.
 

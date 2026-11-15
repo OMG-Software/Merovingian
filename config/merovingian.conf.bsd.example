@@ -90,6 +90,11 @@ server.cors.max_age=86400
 # once (addresses in server.trusted_proxies are exempt), and remote directory
 # and media proxying at most half. Restart required.
 server.http.request_threads=32
+# client_outbound_max_per_client (1..128) is how many of those remote calls
+# (directory, profile and key lookups, federated joins, knocks and leaves) one
+# client address may have in flight at once; more are answered 429. It never
+# exceeds request_threads / 2. Restart required.
+server.http.client_outbound_max_per_client=3
 server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=256

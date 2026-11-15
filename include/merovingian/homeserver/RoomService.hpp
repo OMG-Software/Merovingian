@@ -214,7 +214,9 @@ auto federate_accepted_membership_event(HomeserverRuntime& runtime, std::string_
 // received by the resident server". Puts this server's name and clock on a
 // validated make_join or make_leave template before it is hashed and signed, and
 // drops any event_id (room versions 3 and later derive it from the event). The
-// resident never chooses the timestamp this server signs.
+// resident never chooses the timestamp this server signs. Drops `unsigned`,
+// `hashes` and `signatures` too: signing adds to the signatures an event holds,
+// so a template's own would be sent and stored as part of this server's event.
 auto claim_membership_event_template(canonicaljson::Object& event, std::string_view our_server_name,
                                      std::int64_t now_ms) -> void;
 

@@ -15,7 +15,8 @@ enum class DiscoveryCachePolicy
     // A fresh success only. A remembered failure is ignored and the network
     // asked again, so a client's retry after the destination recovers is not
     // refused for the rest of the lifetime: the federated join and the other
-    // outbound calls a client request triggers.
+    // outbound calls a client request triggers, and outbound delivery, which
+    // its own backoff paces (ADR-0749).
     successes_only,
 };
 

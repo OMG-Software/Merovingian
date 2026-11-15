@@ -189,4 +189,38 @@ auto event_thread_id(database::PersistentStore const& store, canonicaljson::Obje
     }
 }
 
+auto event_relates_to(database::PersistentStore const& store, std::string_view room_id,
+                      canonicaljson::Object const& event, std::string_view target_event_id) -> bool
+{
+    auto parent = canonicaljson::Value{};
+    auto const* current = &event;
+    for (auto hop = std::size_t{0U}; hop < max_thread_relation_hops; ++hop)
+    {
+        auto const* relation = relation_of(*current);
+        auto const* related_id = relation != nullptr ? member_string(*relation, "event_id") : nullptr;
+        if (related_id == nullptr || related_id->empty())
+        {
+            return false;
+        }
+        if (*related_id == target_event_id)
+        {
+            return true;
+        }
+        auto const stored = store.events.find_in_room(room_id, *related_id);
+        if (stored == store.events.end())
+        {
+            return false;
+        }
+        auto parsed = canonicaljson::parse_lossless(stored->json);
+        auto const* parent_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || parent_object == nullptr)
+        {
+            return false;
+        }
+        parent = std::move(parsed.value);
+        current = std::get_if<canonicaljson::Object>(&parent.storage());
+    }
+    return false;
+}
+
 } // namespace merovingian::sync

@@ -6,6 +6,7 @@
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/config/AppserviceConfig.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/DatabaseBackend.hpp"
 #include "merovingian/config/DatabaseConfig.hpp"
@@ -20,10 +21,9 @@
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/SizeLimitParseResult.hpp"
-#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/config/SpecialUseIpRanges.hpp"
-#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/email/MailboxAddress.hpp"
+#include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/http/KeepAlive.hpp"
 #include "merovingian/http/RateLimit.hpp"
 
@@ -943,6 +943,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.http.media_fetch_threads", config.server().http.media_fetch_threads, 256U);
     validate_count("server.http.media_fetch_max_in_flight", config.server().http.media_fetch_max_in_flight, 1024U);
     validate_count("server.http.media_fetch_max_per_client", config.server().http.media_fetch_max_per_client, 256U);
+    validate_count("server.http.client_outbound_max_per_client", config.server().http.client_outbound_max_per_client,
+                   128U);
     validate_count("server.http.max_start_line_bytes", config.server().http.max_start_line_bytes, 8192U);
     validate_count("server.http.max_header_bytes", config.server().http.max_header_bytes, 65536U);
     validate_count("server.http.max_header_count", config.server().http.max_header_count, 200U);

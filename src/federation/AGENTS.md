@@ -116,7 +116,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2". The membership acceptor differs
    from the `/send` path in one respect (F-10, F-12, ADR-0591): it refuses a rejected or soft-failed event `403` and does not
    store it, and it first refuses a room with no local member (`room_has_current_local_interest`; `send_knock` 404, the others
-   403), so nothing is stored, recomputed, published or notified for either. A resent event is answered only while it is
+   403; a `send_leave` from a remote user who holds a `join`, `invite` or `knock` row there is admitted, ADR-0747), so nothing is stored, recomputed, published or notified for either. A resent event is answered only while it is
    still the sender's accepted, current `m.room.member`.
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
@@ -388,10 +388,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `ServerAcl.cpp`, `ServerAclGlob.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists. The glob is a two-pointer match; an ACL over 4096 patterns or with a pattern over 255 bytes, or a check over its step budget, refuses the server; parsed ACLs are cached per event, keyed with the JSON size and hash (ADR-0640). A request that checks several rooms makes one `ServerAclBudget` and passes it to every `room_server_acl_allows` (the receipt sink per EDU, a worker relay per frame); answers per (ACL event version, host) are cached (ADR-0653) |
 | `RemoteDeviceListCache.cpp` | The in-memory device lists of remote users who share a room with a local user (G14, ADR-0560, ADR-0561): fill tickets, update sequencing by `stream_id`/`prev_id`, caps per user and in all. Guarded by `runtime.mutex` |
 | `EduIdempotenceWindow.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, sender, message_id), plus `derive_direct_to_device_message_id` for our outbound IDs |
-| `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
+| `DispatchWorker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off; `make_dispatch_resolver` is its discovery, which never serves a remembered failure (ADR-0749) |
 | `EventQuery.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, `timestamp_to_event` (seeks the store room-and-time index, steps over events `ServerEventFilter` hides, at most `max_time_search_examined` candidates; ADR-0299, ADR-0300), and owns the origin-in-room gate (`origin_may_read_room`) |
 | `OutboundMembership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
-| `CachedServerDiscovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry; `remember_failures` stays the default for key resolution, pushers and appservices |
+| `CachedServerDiscovery.cpp` | TTL-bounded in-memory cache in front of server discovery. `DiscoveryCachePolicy::successes_only` is what a call a client request triggers (the federated join's `make_join`/`send_join`) uses, so a remembered failure never refuses a retry, and so does outbound delivery, which its own backoff paces (ADR-0749); `remember_failures` stays the default for key resolution, pushers and appservices |
 | `RuntimeFederationConfig.cpp` | Federation route registration and per-origin request caps |
 
 ## Adding a new federation endpoint

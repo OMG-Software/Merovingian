@@ -1,6 +1,6 @@
 # Appservice cleartext http only to loopback literals or listed hosts
 
-* Status: accepted
+* Status: accepted; the setting of Complement's image is amended by [ADR-0750](0750-complements-image-also-lists-localhost-as-a-cleartext-appservice-host.md)
 * Deciders: James Chapman
 * Date: 2026-11-06
 

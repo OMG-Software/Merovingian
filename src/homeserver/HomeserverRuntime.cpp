@@ -10,33 +10,33 @@
 #include "merovingian/canonicaljson/ParseError.hpp"
 #include "merovingian/canonicaljson/Parser.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/crypto/RefusingEd25519Provider.hpp"
 #include "merovingian/crypto/RuntimeEd25519Provider.hpp"
 #include "merovingian/crypto/RuntimeMultiKeyEd25519Provider.hpp"
-#include "merovingian/crypto/GenericHash.hpp"
 #include "merovingian/database/PostgresqlStore.hpp"
-#include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
+#include "merovingian/federation/RuntimeFederationConfig.hpp"
 #include "merovingian/federation/ServerDiscovery.hpp"
+#include "merovingian/homeserver/AppserviceEphemeral.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/FederationProxy.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalDatabaseScope.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
+#include "merovingian/homeserver/RedactionService.hpp"
+#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/RuntimeStartOptions.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
-#include "merovingian/homeserver/TypingExpiry.hpp"
-#include "merovingian/homeserver/AppserviceEphemeral.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
-#include "merovingian/homeserver/ClientOutboundProxy.hpp"
-#include "merovingian/homeserver/LocalServices.hpp"
-#include "merovingian/homeserver/RedactionService.hpp"
-#include "merovingian/homeserver/RoomService.hpp"
 #include "merovingian/homeserver/StreamTokenEpoch.hpp"
+#include "merovingian/homeserver/TypingExpiry.hpp"
 #include "merovingian/media/LocalMediaBlob.hpp"
 #include "merovingian/media/LocalMediaRecord.hpp"
 #include "merovingian/media/LocalMediaRepository.hpp"
@@ -51,12 +51,12 @@
 #include "merovingian/observability/MetricLabel.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/Observability.hpp"
+#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/platform/HardeningPlanDecision.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
-#include "merovingian/platform/FileMetadataSupport.hpp"
 #include "merovingian/platform/RuntimeHardening.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
 
@@ -1013,7 +1013,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         config.security().password_hashing.max_concurrent, 1U, auth::argon2id_admission_max_capacity));
     // ADR-0079 caps are a fraction of the main request pool, which is now
     // configured (server.http.request_threads, ADR-0077).
-    runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);
+    runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(
+        config.server().http.request_threads, config.server().http.client_outbound_max_per_client);
     runtime.listeners = net::make_runtime_listeners(config);
     if (runtime.listeners.empty())
     {
@@ -1603,8 +1604,8 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         // unreachable server is still judged by policy_server_allow_without_result.
         if (leader.has_value())
         {
-            if (auto remembered = runtime.policy_decision_cache->stale(entity, std::chrono::steady_clock::now(),
-                                                                       cache_settings);
+            if (auto remembered =
+                    runtime.policy_decision_cache->stale(entity, std::chrono::steady_clock::now(), cache_settings);
                 remembered.has_value())
             {
                 return decision_with_current_config(std::move(*remembered));

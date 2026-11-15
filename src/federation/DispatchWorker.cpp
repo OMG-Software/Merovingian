@@ -3,12 +3,15 @@
 
 #include "merovingian/federation/DispatchWorker.hpp"
 
+#include "merovingian/federation/CachedServerDiscovery.hpp"
+#include "merovingian/federation/DiscoveryCachePolicy.hpp"
 #include "merovingian/federation/DispatchDestinationSnapshot.hpp"
 #include "merovingian/federation/DispatchWorkerConfig.hpp"
 #include "merovingian/federation/DispatchWorkerSummary.hpp"
 #include "merovingian/federation/OutboundCall.hpp"
 #include "merovingian/federation/OutboundTransactionResult.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/federation/ServerDiscovery.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -305,6 +308,26 @@ auto DispatchWorker::enqueue_batch(std::vector<OutboundTransaction> batch) -> st
     }
     cv_.notify_all();
     return accepted;
+}
+
+auto make_dispatch_resolver(ServerDiscoveryNetwork* network, CachedServerDiscovery* cached,
+                            std::uint32_t timeout_seconds) -> DispatchResolver
+{
+    return [network, cached, timeout_seconds](std::string_view server_name) -> std::optional<ServerDiscoveryResult> {
+        if (cached == nullptr && network == nullptr)
+        {
+            return std::nullopt;
+        }
+        // ADR-0749: never a remembered failure. The backoff already paces a failing destination's lookups.
+        auto result = cached != nullptr
+                          ? cached->discover(server_name, timeout_seconds, DiscoveryCachePolicy::successes_only)
+                          : discover_server(server_name, *network, timeout_seconds);
+        if (!result.discovery_allowed)
+        {
+            return std::nullopt;
+        }
+        return result;
+    };
 }
 
 auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t

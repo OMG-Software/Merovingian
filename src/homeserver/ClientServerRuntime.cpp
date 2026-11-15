@@ -5172,8 +5172,11 @@ namespace
     }
 
     // Whether `thread_id` names a thread root of `room_id` (an event in the main timeline) and the event `event_id`
-    // is that root or belongs to its thread (ADR-0737). An event this server does not hold in the room is related to
-    // nothing: the endpoint answers 400 for it.
+    // is related to it (ADR-0737, ADR-0746): it is that root, it belongs to its thread, or its relation chain reaches
+    // the root within the 3 hops of the thread rule, whatever the relation types (an annotation of a reference to
+    // the root). Spec (POST /receipt, 400): "The event_id is not related to the thread_id." An event has one
+    // relation chain, so it is related to at most three roots besides its own thread. An event this server does not
+    // hold in the room is related to nothing: the endpoint answers 400 for it.
     [[nodiscard]] auto receipt_event_is_in_thread(database::PersistentStore const& store, std::string_view room_id,
                                                   std::string_view event_id, std::string_view thread_id) -> bool
     {
@@ -5186,8 +5189,19 @@ namespace
         {
             return true;
         }
-        auto const event_thread = receipt_thread_of_event(store, room_id, event_id);
-        return event_thread.has_value() && *event_thread == thread_id;
+        auto const event = store.events.find_in_room(room_id, event_id);
+        if (event == store.events.end())
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        {
+            return false;
+        }
+        return sync::event_thread_id(store, *object) == thread_id ||
+               sync::event_relates_to(store, room_id, *object, thread_id);
     }
 
     // Sets one of the user's receipts and wakes /sync. Spec (Receipts): "Each user_id,
