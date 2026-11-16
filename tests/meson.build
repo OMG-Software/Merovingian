@@ -544,6 +544,7 @@ shell = find_program('sh')
       'unit/test_invite_room_state.cpp',
       'unit/test_redaction_service.cpp',
       'unit/test_sync_history_visibility.cpp',
+      'unit/test_sync_state_anchor.cpp',
       'unit/test_sync_notifier.cpp',
       'unit/test_parked_poll_registry.cpp',
       'unit/test_lazy_member_tracker.cpp',

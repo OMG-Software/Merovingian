@@ -189,16 +189,19 @@ auto state_anchor_event(database::PersistentStore const& store, std::string_view
     {
         limit = std::min(limit, access.boundary_ordering);
     }
-    // The room's rows newest first (ADR-0435): the first one at or below `limit` that is not withheld has the
-    // highest stream ordering. Among rows sharing it, the one added first wins, as when every row was compared.
+    // The room's rows at or below `limit`, newest first (ADR-0435): the seek skips every row above it without
+    // visiting one, so the cost is the rows stepped over past the limit, not the rows a long absence missed. The
+    // first one that is not withheld has the highest stream ordering. Among rows sharing it, the one added first
+    // wins, as when every row was compared.
     database::PersistentEvent const* newest = nullptr;
-    for (auto const& event : store.events.room_in_stream_order(room_id) | std::views::reverse)
+    for (auto const& event : store.events.room_in_stream_order_up_to(room_id, limit) | std::views::reverse)
     {
         if (newest != nullptr && event.stream_ordering != newest->stream_ordering)
         {
             break;
         }
-        if (event.stream_ordering > limit || event_is_withheld(event))
+        store.state_anchor_rows_examined.add(1U);
+        if (event_is_withheld(event))
         {
             continue;
         }

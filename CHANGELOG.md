@@ -18,7 +18,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
-* None.
+* `use_state_after`: the state anchor at `since` is a binary search of the room's index, so a client back after a long
+  absence no longer walks every row it missed under the runtime lock.
 
 ## Release notes
 

@@ -5837,7 +5837,9 @@ namespace
     // `since_ordering`, for `state_after`. A key can change with no event of the window about it (state resolution can
     // move it back), so this compares the two states; it does not list the window's state events.
     //
-    // Cost: nothing for a room with no event since `since`. With an unforked graph, the state group rows between the
+    // Cost: nothing for a room with no event since `since` (one look at the newest row). Otherwise the anchor at
+    // `since` is a binary search of the room's index plus the withheld rows stepped over below it, however many rows
+    // the window holds (`state_anchor_rows_examined`). With an unforked graph, then the state group rows between the
     // two points, none for a window of messages. Otherwise (a fork, a snapshot between the points, an unreadable chain)
     // it reads the room's state twice, its own rows only.
     [[nodiscard]] auto joined_state_changes(database::PersistentStore const& store, std::string_view room_id,

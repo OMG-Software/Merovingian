@@ -25,7 +25,9 @@ Chosen option: compare state groups (`joined_state_changes` in `ClientServerRunt
 `StateGroupLookup.cpp`).
 
 * A room with no event above `since` costs one look at its newest row and sends nothing.
-* The state at `since` is the recorded state of the newest event at or below it (`state_anchor_event`). With one forward
+* The state at `since` is the recorded state of the newest event at or below it (`state_anchor_event`, found by a binary
+  search of the room's stream-order index, so the rows a long absence missed cost nothing; a test reads
+  `state_anchor_rows_examined`). With one forward
   extremity, at or below the position, the current state is that event's recorded state, so the two points are two groups:
   the same group for a window of messages (no rows read), otherwise the rows between them
   (`state_changes_along_chain`, which never reads a snapshot's rows). The extremity comes from the room's own tips
