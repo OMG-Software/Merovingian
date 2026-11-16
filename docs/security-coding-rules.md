@@ -1064,6 +1064,20 @@ quickly finding everything a given `AGENTS.md` file contributed.
   a duplicated header picks the copy an attacker chose (CWE-444) (ADR-0788).
   Source: `src/homeserver/AGENTS.md`.
 
+- **An OAuth grant is written in one transaction, an authorization code is spent on redemption whatever follows, and a
+  replayed code ends the session it produced; the two refresh endpoints refuse each other's sessions before rotating.**
+  Why: a partial grant leaves a device or token the client was never told of; a code usable after a failed check can
+  be guessed at (CWE-307); a replay is the sign of a stolen code (RFC 6749 section 4.1.2); a refresh token accepted at
+  the wrong endpoint escapes its client binding (ADR-0792, ADR-0793).
+  Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`, `src/database/AGENTS.md`.
+
+- **Every endpoint that asks for User-Interactive Authentication refuses an OAuth session with 403 before checking a
+  password, and revocation or a replay ends a session only through the path `POST /logout` uses.**
+  Why: a session the user granted to an application must not be able to change the password, deactivate the account
+  or delete devices with a password the application may have captured (CWE-306); a second end-of-session path forgets
+  a token, the device list or the remote servers (ADR-0794, ADR-0795).
+  Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
@@ -1925,7 +1939,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/core/AGENTS.md` | Memory safety; Secrets and logging; HTTP and network boundary; Sync |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
-| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |
+| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; OAuth 2.0 API; Database |
 | `src/events/AGENTS.md` | Cryptography; Authentication and authorization |
 | `src/rooms/AGENTS.md` | Authentication and authorization |
 | `src/federation/AGENTS.md` | Federation |
@@ -1936,7 +1950,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/oauth/AGENTS.md` | OAuth 2.0 API |
 | `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
-| `src/database/AGENTS.md` | Database |
+| `src/database/AGENTS.md` | OAuth 2.0 API; Database |
 | `migrations/AGENTS.md` | Database |
 | `src/config/AGENTS.md` | Secrets and logging |
 | `src/observability/AGENTS.md` | Secrets and logging |

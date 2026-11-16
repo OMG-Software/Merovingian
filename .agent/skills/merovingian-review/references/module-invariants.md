@@ -57,6 +57,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - UIA sessions are capped and answer 429, never evicting (ADR-0683). Login on an existing device deletes earlier
   rows (ADR-0590). Login tokens are never persisted (ADR-0548). `#UIAA`
 - The production password cost is pinned by `tests/password_cost/` (ADR-0510).
+- An OAuth session is created only by `grant_oauth_session` with a finite access token; the refresh endpoints refuse
+  each other's sessions before rotating; a UIA endpoint refuses an OAuth session first; revocation goes through
+  `end_device_session` (ADR-0791 to ADR-0795). `#OAuth 2.0 sessions (ADR-0791 to ADR-0795)`
 
 ## src/canonicaljson
 
@@ -106,7 +109,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   is added to every hand-written copy, move and serialise path too.
 - Schema changes go only through `migrations/` (ADR-0224). Nothing but SQLite opens an SQLite file (ADR-0157).
 - A path that deletes a `devices` row deletes its `oauth_sessions` row in the same transaction, and no path deletes
-  an OAuth client that has a session (ADR-0776, ADR-0777). `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
+  an OAuth client that has a session (ADR-0776, ADR-0777). Whatever replaces a device's credentials replaces its
+  `oauth_sessions` row in the same transaction; a grant's audit row is in its transaction (ADR-0792).
+  `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
 
 ## src/email
 
@@ -186,7 +191,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   and codes live only in their hashed, bounded, never-evicting stores (ADR-0782); a password is checked only by
   `verify_login_credentials` and a session-less account made only by `create_local_account` (ADR-0783); a page is
   marked `LocalHttpResponse::page` and gets no CORS header (ADR-0785); an OAuth target's query is never logged
-  (ADR-0786). `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
+  (ADR-0786). A grant is one transaction, a session ends only through `end_device_session_and_announce`, and every
+  UIA endpoint calls `oauth_session_uia_refusal` first (ADR-0792, ADR-0794, ADR-0795).
+  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`

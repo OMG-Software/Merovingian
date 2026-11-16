@@ -66,11 +66,41 @@ auto AuthorizationCodeStore::redeem(std::string_view code, std::uint64_t now_ms)
     }
     if (entry->redeemed)
     {
-        return {AuthorizationCodeRedemption::Outcome::replayed, {}, entry->grant.user_id, entry->grant.device_id};
+        return {AuthorizationCodeRedemption::Outcome::replayed,
+                {},
+                entry->grant.user_id,
+                entry->grant.device_id,
+                entry->grant.client_id,
+                entry->session_created_at_ms};
     }
     forget_unredeemed(*entry);
     entry->redeemed = true;
-    return {AuthorizationCodeRedemption::Outcome::fresh, entry->grant, entry->grant.user_id, entry->grant.device_id};
+    return {AuthorizationCodeRedemption::Outcome::fresh,
+            entry->grant,
+            entry->grant.user_id,
+            entry->grant.device_id,
+            entry->grant.client_id,
+            std::nullopt};
+}
+
+auto AuthorizationCodeStore::next_session_created_at_ms(std::uint64_t now_ms) noexcept -> std::uint64_t
+{
+    m_last_session_created_at_ms = now_ms > m_last_session_created_at_ms ? now_ms : m_last_session_created_at_ms + 1U;
+    return m_last_session_created_at_ms;
+}
+
+auto AuthorizationCodeStore::record_issued_session(std::string_view code, std::uint64_t session_created_at_ms,
+                                                   std::uint64_t now_ms) -> bool
+{
+    erase_expired(now_ms);
+    auto const code_hash = oauth_secret_hash(code);
+    auto* entry = code_hash.has_value() ? m_codes.find(*code_hash) : nullptr;
+    if (entry == nullptr || !entry->redeemed || entry->session_created_at_ms.has_value())
+    {
+        return false;
+    }
+    entry->session_created_at_ms = session_created_at_ms;
+    return true;
 }
 
 auto AuthorizationCodeStore::unredeemed_count_for_client(std::string_view client_id, std::uint64_t now_ms)

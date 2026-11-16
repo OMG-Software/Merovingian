@@ -254,3 +254,99 @@ SCENARIO("The unredeemed codes of a client are counted without a scan", "[oauth]
         }
     }
 }
+
+SCENARIO("A replay names the session the first redemption issued, and only once one was recorded",
+         "[oauth][oauth-code][oauth-replay]")
+{
+    REQUIRE(sodium_init() >= 0);
+    GIVEN("a store holding one code that has been redeemed")
+    {
+        auto store = AuthorizationCodeStore{};
+        auto const code = code_of(store.issue(grant_for("client-a", "DEVICEA"), start_ms));
+        REQUIRE(store.redeem(code, start_ms + 1U).outcome == Outcome::fresh);
+
+        WHEN("it is presented again before any session was recorded")
+        {
+            auto const replay = store.redeem(code, start_ms + 2U);
+
+            THEN("the replay names the client and no session")
+            {
+                REQUIRE(replay.outcome == Outcome::replayed);
+                CHECK(replay.client_id == "client-a");
+                CHECK_FALSE(replay.session_created_at_ms.has_value());
+            }
+        }
+
+        WHEN("the session its redemption issued is recorded and the code is presented again")
+        {
+            auto const recorded = store.record_issued_session(code, start_ms + 7U, start_ms + 2U);
+            auto const again = store.record_issued_session(code, start_ms + 9U, start_ms + 3U);
+            auto const replay = store.redeem(code, start_ms + 4U);
+
+            THEN("the replay names that session, and a second record changes nothing")
+            {
+                CHECK(recorded);
+                CHECK_FALSE(again);
+                REQUIRE(replay.outcome == Outcome::replayed);
+                REQUIRE(replay.session_created_at_ms.has_value());
+                CHECK(*replay.session_created_at_ms == start_ms + 7U);
+            }
+        }
+
+        WHEN("a session is recorded after the code expired")
+        {
+            auto const recorded =
+                store.record_issued_session(code, start_ms + 7U, start_ms + AuthorizationCodeStore::lifetime_ms);
+
+            THEN("nothing is recorded")
+            {
+                CHECK_FALSE(recorded);
+            }
+        }
+    }
+
+    GIVEN("a store holding one code that was never redeemed")
+    {
+        auto store = AuthorizationCodeStore{};
+        auto const code = code_of(store.issue(grant_for("client-a", "DEVICEA"), start_ms));
+
+        WHEN("a session is recorded for it, or for a code never issued")
+        {
+            auto const unredeemed = store.record_issued_session(code, start_ms + 7U, start_ms + 1U);
+            auto const unknown = store.record_issued_session(std::string(64U, 'a'), start_ms + 7U, start_ms + 1U);
+
+            THEN("nothing is recorded, and the code is still fresh")
+            {
+                CHECK_FALSE(unredeemed);
+                CHECK_FALSE(unknown);
+                CHECK(store.redeem(code, start_ms + 2U).outcome == Outcome::fresh);
+            }
+        }
+    }
+}
+
+SCENARIO("The creation times a code store gives OAuth sessions strictly increase", "[oauth][oauth-code][oauth-replay]")
+{
+    GIVEN("an empty store")
+    {
+        auto store = AuthorizationCodeStore{};
+
+        WHEN("it is asked three times within one millisecond, then once later, then once with the clock back")
+        {
+            auto const first = store.next_session_created_at_ms(start_ms);
+            auto const second = store.next_session_created_at_ms(start_ms);
+            auto const third = store.next_session_created_at_ms(start_ms);
+            auto const later = store.next_session_created_at_ms(start_ms + 100U);
+            auto const backwards = store.next_session_created_at_ms(start_ms);
+
+            THEN("each value is the clock or one past the last, whichever is greater")
+            {
+                CHECK(first == start_ms);
+                CHECK(second == start_ms + 1U);
+                CHECK(third == start_ms + 2U);
+                CHECK(later == start_ms + 100U);
+                CHECK(backwards == start_ms + 101U);
+            }
+        }
+    }
+}

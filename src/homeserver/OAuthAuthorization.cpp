@@ -34,6 +34,7 @@
 #include "merovingian/oauth/AuthorizationRedirect.hpp"
 #include "merovingian/oauth/ClientMetadata.hpp"
 #include "merovingian/oauth/ConsentPageInput.hpp"
+#include "merovingian/oauth/FormContentType.hpp"
 #include "merovingian/oauth/FormPostOrigin.hpp"
 #include "merovingian/oauth/GrantedScope.hpp"
 #include "merovingian/oauth/HtmlText.hpp"
@@ -633,29 +634,6 @@ namespace
                               oauth::error_access_denied, "The user denied the request.", consumed->state);
     }
 
-    // `application/x-www-form-urlencoded`, in any ASCII case, with no parameter: what an HTML form posts.
-    [[nodiscard]] auto is_form_content_type(std::string_view content_type) noexcept -> bool
-    {
-        constexpr auto expected = std::string_view{"application/x-www-form-urlencoded"};
-        if (content_type.size() != expected.size())
-        {
-            return false;
-        }
-        for (auto index = std::size_t{0U}; index < expected.size(); ++index)
-        {
-            auto value = content_type[index];
-            if (value >= 'A' && value <= 'Z')
-            {
-                value = static_cast<char>(value - 'A' + 'a');
-            }
-            if (value != expected[index])
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     [[nodiscard]] auto handle_post(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
     {
         auto& runtime = rt.homeserver;
@@ -676,7 +654,7 @@ namespace
                                        oauth::HtmlText{"This form was not sent from a page of this server."});
         }
         auto const content_type = single_header(request, "Content-Type");
-        if (!content_type.has_value() || !is_form_content_type(*content_type))
+        if (!content_type.has_value() || !oauth::page_form_content_type_is_accepted(*content_type))
         {
             return error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
                                        oauth::HtmlText{"This form could not be read."});

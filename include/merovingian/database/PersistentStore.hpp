@@ -51,6 +51,7 @@
 #include "merovingian/database/PersistentMediaBlob.hpp"
 #include "merovingian/database/PersistentMembership.hpp"
 #include "merovingian/database/PersistentNotification.hpp"
+#include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentOneTimeKey.hpp"
 #include "merovingian/database/PersistentOpenidToken.hpp"
 #include "merovingian/database/PersistentPendingMediaUpload.hpp"
@@ -760,10 +761,21 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // One transaction: the device row when `device` is set, the access token, and, with `replace_device_credentials`, the
 // DELETE of every earlier access and refresh row of the token's (user, device) first (F-08, ADR-0590: a login on a
 // device the user holds replaces its credentials; deleted, not revoked, because a presented revoked refresh row counts
-// as reuse). Memory changes only after the commit; a failed commit changes nothing.
+// as reuse). A replacement also deletes the device's `oauth_sessions` row, if it has one, in the same transaction: a
+// legacy login on an OAuth device makes it a legacy device (ADR-0792). Memory changes only after the commit; a failed
+// commit changes nothing.
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token, bool replace_device_credentials = false)
     -> bool;
+// An OAuth 2.0 authorization code grant's writes in ONE transaction (ADR-0792): the device row when `device` is set,
+// the DELETE of every earlier access and refresh row of the device and of its `oauth_sessions` row, then the access
+// row, the refresh row, the new `oauth_sessions` row `session` and the `audit` row. The three session rows must name
+// the same (user, device). False, with nothing written and memory unchanged, when they do not, a token hash is held
+// already, the device row is held already, the session row is refused (`prepare_oauth_session_insert`) or the commit
+// fails. Memory changes only after the commit.
+[[nodiscard]] auto store_oauth_grant(PersistentStore& store, std::optional<PersistentDevice> device,
+                                     PersistentAccessToken access, PersistentRefreshToken refresh,
+                                     PersistentOAuthSession session, PersistentAuditEvent audit) -> bool;
 // A refresh rotation's writes in one transaction (F-08, ADR-0590): every earlier access row of the device is deleted,
 // the new access and refresh rows are inserted, and `evicted_refresh_hashes` (rows the caller found retired, from
 // `CredentialTable::oldest_retired_beyond`) are deleted. False, with nothing changed, if a named row is not retired.

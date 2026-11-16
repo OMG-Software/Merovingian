@@ -1997,6 +1997,88 @@ namespace
     return true;
 }
 
+namespace
+{
+
+    // The writes a login and an OAuth 2.0 grant share (ADR-0590, ADR-0792), as statements for the caller's one
+    // transaction, and their memory half after it committed.
+
+    [[nodiscard]] auto insert_device_statement(PersistentDevice const& device) -> PreparedStatement
+    {
+        return record_statement("insert_device", "INSERT INTO devices VALUES ($1, $2, $3)",
+                                {
+                                    {device.user_id,      false},
+                                    {device.device_id,    false},
+                                    {device.display_name, false}
+        });
+    }
+
+    [[nodiscard]] auto insert_access_token_statement(PersistentAccessToken const& token) -> PreparedStatement
+    {
+        return record_statement("insert_access_token", "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
+                                {
+                                    {token.user_id,                     false},
+                                    {token.device_id,                   false},
+                                    {token.token_hash,                  true },
+                                    {token.revoked ? "true" : "false",  false},
+                                    {expires_at_text(token.expires_at), false},
+                                    {token.predecessor_refresh_hash,    true }
+        });
+    }
+
+    [[nodiscard]] auto insert_refresh_token_statement(PersistentRefreshToken const& token) -> PreparedStatement
+    {
+        return record_statement("insert_refresh_token",
+                                "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                                {
+                                    {token.token_hash, true},
+                                    {token.user_id, false},
+                                    {token.device_id, false},
+                                    {token.revoked ? "true" : "false", false},
+                                    {expires_at_text(token.expires_at), false},
+                                    {token.predecessor_hash, true},
+                                    {std::to_string(std::max<std::int64_t>(token.issued_at_ms, 0)), false}
+        });
+    }
+
+    // DELETE, not revoke (ADR-0590): a revoked refresh row that is presented counts as reuse and ends the device's
+    // session, so a stale client holding the old refresh token would end the login that replaced it. The device's
+    // OAuth session row goes too (ADR-0792): whatever replaces the credentials decides what kind of device it is.
+    auto append_device_credential_deletes(std::vector<PreparedStatement>& statements, std::string_view user_id,
+                                          std::string_view device_id) -> void
+    {
+        statements.push_back(record_statement("delete_device_access_tokens",
+                                              "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {std::string{user_id},   false},
+                                                  {std::string{device_id}, false}
+        }));
+        statements.push_back(record_statement("delete_device_refresh_tokens",
+                                              "DELETE FROM refresh_tokens WHERE user_id = $1 AND device_id = $2",
+                                              {
+                                                  {std::string{user_id},   false},
+                                                  {std::string{device_id}, false}
+        }));
+        statements.push_back(delete_oauth_session_of_device_statement(user_id, device_id));
+    }
+
+    // The memory half of append_device_credential_deletes, after the commit.
+    auto forget_device_credentials(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> void
+    {
+        std::ignore = store.access_tokens.erase_for_device(user_id, device_id);
+        std::ignore = store.refresh_tokens.erase_for_device(user_id, device_id);
+        std::ignore = store.oauth.erase_session(user_id, device_id);
+    }
+
+    auto remember_device(PersistentStore& store, PersistentDevice device) -> void
+    {
+        sync_device_index(store);
+        store.devices.push_back(std::move(device));
+        store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token, bool replace_device_credentials) -> bool
 {
@@ -2011,41 +2093,13 @@ namespace
         {
             return false;
         }
-        statements.push_back(
-            record_statement("insert_device", "INSERT INTO devices VALUES ($1, $2, $3)",
-                             {
-                                 {device->user_id,      false},
-                                 {device->device_id,    false},
-                                 {device->display_name, false}
-        }));
+        statements.push_back(insert_device_statement(*device));
     }
     if (replace_device_credentials)
     {
-        // DELETE, not revoke (ADR-0590): a revoked refresh row that is presented counts as reuse and ends the
-        // device's session, so a stale client holding the old refresh token would end the login that replaced it.
-        statements.push_back(record_statement("delete_device_access_tokens",
-                                              "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
-                                              {
-                                                  {token.user_id,   false},
-                                                  {token.device_id, false}
-        }));
-        statements.push_back(record_statement("delete_device_refresh_tokens",
-                                              "DELETE FROM refresh_tokens WHERE user_id = $1 AND device_id = $2",
-                                              {
-                                                  {token.user_id,   false},
-                                                  {token.device_id, false}
-        }));
+        append_device_credential_deletes(statements, token.user_id, token.device_id);
     }
-    statements.push_back(record_statement("insert_access_token",
-                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
-                                          {
-                                              {token.user_id,                     false},
-                                              {token.device_id,                   false},
-                                              {token.token_hash,                  true },
-                                              {token.revoked ? "true" : "false",  false},
-                                              {expires_at_text(token.expires_at), false},
-                                              {token.predecessor_refresh_hash,    true }
-    }));
+    statements.push_back(insert_access_token_statement(token));
     if (!commit_persistent_transaction(store, statements))
     {
         return false;
@@ -2053,16 +2107,63 @@ namespace
     // Memory changes only after the commit.
     if (replace_device_credentials)
     {
-        std::ignore = store.access_tokens.erase_for_device(token.user_id, token.device_id);
-        std::ignore = store.refresh_tokens.erase_for_device(token.user_id, token.device_id);
+        forget_device_credentials(store, token.user_id, token.device_id);
     }
     if (device.has_value())
     {
-        sync_device_index(store);
-        store.devices.push_back(std::move(*device));
-        store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
+        remember_device(store, std::move(*device));
     }
     std::ignore = store.access_tokens.insert(std::move(token));
+    return true;
+}
+
+[[nodiscard]] auto store_oauth_grant(PersistentStore& store, std::optional<PersistentDevice> device,
+                                     PersistentAccessToken access, PersistentRefreshToken refresh,
+                                     PersistentOAuthSession session, PersistentAuditEvent audit) -> bool
+{
+    if (!token_is_hash(access.token_hash) || !token_is_hash(refresh.token_hash) || access.user_id != refresh.user_id ||
+        access.device_id != refresh.device_id || session.user_id != access.user_id ||
+        session.device_id != access.device_id || access_token_exists(store, access.token_hash) ||
+        refresh_token_exists(store, refresh.token_hash))
+    {
+        return false;
+    }
+    if (device.has_value() &&
+        (device->user_id != access.user_id || device->device_id != access.device_id || device_exists(store, *device)))
+    {
+        return false;
+    }
+    auto session_insert = prepare_oauth_session_insert(store, session, true);
+    if (!session_insert.has_value())
+    {
+        return false;
+    }
+    audit = stamped_audit_event(std::move(audit));
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(8U);
+    if (device.has_value())
+    {
+        statements.push_back(insert_device_statement(*device));
+    }
+    append_device_credential_deletes(statements, access.user_id, access.device_id);
+    statements.push_back(insert_access_token_statement(access));
+    statements.push_back(insert_refresh_token_statement(refresh));
+    statements.push_back(std::move(*session_insert));
+    statements.push_back(audit_insert_statement("oauth_grant_audit", audit));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    // Memory changes only after the commit, in the order of the statements.
+    forget_device_credentials(store, access.user_id, access.device_id);
+    if (device.has_value())
+    {
+        remember_device(store, std::move(*device));
+    }
+    std::ignore = store.access_tokens.insert(std::move(access));
+    std::ignore = store.refresh_tokens.insert(std::move(refresh));
+    std::ignore = remember_oauth_session(store, std::move(session));
+    remember_audit_event(store, std::move(audit));
     return true;
 }
 

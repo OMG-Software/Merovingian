@@ -568,6 +568,20 @@ audit row (category `auth`, actor the user, target the client ID, reason the dev
 is; `oauth.authorization.denied` is audited the same way only when a user had signed in, since a denial before the
 password is anyone's to send.
 
+## OAuth 2.0 token and revocation diagnostics and audit (ADR-0791 to ADR-0795)
+
+`POST /_merovingian/oauth2/token` logs under the `oauth` module: `oauth.token.refused` (debug, `grant_type`, `error`
+and, once read, `client_id`), `oauth.session.granted` (info, `user_id`, `device_id`, `client_id`) and
+`oauth.session.persistence_failed` (warning, the same fields). A replayed authorization code is logged
+`oauth.code.replayed` (warning, `client_id`, `user_id`, `device_id` and `session_ended`). `POST /_merovingian/oauth2/revoke` logs
+`oauth.revocation.refused` (debug, `error`) and `oauth.revocation.accepted` (info, `user_id`, `device_id` and, for an
+OAuth session, `client_id`). Never a code, a code verifier, an access or refresh token, or the request body.
+
+Durable audit rows (category `auth`, actor the user): `oauth.session.granted` (target the client ID, reason the device
+ID), written in the grant's own transaction; `oauth.session.revoked` and `oauth.code.replayed` (target the device ID,
+reason `revoked`), written when the session ends, as `auth.logout` is. A refresh grant writes the `auth.refresh` rows of the legacy
+refresh.
+
 ## Outbound client request diagnostics (F-76, ADR-0418)
 
 `http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:

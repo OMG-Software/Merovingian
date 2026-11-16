@@ -167,12 +167,12 @@ auto oauth_client_has_session(PersistentStore const& store, std::string_view cli
     return store.oauth.sessions_of_client(client_id) != 0U;
 }
 
-auto prepare_oauth_session_insert(PersistentStore const& store, PersistentOAuthSession const& session)
-    -> std::optional<PreparedStatement>
+auto prepare_oauth_session_insert(PersistentStore const& store, PersistentOAuthSession const& session,
+                                  bool replaces_device_session) -> std::optional<PreparedStatement>
 {
     if (session.user_id.empty() || session.device_id.empty() || !client_id_is_storable(session.client_id) ||
         session.scope.size() > max_oauth_scope_bytes || store.oauth.find_client(session.client_id) == nullptr ||
-        store.oauth.find_session(session.user_id, session.device_id) != nullptr)
+        (!replaces_device_session && store.oauth.find_session(session.user_id, session.device_id) != nullptr))
     {
         return std::nullopt;
     }

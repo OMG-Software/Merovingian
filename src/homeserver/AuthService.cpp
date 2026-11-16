@@ -9,9 +9,9 @@
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/auth/Argon2idAdmission.hpp"
 #include "merovingian/auth/FailureWindowTable.hpp"
-#include "merovingian/auth/PasswordPolicy.hpp"
 #include "merovingian/auth/Identity.hpp"
 #include "merovingian/auth/Password.hpp"
+#include "merovingian/auth/PasswordPolicy.hpp"
 #include "merovingian/auth/Session.hpp"
 #include "merovingian/auth/Token.hpp"
 #include "merovingian/config/Config.hpp"
@@ -19,23 +19,25 @@
 #include "merovingian/config/SsoConfig.hpp"
 #include "merovingian/config/SsoIdentityProvider.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
-#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/core/QueryParams.hpp"
-#include "merovingian/crypto/TokenHmacKey.hpp"
-#include "merovingian/crypto/TokenHmacKeys.hpp"
+#include "merovingian/core/SecretBuffer.hpp"
 #include "merovingian/crypto/ConstantTime.hpp"
 #include "merovingian/crypto/Random.hpp"
+#include "merovingian/crypto/TokenHmacKey.hpp"
+#include "merovingian/crypto/TokenHmacKeys.hpp"
 #include "merovingian/crypto/TokenKey.hpp"
+#include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/federation/KeySignatures.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
 #include "merovingian/homeserver/DeactivationAudit.hpp"
+#include "merovingian/homeserver/DeviceLimits.hpp"
+#include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
 #include "merovingian/homeserver/SsoRedirectResult.hpp"
-#include "merovingian/homeserver/DeviceLimits.hpp"
-#include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/oauth/AccessTokenLifetime.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -43,8 +45,8 @@
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 #include "merovingian/platform/FileMetadataSupport.hpp"
-#include "merovingian/trust_safety/PolicySurface.hpp"
 #include "merovingian/trust_safety/PolicyEngine.hpp"
+#include "merovingian/trust_safety/PolicySurface.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -65,6 +67,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -907,6 +910,108 @@ namespace
         return std::nullopt;
     }
 
+    // What a session grant for a verified user may go ahead with: the user, and what the one pass over the device
+    // table found.
+    struct DeviceLoginAdmission final
+    {
+        LocalUser* user{nullptr};
+        UserDeviceScan devices{};
+    };
+
+    // Every check login_local_user_by_id makes before it writes, shared with the OAuth 2.0 authorization code grant
+    // (grant_oauth_session, ADR-0792) so the two cannot drift: the user exists, the device ID is valid, it is not one
+    // of the user's cross-signing key IDs, a device the user does not hold yet fits under `device_count_limit`, and the
+    // account-state gate (deactivated, locked; account_state_refusal). Each refusal is logged and audited as
+    // login.rejected and returned as the OperationResult POST /login answers.
+    [[nodiscard]] auto admit_device_login(HomeserverRuntime& runtime, std::string_view user_id,
+                                          std::string_view device_id)
+        -> std::variant<DeviceLoginAdmission, OperationResult>
+    {
+        auto* user = find_user(runtime.database, user_id);
+        if (user == nullptr)
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   std::string{user_id},   false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "unknown user",         false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
+            return make_operation_result(false, {}, "invalid login", 403U);
+        }
+        if (!auth::device_id_is_valid(device_id))
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   std::string{user_id},   false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "invalid device id",    false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
+            return make_operation_result(false, {}, "invalid device id");
+        }
+        if (device_id_is_cross_signing_key_id(runtime, user_id, device_id))
+        {
+            return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
+        }
+        auto const owned_devices = scan_user_devices(runtime.database.persistent_store, user->user_id, device_id);
+        if (device_creation_over_cap(runtime, user->user_id, device_id, owned_devices))
+        {
+            return make_operation_result(false, {}, "too many devices", 403U);
+        }
+        // The account-state gate shared with complete_login and verify_password_login: deactivated (permanent, and
+        // outranking the reversible moderation states), then locked or suspended.
+        if (auto refusal = account_state_refusal(runtime, *user, device_id); refusal.has_value())
+        {
+            return std::move(refusal->result);
+        }
+        return DeviceLoginAdmission{user, owned_devices};
+    }
+
+    // A fresh opaque token and its v4 hash.
+    struct MintedToken final
+    {
+        std::string token{};
+        std::string hash{};
+    };
+
+    // Mints the access token of a session grant for `user_id` on `device_id`, as login_local_user_by_id always has: a
+    // failure is logged and audited as login.rejected and returned as the OperationResult POST /login answers (400 for
+    // the random source, 503 for a missing token key).
+    [[nodiscard]] auto mint_login_token(HomeserverRuntime& runtime, std::string const& user_id,
+                                        std::string_view device_id) -> std::variant<MintedToken, OperationResult>
+    {
+        auto const token = issue_token();
+        if (!token.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user_id,                   false},
+                                     {"device_id", std::string{device_id},    false},
+                                     {"reason",    "token generation failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user_id, std::string{device_id}, "token generation failed");
+            return make_operation_result(false, {}, "token generation failed");
+        }
+        auto const token_hash = issue_token_hash(runtime, *token);
+        if (!token_hash.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user_id,                false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "token hashing failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user_id, std::string{device_id}, "token hashing failed");
+            return make_operation_result(false, {}, "token key unavailable", 503U);
+        }
+        return MintedToken{*token, *token_hash};
+    }
+
     // Shared tail of login_local_user() and login_appservice_user(): device
     // validation, account-state (locked/suspended) policy, token issuance,
     // and session persistence. The two callers differ only in how they got
@@ -1473,74 +1578,22 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
                             bool with_ttl, std::string_view display_name) -> OperationResult
 {
-    auto* user = find_user(runtime.database, user_id);
-    if (user == nullptr)
+    // The checks and the token are shared with the OAuth 2.0 grant (grant_oauth_session, ADR-0792).
+    auto admitted = admit_device_login(runtime, user_id, device_id);
+    if (auto* refusal = std::get_if<OperationResult>(&admitted); refusal != nullptr)
     {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   std::string{user_id},   false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"reason",    "unknown user",         false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
-        return make_operation_result(false, {}, "invalid login", 403U);
+        return std::move(*refusal);
     }
-    if (!auth::device_id_is_valid(device_id))
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   std::string{user_id},   false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"reason",    "invalid device id",    false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
-        return make_operation_result(false, {}, "invalid device id");
-    }
-    if (device_id_is_cross_signing_key_id(runtime, user_id, device_id))
-    {
-        return make_operation_result(false, {}, "device id must not be a cross-signing key id", 403U);
-    }
-    auto const owned_devices = scan_user_devices(runtime.database.persistent_store, user->user_id, device_id);
-    if (device_creation_over_cap(runtime, user->user_id, device_id, owned_devices))
-    {
-        return make_operation_result(false, {}, "too many devices", 403U);
-    }
+    auto* const user = std::get<DeviceLoginAdmission>(admitted).user;
+    auto const owned_devices = std::get<DeviceLoginAdmission>(admitted).devices;
 
-    // The account-state gate shared with complete_login and verify_password_login: deactivated (permanent, and
-    // outranking the reversible moderation states), then locked or suspended.
-    if (auto refusal = account_state_refusal(runtime, *user, device_id); refusal.has_value())
+    auto minted = mint_login_token(runtime, user->user_id, device_id);
+    if (auto* refusal = std::get_if<OperationResult>(&minted); refusal != nullptr)
     {
-        return std::move(refusal->result);
+        return std::move(*refusal);
     }
-
-    auto const token = issue_token();
-    if (!token.has_value())
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,             false},
-                                 {"device_id", std::string{device_id},    false},
-                                 {"reason",    "token generation failed", false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "token generation failed");
-        return make_operation_result(false, {}, "token generation failed");
-    }
-    auto const token_hash = issue_token_hash(runtime, *token);
-    if (!token_hash.has_value())
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,          false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"reason",    "token hashing failed", false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
-        return make_operation_result(false, {}, "token key unavailable", 503U);
-    }
+    auto const token = std::optional<std::string>{std::get<MintedToken>(minted).token};
+    auto const token_hash = std::optional<std::string>{std::get<MintedToken>(minted).hash};
     auto device = std::optional<database::PersistentDevice>{};
     if (!owned_devices.holds_device)
     {
@@ -1580,6 +1633,75 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
     return make_operation_result(true, *token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+auto grant_oauth_session(HomeserverRuntime& runtime, OAuthGrantRequest const& request) -> SessionRefreshResult
+{
+    // The same checks and the same access token as a login (login_local_user_by_id); only the write differs.
+    auto admitted = admit_device_login(runtime, request.user_id, request.device_id);
+    if (auto const* refusal = std::get_if<OperationResult>(&admitted); refusal != nullptr)
+    {
+        return {false, refusal->status, {}, {}, request.user_id, request.device_id, refusal->reason};
+    }
+    auto* const user = std::get<DeviceLoginAdmission>(admitted).user;
+    auto const holds_device = std::get<DeviceLoginAdmission>(admitted).devices.holds_device;
+    auto minted = mint_login_token(runtime, user->user_id, request.device_id);
+    if (auto const* refusal = std::get_if<OperationResult>(&minted); refusal != nullptr)
+    {
+        // A token the server could not make is its own failure, never the client's.
+        return {false, 500U, {}, {}, request.user_id, request.device_id, refusal->reason};
+    }
+    auto const& access = std::get<MintedToken>(minted);
+    auto const refresh_token = issue_token();
+    auto const refresh_hash = refresh_token.has_value() ? issue_token_hash(runtime, *refresh_token) : std::nullopt;
+    if (!refresh_hash.has_value())
+    {
+        return {false, 500U, {}, {}, request.user_id, request.device_id, "refresh token generation failed"};
+    }
+
+    auto device = std::optional<database::PersistentDevice>{};
+    if (!holds_device)
+    {
+        device = database::PersistentDevice{user->user_id, request.device_id, request.display_name};
+    }
+    // The spec's MUST: an OAuth access token is short-lived, so it always has an expiry (ADR-0791).
+    auto const access_expires_at =
+        token_expires_at(oauth::access_token_lifetime_ms(runtime.config.security().access_token_lifetime_ms));
+    auto const refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
+    // ONE transaction (ADR-0792): the device, the deletion of its earlier credentials and OAuth session (a device the
+    // user holds has its earlier tokens invalidated, as a login on it does, ADR-0590), the access and refresh rows and
+    // the oauth_sessions row and the durable audit row (as auth.login is for a password login: actor the user, target
+    // the client, reason the device). A failed commit leaves none of them.
+    if (!database::store_oauth_grant(
+            runtime.database.persistent_store, std::move(device),
+            {user->user_id, request.device_id, access.hash, false, access_expires_at},
+            {user->user_id, request.device_id, *refresh_hash, false, refresh_expires_at, {}, wall_clock_ms()},
+            {user->user_id, request.device_id, request.client_id, request.scope, request.created_at_ms},
+            local_audit_row(observability::AuditCategory::auth, "oauth.session.granted", user->user_id,
+                            request.client_id, request.device_id)))
+    {
+        observability::log_diagnostic("oauth", "oauth.session.persistence_failed",
+                                      {
+                                          {"user_id",   user->user_id,     false},
+                                          {"device_id", request.device_id, false},
+                                          {"client_id", request.client_id, false}
+        },
+                                      observability::LogEventSeverity::warning);
+        return {false, 500U, {}, {}, request.user_id, request.device_id, "session persistence failed"};
+    }
+    ++runtime.database.next_session_id;
+    std::ignore = runtime.database.sessions.erase_device(user->user_id, request.device_id);
+    runtime.database.sessions.push_back({user->user_id, request.device_id, access.hash, false, access_expires_at});
+    remember_local_audit(runtime.database, observability::AuditCategory::auth, "oauth.session.granted", user->user_id,
+                         request.client_id, request.device_id);
+    observability::log_diagnostic("oauth", "oauth.session.granted",
+                                  {
+                                      {"user_id",   user->user_id,     false},
+                                      {"device_id", request.device_id, false},
+                                      {"client_id", request.client_id, false}
+    },
+                                  observability::LogEventSeverity::info);
+    return {true, 200U, access.token, *refresh_token, user->user_id, request.device_id, {}};
+}
 
 // Application Service API (Matrix v1.19) §"Server admin style permissions":
 // logs in as `user_id` WITHOUT a password check, for a `POST /login` call
@@ -1648,7 +1770,28 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
     return make_operation_result(true, *refresh_token);
 }
 
-auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token) -> SessionRefreshResult
+namespace
+{
+
+    // Whether the API presenting a refresh token of (`user_id`, `device_id`) may use it (ADR-0793): the legacy
+    // POST /refresh (`oauth_client_id` nullopt) only for a device with no `oauth_sessions` row, the OAuth 2.0 token
+    // endpoint only for a device whose row names the presented client. The two APIs never mix.
+    [[nodiscard]] auto refresh_api_matches_device(HomeserverRuntime const& runtime, std::string_view user_id,
+                                                  std::string_view device_id,
+                                                  std::optional<std::string_view> oauth_client_id) -> bool
+    {
+        auto const* session = database::find_oauth_session(runtime.database.persistent_store, user_id, device_id);
+        if (!oauth_client_id.has_value())
+        {
+            return session == nullptr;
+        }
+        return session != nullptr && session->client_id == *oauth_client_id;
+    }
+
+} // namespace
+
+auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token,
+                           std::optional<std::string_view> oauth_client_id) -> SessionRefreshResult
 {
     if (token_hmac_key_v4(runtime) == nullptr)
     {
@@ -1678,6 +1821,24 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     // Copied now: storing the new tokens below may reallocate the vector.
     auto const presented_hash = refresh->token_hash;
     auto const predecessor_hash = refresh->predecessor_hash;
+
+    // ADR-0793: before anything is rotated or revoked, the token must belong to a device of the presenting API. A
+    // legacy refresh token at the OAuth token endpoint, an OAuth one at POST /refresh, or another client's, is
+    // answered as an unknown token and changes nothing: not even a retired token's reuse detection runs for it.
+    if (!refresh_api_matches_device(runtime, user_id, device_id, oauth_client_id))
+    {
+        if (oauth_client_id.has_value())
+        {
+            observability::log_diagnostic("oauth", "oauth.refresh.refused",
+                                          {
+                                              {"user_id",   user_id,                       false},
+                                              {"client_id", std::string{*oauth_client_id}, false},
+                                              {"reason",    "not a session of the client", false}
+            },
+                                          observability::LogEventSeverity::warning);
+        }
+        return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
+    }
 
     // ADR-0074 (Matrix v1.19 CS API, refresh tokens): "The homeserver SHOULD
     // consider that the session is compromised if an old, invalidated refresh
@@ -1798,7 +1959,11 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     auto const evicted_refresh_hashes = runtime.database.persistent_store.refresh_tokens.oldest_retired_beyond(
         user_id, device_id, max_retired_refresh_tokens_per_device);
 
-    auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
+    // An OAuth access token always expires (ADR-0791); a legacy one keeps the configured lifetime, 0 meaning none.
+    auto const configured_access_lifetime_ms = runtime.config.security().access_token_lifetime_ms;
+    auto const new_access_expires_at =
+        token_expires_at(oauth_client_id.has_value() ? oauth::access_token_lifetime_ms(configured_access_lifetime_ms)
+                                                     : configured_access_lifetime_ms);
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
     if (!database::rotate_device_credentials(
             runtime.database.persistent_store,
@@ -2088,7 +2253,15 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     {
         return make_operation_result(false, {}, "unauthenticated");
     }
+    // Shared with OAuth 2.0 revocation, which ends a session exactly as logout does (ADR-0795).
+    return end_device_session(runtime, user_id, device_id, persisted_hash, "auth.logout");
+}
 
+auto end_device_session(HomeserverRuntime& runtime, std::string_view user_id_view, std::string_view device_id_view,
+                        std::string_view persisted_hash, std::string_view audit_event) -> OperationResult
+{
+    auto const user_id = std::string{user_id_view};
+    auto const device_id = std::string{device_id_view};
     // P13 (ADR-0491): the presented token, the device's refresh tokens and the device's access tokens are
     // revoked in one transaction; the checks below confirm the store agrees before anything is marked.
     std::ignore =
@@ -2118,10 +2291,10 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
+    // The presented token is one of the device's, so marking the device's sessions marks it too.
     for (auto& session : runtime.database.sessions)
     {
-        if (matches_any_token_hash(session.access_token_hash, token_hashes) ||
-            (session.user_id == user_id && session.device_id == device_id))
+        if (session.user_id == user_id && session.device_id == device_id)
         {
             session.revoked = true;
         }
@@ -2138,7 +2311,7 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         },
                        observability::LogEventSeverity::warning);
     }
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
+    append_local_audit(runtime.database, observability::AuditCategory::auth, audit_event, user_id, device_id,
                        "revoked");
     log_diagnostic("logout.accepted",
                    {
@@ -2147,6 +2320,30 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     },
                    observability::LogEventSeverity::info);
     return make_operation_result(true, user_id);
+}
+
+auto revocable_session_of_token(HomeserverRuntime const& runtime, std::string_view token) -> std::optional<LocalSession>
+{
+    // Hashed the same way whatever the token turns out to be, and looked up as both kinds, so the work does not depend
+    // on which kind it is or whether it is held. lookup_token_hashes refuses an empty token.
+    auto const token_hashes = lookup_token_hashes(runtime, token);
+    if (token_hashes.empty())
+    {
+        return std::nullopt;
+    }
+    auto const now = std::chrono::system_clock::now();
+    auto const* session = find_session(runtime.database, token_hashes, now);
+    auto const* refresh = runtime.database.persistent_store.refresh_tokens.find(token_hashes);
+    if (session != nullptr)
+    {
+        return *session;
+    }
+    if (refresh != nullptr && matches_any_token_hash(refresh->token_hash, token_hashes) && !refresh->revoked &&
+        !is_expired(refresh->expires_at, now))
+    {
+        return LocalSession{refresh->user_id, refresh->device_id, {}, false, std::nullopt};
+    }
+    return std::nullopt;
 }
 
 auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult

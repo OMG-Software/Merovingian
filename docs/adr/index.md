@@ -672,3 +672,8 @@
 * [0788 - The OAuth browser binding is one `__Host-` cookie, and the pending identifier is the form token](0788-the-oauth-browser-binding-is-one-host-cookie-and-the-pending-identifier-is-the-form-token.md)
 * [0789 - `response_mode=query` is accepted for an `https` redirect URI](0789-response-mode-query-is-accepted-for-an-https-redirect-uri.md)
 * [0790 - An OAuth approval is judged again and audited, and its redirect sends no referrer](0790-an-oauth-approval-is-judged-again-and-audited-and-its-redirect-sends-no-referrer.md)
+* [0791 - The OAuth token endpoint reuses the login's tokens, and an OAuth access token always expires](0791-the-oauth-token-endpoint-reuses-the-login-tokens-and-an-oauth-access-token-always-expires.md)
+* [0792 - An OAuth grant is one transaction, and a replayed code ends only the session it produced](0792-an-oauth-grant-is-one-transaction-and-a-replayed-code-ends-only-the-session-it-produced.md)
+* [0793 - OAuth and legacy sessions do not mix at the refresh endpoints](0793-oauth-and-legacy-sessions-do-not-mix-at-the-refresh-endpoints.md)
+* [0794 - A UIA endpoint refuses an OAuth session, and the cross-signing upload follows the spec's exemptions](0794-a-uia-endpoint-refuses-an-oauth-session-and-cross-signing-upload-follows-the-spec-exemptions.md)
+* [0795 - OAuth revocation ends the session as logout does, whoever asks](0795-oauth-revocation-ends-the-session-as-logout-does-whoever-asks.md)

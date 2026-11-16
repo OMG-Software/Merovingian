@@ -79,6 +79,22 @@ its device checks, so keep it out of the verification). A password account is cr
 `register_password_account`, through `register_local_user` or `create_local_account` (the username checks of
 `/register` first). Never copy any of these steps into a route or a page: change the shared function.
 
+## OAuth 2.0 sessions (ADR-0791 to ADR-0795)
+
+An OAuth 2.0 session is a legacy session (an access and a refresh row in `SessionTable`, rotated by the same
+`refresh_local_session`) plus an `oauth_sessions` row naming the client. Rules:
+
+- `grant_oauth_session` (`src/homeserver/AuthService.cpp`) is the only path that creates one. It reuses
+  `admit_device_login` and `mint_login_token`, never a copy, and always gives the access token an expiry
+  (`oauth::access_token_lifetime_ms`: one hour when `security.access_token_lifetime_ms` is `0`).
+- The refresh endpoints do not mix kinds: `POST /refresh` refuses a token of a device with an `oauth_sessions` row, and
+  the token endpoint's refresh grant refuses one without a row for the client that asks (ADR-0793). The check runs
+  before the rotation, so a refused token is never spent.
+- A UIA endpoint answers an OAuth session `403 M_FORBIDDEN` before the password check (`oauth_session_uia_refusal`,
+  ADR-0794): the password is not the credential such a session was given. A new UIA endpoint calls it first.
+- Revocation and a replayed code end the session through `end_device_session` exactly as `POST /logout` does
+  (ADR-0795); never revoke only the tokens.
+
 ## Session lookup and retention
 
 `LocalDatabase::sessions` is a `homeserver::SessionTable`: `find` narrows by an index of token-hash digests and then calls

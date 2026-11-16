@@ -7,6 +7,7 @@
 #include "merovingian/oauth/OAuthRefusal.hpp"
 
 #include <cstdint>
+#include <string_view>
 
 namespace merovingian::homeserver
 {
@@ -24,5 +25,13 @@ namespace merovingian::homeserver
 // The error answer of `refusal` with `status`: its `error_code` as `error` and its fixed message as
 // `error_description`. The message never quotes the request (oauth/AGENTS.md rule 2), so it is safe to send.
 [[nodiscard]] auto oauth_error_response(std::uint16_t status, oauth::OAuthRefusal const& refusal) -> LocalHttpResponse;
+// The same for a refusal written at the call site: `error_code` (one of oauth/OAuthErrorCodes.hpp) and a fixed
+// `description` that never quotes the request.
+[[nodiscard]] auto oauth_error_response(std::uint16_t status, std::string_view error_code, std::string_view description)
+    -> LocalHttpResponse;
+
+// An answer with no body and `Cache-Control: no-store`: the 200 of a revocation request (RFC 7009 section 2.2: "The
+// content of the response body is ignored by the client"; ADR-0795). No `Content-Type`, since there is no content.
+[[nodiscard]] auto oauth_empty_response(std::uint16_t status) -> LocalHttpResponse;
 
 } // namespace merovingian::homeserver

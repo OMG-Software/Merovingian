@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -56,6 +57,18 @@ public:
     // the code's own expiry, `unknown` otherwise.
     [[nodiscard]] auto redeem(std::string_view code, std::uint64_t now_ms) -> AuthorizationCodeRedemption;
 
+    // The `created_at_ms` for the `oauth_sessions` row a grant from a code is about to write: `now_ms`, or one more
+    // than the last value this store gave if that is not less. Strictly increasing over the store's life, so the value
+    // recorded for a code names one row: a later grant on the same device ID, whose row replaces it, has another
+    // (ADR-0792). Codes live in memory only, so uniqueness within the process is all a replay needs.
+    [[nodiscard]] auto next_session_created_at_ms(std::uint64_t now_ms) noexcept -> std::uint64_t;
+
+    // Records that the redemption of `code` issued the session whose row has `session_created_at_ms`, so a replay
+    // names it. False, recording nothing, when `code` is not held as a redeemed code at `now_ms` (it expired since,
+    // or was never redeemed) or already has a session recorded.
+    [[nodiscard]] auto record_issued_session(std::string_view code, std::uint64_t session_created_at_ms,
+                                             std::uint64_t now_ms) -> bool;
+
     // How many live, unredeemed codes name `client_id`, after removing the expired ones. No scan.
     [[nodiscard]] auto unredeemed_count_for_client(std::string_view client_id, std::uint64_t now_ms) -> std::size_t;
 
@@ -74,6 +87,8 @@ private:
         AuthorizationGrant grant{};
         std::uint64_t expires_at_ms{0U};
         bool redeemed{false};
+        // The session row the redemption issued, once recorded.
+        std::optional<std::uint64_t> session_created_at_ms{};
     };
 
     template <typename Value>
@@ -85,6 +100,8 @@ private:
     HashedSecretTable<Entry> m_codes{};
     // client_id -> the expiry of each of its unredeemed codes; the last element is the latest.
     KeyedBy<std::multiset<std::uint64_t>> m_unredeemed_expiries_by_client{};
+    // The last value next_session_created_at_ms gave.
+    std::uint64_t m_last_session_created_at_ms{0U};
 };
 
 } // namespace merovingian::homeserver

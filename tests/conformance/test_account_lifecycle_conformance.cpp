@@ -5,6 +5,7 @@
 // Authentication failure body, logout deleting the device, M_MISSING_TOKEN on logout,
 // registration sessions and username checks, M_NOT_JSON, and 405 M_UNRECOGNIZED.
 
+#include "../support/CrossSigningFixture.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
@@ -19,8 +20,8 @@
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
-#include "merovingian/homeserver/RuntimeStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
+#include "merovingian/homeserver/RuntimeStartResult.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -208,10 +209,15 @@ SCENARIO("A failed User-Interactive Authentication stage answers 401 with errcod
                 check_failure(response);
             }
         }
-        WHEN("the wrong password is given to POST /keys/device_signing/upload")
+        WHEN("the wrong password is given to POST /keys/device_signing/upload to replace a held master key")
         {
+            // Spec v1.19 ("Changed in v1.11"): no UIA is asked for while no master key is held, so one is held first.
+            REQUIRE(send(started.runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                         "{" + merovingian::tests::make_cross_signing_set("@alice:example.org").master_member() + "}")
+                        .status == 200U);
+            auto const replacement = merovingian::tests::make_cross_signing_set("@alice:example.org").master_member();
             auto const response = send(started.runtime, "POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                                       "{" + password_auth("alice", "WrongHorse7!") + "}");
+                                       "{" + replacement + "," + password_auth("alice", "WrongHorse7!") + "}");
             THEN("the failure carries errcode M_FORBIDDEN and error")
             {
                 check_failure(response);

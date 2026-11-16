@@ -44,6 +44,14 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   form's pending identifier, at most 16 in progress per address (ADR-0787, ADR-0788).
 * An approval judges the account again, is audited, and its redirect sends no referrer; it creates no device, token
   or OAuth session (ADR-0790).
+* `POST /_merovingian/oauth2/token` serves the code grant (PKCE, exact redirect URI, one transaction) and the
+  refresh grant, for public clients only; an OAuth access token always expires (ADR-0791, ADR-0792).
+* `POST /_merovingian/oauth2/revoke` ends the session of an access or refresh token as `/logout` does, and answers
+  200 for an unknown token (ADR-0795).
+* A replayed authorization code ends only the session it produced; `POST /refresh` and the refresh grant each refuse
+  the other kind of session, before the token is spent (ADR-0792, ADR-0793).
+* Endpoints that ask for User-Interactive Authentication answer an OAuth session `403 M_FORBIDDEN` naming the
+  account page; application services are not refused (ADR-0794).
 
 ## Security Fixes
 
@@ -59,15 +67,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   and 302, 303, 409, 504 and other statuses now carry their reason phrase instead of `OK`.
 * `merovingian-db-migrate --plan 1 2 --migrations` now plans only the files between the two versions, instead of
   every file in the directory.
+* `POST /keys/device_signing/upload` asks for UIA only to change held keys: a first upload or a repeat of the held
+  keys succeeds without it, and an application service never needs it, as the spec says (ADR-0794).
 
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
-keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token and revocation
-endpoints, which later 1.1.0 changes serve (registration is served now); leave `server.oauth.enabled` off until
-then. 1.1.0 migrates the database: on first start it applies migration 002, which adds two empty tables and changes
-no existing one. A 1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go
-back.
+keys and set `server.oauth.enabled` instead (ADR-0764). The authorisation, token and revocation endpoints are
+served; the account page is not yet, so a user signed in through OAuth cannot change a password or delete a device
+there: leave `server.oauth.enabled` off until then. 1.1.0 migrates the database: on first start it applies
+migration 002, which adds two empty tables and changes no existing one. A 1.0.x server refuses the migrated
+database, so back it up before upgrading if you may need to go back.
 
 # Version 1.0.2
 

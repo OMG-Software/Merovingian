@@ -28,7 +28,10 @@ This is the largest and most complex module — read this file carefully before 
 | `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
-| `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response`: every OAuth JSON answer, with `no-store` (ADR-0781) |
+| `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response` / `oauth_empty_response`: every OAuth JSON (or empty) answer, with `no-store` (ADR-0781) |
+| `OAuthTokenEndpoint.cpp` | `POST /_merovingian/oauth2/token` (`handle_oauth_token`): the authorization code grant and the refresh grant (ADR-0791 to ADR-0793) |
+| `OAuthRevocation.cpp` | `POST /_merovingian/oauth2/revoke` (`handle_oauth_revoke`): ends the session of an access or refresh token as `/logout` does (ADR-0795) |
+| `OAuthClientCredentials.cpp` | `oauth_client_credentials_refusal`: refuses a `client_secret` field or `Authorization: Basic` (only public clients exist) at the token and revocation endpoints |
 | `OAuthAuthorization.cpp` | `GET` and `POST /_merovingian/oauth2/authorize` (`handle_oauth_authorize`): the authorisation request, the browser cookie, the login, registration and consent pages, and the redirect with a code or an error (ADR-0787 to ADR-0789) |
 | `OAuthClock.cpp` | `oauth_wall_clock_ms`: the wall-clock milliseconds every OAuth store and handler passes |
 | `RequestHeaders.cpp` | `request_header` (first value, case-insensitive name) and `request_header_values` (every value, for a check that refuses a repeated header) |
@@ -144,6 +147,25 @@ Rules for the authorisation pages:
   endpoint creates those.
 - Log under `oauth` with `client_id`, `application_type`, `error`, `user_id` and `device_id` only. Granted, and denied
   after a sign-in, are durable audit rows.
+The token and revocation endpoints are `handle_oauth_token` and `handle_oauth_revoke`, answered before the authentication
+gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
+
+- **A grant is one transaction** (`grant_oauth_session` and `database::store_oauth_grant`, ADR-0792): the device, the
+  deletion of the device's earlier credentials and OAuth row, both tokens, the `oauth_sessions` row and the audit row.
+  Then `remember_signed_in_device` adds the device to the runtime's list as `POST /login` does; never add a write after
+  the commit that a failure could leave behind.
+- **The code grant's checks are in order**: client and grant type, verifier shape, redeem (a spent code whatever
+  follows), then client, redirect URI byte for byte and PKCE, then `account_sign_in_gate` and the device checks. A
+  replayed code ends only the session that code produced (`AuthorizationCodeStore::record_issued_session`, matched on
+  client and `created_at_ms`).
+- **A session ends through `end_device_session_and_announce`** (`ClientDeviceSessions.hpp`), shared with `POST /logout`:
+  revocation, a replayed code, any new path that ends a session.
+- **A UIA endpoint calls `oauth_session_uia_refusal` first** (ADR-0794): `GET`/`POST /login/get_token`,
+  `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `DELETE /devices/{deviceId}`,
+  `POST /delete_devices`, and `POST /keys/device_signing/upload` when the upload is not UIA-exempt. An application
+  service's masquerade token is never refused.
+- Never log a code, a verifier, a token or the body; log `client_id`, `grant_type`, `error`, `user_id`, `device_id`.
+
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
 authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
 
@@ -236,6 +258,11 @@ M_INVALID_SIGNATURE` for a missing or wrong signature, ADR-0421). The three keys
 refused whole (`room_key_batch_refusal`, 400 `M_BAD_JSON`) for a missing or non-object `rooms`, room, `sessions` or
 session, and writes its sessions with `database::store_key_backup_sessions` in one transaction; a failed write is a 500,
 never a 200 with an etag. Do not skip a malformed entry or ignore a write result.
+
+The upload asks for User-Interactive Authentication only when it changes a held key (spec v1.11 "Cross-signing", ADR-0794):
+`cross_signing_upload_is_uia_exempt` exempts an application service, a user with no master key, and an upload whose
+master key and every other key sent equal the held ones (canonical JSON). While a master key is held, an upload
+without one, or with any key that differs from the held one, is UIA, and an OAuth session is refused it with 403.
 
 ## The runtime lock and blocking calls
 
@@ -808,7 +835,8 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A client's device or key change goes through `record_shared_room_device_changes`: local observers only,
   deduplicated across rooms, one batch (ADR-0317). Never loop over a roster calling `record_device_list_change`;
   a federated room's roster is chosen by a remote server.
-- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`) reads
+- A device removal (`DELETE /devices/{deviceId}`, `POST /delete_devices`, `POST /logout`, `POST /logout/all`, OAuth
+  revocation and a replayed code) reads
   `remote_servers_for_user` before the removal, then calls `announce_deleted_devices` once with the devices that really
   went: one `m.device_list_update` with `deleted: true` per device and server, each on its own `allocate_sync_stream_id`
   position, enqueue only. A new path that deletes a device does the same. Account deactivation deletes none today.

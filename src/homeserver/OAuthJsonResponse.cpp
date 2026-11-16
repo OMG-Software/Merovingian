@@ -5,6 +5,8 @@
 
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/Serializer.hpp"
+#include "merovingian/core/Error.hpp"
+#include "merovingian/core/ErrorCode.hpp"
 
 #include <cstdint>
 #include <string>
@@ -46,6 +48,23 @@ auto oauth_error_response(std::uint16_t status, oauth::OAuthRefusal const& refus
     object.push_back(canonicaljson::make_member("error", canonicaljson::Value{refusal.error_code}));
     object.push_back(canonicaljson::make_member("error_description", canonicaljson::Value{refusal.error.message()}));
     return oauth_json_response(status, canonicaljson::Value{std::move(object)});
+}
+
+auto oauth_error_response(std::uint16_t status, std::string_view error_code, std::string_view description)
+    -> LocalHttpResponse
+{
+    return oauth_error_response(
+        status, oauth::OAuthRefusal{
+                    std::string{error_code},
+                    core::Error{core::ErrorCode::invalid_argument, std::string{description}}
+    });
+}
+
+auto oauth_empty_response(std::uint16_t status) -> LocalHttpResponse
+{
+    auto response = LocalHttpResponse{status, {}, {}};
+    response.headers.emplace_back("Cache-Control", "no-store");
+    return response;
 }
 
 } // namespace merovingian::homeserver

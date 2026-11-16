@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration endpoint and the authorization endpoint are served (see "OAuth 2.0 client registration" and "OAuth 2.0 authorisation pages" below); the token and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration, authorization, token and revocation endpoints are served (see "OAuth 2.0 client registration", "OAuth 2.0 authorisation pages" and "OAuth 2.0 token and revocation endpoints" below); the device authorisation endpoint and the account page it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker
@@ -1042,7 +1042,7 @@ is left out rather than taking the resident server's value.
 ## OAuth 2.0 building blocks (`oauth`)
 
 The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md), plan in
-`todos/oauth-2-0-api.md`) is not served yet. The `oauth` module holds its pure parts, with no state, I/O or logging
+`todos/oauth-2-0-api.md`) is served in part (the sections below). The `oauth` module holds its pure parts, with no state, I/O or logging
 ([ADR-0768](adr/0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)); a refusal is an
 `OAuthRefusal`, the wire `error` code beside a `core::Error` with fixed text. Rules: `src/oauth/AGENTS.md`.
 
@@ -1164,6 +1164,53 @@ characters.
 - **What it leaves.** An approval leaves one authorization code (60 s) and nothing else: no device, token or
   `oauth_sessions` row; the token endpoint creates those. No browser session is kept: every authorisation asks for
   the password (ADR-0787).
+
+## OAuth 2.0 token and revocation endpoints (phases 6 and 7)
+
+`POST /_merovingian/oauth2/token` (`handle_oauth_token`, `homeserver/OAuthTokenEndpoint.cpp`) and
+`POST /_merovingian/oauth2/revoke` (`handle_oauth_revoke`, `homeserver/OAuthRevocation.cpp`) are served while
+`server.oauth.enabled` is true (404 `M_UNRECOGNIZED` otherwise), before the authentication gate, in the
+`auth_sensitive` rate tier. The body is `application/x-www-form-urlencoded` (a `charset=utf-8` parameter is accepted),
+read with `core::FormFields`; anything else is 400 `invalid_request`. Every answer is an OAuth JSON answer with
+`Cache-Control: no-store` and the usual CORS headers. Only public clients exist: `Authorization: Basic` is 401
+`invalid_client` with `WWW-Authenticate: Basic`, and a `client_secret` field 400 `invalid_client` (ADR-0791).
+
+- **Authorization code grant.** In order: `client_id`, `code`, `redirect_uri` and `code_verifier` present; the client
+  registered (`invalid_client`) for `authorization_code` (`unauthorized_client`); the verifier well formed
+  (`invalid_request`, the code is not spent); the code redeemed (unknown: `invalid_grant`); the client ID, the redirect
+  URI byte for byte and the PKCE `S256` verifier matched (`invalid_grant`, the code is spent); then
+  `account_sign_in_gate` and the login's device checks (`invalid_grant`). `grant_oauth_session` (`AuthService.cpp`)
+  shares `admit_device_login` and `mint_login_token` with `login_local_user_by_id`, and `database::store_oauth_grant`
+  writes the device (named after the client's `client_name` when it is new and fits the 256-byte cap), the deletion of
+  the device's earlier tokens and OAuth row, both new tokens, the `oauth_sessions` row and the `oauth.session.granted`
+  audit row (actor the user, target the client, reason the device) in ONE transaction (ADR-0792). The device then joins
+  the runtime's device list as after `POST /login`. The answer is 200
+  `{access_token, token_type: "Bearer", expires_in, refresh_token, scope}`.
+- **Access token lifetime.** Always finite: `security.access_token_lifetime_ms`, or one hour when it is 0
+  (`oauth::access_token_lifetime_ms`, ADR-0791). The refresh token takes `refresh_token_lifetime_ms`.
+- **A replayed code** is `invalid_grant` and ends the session that code produced, if the device's `oauth_sessions` row
+  is still that one (its client and its process-unique `created_at_ms`, recorded on the code); a later grant on the same
+  device is left alone (ADR-0792). Logged `oauth.code.replayed` at warning level and audited when a session ended.
+- **Refresh token grant.** `refresh_token` and `client_id`, the client registered for `refresh_token`, then
+  `refresh_local_session` with the client ID: the token's device must hold an `oauth_sessions` row for that client,
+  checked before anything is rotated. The legacy `POST /refresh` refuses a token whose device holds a row, as an unknown
+  token (ADR-0793). A refusal is 400 `invalid_grant`, a storage failure 500 `server_error`. `scope` is ignored.
+- **Legacy login on an OAuth device.** `POST /login` on a device that holds an `oauth_sessions` row deletes the row in
+  the login's own transaction: the device becomes a legacy session.
+- **Revocation.** `token` is required (`invalid_request`); `token_type_hint` and `client_id` are ignored. The token is
+  looked up as a live access token or an unrevoked, unexpired refresh token (`revocable_session_of_token`). Not found:
+  200 with an empty body. Found, OAuth or legacy: `end_device_session_and_announce` ends the session as `POST /logout`
+  does (every token of the device revoked, the device and its `oauth_sessions` row deleted, the deletion announced),
+  audited `oauth.session.revoked`, then 200 with an empty body. There is no 401 case (ADR-0795).
+- **User-Interactive Authentication.** An OAuth session holds no password the client can be asked for. Every endpoint
+  that asks for UIA with an access token (`POST /login/get_token`, `POST /account/password`, `POST /account/deactivate`,
+  `POST /account/3pid/add`, `DELETE /devices/{deviceId}`, `POST /delete_devices`, and a change of held cross-signing
+  keys) answers it 403 `M_FORBIDDEN` naming the account page (`oauth_session_uia_refusal`); an application service is
+  exempt. `POST /keys/device_signing/upload` needs no UIA for any session when no master key is held or when every key
+  sent matches the held one, nor for an application service (spec v1.11 and v1.17; ADR-0794).
+- **Logging.** Under `oauth`: `oauth.token.refused` (debug: grant type, error, client ID), `oauth.session.granted`,
+  `oauth.session.persistence_failed`, `oauth.refresh.refused`, `oauth.code.replayed`, `oauth.revocation.refused` and
+  `oauth.revocation.accepted`, with `user_id`, `device_id` and `client_id` only. Never a code, a verifier or a token.
 
 ## Next starting points
 

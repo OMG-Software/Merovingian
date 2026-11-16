@@ -831,13 +831,23 @@ and its unstable form `GET /_matrix/client/unstable/org.matrix.msc2965/auth_meta
 answer `404 M_UNRECOGNIZED`, as the spec asks of a server without the API. With
 `server.oauth.enabled=true` both answer the server metadata. In 1.1.0 the API
 is being built in phases; this release serves the metadata, client
-registration (`POST /_merovingian/oauth2/register`) and the sign-in pages
+registration (`POST /_merovingian/oauth2/register`), the sign-in pages
 (`/_merovingian/oauth2/authorize`, where a user signs in or creates an account
-and allows the application), and the other endpoints it names follow. Every
-authorisation asks for the password; the server keeps no browser session. At most 10000 client registrations are held; once every held one
-is in use, a new client is answered `503 temporarily_unavailable` until one is
-freed. Until they do, a client that follows the metadata cannot log in,
-so leave the API off.
+and allows the application), the token endpoint
+(`POST /_merovingian/oauth2/token`, the authorization code and refresh grants)
+and revocation (`POST /_merovingian/oauth2/revoke`); the account page and the
+device grant follow. Every authorisation asks for the password; the server
+keeps no browser session. At most 10000 client registrations are held; once
+every held one is in use, a new client is answered `503 temporarily_unavailable`
+until one is freed. Until the account page lands, a user signed in through
+OAuth cannot change their password, deactivate the account, add an email
+address or delete a device from that session: those requests are answered
+`403 M_FORBIDDEN` naming `/_merovingian/account` (ADR-0794), so leave the API
+off unless users can do those things from a legacy login.
+
+An OAuth access token always expires: it lives
+`security.access_token_lifetime_ms`, or one hour when that is `0` (ADR-0791),
+and the client renews it with its refresh token.
 
 No address is configured. The issuer is `server.public_baseurl` with one
 trailing slash, and every endpoint is under it: `/_merovingian/oauth2/register`,
@@ -850,7 +860,7 @@ pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 | Key | Default | When to change |
 |---|---|---|
 | `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
-| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. Checked now, acted on once the OAuth login pages land. |
+| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. Checked now, but not yet acted on: the OAuth login pages have landed, and the legacy API still issues sessions whatever this key says. |
 | `server.oauth.device_grant_enabled` | `false` | Set `true` to offer the device authorization grant (RFC 8628): the metadata then lists the device code grant type and `device_authorization_endpoint`. Refused unless `server.oauth.enabled=true`. |
 | `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Checked now, used once the hand-off lands. |
 

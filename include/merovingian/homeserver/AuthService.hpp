@@ -11,6 +11,7 @@
 #include "merovingian/homeserver/DeactivationAudit.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalSession.hpp"
+#include "merovingian/homeserver/OAuthGrantRequest.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/PasswordLoginRequest.hpp"
@@ -92,8 +93,38 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
-[[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
+// Rotates a refresh token (ADR-0074, ADR-0590). `oauth_client_id` says which API presents it (ADR-0793): nullopt for
+// the legacy POST /refresh, which refuses a token of a device that has an `oauth_sessions` row; a client ID for the
+// OAuth 2.0 token endpoint, which refuses a token of a device whose row does not name that client, or that has none.
+// Either refusal is a 401 "refresh token rejected" decided before anything is rotated or revoked. An OAuth rotation's
+// access token always expires (oauth::access_token_lifetime_ms, ADR-0791). Every other refusal and the lost-response
+// retry are unchanged; a status of 500 or more is a server failure the client may retry.
+[[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token,
+                                         std::optional<std::string_view> oauth_client_id = std::nullopt)
     -> SessionRefreshResult;
+// The OAuth 2.0 authorization code grant's session (ADR-0792): every check login_local_user_by_id makes (the account
+// exists and passes the account-state gate, the device ID is valid and not a cross-signing key ID, a new device fits
+// under the device count), the same access token, a refresh token, and ONE transaction that writes the device (created
+// with `request.display_name`, or kept when the user holds it), deletes the device's earlier tokens and OAuth session,
+// and inserts the access row, the refresh row and the `oauth_sessions` row. Memory changes only after the commit. A
+// refused check keeps the status POST /login would answer (4xx); a token the server could not make or a failed commit
+// is 500 with nothing written. Audits `oauth.session.granted`. The caller holds runtime.mutex.
+[[nodiscard]] auto grant_oauth_session(HomeserverRuntime& runtime, OAuthGrantRequest const& request)
+    -> SessionRefreshResult;
+// Ends the session of (`user_id`, `device_id`) as POST /logout does (P13, ADR-0491, ADR-0795): in one transaction
+// `presented_access_hash` (may be empty) and every access and refresh token of the device are revoked, the store is
+// checked, the in-memory sessions are marked, then the device is deleted (with its `oauth_sessions` row; a failure
+// there is logged, the tokens stay revoked) and `audit_event` is audited. 500 when the revocation did not persist,
+// with nothing marked, so the call can be retried. The caller holds runtime.mutex and announces the deleted device.
+[[nodiscard]] auto end_device_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                                      std::string_view presented_access_hash, std::string_view audit_event)
+    -> OperationResult;
+// The session `token` authenticates, for OAuth 2.0 revocation (ADR-0795): a live access token (not revoked, not
+// expired) or an unrevoked, unexpired refresh token, whichever it is, found through the digest indexes and confirmed in
+// constant time. nullopt for anything else, an application service token included: none is held as a session. The
+// session's `access_token_hash` is set only when `token` is an access token.
+[[nodiscard]] auto revocable_session_of_token(HomeserverRuntime const& runtime, std::string_view token)
+    -> std::optional<LocalSession>;
 // True when `user_id` is a registered, not-deactivated local account. Identity
 // assertion (Application Service API) must act only as such a user (AUTH-12):
 // asserting an unregistered or deactivated user is refused with 403

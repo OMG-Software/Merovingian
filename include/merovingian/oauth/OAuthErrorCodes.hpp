@@ -15,6 +15,11 @@ inline constexpr std::string_view error_invalid_grant = "invalid_grant";
 inline constexpr std::string_view error_invalid_scope = "invalid_scope";
 inline constexpr std::string_view error_invalid_redirect_uri = "invalid_redirect_uri";
 inline constexpr std::string_view error_invalid_client_metadata = "invalid_client_metadata";
+// RFC 6749 section 5.2, from the token and revocation endpoints: client authentication failed (an unknown client, or
+// a client that sent a secret this server never issues: every client is public), and a `grant_type` this server does
+// not serve.
+inline constexpr std::string_view error_invalid_client = "invalid_client";
+inline constexpr std::string_view error_unsupported_grant_type = "unsupported_grant_type";
 // RFC 6749 section 4.1.2.1: the server cannot take the request now (the client registration cap, ADR-0780) or failed
 // in a way the client cannot fix.
 inline constexpr std::string_view error_temporarily_unavailable = "temporarily_unavailable";

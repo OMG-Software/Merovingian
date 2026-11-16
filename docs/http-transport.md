@@ -977,6 +977,15 @@ cookie (ADR-0788). `Origin`, `Sec-Fetch-Site` and `Cookie` are read with `reques
 (`homeserver/RequestHeaders.hpp`) and a header sent twice counts as absent. A form body over `max_body_bytes` gets the
 general `413 M_TOO_LARGE` JSON answer, not a page.
 
+`POST /_merovingian/oauth2/token` and `POST /_merovingian/oauth2/revoke` (ADR-0791 to ADR-0795) are routed the same
+way (`static_routes`, `auth_sensitive`, a `client_static_route_allow` row of `POST`, so another method is `405`),
+before the authentication gate, and are `404 M_UNRECOGNIZED` with the API off. The body must be
+`application/x-www-form-urlencoded` (a `charset=utf-8` parameter is allowed) and is read with `core::FormFields`; anything
+else is `400 invalid_request`. Every answer is built by `oauth_json_response`, `oauth_error_response` or
+`oauth_empty_response` (`Cache-Control: no-store`) and carries the CORS headers of the single boundary. Only public
+clients exist: a `client_secret` field is `400 invalid_client`, and an `Authorization: Basic` header `401
+invalid_client` with `WWW-Authenticate: Basic`. A body over `max_body_bytes` gets the general `413 M_TOO_LARGE`.
+
 ### Admin routes
 
 `/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on

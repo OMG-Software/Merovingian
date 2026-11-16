@@ -72,8 +72,12 @@ inline constexpr auto oauth_client_touch_interval_ms = std::uint64_t{24U} * 60U 
 // The `oauth_sessions` INSERT for a transaction that also writes the device and its tokens (phase 6): append it to
 // that transaction's statements, commit, and only then call `remember_oauth_session` with the same row. nullopt when
 // the row is refused: an empty user, device or client, a client ID or scope over its cap, a client that is not
-// held, or a (user, device) that already holds a session. Reads the store; changes nothing.
-[[nodiscard]] auto prepare_oauth_session_insert(PersistentStore const& store, PersistentOAuthSession const& session)
+// held, or a (user, device) that already holds a session. With `replaces_device_session` a held session is not a
+// refusal: the caller's transaction deletes it first (`delete_oauth_session_of_device_statement`, ahead of this
+// statement) and the caller erases it from memory after the commit, before `remember_oauth_session` (ADR-0792).
+// Reads the store; changes nothing.
+[[nodiscard]] auto prepare_oauth_session_insert(PersistentStore const& store, PersistentOAuthSession const& session,
+                                                bool replaces_device_session = false)
     -> std::optional<PreparedStatement>;
 // The memory half of `prepare_oauth_session_insert`, after its transaction committed. False when memory already
 // holds a session for the device, which cannot happen if nothing wrote between the prepare and the commit.

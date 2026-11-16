@@ -203,7 +203,11 @@ A session row is written in the caller's transaction: `prepare_oauth_session_ins
 commits it with the device and tokens, and only then calls `remember_oauth_session`. **Every path that deletes a
 `devices` row deletes its `oauth_sessions` row in the same transaction**: today that is `delete_device`, which appends
 `delete_oauth_session_of_device_statement` and erases the memory row after the commit. A new device-deleting path does
-the same. Neither table is read by the federation worker.
+the same. **Whatever replaces a device's credentials replaces its `oauth_sessions` row in the same transaction**
+(ADR-0792): `store_oauth_grant` deletes the device's earlier tokens and row and inserts the new ones, and
+`store_device_and_access_token` (a legacy login) deletes the row, so the device is then a legacy device. The grant's
+`oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
+`remember_audit_event` after the commit). Neither table is read by the federation worker.
 
 ## Backend selection
 
