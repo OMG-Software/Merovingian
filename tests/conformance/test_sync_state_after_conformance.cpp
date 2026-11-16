@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // GET /_matrix/client/v3/sync `use_state_after` and the `state_after` section of joined and left rooms
-// (client-server-api.md, GET /sync, "Joined Room", "Left Room"; ADR-0763 to ADR-0765).
+// (client-server-api.md, GET /sync, "Joined Room", "Left Room"; ADR-0818 to ADR-0820).
 #include "../support/JsonTestSupport.hpp"
 #include "../support/SyncStateAfterSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -503,7 +503,7 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
 // `state_after`: "State updates for m.room.member events will be incomplete if lazy_load_members is enabled in the
 // /sync filter, and only return the member events required to display the senders of the timeline events in this
 // response." Lazy-loading room members: "servers MUST include the syncing user's own membership event ... when the full
-// state of rooms is requested". Redundancy follows ADR-0450; a timeline event is not state here, so ADR-0764 forces
+// state of rooms is requested". Redundancy follows ADR-0450; a timeline event is not state here, so ADR-0819 forces
 // every change.
 SCENARIO("Lazy-loading selects the members of state_after", "[conformance][client-server][sync][state-after]")
 {

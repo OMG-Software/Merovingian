@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // GET /_matrix/client/v3/sync `use_state_after`: what this project decides beyond the spec's rows, driven through the
-// client-server stack (ADR-0763 to ADR-0765). What the spec states is in
+// client-server stack (ADR-0818 to ADR-0820). What the spec states is in
 // tests/conformance/test_sync_state_after_conformance.cpp.
 #include "../support/JsonTestSupport.hpp"
 #include "../support/SyncStateAfterSupport.hpp"
@@ -26,7 +26,7 @@ constexpr auto k_full_state_after = std::string_view{"&full_state=true&use_state
 
 } // namespace
 
-// ADR-0763: a sync that finds nothing new in a joined room does not report it.
+// ADR-0818: a sync that finds nothing new in a joined room does not report it.
 SCENARIO("A joined room with nothing new is not reported with use_state_after",
          "[integration][sync][state-after][flow]")
 {
@@ -51,7 +51,7 @@ SCENARIO("A joined room with nothing new is not reported with use_state_after",
     }
 }
 
-// ADR-0764: a delta chain is bounded (`max_state_group_delta_depth`); a window with more changes than it holds falls
+// ADR-0819: a delta chain is bounded (`max_state_group_delta_depth`); a window with more changes than it holds falls
 // back to comparing the two states and still sends one event per changed key.
 SCENARIO("A state_after delta survives more state changes than one delta chain can hold",
          "[integration][sync][state-after][flow]")
@@ -84,7 +84,7 @@ SCENARIO("A state_after delta survives more state changes than one delta chain c
     }
 }
 
-// ADR-0764: the chain walk (`state_changes_along_chain`) answers a single-extremity room from the state groups alone.
+// ADR-0819: the chain walk (`state_changes_along_chain`) answers a single-extremity room from the state groups alone.
 // The fallback reads the room's current state rows, which `state_rows_examined` counts, so a wide state shows which
 // path ran.
 SCENARIO("A state_after delta of an unforked room is read from the state groups, not the room's state",
@@ -138,7 +138,7 @@ SCENARIO("A state_after delta of an unforked room is read from the state groups,
     }
 }
 
-// The parser accepts only the exact string `true`, as `full_state` does (ADR-0763).
+// The parser accepts only the exact string `true`, as `full_state` does (ADR-0818).
 SCENARIO("use_state_after is true only for the exact string true", "[integration][sync][state-after][flow]")
 {
     GIVEN("a room alice has synced")
@@ -176,7 +176,7 @@ SCENARIO("use_state_after is true only for the exact string true", "[integration
     }
 }
 
-// ADR-0763: a client that joined inside the window held nothing of the room, so it is sent the whole state, with its
+// ADR-0818: a client that joined inside the window held nothing of the room, so it is sent the whole state, with its
 // own join, as an initial sync would. (The spec does not state it for an incremental sync.)
 SCENARIO("state_after of a room joined in the window is the room's whole state",
          "[integration][sync][state-after][flow]")
@@ -210,7 +210,7 @@ SCENARIO("state_after of a room joined in the window is the room's whole state",
     }
 }
 
-// ADR-0765: the spec's Left Room `state_after` row does not name `full_state`, so a left room's `state_after` stays a
+// ADR-0820: the spec's Left Room `state_after` row does not name `full_state`, so a left room's `state_after` stays a
 // delta, as its `state` does (ADR-0453).
 SCENARIO("full_state=true leaves a left room's state_after a delta", "[integration][sync][state-after][flow]")
 {
@@ -244,7 +244,7 @@ SCENARIO("full_state=true leaves a left room's state_after a delta", "[integrati
     }
 }
 
-// ADR-0765: a client that was not joined at `since` held nothing of the room, so a left room's `state_after` is the
+// ADR-0820: a client that was not joined at `since` held nothing of the room, so a left room's `state_after` is the
 // whole state as of the leave, not a delta that would hide the create event, power levels and join rules.
 SCENARIO("A room joined and left inside one sync window gives state_after its whole readable state",
          "[integration][sync][state-after][flow]")

@@ -8,9 +8,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Features
 
 * `GET /_matrix/client/v3/sync` honours `use_state_after` (Matrix v1.16): with it true each joined and left room
-  carries `state_after` and no `state` (ADR-0763, ADR-0764, ADR-0765).
-* The 1.1 series has its cross-release upgrade fixture: `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3
-  release, opened, migrated and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
+  carries `state_after` and no `state` (ADR-0818, ADR-0819, ADR-0820).
+* The cross-release upgrade fixture `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3 release, is opened, taken
+  through migration 002 and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
 * The `use_state_after` scenarios asserting project choices, not spec rows, moved from the conformance suite to
   `tests/integration/test_sync_state_after_flow.cpp`.
 
@@ -23,9 +23,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * `use_state_after`: the state anchor at `since` is a binary search of the room's index, so a client back after a long
   absence no longer walks every row it missed under the runtime lock.
 * `use_state_after`: a room joined and left inside one sync window now gets its whole readable state as of the leave in
-  `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0765).
+  `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0820).
 * The sync row of `docs/todos/capability-gaps.md` no longer says a limited sync gives no gap state, and tracks the
-  `state_after` limit after a state fork (ADR-0764).
+  `state_after` limit after a state fork (ADR-0819).
 
 ## Release notes
 

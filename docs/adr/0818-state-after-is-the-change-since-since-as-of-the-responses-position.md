@@ -27,7 +27,7 @@ client takes no state from the timeline, so a `state_after` as of that message w
 filter the two points hold the same state, so this reading never contradicts the spec.
 
 `state` sends the whole state on a `limited` sync because a client cannot otherwise tell what the gap changed. `state_after`
-has no such gap: the delta ([ADR-0764](0764-a-state-after-delta-compares-the-two-states.md)) covers `since` to the position
+has no such gap: the delta ([ADR-0819](0819-a-state-after-delta-compares-the-two-states.md)) covers `since` to the position
 whatever the timeline's size, so whole state would only repeat what the client has, on the requests that are already
 largest. Whole state remains for what the spec names (no `since`, `full_state=true`) and for a room joined in the window,
 where the client holds nothing to apply a delta to.

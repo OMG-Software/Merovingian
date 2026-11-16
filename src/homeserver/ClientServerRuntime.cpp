@@ -5431,7 +5431,7 @@ namespace
             // A member event above this stream ordering is a change since `since`: in the gap when `state` is built,
             // and in the timeline as well for `state_after`, whose client takes no state from the timeline.
             std::optional<std::uint64_t> gap_after{};
-            // The events of a `state_after` delta (ADR-0764): each is a change the client must apply, whatever its
+            // The events of a `state_after` delta (ADR-0819): each is a change the client must apply, whatever its
             // stream ordering (state resolution can move a key back to an older event).
             std::unordered_set<std::string> changed_event_ids{};
             // Drop every state event that is not a member event (an incremental left room's state is a delta).
@@ -5833,7 +5833,7 @@ namespace
         });
     }
 
-    // ADR-0764: the IDs of the state events that make a joined room's state at `position` differ from its state at
+    // ADR-0819: the IDs of the state events that make a joined room's state at `position` differ from its state at
     // `since_ordering`, for `state_after`. A key can change with no event of the window about it (state resolution can
     // move it back), so this compares the two states; it does not list the window's state events.
     //
@@ -6501,7 +6501,7 @@ namespace
         // What room state the user may read (ADR-0357). `none` for a user who never joined: a retracted
         // knock, a declined invite, a ban before any join.
         sync::RoomReadAccess access{};
-        // GET /sync `use_state_after`: answer `state_after` instead of `state` (ADR-0765).
+        // GET /sync `use_state_after`: answer `state_after` instead of `state` (ADR-0820).
         bool use_state_after{false};
     };
 
@@ -6532,7 +6532,7 @@ namespace
         });
     }
 
-    // ADR-0765: a left room's `state_after`: "The state updates for the room up to the end of the timeline", which ends
+    // ADR-0820: a left room's `state_after`: "The state updates for the room up to the end of the timeline", which ends
     // at the leave. The room's state is read only as far as the user may read it (ADR-0357, room_read_access_for), so
     // nothing after their leave is told, however late the ban that ended their membership came. The user's own
     // membership is the event in `leave_event` (the leave, or the ban that followed it); the client takes no state from
@@ -7079,7 +7079,7 @@ namespace
                 since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
             // Spec (GET /sync, `full_state`): "all state events will be returned, even if since is non-empty".
-            // ADR-0763: `state_after` is the changes since `since`, on a limited sync too: they hold everything the gap
+            // ADR-0818: `state_after` is the changes since `since`, on a limited sync too: they hold everything the gap
             // changed, and whole state would only repeat what the client has.
             auto const state_path =
                 !since_token.has_value() || newly_joined || full_state || (limited && !use_state_after);
@@ -7111,7 +7111,7 @@ namespace
             auto const lazy_ref = selector.has_value() ? LazySelectorRef{std::ref(*selector)} : LazySelectorRef{};
             if (use_state_after)
             {
-                // ADR-0763: as of the response's position, not the last delivered event: a state event the timeline
+                // ADR-0818: as of the response's position, not the last delivered event: a state event the timeline
                 // filter hides lies before `next_batch`, and no later sync would report it.
                 if (state_path)
                 {

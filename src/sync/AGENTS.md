@@ -359,7 +359,7 @@ room and, when the user is local, for them. The membership acceptor (`send_join`
 `device_lists.left` for remote users. A user who joins over federation is also `changed` for
 themselves (spec: a server may add a user to `changed` when they share a new room).
 
-## `use_state_after` on `/sync` (ADR-0763 to ADR-0765)
+## `use_state_after` on `/sync` (ADR-0818 to ADR-0820)
 
 `state_after` is as of `sync_position`, not the last delivered event, or a state event the timeline filter hides is lost.
 A delta is `joined_state_changes`: it compares the state at `since` with the state at the position. Do not replace it with a
@@ -369,7 +369,7 @@ single forward extremity with `ForwardExtremityTable::tips_of_room`, never a wal
 the first row at or below its position through `EventTable::room_in_stream_order_up_to` (binary search) and steps only over
 withheld rows (`state_anchor_rows_examined`); never walk the rows above the position. A left room's delta is taken against
 `since` only when the user was joined then (`RoomReadAccess::join_ordering` at or below `since`); a join in the window gets the
-whole readable state (ADR-0765). A left room goes through
+whole readable state (ADR-0820). A left room goes through
 `build_left_room_state_after`, which reads only as far as `room_read_access_for` allows: never a joined room's delta, which
 would tell a departed user what came after their leave. With lazy-loading the delta's member events are always kept
 (`Plan::changed_event_ids`), and the senders' come by key from `member_event_at_position`. A timeline event is not state
