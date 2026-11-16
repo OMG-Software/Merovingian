@@ -22,6 +22,9 @@ struct RoomReadAccess final
     // stream ordering.
     std::string boundary_event_id{};
     std::uint64_t boundary_ordering{0U};
+    // `as_of` only: the stream ordering of the join that `boundary_event_id` ended, found by the walk that found the
+    // boundary (no extra read). A client whose `since` is below it held nothing of the room from this stay.
+    std::uint64_t join_ordering{0U};
 };
 
 // The one predicate behind `initialSync`, `/members`, `/state` and `/state/{type}/{key}`.

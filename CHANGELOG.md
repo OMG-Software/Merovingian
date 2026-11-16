@@ -20,6 +20,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * `use_state_after`: the state anchor at `since` is a binary search of the room's index, so a client back after a long
   absence no longer walks every row it missed under the runtime lock.
+* `use_state_after`: a room joined and left inside one sync window now gets its whole readable state as of the leave in
+  `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0765).
 
 ## Release notes
 

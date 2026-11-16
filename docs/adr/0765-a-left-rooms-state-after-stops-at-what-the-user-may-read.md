@@ -30,6 +30,14 @@ Chosen option: the last (`build_left_room_state_after`).
 * A `since` at or past the end of what the user may read (they left before it, and were banned after it) leaves only that
   membership event.
 * A user who never joined (`none`) gets only their own event, as on `state` (ADR-0357).
+* A client holds the room's state at `since` only if it was joined then. When the join this departure ended began after
+  `since` (`RoomReadAccess::join_ordering` above `since`: a join and leave inside one window, or a rejoin after an earlier
+  departure), nothing is taken away and the whole readable state as of the leave is sent, as an initial sync would, still
+  capped by `room_read_access_for`; lazy-loading then treats the room as new to the client (the tracker is not consulted).
+  The join's ordering comes from the walk of the user's member events that already finds the boundary, so no scan of the
+  room's rows decides it. It is the rule `joined_membership_changed_since` applies to a joined room, read from the join
+  event because a departed user's current member event is the leave. Subtracting what the client "held" would have hidden
+  the create event, power levels and join rules from a client that is never told them another way.
 * `full_state=true` does not make a left room's `state_after` whole: `full_state` is about "all rooms the user is a member
   of" and the Left Room `state_after` does not name it, as ADR-0453 has for `state`.
 * With lazy-loading, a sender's member event is looked up as of the leave. When the state group chain cannot be read it is

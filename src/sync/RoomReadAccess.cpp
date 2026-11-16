@@ -79,9 +79,15 @@ namespace
     // The event that ended the user's most recent join, found by walking the chain of the
     // user's m.room.member events back from their current one (`ending_event_id`) until a
     // join. nullopt when there was no join in the chain or the chain is broken.
+    struct JoinEnding final
+    {
+        database::PersistentEvent const* boundary{nullptr};
+        std::uint64_t join_ordering{0U};
+    };
+
     [[nodiscard]] auto find_join_ending_event(database::PersistentStore const& store, std::string_view room_id,
                                               std::string_view user_id, std::string_view ending_event_id)
-        -> std::optional<database::PersistentEvent const*>
+        -> std::optional<JoinEnding>
     {
         auto const find = [&store](std::string_view id) -> database::PersistentEvent const* {
             auto const found = store.events.find(id);
@@ -104,7 +110,7 @@ namespace
             }
             if (step > 0U && *membership == "join" && !event_is_withheld(*event))
             {
-                return find(child);
+                return JoinEnding{find(child), event->stream_ordering};
             }
             if (step == 0U && *membership == "join")
             {
@@ -170,11 +176,12 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
         return {};
     }
     auto const boundary = find_join_ending_event(store, room_id, user_id, *member_event_id);
-    if (!boundary.has_value() || *boundary == nullptr)
+    if (!boundary.has_value() || boundary->boundary == nullptr)
     {
         return {};
     }
-    return {RoomReadKind::as_of, (*boundary)->event_id, (*boundary)->stream_ordering};
+    return {RoomReadKind::as_of, boundary->boundary->event_id, boundary->boundary->stream_ordering,
+            boundary->join_ordering};
 }
 
 auto state_anchor_event(database::PersistentStore const& store, std::string_view room_id, RoomReadAccess const& access,

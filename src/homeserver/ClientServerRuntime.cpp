@@ -6537,6 +6537,12 @@ namespace
     // nothing after their leave is told, however late the ban that ended their membership came. The user's own
     // membership is the event in `leave_event` (the leave, or the ban that followed it); the client takes no state from
     // the timeline, so it is here even though the timeline carries it.
+    //
+    // A delta is only a delta for a client that held the room's state at `since`. When the join this departure ended
+    // began after `since` (`RoomReadAccess::join_ordering`, found by the walk that found the boundary), the client held
+    // nothing of this room, so the whole readable state as of the leave is sent, as an initial sync sends it, still
+    // capped by `room_read_access_for`. The test is the one `joined_membership_changed_since` applies to a joined room,
+    // read from the join event instead of the current member event, which for a departed user is the leave.
     [[nodiscard]] auto build_left_room_state_after(
         database::PersistentStore const& store, sync::EventTypeFilter const& filter,
         sync::ViewerEventUnsigned& viewer_unsigned, LeftRoomRequest const& request,
@@ -6544,6 +6550,10 @@ namespace
         std::vector<std::string> const& senders, LazySyncRequest& lazy) -> canonicaljson::Array
     {
         auto state_events = canonicaljson::Array{};
+        auto const joined_in_window = request.since_ordering.has_value() &&
+                                      request.access.kind == sync::RoomReadKind::as_of &&
+                                      request.access.join_ordering > *request.since_ordering;
+        auto const delta_since = joined_in_window ? std::optional<std::uint64_t>{} : request.since_ordering;
         if (request.access.kind != sync::RoomReadKind::none)
         {
             auto const readable_to = request.access.kind == sync::RoomReadKind::as_of
@@ -6564,14 +6574,14 @@ namespace
                     }
                 }
             }
-            if (ids.has_value() && request.since_ordering.has_value())
+            if (ids.has_value() && delta_since.has_value())
             {
-                if (*request.since_ordering >= readable_to)
+                if (*delta_since >= readable_to)
                 {
                     ids->clear();
                 }
                 else if (auto const* const since_anchor =
-                             sync::state_anchor_event(store, request.room_id, request.access, *request.since_ordering);
+                             sync::state_anchor_event(store, request.room_id, request.access, *delta_since);
                          since_anchor != nullptr)
                 {
                     if (auto const held = sync::state_event_ids_after(store, *since_anchor); held.has_value())
@@ -6587,7 +6597,8 @@ namespace
                 plan.senders.insert(senders.begin(), senders.end());
                 plan.own_user_id = std::string{request.user_id};
                 plan.own_forced = true;
-                if (request.since_ordering.has_value() && ids.has_value())
+                plan.ignore_tracker = joined_in_window;
+                if (delta_since.has_value() && ids.has_value())
                 {
                     plan.changed_event_ids.insert(ids->begin(), ids->end());
                 }
@@ -6598,7 +6609,7 @@ namespace
             {
                 state_events = build_state_events_array_for_ids(store, filter, *ids, lazy_ref);
             }
-            if (selector.has_value() && request.since_ordering.has_value())
+            if (selector.has_value() && delta_since.has_value())
             {
                 // A delta names only what changed: the other senders' members come by key, as of the leave.
                 auto others = std::vector<std::string>{};
