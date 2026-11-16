@@ -17,7 +17,10 @@ Chosen option: "advertise the operator's service as type `livekit`", because rel
 Element Call understand only that type.
 
 * `server.rtc.livekit.service_url` (an HTTPS URL, refused when not one; never fetched by this server) is advertised as
-  `{"type":"livekit","livekit_service_url":"<url>"}`. The entry has no `url` member.
+  `{"type":"livekit","livekit_service_url":"<url>"}`. The entry has no `url` member. Clients build
+  `<service_url>/sfu/get` and `<service_url>/get_token` by appending to it, so a URL with a query, or whose path ends
+  in `/`, would give a broken request and is refused; a URL with no path (`https://host`, `https://host:8443`) is
+  accepted, as are an IPv6 literal host and a port.
 * Both routes need an access token and are rate limited like any client route. The stable path answers
   `{"transports":[...]}` and, with nothing configured, `{"transports":[]}`. The unstable path answers
   `{"rtc_transports":[...]}` and, with nothing configured, `{}`. Both mirror the reference server. The transport

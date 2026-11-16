@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -348,6 +349,85 @@ namespace
     constexpr auto max_turn_uri_bytes = std::size_t{512U};
     constexpr auto max_turn_uris = std::size_t{16U};
 
+    // Whether `uri` is a TURN URI of RFC 7065, strictly: `turn:` or `turns:`, a host (a name or IPv4 address of ASCII
+    // letters, digits, `.` and `-`, not starting or ending with `.` or `-`, or a bracketed IPv6 literal of hex digits,
+    // `:` and `.`), an optional `:port` of 1 to 65535, and an optional `?transport=udp` or `?transport=tcp`. No
+    // userinfo, path, fragment or other query.
+    auto is_turn_uri(std::string_view uri) -> bool
+    {
+        auto const rest = starts_with(uri, "turn:")    ? uri.substr(5U)
+                          : starts_with(uri, "turns:") ? uri.substr(6U)
+                                                       : std::string_view{};
+        auto const question = rest.find('?');
+        if (question != std::string_view::npos)
+        {
+            auto const query = rest.substr(question + 1U);
+            if (query != "transport=udp" && query != "transport=tcp")
+            {
+                return false;
+            }
+        }
+        auto const authority = rest.substr(0U, question);
+        auto host = std::string_view{};
+        auto port = std::optional<std::string_view>{};
+        if (!authority.empty() && authority.front() == '[')
+        {
+            auto const close = authority.find(']');
+            if (close == std::string_view::npos)
+            {
+                return false;
+            }
+            host = authority.substr(1U, close - 1U);
+            auto const after = authority.substr(close + 1U);
+            if (!after.empty())
+            {
+                if (after.front() != ':')
+                {
+                    return false;
+                }
+                port = after.substr(1U);
+            }
+            if (host.empty() || host.find(':') == std::string_view::npos || !std::ranges::all_of(host, [](char c) {
+                    return std::isxdigit(static_cast<unsigned char>(c)) != 0 || c == ':' || c == '.';
+                }))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            auto const colon = authority.find(':');
+            host = authority.substr(0U, colon);
+            if (colon != std::string_view::npos)
+            {
+                port = authority.substr(colon + 1U);
+            }
+            auto const is_host_byte = [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+                       c == '-';
+            };
+            if (host.empty() || !std::ranges::all_of(host, is_host_byte) || host.front() == '.' ||
+                host.front() == '-' || host.back() == '.' || host.back() == '-')
+            {
+                return false;
+            }
+        }
+        if (port.has_value())
+        {
+            constexpr auto max_port_digits = std::size_t{5U};
+            if (port->empty() || port->size() > max_port_digits || !std::ranges::all_of(*port, is_ascii_digit))
+            {
+                return false;
+            }
+            auto const value = std::stoul(std::string{*port});
+            if (value == 0U || value > 65535U)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // Why `uris` is not an acceptable server.turn.uris list, or nullopt. Fixed text, never the input.
     auto turn_uris_error(std::vector<std::string> const& uris) -> std::optional<std::string_view>
     {
@@ -358,12 +438,10 @@ namespace
         for (auto index = std::size_t{0U}; index < uris.size(); ++index)
         {
             auto const& uri = uris[index];
-            auto const rest = starts_with(uri, "turn:")    ? std::string_view{uri}.substr(5U)
-                              : starts_with(uri, "turns:") ? std::string_view{uri}.substr(6U)
-                                                           : std::string_view{};
-            if (rest.empty())
+            if (!is_turn_uri(uri))
             {
-                return "each TURN URI must start with turn: or turns: and name a host";
+                return "each TURN URI must be turn: or turns: and a host, an optional :port and an optional "
+                       "?transport=udp or ?transport=tcp";
             }
             if (uri.size() > max_turn_uri_bytes)
             {
@@ -1240,11 +1318,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         auto const uri = oauth::ParsedUri::read(service_url);
         auto const* parsed = std::get_if<oauth::ParsedUri>(&uri);
-        if (parsed == nullptr || parsed->scheme() != "https" || !parsed->has_authority() || parsed->host().empty())
+        // Clients append `/sfu/get` or `/get_token` to it, so a query or a trailing slash would build a broken URL.
+        if (parsed == nullptr || parsed->scheme() != "https" || !parsed->has_authority() || parsed->host().empty() ||
+            parsed->has_query() || parsed->path().ends_with('/'))
         {
-            findings.push_back({"server.rtc.livekit.service_url",
-                                "must be an https URL with a host, no userinfo, no fragment, no whitespace and at most "
-                                "2048 bytes"});
+            findings.push_back(
+                {"server.rtc.livekit.service_url",
+                 "must be an https URL with a host, no userinfo, query or fragment, a path that does not "
+                 "end in /, no whitespace and at most 2048 bytes"});
         }
     }
 

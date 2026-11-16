@@ -111,7 +111,9 @@ server.http.ipv6_client_prefix_length=64
 # (use-auth-secret): each user then gets time-limited credentials of their own.
 # Set one or the other; both is refused.
 # server.turn.server=turn:turn.example.org:3478?transport=udp
-# Or several URIs, in the order clients should try them (instead of server.turn.server; both is refused):
+# Or several URIs, comma-separated, in the order clients should try them (instead of server.turn.server; both is
+# refused). Each must be turn: or turns:, a host, an optional :port and an optional ?transport=udp or ?transport=tcp
+# (RFC 7065), for example turn:[2001:db8::1]:3478.
 # server.turn.uris=turn:turn.example.org:3478?transport=udp,turns:turn.example.org:5349?transport=tcp
 # server.turn.username=merovingian
 # server.turn.password=set-in-owner-only-secret-file
@@ -122,6 +124,8 @@ server.http.ipv6_client_prefix_length=64
 # The HTTPS URL of an lk-jwt-service (Element's LiveKit authorisation service) that you run beside a LiveKit SFU.
 # This server never contacts it: it only tells authenticated clients, and the /.well-known/matrix/client
 # document, where it is. Empty means no group-call transport is advertised. Reloadable.
+# Clients append /sfu/get or /get_token to it, so write it with no trailing slash and no query: a URL ending in /
+# or holding ? is refused. https://host, https://host:8443 and https://host/jwt are fine.
 # server.rtc.livekit.service_url=https://livekit-jwt.example.org/lk-jwt-service
 
 # Listener exposure

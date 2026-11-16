@@ -67,6 +67,25 @@ SCENARIO("server.rtc.livekit.service_url accepts an https URL and defaults to no
     }
 }
 
+SCENARIO("server.rtc.livekit.service_url accepts a URL a client can append to", "[config][rtc]")
+{
+    GIVEN("URLs that /sfu/get or /get_token can be appended to")
+    {
+        THEN("each is accepted: a bare host, a port, an IPv6 literal, a path with no trailing slash")
+        {
+            for (auto const* good :
+                 {"https://livekit-jwt.example.org", "https://livekit-jwt.example.org:8443", "https://[2001:db8::1]",
+                  "https://[2001:db8::1]:8443/jwt", "https://example.org/a/b"})
+            {
+                INFO(good);
+                auto const parsed = parse_url(good);
+                REQUIRE_FALSE(has_finding(parsed.findings, "server.rtc.livekit.service_url"));
+                REQUIRE(parsed.config.server().rtc.livekit_service_url == good);
+            }
+        }
+    }
+}
+
 SCENARIO("server.rtc.livekit.service_url refuses anything but a plain https URL", "[config][rtc]")
 {
     GIVEN("values that are not acceptable")
@@ -86,6 +105,12 @@ SCENARIO("server.rtc.livekit.service_url refuses anything but a plain https URL"
             "https://livekit.example.org/a b",
             "https://livekit.example.org/\x01",
             "https://livekit.example.org/caf\xC3\xA9",
+            "https://livekit.example.org/x?a=1",
+            "https://livekit.example.org?a=1",
+            "https://livekit.example.org/x?",
+            "https://livekit.example.org/jwt/",
+            "https://livekit.example.org/",
+            "https://livekit.example.org:8443/",
             long_url,
         };
 

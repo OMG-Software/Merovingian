@@ -97,6 +97,109 @@ SCENARIO("server.turn.uris lists several TURN URIs in order", "[config][turn][tu
     }
 }
 
+SCENARIO("server.turn.uris accepts the RFC 7065 forms and refuses everything else", "[config][turn][turn-uris]")
+{
+    GIVEN("entries that follow the TURN URI grammar")
+    {
+        THEN("each is accepted")
+        {
+            for (auto const* good :
+                 {"turn:turn.example.org", "turn:turn.example.org:3478", "turn:turn.example.org:3478?transport=udp",
+                  "turns:turn.example.org:5349?transport=tcp", "turn:192.0.2.1:3478", "turn:[2001:db8::1]:3478",
+                  "turn:[2001:db8::1]", "turn:a-b.example.org:65535", "turn:turn.example.org:1?transport=tcp"})
+            {
+                INFO(good);
+                auto const parsed = parse_uris(good);
+                REQUIRE(merovingian::config::is_valid(parsed.config));
+                REQUIRE_FALSE(has_finding(parsed.findings, "server.turn.uris"));
+            }
+        }
+    }
+
+    GIVEN("entries with no host, or that leave the grammar")
+    {
+        THEN("each is refused")
+        {
+            for (auto const* bad : {"turn:?transport=udp",
+                                    "turn::3478",
+                                    "turn:@x",
+                                    "turns:/x",
+                                    "turn:turn.example.org:",
+                                    "turn:turn.example.org:0",
+                                    "turn:turn.example.org:65536",
+                                    "turn:turn.example.org:+3478",
+                                    "turn:turn.example.org:34a8",
+                                    "turn:turn.example.org:3478?transport=sctp",
+                                    "turn:turn.example.org:3478?transport=udp&x=1",
+                                    "turn:turn.example.org:3478?x=1",
+                                    "turn:turn.example.org:3478?transport=",
+                                    "turn:turn.example.org:3478?transport=udp?x",
+                                    "turn:turn.example.org.",
+                                    "turn:.example.org",
+                                    "turn:-example.org",
+                                    "turn:example.org-",
+                                    "turn:u@turn.example.org",
+                                    "turn:turn.example.org/path",
+                                    "turn:turn.example.org#frag",
+                                    "turn:turn.example.org:3478#frag",
+                                    "turn:turn_example.org",
+                                    "turn:[2001:db8::1",
+                                    "turn:2001:db8::1]:3478",
+                                    "turn:[]:3478",
+                                    "turn:[2001:db8::g]:3478",
+                                    "turn:[2001:db8::1]x",
+                                    "turn:[2001:db8::1]:",
+                                    "turn:[example.org]"})
+            {
+                INFO(bad);
+                auto const parsed = parse_uris(std::string{"turn:ok.example.org,"} + bad);
+                REQUIRE_FALSE(merovingian::config::is_valid(parsed.config));
+                REQUIRE(has_finding(parsed.findings, "server.turn.uris"));
+            }
+        }
+    }
+}
+
+SCENARIO("server.turn.uris uses the config's ordinary comma-separated list syntax", "[config][turn][turn-uris]")
+{
+    GIVEN("a list with an empty entry between two URIs")
+    {
+        auto const parsed = parse_uris("turn:a.example,,turn:b.example");
+
+        THEN("the empty entry is ignored")
+        {
+            REQUIRE(merovingian::config::is_valid(parsed.config));
+            REQUIRE(parsed.config.server().turn.uris.size() == 2U);
+            CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
+            CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+        }
+    }
+
+    GIVEN("a list with a trailing comma and whitespace around entries")
+    {
+        auto const parsed = parse_uris("  turn:a.example ,\tturn:b.example , ");
+
+        THEN("whitespace around an entry and the empty last entry are ignored")
+        {
+            REQUIRE(merovingian::config::is_valid(parsed.config));
+            REQUIRE(parsed.config.server().turn.uris.size() == 2U);
+            CHECK(parsed.config.server().turn.uris[0U] == "turn:a.example");
+            CHECK(parsed.config.server().turn.uris[1U] == "turn:b.example");
+        }
+    }
+
+    GIVEN("a value of only a comma")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("server.turn.uris=,\n");
+
+        THEN("the list is empty and TURN is not configured")
+        {
+            REQUIRE(merovingian::config::is_valid(parsed.config));
+            CHECK(parsed.config.server().turn.uris.empty());
+        }
+    }
+}
+
 SCENARIO("server.turn.uris refuses a bad list and never repairs it", "[config][turn][turn-uris]")
 {
     GIVEN("both server.turn.server and server.turn.uris")

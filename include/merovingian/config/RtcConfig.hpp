@@ -13,8 +13,10 @@ struct RtcConfig final
 {
     // The HTTPS URL of an external MatrixRTC authorisation service (Element's `lk-jwt-service`) that the operator
     // runs beside a LiveKit SFU. Advertised as a `livekit` transport. Empty means no transport is configured.
-    // validate() refuses a value that is not an absolute `https` URL with a host, no userinfo, no fragment, no
-    // whitespace or control character, and at most 2048 bytes.
+    // Clients build `<service_url>/sfu/get` and `<service_url>/get_token` by appending to it. validate() refuses a
+    // value that is not an absolute `https` URL with a host, no userinfo, no query, no fragment, no whitespace or
+    // control character and at most 2048 bytes, or whose path ends in `/`. A URL with no path (`https://host`,
+    // `https://host:8443`) is accepted.
     std::string livekit_service_url{};
 };
 

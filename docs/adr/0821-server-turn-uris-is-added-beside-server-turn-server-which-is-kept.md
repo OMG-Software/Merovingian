@@ -14,13 +14,19 @@ that blocks UDP needs the second one. How does the configuration name several UR
 Chosen option: "a new list key beside the old one", because a 1.0.x configuration must still parse in 1.1 and the old
 value keeps its meaning.
 
-* `server.turn.uris` is a comma-separated list (as `server.identity_server.trusted_servers` is). The response's `uris`
-  array carries the entries in the configured order. `server.turn.server` stays, and still gives a one-element array.
+* `server.turn.uris` uses the configuration's ordinary comma-separated list syntax (as
+  `server.identity_server.trusted_servers` does): whitespace around an entry and empty entries are ignored, by the shared
+  `parse_string_list`, which this change does not alter. The response's `uris` array carries the entries in the
+  configured order. `server.turn.server` stays, and still gives a one-element array.
 * TURN is enabled when either key is set. Setting both is refused at parse time, like `shared_secret_file` with
   `username` and `password`, so it is never unclear which one clients get.
-* Each `server.turn.uris` entry is refused, never repaired, unless it starts with `turn:` or `turns:` followed by
-  something, is at most 512 bytes of printable ASCII (no whitespace or control character), is not a repeat of an
-  earlier entry, and the list holds at most 16 entries. `server.turn.server` has never been validated, and is not
+* "Refused, never repaired" applies to the content of each entry. An entry is refused unless it follows the TURN URI
+  grammar of RFC 7065, strictly: `turn:` or `turns:` in lower case; a host, being a name or IPv4 address of ASCII
+  letters, digits, `.` and `-` that does not start or end with `.` or `-`, or an IPv6 literal in square brackets of hex
+  digits, `:` and `.`; an optional `:port`, decimal, 1 to 65535, no sign, not empty; an optional `?transport=udp` or
+  `?transport=tcp`, exactly. No userinfo, path, fragment or other query. An entry with no host (`turn:?transport=udp`,
+  `turn::3478`) would be sent to every client, so it is refused. An entry is also at most 512 bytes of printable ASCII,
+  is not a repeat of an earlier entry, and the list holds at most 16 entries. `server.turn.server` has never been validated, and is not
   tightened here: a value an existing configuration holds must not start to be refused by an upgrade.
 * The key is reloadable and diffed by the reload plan like the other `server.turn.*` keys.
 
