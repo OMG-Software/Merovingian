@@ -74,6 +74,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   of ten minutes (ADR-0805).
 * A device sign-in's consent page warns first that another device is being signed in, never creates an account, and
   one browser at a time answers a code (ADR-0806).
+* The threat model and the security review checklist cover the OAuth 2.0 API: its pages, form posts, redirects,
+  stores, sessions and logging, with the risks the ADRs accept.
 
 ## Security Fixes
 

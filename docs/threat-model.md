@@ -24,6 +24,8 @@
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - E2EE /keys/upload storage caps: one-time keys per device and fallback-key algorithms per device (`max_fallback_keys_per_device`, GHSA-3p9g-gpvx-2cx9, ADR-0594), refused whole with 400 M_TOO_LARGE before anything is stored
 - Token handling
+- The OAuth 2.0 API (1.1.0): the server's own HTML pages, unauthenticated client registration, the authorization,
+  token, revocation and device endpoints, and the account pages (see "OAuth 2.0 API" below)
 - The operator surface (`/_merovingian/admin/*`): one route table (`observability::admin_routes()`) that the dispatcher, the router and the rate limiter all read (ADR-0504); administrators can lock, suspend and permanently deactivate accounts (`confirm` required, ADR-0506); there is no route that stops the process (ADR-0505)
 - Server signing-key persistence
 - Media handling
@@ -3146,3 +3148,179 @@ rows and the roster with them. Nothing is removed when the room has no tips or i
   remote server cannot starve them.
 - **A resident chose how much a knock stored and how many signatures it cost.** **Mitigation:** the answer is bounded in
   bytes and the list in count and entry size before any signature check.
+
+## OAuth 2.0 API (1.1.0, ADR-0760 to ADR-0811)
+
+With `server.oauth.enabled` the server is its own OAuth 2.0 authorisation server (ADR-0760): it serves HTML pages a
+browser renders, registers clients without authentication, and issues sessions from them. Each entry gives the threat,
+the mitigation as built, and the risk the ADRs accept. The rules that keep these mitigations in place are in
+`src/homeserver/AGENTS.md` ("OAuth 2.0 API") and `src/oauth/AGENTS.md`; the reviewer's checks are in
+[the security review checklist](security-review-checklist.md#oauth-20-api).
+
+### The server's own pages
+
+- **Script injection through client metadata or a query parameter.** Every page (authorisation, registration,
+  consent, device link, account pages, error pages) is fixed HTML built by one renderer, `oauth::Page`, with no
+  JavaScript (ADR-0763). Text reaches it only as `HtmlText`, escaped at run time, or as a compile-time literal, so
+  unescaped text does not compile; escaping refuses empty text, invalid UTF-8, text over 4096 bytes and control and
+  bidirectional formatting characters, and a detail value is wrapped in `<bdi>` (ADR-0772). A link is written only for
+  an `https` URL `ParsedUri::read` accepts. No member initialiser holds page text, because clang 18 would check it only
+  at run time (ADR-0800). Every page carries `Content-Security-Policy: default-src 'none'; style-src 'sha256-…';
+  base-uri 'none'; frame-ancestors 'none'; form-action 'self'`, the hash computed from the one style block (ADR-0772).
+  A client's logo is never fetched or shown (ADR-0763, ADR-0771). **Residual risk:** a client name in a script that
+  needs a bidirectional mark is refused at registration (ADR-0771).
+- **Clickjacking.** `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every page (ADR-0772).
+- **Content sniffing and caching.** The boundary adds `X-Content-Type-Options: nosniff` to every answer, a page
+  included; a page is `text/html; charset=utf-8` with `Cache-Control: no-store` and is marked
+  `LocalHttpResponse::page`, so it gets no CORS header and another origin cannot read it (ADR-0772, ADR-0785).
+- **A redirect blocked or widened by `form-action`.** A page whose form post is answered by a redirect to the client
+  adds the matched redirect target's origin, or its private-use scheme, to `form-action`; nothing else adds a source,
+  and `https:` alone, `data:` or `javascript:` can never be added (ADR-0772). A native loopback target on `[::1]` adds
+  `http:`, because a browser ignores a bracketed host in a source (ADR-0811). **Residual risk:** on that one page
+  `form-action` allows a redirect to any `http:` origin; its only form posts to `'self'` and the redirect is the matched
+  loopback URI (ADR-0811).
+- **An exception escaping a page handler.** The dispatch boundary catches it, logs `request.exception` with the method,
+  the normalised route and the exception's type, never `what()`, and answers a request `request_serves_page` names with
+  a fixed HTML error page under the pages' headers (ADR-0803, ADR-0810); every other route gets `500 M_UNKNOWN`.
+  **Residual risk:** `request_serves_page` restates the page routes, so a new page route must be added there (ADR-0810).
+
+### Cross-site request forgery on the form posts
+
+- **Login forgery and consent forged from another site.** Every form post is refused with 403, before its body is read,
+  unless `Origin` equals this server's origin byte for byte and `Sec-Fetch-Site`, when sent, is `same-origin`
+  (`oauth::form_post_origin_is_accepted`, ADR-0784). The pages send `Referrer-Policy: same-origin` (and the same
+  `<meta name="referrer">`), not `no-referrer`, because under `no-referrer` some browsers send `Origin: null` on a
+  same-origin post, which would force the check to accept `null` (ADR-0784). A navigation to another origin, the
+  client's redirect included, carries no `Referer`; the redirects to the client also send `no-referrer` (ADR-0790).
+- **The authorisation pages' cookie.** `__Host-mv-oauth` (`Secure`, `HttpOnly`, `Path=/`, no `Domain`, `SameSite=Lax`,
+  10 minutes) binds a pending authorisation to its browser; `Lax` because the client opens the page with a top-level
+  navigation from another site, which `Strict` would strip. A pending authorisation is found only with the form's
+  `pending` field and the cookie together; the store keeps the cookie value only as a hash and compares it in constant
+  time, and a header sent twice counts as absent (ADR-0788). It never stands for an account: no browser session is kept
+  and every authorisation asks for the password (ADR-0787). **Residual risk:** all pending authorisations of one browser
+  share the cookie, so its value and one pending identifier together are enough; a browser that strips `Origin` or
+  refuses cookies cannot sign in (ADR-0784, ADR-0788).
+- **The account pages' session.** `__Host-mv-account` (`Secure`, `HttpOnly`, `SameSite=Strict`, 15 minutes fixed,
+  never extended) under the hash of a 32-byte secret, at most 4 per user and 4096 in all. Every signed-in form carries a
+  form token derived from the secret, which is not the cookie value, compared in constant time; a post is checked in
+  order: origin, content type, form, live session and `account_sign_in_gate`, form token (ADR-0796). `Strict`, unlike
+  the authorisation cookie, because nothing reaches these pages from another site with a reason to carry the session; a
+  client's deep link opens the sign-in form first (ADR-0796).
+
+### Open redirect and authorization code theft
+
+- **Sending the browser, with a code or an error, to an address of the attacker's choice.** Nothing is redirected
+  before the client and its redirect URI are validated; a failure of either is a 400 page, and the page policy names
+  only a validated redirect origin (ADR-0770, ADR-0772). Every address is read by the strict `ParsedUri` reader (no
+  fragment, no userinfo, nothing decoded or normalised) and a redirect URI is matched byte for byte against a registered
+  one, except a native loopback URI's port (ADR-0770).
+- **A stolen or intercepted code.** PKCE `S256` only, compared in constant time (ADR-0768). A code is 32 random bytes
+  kept only as a hash, lives 60 seconds, is bound to client, redirect URI, challenge, user, device and scope, and is
+  single use (ADR-0782). A replayed code is `invalid_grant` and ends the session its first redemption produced, and
+  only that one, matched on client and `created_at_ms` (ADR-0792). **Residual risk:** a replay after a restart or after
+  the code expired is an unknown code and ends nothing (ADR-0792). With `response_mode=query` and an https redirect the
+  code reaches the server behind the redirect URI and its logs; PKCE and the 60-second life keep it from being redeemed
+  by anyone else (ADR-0789).
+
+### Client impersonation
+
+- **A malicious client posing as a trusted one.** Registration is open and every client is public
+  (`token_endpoint_auth_method` `none`), so a client is identified only by what it registered (ADR-0771). `client_uri`
+  must be `https` on a DNS name of two or more labels (no IP literal, no `localhost`, no last label that a browser reads
+  as a number); a web redirect URI must be on that host or a subdomain and a private-use scheme must be the reversed
+  host (ADR-0770); `client_name` is 1 to 128 bytes with no control, bidirectional or invisible character, so two names
+  cannot look alike (ADR-0771). The consent page names the client, the host of its `client_uri`, where the browser goes
+  next, the device ID and that the whole account is granted. **Residual risk:** nothing proves that a client is who its
+  name says; the `client_uri` host is the only thing a user can check.
+- **The client ID.** A keyed BLAKE2b hash of the canonical accepted metadata, with a key derived from the master key
+  (ADR-0779), so a repeat registration is the same client and the table does not grow per login. **Residual risk:** two
+  installs with identical metadata share an ID, which gives neither anything over the other; replacing the master key
+  orphans every client, and clients register again (ADR-0779).
+
+### The device authorization grant as a phishing tool
+
+- **An attacker starts a device sign-in and sends the victim the link or code.** The grant is off unless
+  `server.oauth.device_grant_enabled` is set (ADR-0804). The consent page's first item is a warning that a different
+  device, not this browser, is being signed in, and to deny if someone sent the code; a device sign-in never creates an
+  account (ADR-0806). One browser at a time answers a code, under a two-minute lease; another browser gets 409
+  (ADR-0806).
+- **Guessing a user code.** A user code is 8 characters from a 20-letter alphabet (about 34.5 bits), so its strength is
+  the throttle: five wrong codes per client address key in ten minutes, a code that does not read and an unknown code
+  being the same 400 page and both counted, and a blocked address never reaching a lookup (ADR-0805). **Residual
+  risk:** the warning cannot stop a user who approves anyway (ADR-0806); behind a shared address five wrong codes from
+  anyone block everyone there for ten minutes; the throttle fails closed at its cap of 8192 windows, so a flood of
+  distinct addresses delays every address's first code (ADR-0805).
+
+### The legacy SSO hand-off
+
+- **A login token sent to an address of the attacker's choice.** With both APIs on, the SSO redirect starts the
+  built-in sign-in, then always shows a confirmation page naming the account and the destination (its host and port, or
+  the scheme of an application on the device), even for an allowlisted address (ADR-0802). The destination is `https`,
+  loopback `http` or a private-use scheme with no authority, and must also match
+  `server.oauth.hand_off_redirect_allowlist` when it is set: an https origin or a bare scheme, never a prefix
+  (ADR-0774); it is read again at every step. The login token is 32 random bytes in `LoginTokenStore`, single use, 30
+  seconds (ADR-0802). **Residual risk:** 30 seconds is longer than the spec's suggested five, chosen so a native
+  application has time to be switched to; with no allowlist set, a user who confirms an unfamiliar destination sends it
+  a token (ADR-0802).
+
+### Resource exhaustion
+
+- **Unauthenticated stores.** Pending authorisations (8192 in all, 16 per client address key, 10 minutes) and codes
+  (8192, 60 seconds) are in memory, hashed, and never evict a live entry; a full store refuses (ADR-0782). Device
+  authorisations: 4096 in all, 8 per address, 10 minutes; the wrong-code throttle holds 8192 windows (ADR-0805).
+  Account-page sessions: 4096 in all, 4 per user, the user's own oldest replaced (ADR-0796). Cross-signing reset
+  approvals: one per user, 4096 users (ADR-0797). Hand-off login tokens are bounded by `LoginTokenStore`'s caps
+  (ADR-0548, ADR-0802).
+- **Client registrations.** At most 10000 clients; at the cap a registration evicts idle clients least recently used
+  first, never one with a session or a pending authorisation, else 503 with nothing stored (ADR-0780). A client's last
+  use is written at most once a day, and the retention sweep deletes a client with no session unused for 30 days
+  (ADR-0777). Every OAuth endpoint but `auth_metadata` takes the `auth_sensitive` rate limit (ADR-0775).
+- **Accepted limits.** An attacker with a few hundred IPv6 /64 networks (a client address key groups IPv6 by
+  `server.http.ipv6_client_prefix_length`, default /64) can fill the 8192 pending authorisations 16 at a time and keep
+  OAuth sign-in answering 503 for as long as they keep the store full (ADR-0782). The wrong-code throttle fails closed
+  at its cap rather than open (ADR-0805). A flood of registrations can evict a legitimate client between its
+  registration and its authorisation; it registers again (ADR-0780). A restart loses every pending authorisation, code,
+  device sign-in, account-page session and reset approval (ADR-0782, ADR-0796, ADR-0797, ADR-0805).
+
+### Credential and session lifecycle
+
+- **A sign-in that outlives a password change.** A sign-in carries the credential stamp of its password check (a hash
+  of the stored password hash, never logged); the approval, the code grant and the device code grant compare it, so a
+  password change, reset or deactivation ends a sign-in in progress, an unredeemed code and an unpolled device approval
+  (ADR-0807). Every password change, reset and deactivation also ends the user's account-page sessions and withdraws a
+  reset approval (ADR-0798). **Residual risk:** a sign-in started just before the user changed their own password must
+  be started again (ADR-0807).
+- **A stale OAuth session row.** An `oauth_sessions` row is deleted in the transaction that revokes its device's last
+  credential (password change, reset, deactivation, refresh-token reuse), and the retention sweep deletes a row whose
+  device holds no live token, so its client can be evicted (ADR-0808). A grant writes the device, its tokens, the row
+  and the audit row in one transaction (ADR-0792).
+- **Mixing the two APIs.** `POST /refresh` refuses an OAuth device's refresh token and the token endpoint refuses a
+  legacy one, before the token is spent (ADR-0793). An OAuth access token always expires (ADR-0791). Revocation ends a
+  session as `/logout` does (ADR-0795).
+- **User-interactive authentication from an OAuth session.** Every UIA endpoint refuses an OAuth session with 403
+  before the body is read; an application service is never refused (ADR-0794). The one exception is a replacing
+  cross-signing upload, which offers the `m.oauth` stage: the user approves the reset on the account page (one approval,
+  10 minutes, spent only by an upload that is stored), and a password stage from an OAuth session is never checked
+  (ADR-0797). A polling retry reuses the user's live UIA session, so polling costs no session per request (ADR-0799).
+  When the challenge names one of the user's OAuth devices the approval is bound to it and only that device's upload can
+  take it (ADR-0809). **Residual risk:** an approval given on the unbound page can be spent by any of the user's OAuth
+  sessions within its 10 minutes (ADR-0797, ADR-0799, ADR-0809); a token holder can upload the first cross-signing keys
+  of an account that has none, as the spec allows (ADR-0794).
+
+### What is logged
+
+- The query of any `/_merovingian/oauth2/*` or `/_merovingian/account*` request is never logged (`sanitized_http_target`
+  drops it, ADR-0786), so a `state`, code or login hint cannot reach the log. Handlers log `client_id`, `grant_type`,
+  `application_type`, `error`, `user_id` and `device_id`, never a code, verifier, token, password, cookie, form token
+  or body. A refused token or device request logs `client_id` only once it names a registered client, since before then
+  it is text of the caller's choosing. Granted authorisations, denials after a sign-in and granted sessions are durable
+  audit rows (ADR-0790, ADR-0792). **Residual risk:** an operator cannot see which parameters an OAuth request carried
+  (ADR-0786).
+
+### Open: not yet exercised in a browser or a real client
+
+None of the above has been exercised in a real browser or with a real client. The test suite drives the handlers
+directly, so these are unverified: the browser's handling of the `__Host-` cookies and their `SameSite` values, whether
+Chromium's `form-action` lets the 303 after a form post through to the client, IPv6 loopback redirects, and a client's
+deep links to the account pages. Milestone A in [the OAuth 2.0 plan](todos/oauth-2-0-api.md) (Element X on iOS and
+Android against a server built from this branch) closes this item.
