@@ -46,7 +46,10 @@ namespace
         {
             return false;
         }
-        auto const prefix = std::string{"http://"} + registered.host();
+        // A native client's loopback redirect URI is `http` by the spec ("Redirect URI validation") and RFC 8252
+        // section 7.3, and the caller has already established that the host is a loopback literal: no cleartext
+        // leaves the machine. The analyser's "use HTTPS" finding does not apply to this line.
+        auto const prefix = std::string{"http://"} + registered.host(); // NOSONAR(cpp:S5332)
         auto const port_text = ":" + std::to_string(*requested.port());
         auto const& text = requested.text();
         auto const& base = registered.text();

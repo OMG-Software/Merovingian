@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <stdexcept>
 #include <string_view>
 
 namespace merovingian::oauth
@@ -23,7 +24,7 @@ public:
     {
         if (m_text.empty() || m_text.size() > max_chars)
         {
-            throw "an HtmlName must be 1 to 64 characters";
+            throw std::logic_error{"an HtmlName must be 1 to 64 characters"};
         }
         for (auto const value : m_text)
         {
@@ -31,7 +32,7 @@ public:
                                  (value >= '0' && value <= '9') || value == '_' || value == '-';
             if (!allowed)
             {
-                throw "an HtmlName holds a character outside A-Z a-z 0-9 _ -";
+                throw std::logic_error{"an HtmlName holds a character outside A-Z a-z 0-9 _ -"};
             }
         }
     }

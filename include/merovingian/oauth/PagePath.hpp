@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <stdexcept>
 #include <string_view>
 
 namespace merovingian::oauth
@@ -21,7 +22,7 @@ public:
         if (!m_text.starts_with('/') || m_text.find("//") != std::string_view::npos ||
             m_text.find("..") != std::string_view::npos)
         {
-            throw "a PagePath must start with one / and hold no // or ..";
+            throw std::logic_error{"a PagePath must start with one / and hold no // or .."};
         }
         for (auto const value : m_text)
         {
@@ -30,7 +31,7 @@ public:
                                  value == '.';
             if (!allowed)
             {
-                throw "a PagePath holds a character outside A-Z a-z 0-9 / _ - .";
+                throw std::logic_error{"a PagePath holds a character outside A-Z a-z 0-9 / _ - ."};
             }
         }
     }

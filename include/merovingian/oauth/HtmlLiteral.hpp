@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <stdexcept>
 #include <string_view>
 
 namespace merovingian::oauth
@@ -22,14 +23,14 @@ public:
     {
         if (m_text.empty())
         {
-            throw "an HtmlLiteral must not be empty";
+            throw std::logic_error{"an HtmlLiteral must not be empty"};
         }
         for (auto const value : m_text)
         {
             if (value < ' ' || value > '~' || value == '&' || value == '<' || value == '>' || value == '"' ||
                 value == '\'')
             {
-                throw "an HtmlLiteral holds a character that would need escaping";
+                throw std::logic_error{"an HtmlLiteral holds a character that would need escaping"};
             }
         }
     }
