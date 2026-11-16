@@ -6,18 +6,19 @@
 #include "merovingian/database/CappedAccountDataStore.hpp"
 #include "merovingian/database/CredentialTable.hpp"
 #include "merovingian/database/DeferredPduAwaits.hpp"
-#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/DeferredPduUpsert.hpp"
 #include "merovingian/database/EventStateGroupTable.hpp"
 #include "merovingian/database/EventTable.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
 #include "merovingian/database/ForwardExtremityTable.hpp"
+#include "merovingian/database/KeyBackupDigest.hpp"
 #include "merovingian/database/MediaBlobRead.hpp"
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/MembershipStoreResult.hpp"
 #include "merovingian/database/MigrationApplyResult.hpp"
 #include "merovingian/database/MigrationValidationResult.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAdminAction.hpp"
@@ -442,9 +443,9 @@ struct PersistentStore final
     // Key backup indexes (ADR-0606): a session by (user, version, room, session), the sessions of each (user,
     // version) and the versions of each user. Same trust rule as above. A deleted session or version erases by
     // moving the last row into the gap, so `key_backup_sessions` has no meaningful order.
-    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions` and
-    // rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds it
-    // stale recomputes from the rows without storing the result.
+    // The digest of each (user, version) backup (run-3 C22, ADR-0673), kept by every writer of `key_backup_sessions`
+    // and rebuilt after hydration. Trusted only while its count equals the version's session count; a reader that finds
+    // it stale recomputes from the rows without storing the result.
     std::unordered_map<std::string, KeyBackupDigest> key_backup_digests{};
     RowKeyIndex key_backup_session_index{};
     RowGroupIndex key_backup_version_session_index{};
@@ -565,6 +566,9 @@ struct PersistentStore final
     // audit log (C26).
     ExaminedRows audit_type_queries{};
     std::vector<PersistentLoginToken> login_tokens{};
+    // Migration 002 (ADR-0776, ADR-0777): `oauth_clients` and `oauth_sessions`, with their indexes. Read and write
+    // through OAuthStore.hpp; `delete_device` removes a device's session in the transaction that deletes the device.
+    OAuthTables oauth{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
@@ -1262,8 +1266,7 @@ auto for_each_key_backup_session(PersistentStore const& store, std::string_view 
 // Stores every signature in one transaction (one commit, whatever the count): all are written or, when the write
 // fails, none is. A row with an empty target key or an empty payload is refused and the rest are still written; the
 // result is false when any row was refused. An empty list succeeds and writes nothing. Run-3 C14 (ADR-0672).
-[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures)
-    -> bool;
+[[nodiscard]] auto store_key_signatures(PersistentStore& store, std::vector<PersistentKeySignature> signatures) -> bool;
 // Calls `visit` with the (target user, target key) of each signature `signer_user_id` holds; stops when it returns
 // false. Reads the signer's rows only, counted in `key_rows_examined`.
 auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,

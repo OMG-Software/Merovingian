@@ -24,10 +24,24 @@ to match statement for statement.
 - **v1 is frozen (1.0.0 is cut).** The pre-1.0 rule, that a schema change edited
   `core_tables`/`core_indexes` and this file together, no longer applies. Never edit `001_initial_schema.sql`, and never change
   `core_tables`/`core_indexes` in a way that changes what v1 creates. A schema change is
-  a new migration: `002_<name>.sql`, plus its upgrade step in `upgrade_migration_catalog()`
-  and its downgrade at the front of `downgrade_migration_catalog()`. The first one must
-  also make `initial_schema_definitions()` keep returning the v1 shape while
-  `current_schema_definitions()` gains the change (today both return the same registry).
+  a new migration: `00N_<name>.sql`, plus its upgrade step in `upgrade_migration_catalog()`
+  and its downgrade at the front of `downgrade_migration_catalog()`.
+
+## Migration 002: the OAuth 2.0 tables (1.1.0, ADR-0776, ADR-0778)
+
+`002_oauth_tables.sql` creates `oauth_clients`, `oauth_sessions` and `idx_oauth_sessions_client_id`. It is the
+first migration after v1, so it also split the schema registry by version (ADR-0778): `Schema.cpp` keeps one pair of
+arrays per version (`core_tables`/`core_indexes` for v1, `oauth_tables`/`oauth_indexes` for v2), and
+`schema_definitions_added_by(version)` / `schema_indexes_added_by(version)` return what a version adds.
+`initial_schema_definitions()` is version 1 only and `current_schema_definitions()` every version up to
+`current_schema_version()`. Each step is generated from what its version adds (`oauth_tables_migration()`), and the
+bootstraps build version 1 only, so a fresh database runs 002 exactly as an upgraded 1.0.x one does. The unit test
+"Checked-in migrations hold exactly the steps this build runs" compares every file to its catalog step.
+
+A later migration that adds tables does the same: new arrays, a case in both `*_added_by` functions, a step built
+with `schema_step_creating` and its downgrade with `schema_step_dropping`, a file equal to the step, a higher
+`schema_version`, and the new tables classified for the worker. It never edits an earlier version's arrays.
+`merovingian-db-migrate --plan A B --migrations DIR` takes only the files with a version in (A, B].
 - Never rename a step or reuse a version number: the ledger check identifies a step by
   both.
 
@@ -39,7 +53,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `001`.
+Current highest: `002`.
 
 ## File format
 
@@ -55,8 +69,8 @@ NEXT SQL STATEMENT
 - Each statement preceded by `-- statement <name>` on its own line
 - Statement names must be unique within the file and descriptive (`events_add_stream_ordering`, not `stmt1`)
 - No trailing semicolons — the migration runner adds them
-- The v1 file names each table statement `create_<table>` and each index statement
-  `create_<index>`, and quotes table names in `CREATE TABLE`, exactly as the build's
+- The v1 and 002 files name each table statement `create_<table>` and each index statement
+  `create_<index>`, and quote table names in `CREATE TABLE`, exactly as the build's
   generated DDL does
 
 ## Federation worker classification

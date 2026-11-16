@@ -1382,6 +1382,44 @@ namespace
             }
         }
 
+        // Migration 002 (ADR-0776): OAuth 2.0 clients and the devices that are their sessions. Neither is on the
+        // federation worker's allowlist.
+        if (table_load_profile_includes("oauth_clients", profile))
+        {
+            auto clients = query_rows(connection, "postgresql_load_oauth_clients",
+                                      "SELECT client_id, metadata_json, created_at_ms, last_used_at_ms FROM "
+                                      "oauth_clients ORDER BY client_id");
+            if (!clients.ok)
+            {
+                return false;
+            }
+            for (auto const& row : clients.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    std::ignore = store.oauth.insert_client({row[0], row[1], parse_u64(row[2]), parse_u64(row[3])});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("oauth_sessions", profile))
+        {
+            auto sessions = query_rows(connection, "postgresql_load_oauth_sessions",
+                                       "SELECT user_id, device_id, client_id, scope, created_at_ms FROM "
+                                       "oauth_sessions ORDER BY user_id, device_id");
+            if (!sessions.ok)
+            {
+                return false;
+            }
+            for (auto const& row : sessions.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    std::ignore = store.oauth.insert_session({row[0], row[1], row[2], row[3], parse_u64(row[4])});
+                }
+            }
+        }
+
         if (table_load_profile_includes("appservice_txn_cursor", profile))
         {
             auto appservice_txn_cursor_result =

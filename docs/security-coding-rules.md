@@ -637,6 +637,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: a limit one server can fill would let its forks keep out another server's ban or demotion (ADR-0374, ADR-0602).
   Source: `src/homeserver/AGENTS.md`.
 
+- **A device's OAuth session row is deleted in the transaction that deletes the device, and an OAuth client that has
+  a session is never deleted.** Every device-deleting path goes through `database::delete_device`; the retention sweep
+  and any cap choose candidates with `oauth_clients_without_sessions`, and `delete_oauth_clients` refuses a set that
+  names a client with a session.
+  Why: a session row that outlives its device would mark a later device of the same ID as an OAuth device, and the
+  spec forbids deleting a client registration that has an active session (ADR-0776, ADR-0777).
+  Source: `src/database/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
 - **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied
   through the normal write path.**
   Why: a resolution reads both, and `current_state` has other writers, so a stale or skipped result leaves state a

@@ -132,8 +132,9 @@ fixture until the 1.1 series starts.
 
 Since 1.0.0, the v1 migration (the `initial_schema` step in `src/database/Migration.cpp`)
 and `migrations/001_initial_schema.sql` never change. A schema change is a new numbered
-migration (v2 onwards) that keeps deployed databases compatible. A unit test requires the
-SQL file to match the build's v1 step statement for statement.
+migration (v2 onwards) that keeps deployed databases compatible; the first is
+`002_oauth_tables.sql` in 1.1.0 (ADR-0778). A unit test requires each SQL file to match the
+build's step statement for statement.
 
 ## Verifying release signatures
 

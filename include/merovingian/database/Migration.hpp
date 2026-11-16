@@ -23,6 +23,9 @@ namespace merovingian::database
 [[nodiscard]] auto migration_plan_summary(MigrationPlan const& plan) -> std::string;
 [[nodiscard]] auto initial_schema_migration() -> MigrationStep;
 [[nodiscard]] auto downgrade_initial_schema_migration() -> MigrationStep;
+// Migration 002 (1.1.0): the OAuth 2.0 client and session tables (ADR-0776, ADR-0778).
+[[nodiscard]] auto oauth_tables_migration() -> MigrationStep;
+[[nodiscard]] auto downgrade_oauth_tables_migration() -> MigrationStep;
 [[nodiscard]] auto upgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto downgrade_migration_catalog() -> std::vector<MigrationStep>;
 [[nodiscard]] auto migration_plan_for(SchemaState const& state) -> MigrationPlan;

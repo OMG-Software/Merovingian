@@ -343,6 +343,7 @@ shell = find_program('sh')
       'unit/test_database_security_boundaries.cpp',
       'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
+      'unit/test_database_oauth_store.cpp',
       'unit/test_media_reservation_sweep.cpp',
       'unit/test_credential_tables.cpp',
       'unit/test_bundled_aggregations.cpp',

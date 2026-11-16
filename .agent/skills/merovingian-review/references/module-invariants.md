@@ -105,6 +105,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - Reads go by index, never scan. `PersistentStore` mutexes follow ADR-0517. A member added to `PersistentStore`
   is added to every hand-written copy, move and serialise path too.
 - Schema changes go only through `migrations/` (ADR-0224). Nothing but SQLite opens an SQLite file (ADR-0157).
+- A path that deletes a `devices` row deletes its `oauth_sessions` row in the same transaction, and no path deletes
+  an OAuth client that has a session (ADR-0776, ADR-0777). `src/database/AGENTS.md#OAuth 2.0 tables (migration 002, ADR-0776, ADR-0777)`
 
 ## src/email
 
@@ -307,6 +309,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 
 - Never edit an applied migration. `001_initial_schema.sql` is frozen (ADR-0224). A change is a new numbered
   file, plus its step in `upgrade_migration_catalog()` and its downgrade. `migrations/AGENTS.md#Safety rules`
+- A migration's tables go in their own per-version arrays in `Schema.cpp`, never into an earlier version's; the file
+  equals the generated step (ADR-0778). `migrations/AGENTS.md#Migration 002: the OAuth 2.0 tables (1.1.0, ADR-0776, ADR-0778)`
 - Next number is the maximum plus one, contiguous. Check that parallel branches have not taken it. Format and
   header follow `#File format`.
 - Every new table is classified for the federation worker. `#Federation worker classification`

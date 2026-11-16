@@ -7,6 +7,8 @@
 // MEROVINGIAN_TEST_POSTGRESQL_URI is not set; a skip is not a pass.
 
 #include <catch2/catch_test_macros.hpp>
+#include <merovingian/database/OAuthClientStoreResult.hpp>
+#include <merovingian/database/OAuthStore.hpp>
 #include <merovingian/database/PersistentStore.hpp>
 #include <merovingian/database/PostgresqlStore.hpp>
 
@@ -1609,6 +1611,71 @@ SCENARIO("A removal from current state survives a reopen on PostgreSQL", "[postg
                 auto const* row = db::find_membership_row(reopened.store, room_id, member);
                 REQUIRE(row != nullptr);
                 CHECK(row->membership == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL OAuth clients and sessions survive a reopen and a session goes with its device",
+         "[database][postgresql][integration][pg-behaviour][oauth]")
+{
+    GIVEN("a client, a second client to touch, and a device holding an OAuth session")
+    {
+        auto const uri = postgresql_uri();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = reopen(uri);
+        auto const suffix = unique_suffix();
+        auto const user_id = "@oauth-" + suffix + ":example.org";
+        auto const client_id = "client-" + suffix;
+        auto const touched_id = "touched-" + suffix;
+        REQUIRE(make_user(opened.store, user_id));
+        REQUIRE(db::store_device(opened.store, {user_id, "DEV", "phone"}));
+        REQUIRE(db::store_device(opened.store, {user_id, "KEEP", "laptop"}));
+        REQUIRE(db::store_oauth_client(opened.store, {client_id, R"({"client_name":"A"})", 5U, 5U}) ==
+                db::OAuthClientStoreResult::inserted);
+        REQUIRE(db::store_oauth_client(opened.store, {touched_id, R"({"client_name":"B"})", 6U, 6U}) ==
+                db::OAuthClientStoreResult::inserted);
+        REQUIRE(db::store_oauth_session(opened.store, {user_id, "DEV", client_id, "urn:matrix:client:api:*", 7U}));
+        REQUIRE(db::store_oauth_session(opened.store, {user_id, "KEEP", client_id, "openid", 8U}));
+
+        WHEN("the second client is touched a day later, the device is deleted, and the store is reopened")
+        {
+            auto const later = 6U + db::oauth_client_touch_interval_ms + 1U;
+            REQUIRE(db::touch_oauth_client(opened.store, touched_id, later));
+            REQUIRE(db::delete_device(opened.store, user_id, "DEV"));
+            opened = {};
+            auto reopened = reopen(uri);
+            auto const* held = db::find_oauth_client(reopened.store, client_id);
+            auto const* touched = db::find_oauth_client(reopened.store, touched_id);
+
+            THEN("both clients keep their fields, the touch persisted, and only the kept device's session remains")
+            {
+                REQUIRE(held != nullptr);
+                REQUIRE(held->metadata_json == R"({"client_name":"A"})");
+                REQUIRE(held->created_at_ms == 5U);
+                REQUIRE(touched != nullptr);
+                REQUIRE(touched->last_used_at_ms == later);
+                REQUIRE(db::find_oauth_session(reopened.store, user_id, "DEV") == nullptr);
+                auto const* kept = db::find_oauth_session(reopened.store, user_id, "KEEP");
+                REQUIRE(kept != nullptr);
+                REQUIRE(kept->scope == "openid");
+                REQUIRE(kept->created_at_ms == 8U);
+                REQUIRE(db::oauth_client_has_session(reopened.store, client_id));
+            }
+
+            AND_THEN("a sessionless client can be deleted, and the client with a session cannot")
+            {
+                auto const sessionless = std::vector<std::string>{touched_id};
+                auto const with_session = std::vector<std::string>{client_id};
+                REQUIRE(db::delete_oauth_clients(reopened.store, sessionless));
+                REQUIRE_FALSE(db::delete_oauth_clients(reopened.store, with_session));
+                auto again = reopen(uri);
+                REQUIRE(db::find_oauth_client(again.store, touched_id) == nullptr);
+                REQUIRE(db::find_oauth_client(again.store, client_id) != nullptr);
             }
         }
     }

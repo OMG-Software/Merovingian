@@ -1062,6 +1062,21 @@ The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-
   headers every page carries
   ([ADR-0772](adr/0772-page-text-is-escaped-by-type-and-the-page-policy-names-only-a-validated-redirect-origin.md)).
 
+## OAuth 2.0 storage (migration 002)
+
+1.1.0 adds two tables (ADR-0776, ADR-0777, ADR-0778); nothing serves them yet, and the token tables are unchanged.
+
+- `oauth_clients`: one row per registered client, its canonical metadata (at most 16 KiB), when it was registered
+  and when it was last used. A client row is kept as first written; `last_used_at_ms` is written at most once a day.
+  The hourly `retention-sweep` deletes a client with no session that has not been used for 30 days, at most 500 per
+  transaction. A client with a session is never deleted.
+- `oauth_sessions`: one row per OAuth device, keyed by (user ID, device ID), naming its client and granted scope (at
+  most 2048 bytes). A device is an OAuth device exactly when it has a row. The row is written in the transaction that
+  writes the device and its tokens (phase 6), and deleted in the transaction that deletes the device, which covers
+  `POST /logout`, `POST /logout/all`, `DELETE /devices/{deviceId}` and `POST /delete_devices`.
+
+Neither table is read by the federation worker.
+
 ## Next starting points
 
 1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.

@@ -23,6 +23,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   (https origins or bare private-use schemes, never prefixes) are parsed and checked; all need a restart (ADR-0774).
 * With OAuth on, `server.public_baseurl` must be an https URL with a host and no query, and
   `server.sso.authorization_url` is refused.
+* Migration 002 adds the `oauth_clients` and `oauth_sessions` tables, hydrated on both backends; deleting a device
+  deletes its OAuth session in the same transaction (ADR-0776, ADR-0778).
+* The retention sweep deletes OAuth clients with no session unused for 30 days, never one with a session, and a
+  client's last use is written at most once a day (ADR-0777).
 
 ## Security Fixes
 
@@ -33,12 +37,16 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * A handler's `Content-Type` spelled in another letter case no longer adds a second `Content-Type` to the response,
   and 302, 303, 409, 504 and other statuses now carry their reason phrase instead of `OK`.
+* `merovingian-db-migrate --plan 1 2 --migrations` now plans only the files between the two versions, instead of
+  every file in the directory.
 
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
 keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token, registration and
-revocation endpoints, which later 1.1.0 changes serve; leave `server.oauth.enabled` off until then.
+revocation endpoints, which later 1.1.0 changes serve; leave `server.oauth.enabled` off until then. 1.1.0 migrates
+the database: on first start it applies migration 002, which adds two empty tables and changes no existing one. A
+1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go back.
 
 # Version 1.0.2
 

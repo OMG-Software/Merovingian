@@ -1168,6 +1168,20 @@ namespace
                              entry.used = text_is_true(column_text(row, 3));
                              store.login_tokens.push_back(std::move(entry));
                          }) &&
+               // Migration 002 (ADR-0776): OAuth 2.0 clients and the devices that are their sessions.
+               load_rows(connection,
+                         "SELECT client_id, metadata_json, created_at_ms, last_used_at_ms FROM oauth_clients",
+                         [&store](sqlite3_stmt& row) {
+                             std::ignore = store.oauth.insert_client({column_text(row, 0), column_text(row, 1),
+                                                                      parse_u64(column_text(row, 2)),
+                                                                      parse_u64(column_text(row, 3))});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, client_id, scope, created_at_ms FROM oauth_sessions",
+                         [&store](sqlite3_stmt& row) {
+                             std::ignore = store.oauth.insert_session({column_text(row, 0), column_text(row, 1),
+                                                                       column_text(row, 2), column_text(row, 3),
+                                                                       parse_u64(column_text(row, 4))});
+                         }) &&
                // Application service delivery state: transaction cursors, the outbox and the directory mapping.
                load_rows(connection,
                          "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "

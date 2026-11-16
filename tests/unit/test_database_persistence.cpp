@@ -3,9 +3,12 @@
 #include "../support/JoiningThreads.hpp"
 #include "../support/TempDirectory.hpp"
 #include "merovingian/database/BoundValue.hpp"
+#include "merovingian/database/Connection.hpp"
 #include "merovingian/database/DatabaseExecutor.hpp"
 #include "merovingian/database/ExaminedRows.hpp"
+#include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MigrationDirection.hpp"
+#include "merovingian/database/MigrationFiles.hpp"
 #include "merovingian/database/MigrationPlan.hpp"
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
@@ -24,15 +27,12 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/PostgresqlConnection.hpp"
+#include "merovingian/database/PostgresqlStore.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 #include "merovingian/database/QueryResult.hpp"
+#include "merovingian/database/Schema.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/Connection.hpp"
-#include "merovingian/database/Migration.hpp"
-#include "merovingian/database/MigrationFiles.hpp"
-#include "merovingian/database/PostgresqlStore.hpp"
-#include "merovingian/database/Schema.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <sqlite3.h>
@@ -1332,7 +1332,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies the single v1 schema step and its explicit downgrade",
+SCENARIO("Database migration runner applies the v1 and v2 schema steps and their explicit downgrades",
          "[database][migration]")
 {
     GIVEN("an empty schema state")
@@ -1348,25 +1348,30 @@ SCENARIO("Database migration runner applies the single v1 schema step and its ex
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("one step builds the whole current schema at v1, and one step takes it away")
+            THEN("v1 then v2 build the whole current schema, and two steps take it away newest first")
             {
-                REQUIRE(merovingian::database::current_schema_version() == 1U);
+                REQUIRE(merovingian::database::current_schema_version() == 2U);
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
-                REQUIRE(upgrade_plan.target_version == 1U);
-                REQUIRE(upgrade_plan.steps.size() == 1U);
-                REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.front().name == "initial_schema");
+                REQUIRE(upgrade_plan.target_version == 2U);
+                REQUIRE(upgrade_plan.steps.size() == 2U);
+                REQUIRE(upgrade_plan.steps[0].version == 1U);
+                REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
+                REQUIRE(upgrade_plan.steps[1].version == 2U);
+                REQUIRE(upgrade_plan.steps[1].name == "oauth_tables");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 1U);
-                REQUIRE(upgraded.state.applied_migrations.size() == 1U);
+                REQUIRE(upgraded.state.version == 2U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 2U);
                 REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "oauth_tables");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 1U);
-                REQUIRE(downgrade_plan.steps.front().name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 2U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_oauth_tables");
+                REQUIRE(downgrade_plan.steps[0].version == 1U);
+                REQUIRE(downgrade_plan.steps[1].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1377,10 +1382,10 @@ SCENARIO("Database migration runner applies the single v1 schema step and its ex
 
 SCENARIO("The v1 schema step creates every table in its final shape and every index", "[database][migration][collapse]")
 {
-    GIVEN("the v1 schema step and the current table inventory")
+    GIVEN("the v1 schema step and the v1 table inventory")
     {
         auto const step = merovingian::database::initial_schema_migration();
-        auto const tables = merovingian::database::current_schema_definitions();
+        auto const tables = merovingian::database::initial_schema_definitions();
 
         WHEN("its statements are inspected")
         {
@@ -1391,24 +1396,20 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                 return found == step.statements.end() ? std::string{} : found->sql;
             };
 
-            THEN("each current table is created whole, by exactly the DDL the registry describes")
+            THEN("each v1 table is created whole, by exactly the DDL the registry describes")
             {
-                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 1U);
-                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 1U);
+                REQUIRE(merovingian::database::upgrade_migration_catalog().size() == 2U);
+                REQUIRE(merovingian::database::downgrade_migration_catalog().size() == 2U);
                 for (auto const& table : tables)
                 {
                     INFO("table " << table.name);
                     REQUIRE(statement_sql("create_" + std::string{table.name}) ==
                             merovingian::database::create_table_sql(table).value());
                 }
-                // The v1 step's own table set is the current one: nothing is left to a later step.
-                auto const initial = merovingian::database::initial_schema_definitions();
-                REQUIRE(initial.size() == tables.size());
-                for (auto index = std::size_t{0U}; index < tables.size(); ++index)
-                {
-                    REQUIRE(initial[index].name == tables[index].name);
-                    REQUIRE(initial[index].columns_sql == tables[index].columns_sql);
-                }
+                // v1 is frozen (ADR-0224): its table set is what version 1 adds, and no later table leaks into it.
+                REQUIRE(tables.size() == merovingian::database::schema_definitions_added_by(1U).size());
+                REQUIRE(statement_sql("create_oauth_clients").empty());
+                REQUIRE(statement_sql("create_oauth_sessions").empty());
             }
 
             AND_THEN("every column the pre-1.0 chain ALTERed on is part of its table's CREATE")
@@ -1466,6 +1467,60 @@ SCENARIO("The v1 schema step creates every table in its final shape and every in
                     INFO("statement " << statement.name);
                     REQUIRE((statement.sql.starts_with("CREATE TABLE ") || statement.sql.starts_with("CREATE INDEX ")));
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("The v2 schema step adds only the OAuth 2.0 tables and their index", "[database][migration][oauth]")
+{
+    GIVEN("the v2 schema step, its downgrade and the current table inventory")
+    {
+        auto const step = merovingian::database::oauth_tables_migration();
+        auto const downgrade = merovingian::database::downgrade_oauth_tables_migration();
+        auto const initial = merovingian::database::initial_schema_tables();
+        auto const current = merovingian::database::current_schema_tables();
+
+        WHEN("its statements are inspected")
+        {
+            auto const names = [&step]() {
+                auto collected = std::vector<std::string>{};
+                for (auto const& statement : step.statements)
+                {
+                    collected.push_back(statement.name);
+                }
+                return collected;
+            }();
+
+            THEN("it creates oauth_clients, oauth_sessions and the client index, and nothing else")
+            {
+                REQUIRE(step.version == 2U);
+                REQUIRE(step.name == "oauth_tables");
+                REQUIRE(step.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(names == std::vector<std::string>{"create_oauth_clients", "create_oauth_sessions",
+                                                          "create_idx_oauth_sessions_client_id"});
+                REQUIRE(step.statements[0].sql ==
+                        "CREATE TABLE \"oauth_clients\" (client_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, "
+                        "created_at_ms TEXT NOT NULL, last_used_at_ms TEXT NOT NULL)");
+                REQUIRE(step.statements[1].sql ==
+                        "CREATE TABLE \"oauth_sessions\" (user_id TEXT NOT NULL, device_id TEXT NOT NULL, client_id "
+                        "TEXT NOT NULL, scope TEXT NOT NULL, created_at_ms TEXT NOT NULL, PRIMARY KEY (user_id, "
+                        "device_id))");
+                REQUIRE(step.statements[2].sql ==
+                        "CREATE INDEX idx_oauth_sessions_client_id ON oauth_sessions (client_id)");
+                REQUIRE(current.size() == initial.size() + 2U);
+                REQUIRE(std::ranges::find(initial, std::string_view{"oauth_clients"}) == initial.end());
+                REQUIRE(std::ranges::find(current, std::string_view{"oauth_clients"}) != current.end());
+                REQUIRE(std::ranges::find(current, std::string_view{"oauth_sessions"}) != current.end());
+            }
+
+            AND_THEN("its downgrade drops only those two tables, sessions first, back to version 1")
+            {
+                REQUIRE(downgrade.version == 1U);
+                REQUIRE(downgrade.name == "drop_oauth_tables");
+                REQUIRE(downgrade.statements.size() == 2U);
+                REQUIRE(downgrade.statements[0].sql.find("oauth_sessions") != std::string::npos);
+                REQUIRE(downgrade.statements[1].sql.find("oauth_clients") != std::string::npos);
             }
         }
     }
@@ -2324,10 +2379,9 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
     }
 }
 
-// The checked-in file is the frozen record of v1. Once 1.0.0 ships it must
-// never change, and neither may the step the build runs: a change to a table
-// that breaks this scenario belongs in a new numbered migration instead.
-SCENARIO("Checked-in migrations hold exactly the v1 step this build runs", "[database][migration][files]")
+// The checked-in files are the frozen record of each step. v1 must never change once 1.0.0 shipped, nor 002 once
+// 1.1.0 ships, and neither may the step the build runs: a change to a table belongs in a new numbered migration.
+SCENARIO("Checked-in migrations hold exactly the steps this build runs", "[database][migration][files]")
 {
     GIVEN("the repository migration directory")
     {
@@ -2337,23 +2391,65 @@ SCENARIO("Checked-in migrations hold exactly the v1 step this build runs", "[dat
         {
             REQUIRE_FALSE(directory.empty());
             auto const loaded = merovingian::database::load_migration_files(directory.string());
-            auto const built = merovingian::database::initial_schema_migration();
+            auto const built = merovingian::database::upgrade_migration_catalog();
 
-            THEN("there is one file, v1, statement for statement the same as the build's v1 step")
+            THEN("there is one file per catalog step, statement for statement the same as the build's step")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 1U);
-                auto const& file = loaded.steps.front();
-                REQUIRE(file.version == 1U);
-                REQUIRE(file.name == built.name);
-                REQUIRE(file.direction == merovingian::database::MigrationDirection::upgrade);
-                REQUIRE(file.statements.size() == built.statements.size());
-                for (auto index = std::size_t{0U}; index < built.statements.size(); ++index)
+                REQUIRE(loaded.steps.size() == built.size());
+                REQUIRE(built.size() == merovingian::database::current_schema_version());
+                for (auto step = std::size_t{0U}; step < built.size(); ++step)
                 {
-                    INFO("statement " << built.statements[index].name);
-                    REQUIRE(file.statements[index].name == built.statements[index].name);
-                    REQUIRE(file.statements[index].sql == built.statements[index].sql);
+                    auto const& file = loaded.steps[step];
+                    INFO("step " << built[step].name);
+                    REQUIRE(file.version == step + 1U);
+                    REQUIRE(file.version == built[step].version);
+                    REQUIRE(file.name == built[step].name);
+                    REQUIRE(file.direction == merovingian::database::MigrationDirection::upgrade);
+                    REQUIRE(file.statements.size() == built[step].statements.size());
+                    for (auto index = std::size_t{0U}; index < built[step].statements.size(); ++index)
+                    {
+                        INFO("statement " << built[step].statements[index].name);
+                        REQUIRE(file.statements[index].name == built[step].statements[index].name);
+                        REQUIRE(file.statements[index].sql == built[step].statements[index].sql);
+                    }
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("An offline plan takes only the migration files between its two versions",
+         "[database][migration][files][oauth]")
+{
+    GIVEN("the repository migration directory and the migration role")
+    {
+        auto const directory = locate_repository_migrations_directory();
+        REQUIRE_FALSE(directory.empty());
+        auto const loaded = merovingian::database::load_migration_files(directory.string());
+        REQUIRE(loaded.ok);
+        auto migration_config = merovingian::config::DatabaseConfig{};
+        migration_config.role = merovingian::config::DatabaseRole::migration;
+
+        WHEN("plans from v1 to v2 and from nothing to v2 are built from the files")
+        {
+            auto const from_v1 =
+                merovingian::database::build_offline_migration_plan(migration_config, 1U, 2U, loaded.steps);
+            auto const from_empty =
+                merovingian::database::build_offline_migration_plan(migration_config, 0U, 2U, loaded.steps);
+            auto const no_op =
+                merovingian::database::build_offline_migration_plan(migration_config, 2U, 2U, loaded.steps);
+
+            THEN("a v1 database gets 002 alone, an empty one gets 001 then 002, and a v2 one gets nothing")
+            {
+                REQUIRE(from_v1.ok);
+                REQUIRE(from_v1.plan.steps.size() == 1U);
+                REQUIRE(from_v1.plan.steps.front().name == "oauth_tables");
+                REQUIRE(from_empty.ok);
+                REQUIRE(from_empty.plan.steps.size() == 2U);
+                REQUIRE(from_empty.plan.steps.front().name == "initial_schema");
+                REQUIRE(no_op.ok);
+                REQUIRE(no_op.plan.steps.empty());
             }
         }
     }
@@ -2405,11 +2501,11 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                // Every table belongs to the v1 schema: the pre-1.0 migration chain
-                // collapsed into it, so the initial and current inventories match.
+                // The pre-1.0 migration chain collapsed into v1's 64 tables; migration 002 (1.1.0) adds the two
+                // OAuth 2.0 tables.
                 REQUIRE(tables.size() == 64U);
-                REQUIRE(merovingian::database::current_schema_version() == 1U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 64U);
+                REQUIRE(merovingian::database::current_schema_version() == 2U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 66U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

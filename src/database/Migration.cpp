@@ -9,10 +9,10 @@
 #include "merovingian/database/MigrationRecord.hpp"
 #include "merovingian/database/MigrationStep.hpp"
 #include "merovingian/database/MigrationValidationResult.hpp"
+#include "merovingian/database/Schema.hpp"
 #include "merovingian/database/SchemaIndexDefinition.hpp"
 #include "merovingian/database/SchemaState.hpp"
 #include "merovingian/database/SchemaTableDefinition.hpp"
-#include "merovingian/database/Schema.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
@@ -35,6 +35,9 @@ namespace
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
     constexpr auto initial_schema_name = std::string_view{"initial_schema"};
+    // Migration 002 (ADR-0776): migrations/002_oauth_tables.sql records it.
+    constexpr auto oauth_tables_version = std::uint32_t{2U};
+    constexpr auto oauth_tables_name = std::string_view{"oauth_tables"};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
         -> std::optional<PreparedStatement>
@@ -186,6 +189,40 @@ namespace
         return is_data_only_statement(statement.sql);
     }
 
+    // The upgrade to `version`: CREATE TABLE for each table that version adds, then CREATE INDEX for each of its
+    // indexes, named create_<table> and create_<index> as the migration files name them (ADR-0778).
+    [[nodiscard]] auto schema_step_creating(std::uint32_t version, std::string_view name) -> MigrationStep
+    {
+        auto statements = std::vector<PreparedStatement>{};
+        for (auto const& table : schema_definitions_added_by(version))
+        {
+            // Table definitions are allowlisted at compile time, so the
+            // generated CREATE TABLE SQL is always valid.
+            statements.push_back(make_create_table_statement(table).value());
+        }
+        for (auto const& index : schema_indexes_added_by(version))
+        {
+            // Likewise for the registered indexes.
+            statements.push_back(make_create_index_statement(index).value());
+        }
+        return {version, std::string{name}, std::move(statements), MigrationDirection::upgrade};
+    }
+
+    // The downgrade from `version` to the one before: DROP TABLE for each table `version` added, in reverse
+    // order so a dependent table comes down before the one it references. Each table's indexes go with it.
+    [[nodiscard]] auto schema_step_dropping(std::uint32_t version, std::string_view name) -> MigrationStep
+    {
+        auto statements = std::vector<PreparedStatement>{};
+        auto definitions = schema_definitions_added_by(version);
+        for (auto iterator = definitions.rbegin(); iterator != definitions.rend(); ++iterator)
+        {
+            // Table names are allowlisted at compile time, so the generated
+            // DROP TABLE SQL is always valid.
+            statements.push_back(make_drop_table_statement(iterator->name).value());
+        }
+        return {version - 1U, std::string{name}, std::move(statements), MigrationDirection::downgrade};
+    }
+
 } // namespace
 
 auto migration_direction_name(MigrationDirection direction) noexcept -> std::string_view
@@ -275,50 +312,38 @@ auto migration_plan_summary(MigrationPlan const& plan) -> std::string
 
 auto initial_schema_migration() -> MigrationStep
 {
-    // The whole schema, tables then indexes. Every pre-1.0 migration was folded
-    // into this one step (ADR-0224); migrations/001_initial_schema.sql records it
-    // statement for statement, and from 1.0.0 neither may change.
-    auto statements = std::vector<PreparedStatement>{};
-    for (auto const& table : initial_schema_definitions())
-    {
-        // Core table definitions are allowlisted at compile time, so the
-        // generated CREATE TABLE SQL is always valid.
-        statements.push_back(make_create_table_statement(table).value());
-    }
-    for (auto const& index : initial_schema_indexes())
-    {
-        // Likewise for the registered indexes.
-        statements.push_back(make_create_index_statement(index).value());
-    }
-    return {initial_schema_version, std::string{initial_schema_name}, std::move(statements),
-            MigrationDirection::upgrade};
+    // The whole v1 schema, tables then indexes. Every pre-1.0 migration was
+    // folded into this one step (ADR-0224); migrations/001_initial_schema.sql
+    // records it statement for statement, and from 1.0.0 neither may change.
+    return schema_step_creating(initial_schema_version, initial_schema_name);
 }
 
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
-    auto statements = std::vector<PreparedStatement>{};
-    auto definitions = initial_schema_definitions();
-    // Drop in reverse declaration order so dependent tables come down
-    // before the ones they reference. Each table's indexes go with it.
-    for (auto iterator = definitions.rbegin(); iterator != definitions.rend(); ++iterator)
-    {
-        // Core table names are allowlisted at compile time, so the generated
-        // DROP TABLE SQL is always valid.
-        statements.push_back(make_drop_table_statement(iterator->name).value());
-    }
-    return {0U, "drop_initial_schema", std::move(statements), MigrationDirection::downgrade};
+    return schema_step_dropping(initial_schema_version, "drop_initial_schema");
 }
 
-// The next migration is v2: add its upgrade step here and its downgrade (to v1)
-// at the front of the downgrade catalog, and leave v1 exactly as it is.
+auto oauth_tables_migration() -> MigrationStep
+{
+    return schema_step_creating(oauth_tables_version, oauth_tables_name);
+}
+
+auto downgrade_oauth_tables_migration() -> MigrationStep
+{
+    return schema_step_dropping(oauth_tables_version, "drop_oauth_tables");
+}
+
+// The next migration is v3: add its upgrade step at the end here, its downgrade
+// (to v2) at the front of the downgrade catalog, and its tables to
+// schema_definitions_added_by. Never change an earlier step.
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration()};
+    return {initial_schema_migration(), oauth_tables_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_initial_schema_migration()};
+    return {downgrade_oauth_tables_migration(), downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
@@ -489,8 +514,9 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
 
 auto migration_rollback_policy() noexcept -> std::string_view
 {
-    return "schema deploys at v1 in its final shape; the only downgrade drops it, exists for completeness, "
-           "and remains operator-controlled, paired with backup/restore validation";
+    return "schema deploys at v1 and migrates forward one numbered step at a time; each step's downgrade drops "
+           "what that step created, exists for completeness, and remains operator-controlled, paired with "
+           "backup/restore validation";
 }
 
 } // namespace merovingian::database

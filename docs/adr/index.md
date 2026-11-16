@@ -657,3 +657,6 @@
 * [0773 - The OAuth issuer is `server.public_baseurl`, and the routes live under `/_merovingian/`](0773-the-oauth-issuer-is-public-baseurl-and-the-routes-live-under-merovingian.md)
 * [0774 - A hand-off allowlist entry is an https origin or a bare private-use scheme, never a prefix](0774-a-hand-off-allowlist-entry-is-an-https-origin-or-a-bare-private-use-scheme-never-a-prefix.md)
 * [0775 - `auth_metadata` stays in the generic rate-limit tier](0775-auth-metadata-stays-in-the-generic-rate-limit-tier.md)
+* [0776 - An OAuth session is a row keyed by user and device, and the token tables do not change](0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)
+* [0777 - An OAuth client's last use is written at most once a day](0777-an-oauth-client-s-last-use-is-written-at-most-once-a-day.md)
+* [0778 - The schema is built from per-version tables, and each migration step from what its version adds](0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)

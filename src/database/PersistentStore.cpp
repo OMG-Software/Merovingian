@@ -15,6 +15,7 @@
 #include "merovingian/database/MembershipProjection.hpp"
 #include "merovingian/database/Migration.hpp"
 #include "merovingian/database/MissingEventReferences.hpp"
+#include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/database/PersistentAccessToken.hpp"
 #include "merovingian/database/PersistentAccountData.hpp"
 #include "merovingian/database/PersistentAdminAction.hpp"
@@ -2344,11 +2345,14 @@ namespace
         record_statement("delete_to_device_messages_of_device",
                          "DELETE FROM to_device_messages WHERE target_user_id = $1 AND target_device_id = $2",
                          parameters),
+        // An OAuth device's session row goes with the device (ADR-0776), so the two never disagree.
+        delete_oauth_session_of_device_statement(user_id, device_id),
     };
     if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
+    std::ignore = store.oauth.erase_session(user_id, device_id);
     // The erase keeps the vector's order, so it shifts the rows after it once, for a device that exists.
     store.devices.erase(std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
         return device.user_id == user_id && device.device_id == device_id;
@@ -5615,12 +5619,12 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
     statements.reserve(signatures.size());
     for (auto const& signature : signatures)
     {
-        statements.push_back(record_statement(
-            "upsert_key_signature",
-            "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
-            "target_user_id, target_device_id) DO UPDATE SET json = $4",
-            {public_value(signature.signer_user_id), public_value(signature.target_user_id),
-             public_value(signature.target_device_id), sensitive_value(signature.json)}));
+        statements.push_back(
+            record_statement("upsert_key_signature",
+                             "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
+                             "target_user_id, target_device_id) DO UPDATE SET json = $4",
+                             {public_value(signature.signer_user_id), public_value(signature.target_user_id),
+                              public_value(signature.target_device_id), sensitive_value(signature.json)}));
     }
     if (!commit_persistent_transaction(store, statements))
     {
@@ -5649,7 +5653,7 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
         store.key_signature_key_index.note_appended(store.key_signatures.size(), key_signature_key_of(added));
         store.key_signature_signer_index.note_appended(store.key_signatures.size(), added.signer_user_id);
         store.key_signature_target_key_index.note_appended(store.key_signatures.size(),
-                                                            key_signature_target_key_of(added));
+                                                           key_signature_target_key_of(added));
     }
     return all_accepted;
 }
@@ -5657,9 +5661,9 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void
 auto for_each_signer_key_signature(PersistentStore const& store, std::string_view signer_user_id,
                                    std::function<bool(PersistentKeySignature const&)> const& visit) -> void
 {
-    for (auto const position : positions_in_group(store.key_signature_signer_index, store.key_signatures,
-                                                  std::string{signer_user_id}, key_signature_signer_of,
-                                                  store.key_rows_examined))
+    for (auto const position :
+         positions_in_group(store.key_signature_signer_index, store.key_signatures, std::string{signer_user_id},
+                            key_signature_signer_of, store.key_rows_examined))
     {
         if (!visit(store.key_signatures[position]))
         {

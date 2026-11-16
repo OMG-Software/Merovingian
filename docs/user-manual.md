@@ -1997,15 +1997,17 @@ and cannot be selected in the config file.
 `merovingian-db-migrate` plans schema migrations without starting the runtime:
 
 ```sh
-merovingian-db-migrate --plan 0 1 --migrations migrations/
+merovingian-db-migrate --plan 1 2 --migrations migrations/
 ```
 
-The schema is at version 1 and `migrations/` holds only `001_initial_schema.sql`,
-so `--plan 0 1` is the plan that matches it. With `--migrations`, the steps come
-from the files, and the plan is rejected (exit 78) unless their versions run
-contiguously from `<current-version> + 1` to `<target-version>`; without
-`--migrations`, the plan is built from the steps this build carries. A plan to a
-version this build does not have, such as `--plan 1 2`, is rejected.
+The schema is at version 2 and `migrations/` holds `001_initial_schema.sql` and
+`002_oauth_tables.sql` (1.1.0), so `--plan 1 2` is the plan that takes a 1.0.x
+database to this release: migration 002 alone. With `--migrations`, the steps come
+from the files whose version lies between `<current-version>` (exclusive) and
+`<target-version>`, and the plan is rejected (exit 78) unless they run
+contiguously; without `--migrations`, the plan is built from the steps this build
+carries. A plan to a version this build does not have, such as `--plan 2 3`, is
+rejected.
 
 The tool only prints a plan. It takes no database URI or config file, never
 opens a database, and never changes one: it sets the migration role

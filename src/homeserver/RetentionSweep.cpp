@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/RetentionSweep.hpp"
 
+#include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
@@ -20,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 #include <vector>
@@ -166,14 +168,68 @@ namespace
         return done;
     }
 
+    // Returns true when every expired sessionless client was deleted (or there was none), false when the sweep
+    // stopped at its batch cap or was asked to stop. Each batch is chosen and deleted in one hold of the lock, so a
+    // session granted between batches is seen by the next choice: delete_oauth_clients refuses a client with one.
+    [[nodiscard]] auto sweep_oauth_clients(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now,
+                                           StopFlag const& stop) -> bool
+    {
+        auto const now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+        auto const keep_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(oauth_client_retention).count());
+        if (now_ms <= keep_ms)
+        {
+            return true;
+        }
+        auto const used_before_ms = now_ms - keep_ms;
+        auto const pending = [&runtime](std::string_view client_id) {
+            return oauth_client_has_pending_authorisation(runtime, client_id);
+        };
+        auto batches = std::size_t{0U};
+        auto deleted = std::size_t{0U};
+        auto done = false;
+        while (batches < retention_max_batches && !stop.stop_requested())
+        {
+            auto const guard = RuntimeLock{runtime.mutex};
+            auto const expired = database::oauth_clients_without_sessions(
+                runtime.database.persistent_store, retention_batch_rows, used_before_ms, pending);
+            if (expired.empty())
+            {
+                done = true;
+                break;
+            }
+            if (!database::delete_oauth_clients(runtime.database.persistent_store, expired))
+            {
+                LOG_WARNING("Retention sweep could not delete a batch of unused OAuth 2.0 clients; will retry");
+                return true;
+            }
+            deleted += expired.size();
+            ++batches;
+        }
+        if (deleted != 0U)
+        {
+            LOG_INFO("Retention sweep deleted unused OAuth 2.0 clients; clients=" + std::to_string(deleted));
+        }
+        return done;
+    }
+
 } // namespace
+
+// The seam phase 5 fills in: no authorisation request is kept yet, so none can name a client.
+auto oauth_client_has_pending_authorisation([[maybe_unused]] HomeserverRuntime const& runtime,
+                                            [[maybe_unused]] std::string_view client_id) -> bool
+{
+    return false;
+}
 
 auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now, StopFlag const& stop)
     -> std::chrono::milliseconds
 {
     auto const credentials_done = sweep_credentials(runtime, now, stop);
     auto const audit_done = sweep_audit_log(runtime, now, stop);
-    if (credentials_done && audit_done)
+    auto const oauth_done = sweep_oauth_clients(runtime, now, stop);
+    if (credentials_done && audit_done && oauth_done)
     {
         return std::chrono::duration_cast<std::chrono::milliseconds>(retention_sweep_interval);
     }
