@@ -1104,6 +1104,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   user leaves an account behind (ADR-0801).
   Source: `src/homeserver/AGENTS.md`.
 
+- **The legacy login hand-off sends a login token only to a `redirectUrl` that `oauth::hand_off_redirect_target`
+  accepts, read again at every step, and only after the signed-in user confirmed on a page naming it.**
+  Why: the spec's own example is a link that sends a victim's login token to `evil.com` (CWE-601, CWE-352); an
+  allowlist alone does not stop a link spending the victim's session on a listed application (ADR-0802).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.

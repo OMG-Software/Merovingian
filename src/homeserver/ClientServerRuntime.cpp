@@ -4508,13 +4508,6 @@ namespace
         return dispatch_err(req, rt, refusal->status, refusal->errcode, refusal->reason);
     }
 
-    // Hash of a login token as `LoginTokenStore` keeps it. The token is 256 random bits, so an unkeyed hash suffices.
-    [[nodiscard]] auto login_token_hash(std::string_view token) -> std::optional<std::string>
-    {
-        auto const pieces = std::array<std::string_view, 1U>{token};
-        return crypto::generic_hash(pieces);
-    }
-
     // F-07: the operator accounts route deactivates through `HomeserverRuntime` alone, which cannot reach the
     // login tokens. After a successful POST to it, a target that is now deactivated holds none.
     auto erase_login_tokens_of_deactivated_target(ClientServerRuntime& rt, std::string_view request_path) -> void
@@ -4638,7 +4631,7 @@ namespace
             });
         }
         auto const token = crypto::secure_random_hex(32U);
-        auto const token_hash = token.has_value() ? login_token_hash(*token) : std::nullopt;
+        auto const token_hash = token.has_value() ? LoginTokenStore::token_hash(*token) : std::nullopt;
         if (!token_hash.has_value())
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a login token");
@@ -4665,16 +4658,19 @@ namespace
                              })));
     }
 
-    // Consumes a login token minted by get_token, answering the user it was minted for. A token is spent by the
-    // attempt that names it, so this is called once per login. Empty when the feature is off.
+    // Consumes a login token minted by get_token or by the legacy login hand-off (ADR-0802), answering the user it was
+    // minted for. A token is spent by the attempt that names it, so this is called once per login. Empty when neither
+    // mints tokens.
     [[nodiscard]] auto redeem_minted_login_token(ClientServerRuntime& rt, std::string_view token)
         -> std::optional<std::string>
     {
-        if (!login_tokens_enabled(rt) || token.empty())
+        auto const minted_here =
+            login_tokens_enabled(rt) || legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth);
+        if (!minted_here || token.empty())
         {
             return std::nullopt;
         }
-        auto const token_hash = login_token_hash(token);
+        auto const token_hash = LoginTokenStore::token_hash(token);
         if (!token_hash.has_value())
         {
             return std::nullopt;
@@ -16143,6 +16139,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             flows.emplace_back(json_obj(std::move(sso_flow)));
         }
+        // Spec "OAuth 2.0 aware clients", server behaviour: with the OAuth 2.0 API on, `m.login.sso` with
+        // `oauth_aware_preferred: true`, its redirect handing the browser to the built-in pages (ADR-0802). The login
+        // token the hand-off returns is redeemed with `m.login.token`, offered here when get_token did not already.
+        // `m.login.password` stays ("If password authentication was previously enabled"). `server.sso.*` cannot be
+        // configured with OAuth on, so the flow above is never offered twice.
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            if (!login_tokens_enabled(rt))
+            {
+                flows.emplace_back(json_obj({json_member("type", json_str("m.login.token"))}));
+            }
+            flows.emplace_back(json_obj({
+                json_member("type", json_str("m.login.sso")),
+                json_member("oauth_aware_preferred", json_bool(true)),
+            }));
+        }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("flows", json_arr(std::move(flows))),
@@ -16158,6 +16170,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
         {
             return std::move(*refused);
+        }
+        // With the OAuth 2.0 API on, the built-in pages answer the redirect (ADR-0802): sign-in or registration, a
+        // confirmation, then a login token back to `redirectUrl`.
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_login_hand_off(rt, req), {}};
         }
         auto const redirect_url = query_param_value(req.target, "redirectUrl");
         auto const action = query_param_value(req.target, "action");
@@ -16176,6 +16194,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
         {
             return std::move(*refused);
+        }
+        // The hand-off advertises no identity provider, so every `idpId` starts the same pages (ADR-0802).
+        if (legacy_login_hand_off_enabled(rt.homeserver.config.server().oauth))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_login_hand_off(rt, req), {}};
         }
         auto path_and_idp = req.target.substr(std::string_view{"/_matrix/client/v3/login/sso/redirect/"}.size());
         if (auto const query = path_and_idp.find('?'); query != std::string_view::npos)

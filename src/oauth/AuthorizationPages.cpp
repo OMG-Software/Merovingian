@@ -3,6 +3,7 @@
 
 #include "merovingian/oauth/AuthorizationPages.hpp"
 
+#include "merovingian/oauth/AsciiCase.hpp"
 #include "merovingian/oauth/HtmlLiteral.hpp"
 #include "merovingian/oauth/OAuthPaths.hpp"
 #include "merovingian/oauth/PageDetail.hpp"
@@ -100,13 +101,14 @@ namespace
     // private-use scheme (which names the application, since it is the reversed host of its client URI).
     [[nodiscard]] auto destination_of(ParsedUri const& target) -> HtmlText
     {
-        auto const& scheme = target.scheme();
+        // A scheme's case is not significant (RFC 3986 section 3.1): `HTTPS://host` is shown as its host.
+        auto const scheme = ascii_lower(target.scheme());
         auto const web = scheme == "https" || scheme == "http";
         if (web && target.has_authority())
         {
             return shown(target.host(), "an address that cannot be shown");
         }
-        auto text = scheme;
+        auto text = target.scheme();
         text.append(": (an application on your device)");
         return shown(text, "an address that cannot be shown");
     }
@@ -209,6 +211,38 @@ auto consent_page(ConsentPageInput const& input, ParsedUri const& redirect_targe
     std::ignore = form.button(SubmitButton{action_field, action_approve, HtmlText{"Allow"}});
     std::ignore = form.button(SubmitButton{action_field, action_deny, HtmlText{"Deny"}});
     std::ignore = page.form(form);
+    return page;
+}
+
+auto hand_off_page(std::string_view pending_id, std::string_view user_id, ParsedUri const& target) -> Page
+{
+    auto page = Page{HtmlText{"Sign in to an application"}};
+    auto const details = std::array{
+        PageDetail{HtmlText{"Account"}, shown(user_id, "an account that cannot be shown")},
+        PageDetail{HtmlText{"Application"}, destination_of(target)},
+    };
+    page.details(details);
+    page.paragraph(HtmlText{"If you continue, this application is signed in to your account and gets full access to "
+                            "it: it can read and send your messages, join and leave rooms and change your settings, "
+                            "as you can. Continue only if you started this sign-in from that application."});
+    auto const pending = pending_value(pending_id);
+    if (!pending.has_value())
+    {
+        add_cannot_continue(page);
+        return page;
+    }
+    auto form = PageForm{authorize_path};
+    form.hidden(pending_field, *pending);
+    std::ignore = form.button(SubmitButton{action_field, action_approve, HtmlText{"Continue"}});
+    std::ignore = form.button(SubmitButton{action_field, action_deny, HtmlText{"Cancel"}});
+    std::ignore = page.form(form);
+    return page;
+}
+
+auto hand_off_cancelled_page() -> Page
+{
+    auto page = Page{HtmlText{"Sign-in cancelled"}};
+    page.paragraph(HtmlText{"The application was not signed in. You can close this page."});
     return page;
 }
 

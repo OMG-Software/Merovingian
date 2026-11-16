@@ -269,6 +269,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   allowlist entry is an https origin or a bare private-use scheme, never a prefix (ADR-0774).
 - The legacy API switch is `legacy_auth_refusal` alone; a route that issues a legacy session asks it (ADR-0801).
   `src/homeserver/AGENTS.md`
+- The legacy login hand-off confirms before every redirect, re-reads `redirectUrl` with `hand_off_redirect_target`,
+  and is a kind of `PendingAuthorisation`, not a copied handler (ADR-0802). `src/homeserver/AGENTS.md`
 
 ## src/observability
 

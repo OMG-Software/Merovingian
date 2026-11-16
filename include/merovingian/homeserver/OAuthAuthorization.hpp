@@ -56,4 +56,22 @@ inline constexpr auto max_oauth_login_hint_bytes = std::size_t{255U};
 [[nodiscard]] auto handle_oauth_authorize(ClientServerRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
 
+// How long a login token minted by the hand-off can be redeemed. The spec recommends around five seconds for an SSO
+// login token ("Client login via SSO"); 30 seconds leaves room for a mobile operating system to switch to the
+// application, and the token is still single use (ADR-0802).
+inline constexpr auto hand_off_login_token_lifetime_ms = std::uint32_t{30000U};
+
+// `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` with the OAuth 2.0 API and the legacy API both on (spec
+// "OAuth 2.0 aware clients"; plan P10; ADR-0802). The dispatcher has checked both keys. `redirectUrl` (required) must
+// pass oauth::hand_off_redirect_target with `server.oauth.hand_off_redirect_allowlist`, else a 400 page with no
+// redirect. `action=register` starts on the registration page; any other `action`, or none, on the login page. The
+// identity provider ID is not read. A pending authorisation of kind `login_token_hand_off` is created exactly as the
+// authorisation request does, and the forms post to `/_merovingian/oauth2/authorize`: after the password, a
+// confirmation page names the account and the destination; `approve` mints a login token into
+// ClientServerRuntime::login_tokens (hand_off_login_token_lifetime_ms) and answers 303 to the address
+// oauth::hand_off_return_address makes; `deny` answers a page and redirects nowhere. Same lock rules as
+// handle_oauth_authorize. Never logs the address, the token, the cookie or the pending identifier.
+[[nodiscard]] auto handle_login_hand_off(ClientServerRuntime& runtime, LocalHttpRequest const& request)
+    -> LocalHttpResponse;
+
 } // namespace merovingian::homeserver

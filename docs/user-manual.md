@@ -880,7 +880,7 @@ pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 | `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
 | `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
 | `server.oauth.device_grant_enabled` | `false` | Set `true` to offer the device authorization grant (RFC 8628): the metadata then lists the device code grant type and `device_authorization_endpoint`. Refused unless `server.oauth.enabled=true`. |
-| `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Checked now, used once the hand-off lands. |
+| `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Empty, any `https` address, a loopback `http` address or a private-use scheme is accepted. See [The hand-off for legacy clients](#the-hand-off-for-legacy-clients). |
 
 The metadata offers `prompt=create` (`prompt_values_supported`) only while
 `security.registration.enabled=true`: account creation through the pages
@@ -888,7 +888,27 @@ follows the legacy registration settings (ADR-0762).
 
 Every `server.oauth.*` key needs a restart.
 
-##### Turning the legacy API off
+##### The hand-off for legacy clients
+
+With `server.oauth.enabled=true` and `server.oauth.legacy_api_enabled=true` (the
+default), clients that know only the legacy API are sent to this server's own
+sign-in pages (ADR-0802). `GET /_matrix/client/v3/login` adds `m.login.sso`
+with `"oauth_aware_preferred": true`, and `m.login.token` when
+`security.login_token.enabled` did not already add it; `m.login.password` stays.
+`GET /_matrix/client/v3/login/sso/redirect` (and `/{idpId}`, whatever the ID)
+needs a `redirectUrl`:
+
+- `https://` with a host; `http://` only to `localhost`, `127.0.0.1` or
+  `[::1]`; or a private-use scheme holding a `.` (`io.element.app:/callback`).
+  Anything else, and an address `server.oauth.hand_off_redirect_allowlist`
+  does not list when it is set, gets a 400 page and no redirect.
+- `action=register` opens the registration page (when registration is open);
+  anything else the sign-in page.
+- After the password, a confirmation page names the account and where the
+  browser goes next. Continue sends the browser there with a `loginToken` that
+  works once, within 30 seconds; Cancel sends it nowhere.
+
+#### Turning the legacy API off
 
 With `server.oauth.legacy_api_enabled=false` users sign in and register only
 through the OAuth 2.0 API (ADR-0801):
@@ -901,7 +921,7 @@ through the OAuth 2.0 API (ADR-0801):
 | `POST /_matrix/client/v3/register`, a user | `403 M_FORBIDDEN` |
 | `POST /_matrix/client/v3/register`, an application service without `"inhibit_login": true` | `400 M_APPSERVICE_LOGIN_UNSUPPORTED`, nothing created |
 | `POST /_matrix/client/v3/register`, an application service with `"inhibit_login": true` | served as before |
-| `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` | `404 M_UNRECOGNIZED` |
+| `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` | `404 M_UNRECOGNIZED`; no hand-off |
 | `POST /_matrix/client/v1/login/get_token` | `404 M_UNRECOGNIZED`; `m.get_login_token` reports `enabled: false` |
 
 Unchanged: every session already issued, with `/refresh`, `/logout`,

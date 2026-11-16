@@ -8,6 +8,7 @@
 #include "merovingian/core/Error.hpp"
 #include "merovingian/core/FormFields.hpp"
 #include "merovingian/core/HostCookie.hpp"
+#include "merovingian/crypto/Random.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AccountCreationRequest.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -18,6 +19,7 @@
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/LoginTokenStore.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OAuthClock.hpp"
 #include "merovingian/homeserver/OAuthPageResponse.hpp"
@@ -26,6 +28,7 @@
 #include "merovingian/homeserver/PasswordLoginRequest.hpp"
 #include "merovingian/homeserver/PasswordLoginVerification.hpp"
 #include "merovingian/homeserver/PendingAuthorisation.hpp"
+#include "merovingian/homeserver/PendingAuthorisationKind.hpp"
 #include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/oauth/AccountFormInput.hpp"
 #include "merovingian/oauth/ApplicationType.hpp"
@@ -36,6 +39,7 @@
 #include "merovingian/oauth/FormContentType.hpp"
 #include "merovingian/oauth/FormPostOrigin.hpp"
 #include "merovingian/oauth/GrantedScope.hpp"
+#include "merovingian/oauth/HandOffRedirect.hpp"
 #include "merovingian/oauth/HtmlText.hpp"
 #include "merovingian/oauth/OAuthBaseUrl.hpp"
 #include "merovingian/oauth/OAuthErrorCodes.hpp"
@@ -81,6 +85,8 @@ namespace
     constexpr auto status_too_many_requests = std::uint16_t{429U};
     constexpr auto status_server_error = std::uint16_t{500U};
     constexpr auto status_unavailable = std::uint16_t{503U};
+    // A hand-off's login token: 32 random bytes, as get_token mints, and redeemable for 30 seconds (ADR-0802).
+    constexpr auto login_token_bytes = std::size_t{32U};
     // The longest username read from the login form: a user ID is at most 255 bytes, so no account has a longer one.
     constexpr auto max_login_username_bytes = std::size_t{255U};
 
@@ -208,6 +214,31 @@ namespace
         return ClientTarget{std::move(*metadata), std::move(*matched)};
     }
 
+    [[nodiscard]] auto is_hand_off(PendingAuthorisation const& entry) noexcept -> bool
+    {
+        return entry.kind == PendingAuthorisationKind::login_token_hand_off;
+    }
+
+    // A hand-off's `redirectUrl` read again under the rules and the allowlist in force now, for the confirmation page
+    // and the final redirect. nullopt when it no longer passes.
+    [[nodiscard]] auto hand_off_target(HomeserverRuntime const& runtime, PendingAuthorisation const& entry)
+        -> std::optional<oauth::ParsedUri>
+    {
+        return oauth::hand_off_redirect_target(entry.redirect_uri,
+                                               runtime.config.server().oauth.hand_off_redirect_allowlist);
+    }
+
+    auto log_hand_off(std::string_view event, std::string_view user_id, observability::LogEventSeverity severity)
+        -> void
+    {
+        auto fields = std::vector<observability::StructuredLogField>{};
+        if (!user_id.empty())
+        {
+            fields.push_back({"user_id", std::string{user_id}, false});
+        }
+        log_oauth(event, std::move(fields), severity);
+    }
+
     // What every form post of one pending authorisation shares.
     struct FormPost final
     {
@@ -268,6 +299,18 @@ namespace
     [[nodiscard]] auto consent_response(FormPost const& post, std::string_view user_id) -> LocalHttpResponse
     {
         auto const& runtime = post.runtime.homeserver;
+        if (is_hand_off(post.entry))
+        {
+            // The confirmation page (ADR-0802): it names the account and where the browser goes, and its policy allows
+            // the redirect to that address alone.
+            auto const destination = hand_off_target(runtime, post.entry);
+            if (!destination.has_value())
+            {
+                return expired_page();
+            }
+            return oauth_page_response(status_ok, oauth::hand_off_page(post.pending_id, user_id, *destination),
+                                       oauth::page_headers(*destination));
+        }
         auto const target = client_target(runtime, post.entry);
         if (!target.has_value())
         {
@@ -452,6 +495,62 @@ namespace
         return authenticated(post, created.value);
     }
 
+    // `approve` of a hand-off, its entry already spent: the account is judged again, and a single-use login token for
+    // the user is minted into the store get_token uses and added to the `redirectUrl` (ADR-0802). Refusals are pages:
+    // the address is the application's, and an error there would mean nothing to it.
+    [[nodiscard]] auto finish_hand_off(ClientServerRuntime& rt, PendingAuthorisation const& consumed)
+        -> LocalHttpResponse
+    {
+        auto& runtime = rt.homeserver;
+        auto const target = hand_off_target(runtime, consumed);
+        if (!target.has_value())
+        {
+            return expired_page();
+        }
+        if (account_sign_in_gate(runtime, consumed.user_id, {}) != Outcome::verified)
+        {
+            log_hand_off("oauth.hand_off.refused", consumed.user_id, observability::LogEventSeverity::info);
+            return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Sign-in refused"},
+                                             oauth::HtmlText{"This account cannot sign in."});
+        }
+        auto const unavailable = []() {
+            return oauth_error_page_response(
+                status_unavailable, oauth::HtmlText{"Sign-in is not available"},
+                oauth::HtmlText{"The server cannot complete the sign-in now. Try again later."});
+        };
+        auto const token = crypto::secure_random_hex(login_token_bytes);
+        auto token_hash = token.has_value() ? LoginTokenStore::token_hash(*token) : std::nullopt;
+        if (!token_hash.has_value())
+        {
+            return unavailable();
+        }
+        auto const issued = rt.login_tokens.issue(consumed.user_id, std::move(*token_hash), oauth_wall_clock_ms(),
+                                                  hand_off_login_token_lifetime_ms, rt.limits.max_login_tokens_per_user,
+                                                  rt.limits.max_login_tokens);
+        if (issued.outcome != LoginTokenStore::IssueOutcome::issued)
+        {
+            log_hand_off("oauth.hand_off.refused", consumed.user_id, observability::LogEventSeverity::info);
+            return unavailable();
+        }
+        auto const address = oauth::hand_off_return_address(*target, *token);
+        if (!address.has_value())
+        {
+            return unavailable();
+        }
+        log_hand_off("oauth.hand_off.granted", consumed.user_id, observability::LogEventSeverity::info);
+        append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login_token.issued",
+                           consumed.user_id, {}, "hand_off");
+        auto response = LocalHttpResponse{};
+        response.status = status_see_other;
+        response.headers = {
+            {"Location",        *address     },
+            {"Cache-Control",   "no-store"   },
+            {"Referrer-Policy", "no-referrer"},
+        };
+        response.page = true;
+        return response;
+    }
+
     // `approve`: the entry must hold a verified user. It is spent, the account is judged again, and a code bound to the
     // whole request and the user is sent to the client.
     [[nodiscard]] auto handle_approve(FormPost const& post) -> LocalHttpResponse
@@ -466,6 +565,10 @@ namespace
         if (!consumed.has_value() || consumed->user_id.empty())
         {
             return expired_page();
+        }
+        if (is_hand_off(*consumed))
+        {
+            return finish_hand_off(post.runtime, *consumed);
         }
         auto const target = client_target(runtime, *consumed);
         if (!target.has_value())
@@ -522,6 +625,12 @@ namespace
         if (!consumed.has_value())
         {
             return expired_page();
+        }
+        if (is_hand_off(*consumed))
+        {
+            // Nothing is sent to the application: the browser stays on this server (ADR-0802).
+            log_hand_off("oauth.hand_off.cancelled", consumed->user_id, observability::LogEventSeverity::info);
+            return oauth_plain_page(status_ok, oauth::hand_off_cancelled_page());
         }
         auto const target = client_target(runtime, *consumed);
         if (!target.has_value())
@@ -624,13 +733,76 @@ namespace
                                          oauth::HtmlText{"This form asked for something this page does not do."});
     }
 
-    // What the `prompt` parameter asks the first page to be.
+    // What the `prompt` parameter (or the hand-off's `action`) asks the first page to be.
     enum class FirstPage : std::uint8_t
     {
         login,
         registration,
         registration_closed,
     };
+
+    // The first page of a sign-in and whether the sign-in started: false when no cookie could be made or the store
+    // refused the entry, and the page says so.
+    struct SignInStart final
+    {
+        LocalHttpResponse response;
+        bool started{false};
+    };
+
+    // Binds `authorisation` to this browser's cookie (reused when the request carries a well-formed one, else fresh),
+    // stores it and answers the first page with the cookie. Shared by the authorisation request and the hand-off.
+    [[nodiscard]] auto start_sign_in(ClientServerRuntime& rt, LocalHttpRequest const& request,
+                                     PendingAuthorisation authorisation, FirstPage first_page) -> SignInStart
+    {
+        auto& runtime = rt.homeserver;
+        auto browser_token = request_secret_cookie(request, oauth_browser_cookie_name);
+        if (!browser_token.has_value())
+        {
+            browser_token = make_oauth_secret();
+        }
+        auto const cookie = browser_token.has_value()
+                                ? core::host_cookie(oauth_browser_cookie_name, *browser_token,
+                                                    core::CookieSameSite::lax, oauth_browser_cookie_max_age_seconds)
+                                : std::variant<std::string, core::Error>{core::Error{}};
+        auto const* set_cookie = std::get_if<std::string>(&cookie);
+        if (set_cookie == nullptr)
+        {
+            return SignInStart{
+                oauth_error_page_response(status_unavailable, oauth::HtmlText{"Sign-in is not available"},
+                                          oauth::HtmlText{"The server cannot start a sign-in now. Try again later."}),
+                false};
+        }
+        auto const hint = authorisation.login_hint;
+        auto created = runtime.oauth_pending_authorisations.create(
+            std::move(authorisation), *browser_token, rate_limit_client_key(request, runtime.config.server()),
+            oauth_wall_clock_ms());
+        auto const* pending_id = std::get_if<std::string>(&created);
+        if (pending_id == nullptr)
+        {
+            return SignInStart{oauth_error_page_response(
+                                   status_unavailable, oauth::HtmlText{"Sign-in is not available"},
+                                   oauth::HtmlText{"Too many sign-ins are in progress. Try again in a few minutes."}),
+                               false};
+        }
+        auto response = std::invoke([&]() {
+            if (first_page == FirstPage::registration)
+            {
+                return registration_page_response(status_ok, registration_form_input(runtime, *pending_id));
+            }
+            auto input = login_form_input(runtime, *pending_id);
+            if (hint.has_value())
+            {
+                input.username = *hint;
+            }
+            if (first_page == FirstPage::registration_closed)
+            {
+                input.notice = registration_closed_notice();
+            }
+            return login_page_response(status_ok, input);
+        });
+        response.headers.emplace_back("Set-Cookie", *set_cookie);
+        return SignInStart{std::move(response), true};
+    }
 
     [[nodiscard]] auto handle_get(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
     {
@@ -733,22 +905,6 @@ namespace
         auto const hint = login_hint_username(fields->find("login_hint"), server_name);
 
         // Step 3: bind a pending authorisation to this browser.
-        auto browser_token = request_secret_cookie(request, oauth_browser_cookie_name);
-        if (!browser_token.has_value())
-        {
-            browser_token = make_oauth_secret();
-        }
-        auto const cookie = browser_token.has_value()
-                                ? core::host_cookie(oauth_browser_cookie_name, *browser_token,
-                                                    core::CookieSameSite::lax, oauth_browser_cookie_max_age_seconds)
-                                : std::variant<std::string, core::Error>{core::Error{}};
-        auto const* set_cookie = std::get_if<std::string>(&cookie);
-        if (set_cookie == nullptr)
-        {
-            return oauth_error_page_response(
-                status_unavailable, oauth::HtmlText{"Sign-in is not available"},
-                oauth::HtmlText{"The server cannot start a sign-in now. Try again later."});
-        }
         auto authorisation = PendingAuthorisation{};
         authorisation.client_id = std::string{*client_id};
         authorisation.redirect_uri = std::string{*requested_redirect};
@@ -762,16 +918,11 @@ namespace
         {
             authorisation.login_hint = *hint;
         }
-        auto created = runtime.oauth_pending_authorisations.create(
-            std::move(authorisation), *browser_token, rate_limit_client_key(request, runtime.config.server()),
-            oauth_wall_clock_ms());
-        auto const* pending_id = std::get_if<std::string>(&created);
-        if (pending_id == nullptr)
+        auto start = start_sign_in(rt, request, std::move(authorisation), first_page);
+        if (!start.started)
         {
             log_refused(*client_id, oauth::error_temporarily_unavailable);
-            return oauth_error_page_response(
-                status_unavailable, oauth::HtmlText{"Sign-in is not available"},
-                oauth::HtmlText{"Too many sign-ins are in progress. Try again in a few minutes."});
+            return std::move(start.response);
         }
         log_oauth("oauth.authorization.started",
                   {
@@ -779,28 +930,51 @@ namespace
                       {"application_type", std::string{application_type_name(metadata->application_type())}, false}
         },
                   observability::LogEventSeverity::debug);
-
-        auto response = std::invoke([&]() {
-            if (first_page == FirstPage::registration)
-            {
-                return registration_page_response(status_ok, registration_form_input(runtime, *pending_id));
-            }
-            auto input = login_form_input(runtime, *pending_id);
-            if (hint.has_value())
-            {
-                input.username = *hint;
-            }
-            if (first_page == FirstPage::registration_closed)
-            {
-                input.notice = registration_closed_notice();
-            }
-            return login_page_response(status_ok, input);
-        });
-        response.headers.emplace_back("Set-Cookie", *set_cookie);
-        return response;
+        return std::move(start.response);
     }
 
 } // namespace
+
+auto handle_login_hand_off(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
+{
+    auto& runtime = rt.homeserver;
+    auto parsed = core::FormFields::parse(request_target_query(request.target));
+    auto const* fields = std::get_if<core::FormFields>(&parsed);
+    if (fields == nullptr)
+    {
+        log_hand_off("oauth.hand_off.refused", {}, observability::LogEventSeverity::debug);
+        return bad_request_page(oauth::HtmlText{"The request is malformed. Return to the application and try again."});
+    }
+    auto const redirect_url = fields->find("redirectUrl");
+    if (!redirect_url.has_value() || redirect_url->empty())
+    {
+        log_hand_off("oauth.hand_off.refused", {}, observability::LogEventSeverity::debug);
+        return bad_request_page(oauth::HtmlText{"The application did not say where to return after the sign-in. "
+                                                "Return to the application and try again."});
+    }
+    // Read here only to refuse; the entry keeps the text and every later step reads it again (ADR-0802).
+    if (!oauth::hand_off_redirect_target(*redirect_url, runtime.config.server().oauth.hand_off_redirect_allowlist)
+             .has_value())
+    {
+        log_hand_off("oauth.hand_off.refused", {}, observability::LogEventSeverity::debug);
+        return bad_request_page(oauth::HtmlText{"The application asked to return to an address this server does not "
+                                                "send sign-ins to. Return to the application and try again."});
+    }
+    // Spec `GET /login/sso/redirect`: `action` is `login` or `register`; anything else, or none, is a login.
+    auto first_page = FirstPage::login;
+    if (fields->find("action") == std::optional<std::string_view>{"register"})
+    {
+        first_page = registration_enabled(runtime) ? FirstPage::registration : FirstPage::registration_closed;
+    }
+    auto authorisation = PendingAuthorisation{};
+    authorisation.kind = PendingAuthorisationKind::login_token_hand_off;
+    authorisation.redirect_uri = std::string{*redirect_url};
+    authorisation.create_account = first_page != FirstPage::login;
+    auto start = start_sign_in(rt, request, std::move(authorisation), first_page);
+    log_hand_off(start.started ? "oauth.hand_off.started" : "oauth.hand_off.refused", {},
+                 observability::LogEventSeverity::debug);
+    return std::move(start.response);
+}
 
 auto handle_oauth_authorize(ClientServerRuntime& runtime, LocalHttpRequest const& request) -> LocalHttpResponse
 {

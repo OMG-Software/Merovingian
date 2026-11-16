@@ -273,7 +273,7 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   `auth.account_deactivated`, `auth.password_changed`,
   `auth.openid.request_token`, `auth.sso.login_token.issued`,
   `auth.sso.login_token.redeemed`, `auth.login_token.issued`,
-  `auth.login_token.redeemed` (tokens from `POST /login/get_token`),
+  `auth.login_token.redeemed` (tokens from `POST /login/get_token`, and from the OAuth hand-off, issued with reason `hand_off`),
   `auth.refresh.reuse_detected`, `auth.refresh.predecessor_revoke`,
   `auth.password_reset`.
 - `device.*` (`src/homeserver/AuthService.cpp`, `src/homeserver/ClientServerRuntime.cpp`):
@@ -567,6 +567,13 @@ challenge, the code, the cookie, the pending identifier or a password. `oauth.au
 audit row (category `auth`, actor the user, target the client ID, reason the device ID), as a successful `auth.login`
 is; `oauth.authorization.denied` is audited the same way only when a user had signed in, since a denial before the
 password is anyone's to send.
+
+The legacy login hand-off (ADR-0802) logs under the same module: `oauth.hand_off.started` (debug, no field),
+`oauth.hand_off.refused` (debug for a refused `redirectUrl` or a store refusal, no field; info with `user_id` when the
+account fails `account_sign_in_gate` or the login token store is full), `oauth.hand_off.granted` and
+`oauth.hand_off.cancelled` (info, `user_id` once signed in). Never the `redirectUrl`, the login token, the cookie or
+the pending identifier. A granted hand-off writes the durable `auth.login_token.issued` row (actor the user, reason
+`hand_off`); its redemption is `auth.login_token.redeemed`, as for a get_token token.
 
 ## OAuth 2.0 token and revocation diagnostics and audit (ADR-0791 to ADR-0795)
 

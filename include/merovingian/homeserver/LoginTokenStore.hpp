@@ -45,6 +45,9 @@ public:
         std::uint64_t retry_after_ms{0U};
     };
 
+    // The hash this store keeps of `token` (unkeyed BLAKE2b-256 as lower-case hex), or nullopt when hashing failed.
+    // Every caller that issues or redeems hashes with this.
+    [[nodiscard]] static auto token_hash(std::string_view token) -> std::optional<std::string>;
     // Records `token_hash` for `user_id`, valid for `lifetime_ms` from `now_ms`.
     [[nodiscard]] auto issue(std::string_view user_id, std::string token_hash, std::uint64_t now_ms,
                              std::uint64_t lifetime_ms, std::size_t per_user_cap, std::size_t total_cap) -> IssueResult;

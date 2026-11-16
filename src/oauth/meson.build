@@ -9,6 +9,7 @@ oauth_sources = files(
   'FormContentType.cpp',
   'FormPostOrigin.cpp',
   'HandOffAllowlist.cpp',
+  'HandOffRedirect.cpp',
   'HtmlText.cpp',
   'OAuthBaseUrl.cpp',
   'Page.cpp',

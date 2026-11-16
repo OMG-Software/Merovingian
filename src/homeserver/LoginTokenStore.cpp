@@ -3,8 +3,10 @@
 #include "merovingian/homeserver/LoginTokenStore.hpp"
 
 #include "merovingian/crypto/ConstantTime.hpp"
+#include "merovingian/crypto/GenericHash.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <utility>
 
@@ -72,6 +74,13 @@ auto LoginTokenStore::erase_user(std::string_view user_id) -> void
     std::erase_if(m_entries, [user_id](Entry const& entry) {
         return entry.user_id == user_id;
     });
+}
+
+auto LoginTokenStore::token_hash(std::string_view token) -> std::optional<std::string>
+{
+    // The token is 256 random bits, so an unkeyed hash suffices.
+    auto const pieces = std::array<std::string_view, 1U>{token};
+    return crypto::generic_hash(pieces);
 }
 
 auto LoginTokenStore::size() const noexcept -> std::size_t

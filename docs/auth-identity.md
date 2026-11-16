@@ -1267,6 +1267,18 @@ the spec's "Account management" names: `account_management_uri` and all six `org
 - **What carries on.** Sessions already issued, `/refresh`, `/logout`, `/logout/all`, User-Interactive Authentication
   and every authenticated endpoint; the username availability and registration-token validity checks, the email and
   phone token requests, and password reset by email, none of which issues a session.
+- **Hand-off (P10, ADR-0802).** With both APIs on (`legacy_login_hand_off_enabled`), `GET /login` adds `m.login.sso`
+  with `oauth_aware_preferred: true` (and `m.login.token` if get_token did not), and both SSO redirects call
+  `handle_login_hand_off` (`OAuthAuthorization.cpp`). `redirectUrl` must pass `oauth::hand_off_redirect_target`
+  (`https`; `http` on a loopback host; a private-use scheme; the allowlist when set), else a 400 page. A
+  `PendingAuthorisation` of kind `login_token_hand_off` is started by the same `start_sign_in` as `/authorize`, and its
+  forms post there: the shared cookie, Origin check, pending cap, login throttle and account creation. After the
+  password a confirmation page (`page_headers(target)`) names the account and the destination. `approve` re-reads the
+  address, runs `account_sign_in_gate`, mints 32 random bytes into `LoginTokenStore` for
+  `hand_off_login_token_lifetime_ms` (30 s, under the get_token caps), audits `auth.login_token.issued` with reason
+  `hand_off`, and answers 303 to `oauth::hand_off_return_address` (old `loginToken` parameters removed). `deny` answers
+  a page. `POST /login` `m.login.token` redeems from that store when get_token or the hand-off is on.
+  `complete_sso_login` is not used: it needs `server.sso.*`, which cannot be set with OAuth on.
 
 ## Next starting points
 

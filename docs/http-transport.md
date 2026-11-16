@@ -977,6 +977,11 @@ cookie (ADR-0788). `Origin`, `Sec-Fetch-Site` and `Cookie` are read with `reques
 (`homeserver/RequestHeaders.hpp`) and a header sent twice counts as absent. A form body over `max_body_bytes` gets the
 general `413 M_TOO_LARGE` JSON answer, not a page.
 
+With the OAuth 2.0 API and the legacy API both on, `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` answer
+the same pages (ADR-0802): a 200 sign-in or registration page with the `__Host-mv-oauth` cookie, or a 400 page with no
+`Location` for a refused `redirectUrl`, all marked `LocalHttpResponse::page`. The final redirect is the `303` to the
+`redirectUrl` from the confirmation page's form post, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+
 `POST /_merovingian/oauth2/token` and `POST /_merovingian/oauth2/revoke` (ADR-0791 to ADR-0795) are routed the same
 way (`static_routes`, `auth_sensitive`, a `client_static_route_allow` row of `POST`, so another method is `405`),
 before the authentication gate, and are `404 M_UNRECOGNIZED` with the API off. The body must be

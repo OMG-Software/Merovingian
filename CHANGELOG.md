@@ -66,6 +66,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   time (ADR-0800).
 * `server.oauth.legacy_api_enabled=false` stops legacy logins and registrations; appservices register with
   `inhibit_login`, and sessions already issued carry on (ADR-0801).
+* With OAuth on, `GET /login` prefers `m.login.sso`, whose redirect signs in on the built-in pages, confirms, and
+  returns a single-use 30-second `loginToken` to `redirectUrl` (ADR-0802).
 
 ## Security Fixes
 

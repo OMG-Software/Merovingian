@@ -9,6 +9,8 @@
 #include "merovingian/oauth/Page.hpp"
 #include "merovingian/oauth/ParsedUri.hpp"
 
+#include <string_view>
+
 namespace merovingian::oauth
 {
 
@@ -48,6 +50,13 @@ inline constexpr auto action_deny = HtmlName{"deny"};
 // buttons.
 [[nodiscard]] auto consent_page(ConsentPageInput const& input, ParsedUri const& redirect_target) -> Page;
 
+// The confirmation page of the legacy login hand-off (plan P10, ADR-0802): the user signed in, and the application
+// at `target` (its host for an `http` or `https` address, else its scheme) is about to receive a login token for the
+// account. Continue (`approve`) and cancel (`deny`) post to `authorize_path`. Sent with `page_headers(target)`.
+[[nodiscard]] auto hand_off_page(std::string_view pending_id, std::string_view user_id, ParsedUri const& target)
+    -> Page;
+// The page a cancelled hand-off ends on: nothing is sent to the application.
+[[nodiscard]] auto hand_off_cancelled_page() -> Page;
 // A page that only says what went wrong: `title` and one paragraph, no form.
 [[nodiscard]] auto error_page(HtmlText title, HtmlText const& message) -> Page;
 

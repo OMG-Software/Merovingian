@@ -201,6 +201,11 @@ The legacy API switch (`server.oauth.legacy_api_enabled`, ADR-0801) is decided b
 create anything. A new route that lists the legacy logins or issues a user a session asks it too; never test the key
 in a route. A session already issued, `/refresh`, `/logout` and UIA are not uses and are never gated.
 
+With both APIs on, the SSO redirects call `handle_login_hand_off` (`OAuthAuthorization.cpp`, ADR-0802). It starts a
+`PendingAuthorisation` of kind `login_token_hand_off` through the same `start_sign_in` as `/authorize`; only the
+consent page, `approve` and `deny` branch on the kind. A hand-off never redirects before the user confirmed, reads its
+`redirectUrl` again with `oauth::hand_off_redirect_target` at every step, and mints only into `rt.login_tokens`.
+
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
 authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
 

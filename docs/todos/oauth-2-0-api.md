@@ -242,8 +242,9 @@ retry and given back unless the keys are stored (ADR-0797).
 
 - With both APIs on, `GET /login` adds `m.login.sso` with `oauth_aware_preferred: true`. The SSO redirect endpoints
   read `action` and send the browser to the built-in login or registration page. After the confirmation page (P10)
-  the browser returns to the client with a login token, which the client redeems with `m.login.token`. This gives
-  `complete_sso_login` its first caller.
+  the browser returns to the client with a login token, which the client redeems with `m.login.token`. Done in
+  phase 9 (ADR-0802): the token is minted into `LoginTokenStore`, not by `complete_sso_login`, which needs
+  `server.sso.*`.
 - With `server.oauth.legacy_api_enabled=false`: `GET /login` is `404 M_UNRECOGNIZED`; `POST /login` and
   `POST /register` refuse users; `POST /register` still serves application services and requires
   `inhibit_login: true`; `m.login.application_service` is `400 M_APPSERVICE_LOGIN_UNSUPPORTED`. Existing legacy
