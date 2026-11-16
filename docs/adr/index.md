@@ -651,3 +651,5 @@
 * [0767 - A response head the formatter cannot write safely is refused with a 500](0767-a-response-head-the-formatter-cannot-write-safely-is-refused-with-a-500.md)
 * [0768 - The `oauth` module is pure, and carries the wire error beside `core::Error`](0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)
 * [0769 - An OAuth scope needs the API token and exactly one device token of ten or more unreserved characters](0769-an-oauth-scope-needs-the-api-token-and-exactly-one-device-token-of-ten-or-more-unreserved-characters.md)
+* [0770 - OAuth addresses are read by a strict reader of our own and matched byte for byte](0770-oauth-addresses-are-read-by-a-strict-reader-of-our-own-and-matched-byte-for-byte.md)
+* [0771 - OAuth client metadata rules, and its canonical form](0771-oauth-client-metadata-rules-and-its-canonical-form.md)

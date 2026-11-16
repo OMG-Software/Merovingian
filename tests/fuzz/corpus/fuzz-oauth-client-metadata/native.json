@@ -1,0 +1,1 @@
+{"application_type":"native","client_uri":"https://example.com/","redirect_uris":["com.example.app:/cb","http://[::1]/cb"],"grant_types":["authorization_code","refresh_token","x"],"client_name":"App","policy_uri":"https://example.com/p","tos_uri#fr":"x"}
