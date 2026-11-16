@@ -292,16 +292,18 @@ SCENARIO("A redirect target adds only its own origin to form-action", "[oauth][p
         auto const web = read("https://app.example.com:8443/cb;script-src%20*?x=1;default-src%20*,'unsafe-inline'");
         auto const loopback = read("http://127.0.0.1:5000/cb?a=;b");
         auto const native = read("com.example.app:/cb;script-src");
+        auto const ipv6_loopback = read("http://[::1]:5000/cb?a=;b");
 
         WHEN("headers are built for each")
         {
             auto const web_policy = header(merovingian::oauth::page_headers(web), "Content-Security-Policy");
             auto const loopback_policy = header(merovingian::oauth::page_headers(loopback), "Content-Security-Policy");
             auto const native_policy = header(merovingian::oauth::page_headers(native), "Content-Security-Policy");
+            auto const ipv6_policy = header(merovingian::oauth::page_headers(ipv6_loopback), "Content-Security-Policy");
 
             THEN("each policy has the same five directives and ends with the target's origin or scheme")
             {
-                for (auto const& policy : {web_policy, loopback_policy, native_policy})
+                for (auto const& policy : {web_policy, loopback_policy, native_policy, ipv6_policy})
                 {
                     REQUIRE(count(policy, ";") == 4U);
                     REQUIRE(policy.find("script-src") == std::string::npos);
@@ -310,6 +312,9 @@ SCENARIO("A redirect target adds only its own origin to form-action", "[oauth][p
                 REQUIRE(web_policy.ends_with("; form-action 'self' https://app.example.com:8443"));
                 REQUIRE(loopback_policy.ends_with("; form-action 'self' http://127.0.0.1:5000"));
                 REQUIRE(native_policy.ends_with("; form-action 'self' com.example.app:"));
+                // CSP has no form for an IPv6 host, so a bracketed loopback target adds its scheme (ADR-0811).
+                REQUIRE(ipv6_policy.ends_with("; form-action 'self' http:"));
+                REQUIRE(ipv6_policy.find('[') == std::string::npos);
             }
         }
     }

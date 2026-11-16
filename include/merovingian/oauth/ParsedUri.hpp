@@ -62,7 +62,8 @@ public:
     [[nodiscard]] auto query() const noexcept -> std::string const&;
 
     // The origin as a Content-Security-Policy source: `scheme://host` or `scheme://host:port` with an authority,
-    // `scheme:` without one. Built from the fields above only, so it holds no space, `;`, `,` or quote.
+    // `scheme:` without one or with a bracketed IPv6 host, which CSP cannot name (ADR-0811). Built from the fields
+    // above only, so it holds no space, `;`, `,` or quote.
     [[nodiscard]] auto csp_source() const -> std::string;
 
 private:

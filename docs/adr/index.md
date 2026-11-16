@@ -692,3 +692,4 @@
 * [0808 - An OAuth session row ends with the last credential of its device](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md)
 * [0809 - A cross-signing reset approval is bound to the OAuth device that asked for it](0809-a-cross-signing-reset-approval-is-bound-to-the-oauth-device-that-asked-for-it.md)
 * [0810 - An exception escaping one of the server's own pages is answered with a fixed error page](0810-an-exception-escaping-one-of-the-server-s-own-pages-is-answered-with-a-fixed-error-page.md)
+* [0811 - A bracketed IPv6 redirect target adds only its scheme to form-action](0811-a-bracketed-ipv6-redirect-target-adds-only-its-scheme-to-form-action.md)

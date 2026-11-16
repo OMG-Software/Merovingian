@@ -38,7 +38,10 @@ namespace
         {
             return target.has_authority() && is_loopback_host(target.host());
         }
-        return scheme.find('.') != std::string_view::npos;
+        // A private-use scheme (RFC 8252 section 7.1) is a reversed DNS name with no authority (ADR-0802, amended):
+        // `com.example.app://evil.example/` could otherwise reach an authority the allowlist entry `com.example.app:`
+        // never named.
+        return scheme.find('.') != std::string_view::npos && !target.has_authority();
     }
 
     [[nodiscard]] auto matches_entry(ParsedUri const& target, std::string_view scheme, std::string_view entry) -> bool

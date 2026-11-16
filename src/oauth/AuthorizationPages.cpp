@@ -107,7 +107,14 @@ namespace
         auto const web = scheme == "https" || scheme == "http";
         if (web && target.has_authority())
         {
-            return shown(target.host(), "an address that cannot be shown");
+            // The port when one is written: `localhost:8080` and `localhost:9090` are different applications.
+            auto host = target.host();
+            if (target.port().has_value())
+            {
+                host.push_back(':');
+                host.append(std::to_string(*target.port()));
+            }
+            return shown(host, "an address that cannot be shown");
         }
         auto text = target.scheme();
         text.append(": (an application on your device)");

@@ -46,7 +46,7 @@ SCENARIO("An https address, a loopback http address and a private-use scheme are
         auto const url = GENERATE(as<std::string>{}, "https://app.example.com/cb", "https://app.example.com:8443/x?y=1",
                                   "HTTPS://App.Example.com/cb", "http://localhost:8080/cb", "http://127.0.0.1/cb",
                                   "http://[::1]:9000/", "http://LOCALHOST/cb", "io.element.app:/callback",
-                                  "com.example.app://login", "Com.Example.App:/x");
+                                  "com.example.app:/login", "Com.Example.App:/x");
 
         WHEN("no allowlist is configured")
         {
@@ -67,7 +67,9 @@ SCENARIO("Any other address is refused as a hand-off target", "[oauth][hand-off-
                                   "file:///etc/passwd", "http://app.example.com/cb", "http://10.0.0.1/cb",
                                   "http://localhost.evil.com/", "https:/no-authority", "ftp://example.com/",
                                   "myapp:/cb", "/relative/path", "https://app.example.com/cb#fragment",
-                                  "https://user@app.example.com/cb", "https://app.example.com/a b");
+                                  "https://user@app.example.com/cb", "https://app.example.com/a b",
+                                  // A private-use scheme takes no authority (RFC 8252 section 7.1).
+                                  "com.example.app://login", "com.example.app://evil.example/cb");
 
         WHEN("it is checked")
         {
@@ -166,6 +168,34 @@ SCENARIO("The hand-off confirmation page names the account and the destination",
                 CHECK_FALSE(contains(no_form, "<form"));
                 CHECK(contains(cancelled, "Sign-in cancelled"));
                 CHECK_FALSE(contains(cancelled, "<form"));
+            }
+        }
+    }
+}
+
+SCENARIO("The hand-off confirmation page shows the destination's port when it has one", "[oauth][hand-off-redirect]")
+{
+    GIVEN("two loopback targets on different ports, and an https target on a port")
+    {
+        auto const first = hand_off_redirect_target("http://localhost:8080/cb", {});
+        auto const second = hand_off_redirect_target("http://localhost:9090/cb", {});
+        auto const web = hand_off_redirect_target("https://app.example.com:8443/cb", {});
+        REQUIRE(first.has_value());
+        REQUIRE(second.has_value());
+        REQUIRE(web.has_value());
+
+        WHEN("the pages are rendered")
+        {
+            auto const first_html = merovingian::oauth::hand_off_page(pending, "@alice:example.org", *first).render();
+            auto const second_html = merovingian::oauth::hand_off_page(pending, "@alice:example.org", *second).render();
+            auto const web_html = merovingian::oauth::hand_off_page(pending, "@alice:example.org", *web).render();
+
+            THEN("each names its host and port, so the two loopback applications are told apart")
+            {
+                CHECK(contains(first_html, "localhost:8080"));
+                CHECK(contains(second_html, "localhost:9090"));
+                CHECK_FALSE(contains(first_html, "localhost:9090"));
+                CHECK(contains(web_html, "app.example.com:8443"));
             }
         }
     }

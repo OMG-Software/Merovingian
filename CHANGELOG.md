@@ -91,6 +91,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   `m.oauth` URL now carries `device_id` (ADR-0809).
 * A refused OAuth token or device request logs its `client_id` only when it names a registered client, so a caller
   cannot write text of its choosing into the log.
+* A client URI host whose last label is a number to a browser (`app.0x7f`, the WHATWG rule) is refused (ADR-0771).
+* A client name holding an invisible character (soft hyphen, zero-width characters, word joiner, BOM, tag characters
+  and others) is refused, so two names cannot look alike (ADR-0771).
+* The legacy SSO hand-off refuses a private-use scheme address with an authority, such as `com.example.app://host/`,
+  which an allowlisted bare scheme never named (ADR-0802).
+* The URI reader takes an IPv6 host only in the RFC 3986 grammar, not any run of hex digits, `:` and `.` (ADR-0811).
 
 ## Bug fixes
 
@@ -107,6 +113,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * An exception escaping the authorisation, device link, account or SSO hand-off page is answered with an HTML error
   page under the pages' headers, not JSON (ADR-0810).
 * The OAuth refresh grant lists a device after a restart with its stored display name, not its device ID.
+* A native client on an `http://[::1]` redirect URI completes its sign-in: CSP cannot name an IPv6 host, so
+  `form-action` gets `http:` for it (ADR-0811).
+* The hand-off confirmation page shows the destination's port, so two loopback applications are told apart.
 
 ## Release notes
 

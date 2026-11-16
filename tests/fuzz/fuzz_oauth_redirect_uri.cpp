@@ -4,6 +4,10 @@
 // Exercises the strict URI reader (oauth::ParsedUri::read), the client URI rules and the redirect URI rules
 // (validate_redirect_uri, match_redirect_uri). Bytes before the first NUL are the redirect URI; bytes after it are
 // the client URI, which is also the one registered URI the redirect URI is matched against.
+//
+// Beside stability it aborts when a property that holds for every input breaks: a CSP source holds no space, `;`, `,`
+// or quote (it is joined into a policy header), a match returns the very text requested (the redirect goes there),
+// and a redirect URI that validates matches itself once registered.
 
 #include "fuzz_input.hpp"
 #include "merovingian/oauth/ApplicationType.hpp"
@@ -14,9 +18,40 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <string>
-#include <tuple>
+#include <string_view>
 #include <variant>
+
+namespace
+{
+
+// Aborts the run, which libFuzzer reports as a crash with the input that broke the property.
+auto require(bool property) -> void
+{
+    if (!property)
+    {
+        std::abort();
+    }
+}
+
+auto require_safe_csp_source(merovingian::oauth::ParsedUri const& uri) -> void
+{
+    auto const source = uri.csp_source();
+    require(source.find_first_of(" ;,'\"") == std::string::npos);
+}
+
+auto require_exact_match(std::optional<merovingian::oauth::ParsedUri> const& match, std::string_view requested) -> void
+{
+    if (match.has_value())
+    {
+        require(match->text() == requested);
+        require_safe_csp_source(*match);
+    }
+}
+
+} // namespace
 
 extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t size) -> int
 {
@@ -28,13 +63,13 @@ extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t siz
     auto const parsed = merovingian::oauth::ParsedUri::read(redirect);
     if (auto const* uri = std::get_if<merovingian::oauth::ParsedUri>(&parsed))
     {
-        std::ignore = uri->csp_source();
+        require_safe_csp_source(*uri);
     }
 
     auto const registered = std::array{std::string{client}};
     for (auto const type : {ApplicationType::web, ApplicationType::native})
     {
-        std::ignore = merovingian::oauth::match_redirect_uri(redirect, type, registered);
+        require_exact_match(merovingian::oauth::match_redirect_uri(redirect, type, registered), redirect);
     }
 
     auto const client_uri = merovingian::oauth::ClientUri::read(client);
@@ -42,7 +77,14 @@ extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t siz
     {
         for (auto const type : {ApplicationType::web, ApplicationType::native})
         {
-            std::ignore = merovingian::oauth::validate_redirect_uri(redirect, type, *base);
+            auto const validated = merovingian::oauth::validate_redirect_uri(redirect, type, *base);
+            if (std::holds_alternative<merovingian::oauth::ParsedUri>(validated))
+            {
+                auto const itself = std::array{std::string{redirect}};
+                auto const match = merovingian::oauth::match_redirect_uri(redirect, type, itself);
+                require(match.has_value());
+                require_exact_match(match, redirect);
+            }
         }
     }
     return 0;

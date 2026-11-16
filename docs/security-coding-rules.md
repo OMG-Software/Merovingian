@@ -1024,7 +1024,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/oauth/AGENTS.md`.
 
 - **HTML is built only by `oauth::Page`, whose parts accept only `HtmlText` (escaped) or compile-time values; every
-  page carries `page_headers()`, and only a matched redirect URI's origin is added to `form-action`.**
+  page carries `page_headers()`, and only a matched redirect URI's origin is added to `form-action` (its scheme alone
+  for a bracketed IPv6 loopback host, which CSP cannot name; ADR-0811).**
   Why: the pages take passwords and show text an unauthenticated client chose; one unescaped value is script
   injection on the login page (CWE-79), and a policy source built from raw input can add directives (CWE-116).
   Source: `src/oauth/AGENTS.md`.

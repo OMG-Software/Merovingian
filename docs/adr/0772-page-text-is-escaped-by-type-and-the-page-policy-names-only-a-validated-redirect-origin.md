@@ -4,6 +4,9 @@
 * Deciders: James Chapman
 * Date: 2026-11-15
 
+Amended by [ADR-0811](0811-a-bracketed-ipv6-redirect-target-adds-only-its-scheme-to-form-action.md): a matched
+redirect target on a bracketed IPv6 host adds only its scheme, `http:`, which CSP can name.
+
 ## Context and Problem Statement
 
 [ADR-0763](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md) requires that text reaches a

@@ -145,6 +145,61 @@ SCENARIO("The URI reader refuses hostile and ambiguous forms", "[oauth][uri][sec
     }
 }
 
+SCENARIO("The URI reader takes an IPv6 host only in the RFC 3986 IPv6address grammar", "[oauth][uri][boundary]")
+{
+    GIVEN("well-formed IPv6 literals and literals the old character check let through")
+    {
+        auto const good = std::array<std::string_view, 9>{
+            "http://[::1]/cb",
+            "http://[::]/cb",
+            "http://[1:2:3:4:5:6:7:8]/cb",
+            "http://[1::8]:8080/cb",
+            "http://[1:2:3:4:5:6:7::]/cb",
+            "http://[::2:3:4:5:6:7:8]/cb",
+            "http://[::ffff:127.0.0.1]/cb",
+            "http://[1:2:3:4:5:6:1.2.3.4]/cb",
+            "http://[FE80::aB:0]/cb",
+        };
+        auto const bad = std::array<std::string_view, 18>{
+            "http://[:]/cb",
+            "http://[:::]/cb",
+            "http://[1::2::3]/cb",
+            "http://[1:2:3:4:5:6:7:8:9]/cb",
+            "http://[1:2:3:4:5:6:7]/cb",
+            "http://[1:2:3:4:5:6:7:8::]/cb",
+            "http://[12345::1]/cb",
+            "http://[:1::2]/cb",
+            "http://[1::2:]/cb",
+            "http://[1.2.3.4::]/cb",
+            "http://[::1.2.3.4:5]/cb",
+            "http://[::256.0.0.1]/cb",
+            "http://[::01.2.3.4]/cb",
+            "http://[::1.2.3]/cb",
+            "http://[::1.2.3.4.5]/cb",
+            "http://[1:2:3:4:5:6:7:1.2.3.4]/cb",
+            "http://[...:]/cb",
+            "http://[v1.x]/cb",
+        };
+
+        WHEN("each is read")
+        {
+            THEN("the well-formed ones are read and the others refused")
+            {
+                for (auto const text : good)
+                {
+                    INFO(text);
+                    REQUIRE(reads(text));
+                }
+                for (auto const text : bad)
+                {
+                    INFO(text);
+                    REQUIRE_FALSE(reads(text));
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("The URI reader refuses NUL, non-ASCII and over-long input", "[oauth][uri][boundary]")
 {
     GIVEN("a URI with an embedded NUL, one with a UTF-8 host, one of 2048 bytes and one of 2049")
@@ -329,10 +384,24 @@ SCENARIO("A client URI must be https on a DNS name of two or more labels", "[oau
 {
     GIVEN("client URIs on IP literals, loopback names, single labels, http, or with userinfo or a fragment")
     {
-        auto const refused = std::array<std::string_view, 11>{
-            "http://example.com/",  "https://localhost/", "https://app.localhost/",    "https://127.0.0.1/",
-            "https://[::1]/",       "https://example/",   "https://user@example.com/", "https://example.com/#",
-            "https://example.123/", "com.example:/",      "https:example.com",
+        auto const refused = std::array<std::string_view, 16>{
+            "http://example.com/",
+            "https://localhost/",
+            "https://app.localhost/",
+            "https://127.0.0.1/",
+            "https://[::1]/",
+            "https://example/",
+            "https://user@example.com/",
+            "https://example.com/#",
+            "https://example.123/",
+            "com.example:/",
+            "https:example.com",
+            // The WHATWG "ends in a number" rule: a browser reads these hosts as IPv4 addresses.
+            "https://app.0x7f/",
+            "https://app.0X1/",
+            "https://1.0x/",
+            "https://a.0xABCdef/",
+            "https://0x7f.1/",
         };
 
         WHEN("each is read")
@@ -357,6 +426,17 @@ SCENARIO("A client URI must be https on a DNS name of two or more labels", "[oau
             {
                 REQUIRE(base.host_lower() == "app.example.com");
                 REQUIRE(base.reversed_host_lower() == "com.example.app");
+            }
+        }
+        AND_WHEN("hosts whose last label only looks like a number are read")
+        {
+            THEN("they are DNS names and accepted")
+            {
+                for (auto const text : {"https://app.0xg1/", "https://app.x7f/", "https://app.1a/", "https://app.0y1/"})
+                {
+                    INFO(text);
+                    REQUIRE(std::holds_alternative<ClientUri>(ClientUri::read(text)));
+                }
             }
         }
     }

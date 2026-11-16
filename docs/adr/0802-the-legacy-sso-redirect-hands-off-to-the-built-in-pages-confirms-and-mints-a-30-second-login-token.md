@@ -6,6 +6,10 @@
 
 Technical Story: plan P10 in `docs/todos/oauth-2-0-api.md`, the hand-off for clients that know only the legacy API.
 
+Amended 2026-11-16 (review finding 9): a private-use scheme address must also have no authority
+(`com.example.app:/cb`, never `com.example.app://host/cb`), as RFC 8252 section 7.1 writes one, so an allowlisted bare
+scheme cannot reach an authority it never named.
+
 ## Context and Problem Statement
 
 With the OAuth 2.0 API on, the spec ("OAuth 2.0 aware clients", Server behaviour) requires the legacy `m.login.sso`

@@ -8,6 +8,7 @@
 #include "merovingian/oauth/OAuthErrorCodes.hpp"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 namespace merovingian::oauth
@@ -43,6 +44,27 @@ namespace
         return reversed;
     }
 
+    // The WHATWG URL Standard's "ends in a number checker" for the last label: all ASCII digits, or `0x` / `0X`
+    // followed only by hex digits (`0x` alone included). A browser reads such a host as an IPv4 address (`0x7f.1` is
+    // 127.0.0.1 to it), so it is never a DNS name here.
+    [[nodiscard]] auto ends_in_a_number(std::string_view label) noexcept -> bool
+    {
+        auto const digits = [](std::string_view text, auto&& accepted) noexcept {
+            return std::ranges::all_of(text, accepted);
+        };
+        if (!label.empty() && digits(label, [](char value) noexcept {
+                return value >= '0' && value <= '9';
+            }))
+        {
+            return true;
+        }
+        return label.size() >= 2U && label[0] == '0' && (label[1] == 'x' || label[1] == 'X') &&
+               digits(label.substr(2U), [](char value) noexcept {
+                   return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
+                          (value >= 'A' && value <= 'F');
+               });
+    }
+
 } // namespace
 
 ClientUri::ClientUri(ParsedUri uri)
@@ -74,14 +96,11 @@ auto ClientUri::read(std::string_view text) -> std::variant<ClientUri, OAuthRefu
     {
         return refuse(core::ErrorCode::parse_failure, "The client_uri host must have at least two labels.");
     }
-    auto const top_label = std::string_view{host}.substr(last_dot + 1U);
-    if (std::ranges::all_of(top_label, [](char value) noexcept {
-            return value >= '0' && value <= '9';
-        }))
+    if (ends_in_a_number(std::string_view{host}.substr(last_dot + 1U)))
     {
         return refuse(core::ErrorCode::parse_failure, "The client_uri host must be a DNS name.");
     }
-    if (top_label == "localhost")
+    if (std::string_view{host}.substr(last_dot + 1U) == "localhost")
     {
         return refuse(core::ErrorCode::parse_failure, "The client_uri host must not be a loopback name.");
     }

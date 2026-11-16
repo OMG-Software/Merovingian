@@ -4,6 +4,12 @@
 * Deciders: James Chapman
 * Date: 2026-11-15
 
+Amended 2026-11-16 (review finding 10): the last label is refused under the WHATWG URL Standard's "ends in a number"
+rule, all digits or `0x`/`0X` followed only by hex digits (`app.0x7f`), since a browser reads such a host as an IPv4
+address.
+Amended 2026-11-16 (review finding 11): a displayed name also refuses the invisible characters that let two names
+look alike: U+00AD, U+180E, U+200B to U+200D, U+2060 to U+2064, U+FEFF, U+FFF9 to U+FFFB and U+E0000 to U+E007F.
+
 ## Context and Problem Statement
 
 Client registration is unauthenticated (spec "Client registration", RFC 7591). The spec fixes some rules (`web` and

@@ -6,6 +6,8 @@
 #include "merovingian/core/ErrorCode.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <optional>
 
 namespace merovingian::oauth
 {
@@ -103,16 +105,96 @@ namespace
         }
     }
 
+    // RFC 3986 dec-octet: 0 to 255, no leading zero.
+    [[nodiscard]] auto dec_octet_is_valid(std::string_view octet) noexcept -> bool
+    {
+        constexpr auto max_octet = 255U;
+        if (octet.empty() || octet.size() > 3U || (octet.size() > 1U && octet.front() == '0') ||
+            !std::ranges::all_of(octet, is_digit))
+        {
+            return false;
+        }
+        auto value = 0U;
+        for (auto const digit : octet)
+        {
+            value = (value * 10U) + static_cast<unsigned>(digit - '0');
+        }
+        return value <= max_octet;
+    }
+
+    // RFC 3986 IPv4address: four dec-octets separated by dots.
+    [[nodiscard]] auto ipv4_address_is_valid(std::string_view text) noexcept -> bool
+    {
+        constexpr auto octets = 4U;
+        auto count = 0U;
+        while (true)
+        {
+            auto const dot = text.find('.');
+            if (!dec_octet_is_valid(text.substr(0U, dot)))
+            {
+                return false;
+            }
+            ++count;
+            if (dot == std::string_view::npos)
+            {
+                return count == octets;
+            }
+            text = text.substr(dot + 1U);
+        }
+    }
+
+    // The 16-bit pieces of one side of an IPv6 address: `h16 *(":" h16)`, the last one of the address possibly an
+    // IPv4address (worth two pieces). nullopt when malformed; 0 for an empty side.
+    [[nodiscard]] auto ipv6_pieces(std::string_view side, bool may_end_in_ipv4) noexcept -> std::optional<std::size_t>
+    {
+        if (side.empty())
+        {
+            return 0U;
+        }
+        auto pieces = std::size_t{0U};
+        while (true)
+        {
+            auto const colon = side.find(':');
+            auto const piece = side.substr(0U, colon);
+            if (colon == std::string_view::npos && may_end_in_ipv4 && piece.find('.') != std::string_view::npos)
+            {
+                return ipv4_address_is_valid(piece) ? std::optional{pieces + 2U} : std::nullopt;
+            }
+            if (piece.empty() || piece.size() > 4U || !std::ranges::all_of(piece, is_hex_digit))
+            {
+                return std::nullopt;
+            }
+            ++pieces;
+            if (colon == std::string_view::npos)
+            {
+                return pieces;
+            }
+            side = side.substr(colon + 1U);
+        }
+    }
+
+    // RFC 3986 IP-literal holding an IPv6address: eight 16-bit pieces, or fewer with one `::` standing for at least
+    // one, the last two possibly written as an IPv4 address. No zone identifier and no IPvFuture.
     [[nodiscard]] auto ipv6_literal_is_valid(std::string_view host) noexcept -> bool
     {
+        constexpr auto ipv6_pieces_total = std::size_t{8U};
         if (host.size() < 4U || host.size() > max_ipv6_literal_bytes || host.front() != '[' || host.back() != ']')
         {
             return false;
         }
         auto const inner = host.substr(1U, host.size() - 2U);
-        return inner.find(':') != std::string_view::npos && std::ranges::all_of(inner, [](char value) noexcept {
-                   return is_hex_digit(value) || value == ':' || value == '.';
-               });
+        auto const elision = inner.find("::");
+        if (elision == std::string_view::npos)
+        {
+            return ipv6_pieces(inner, true) == ipv6_pieces_total;
+        }
+        if (inner.find("::", elision + 1U) != std::string_view::npos)
+        {
+            return false;
+        }
+        auto const head = ipv6_pieces(inner.substr(0U, elision), false);
+        auto const tail = ipv6_pieces(inner.substr(elision + 2U), true);
+        return head.has_value() && tail.has_value() && *head + *tail < ipv6_pieces_total;
     }
 
     // 1 to 5 digits, no leading zero, 1..65535.
@@ -304,6 +386,13 @@ auto ParsedUri::csp_source() const -> std::string
     auto source = m_scheme;
     source.push_back(':');
     if (!m_has_authority)
+    {
+        return source;
+    }
+    // A bracketed IPv6 host has no form in the CSP host-source grammar (CSP3 section 2.3.1), and a browser drops a
+    // source it cannot parse, which would block the redirect; the scheme alone is the narrowest source that names it
+    // (ADR-0811).
+    if (m_host.starts_with('['))
     {
         return source;
     }

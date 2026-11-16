@@ -37,6 +37,8 @@ Add a new `fuzz_<surface>.cpp` that:
 2. Feeds the raw bytes into the parsing surface under test
 3. Asserts that the parser does not crash, corrupt memory, or loop infinitely
 4. Does **not** assert a specific output — fuzzing is about stability, not correctness
+   A target may abort (`std::abort`) when a property that must hold for every input breaks, such as
+   `fuzz_oauth_redirect_uri.cpp`'s CSP source, exact match and self-match checks; never on one input's expected value.
 
 Register the target in `tests/fuzz/meson.build`.
 

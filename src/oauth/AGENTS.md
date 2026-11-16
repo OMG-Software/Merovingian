@@ -13,7 +13,7 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `Pkce.cpp` | `pkce_challenge_is_valid`, `pkce_verifier_is_valid`, `pkce_s256_matches`: RFC 7636 with `S256` only, compared in constant time |
 | `ScopeParser.cpp` | `parse_scope` and `oauth_device_id_is_valid`: the API token and exactly one device token, unknown tokens dropped (ADR-0769) |
 | `ParsedUri.cpp` | `ParsedUri::read`: the strict URI reader for every address a client supplies and every page link (ADR-0770) |
-| `ClientUri.cpp` | `ClientUri::read`: `https` on a DNS name of two or more labels (ADR-0771) |
+| `ClientUri.cpp` | `ClientUri::read`: `https` on a DNS name of two or more labels whose last label does not end in a number by the WHATWG rule (all digits, or `0x` and hex digits) (ADR-0771) |
 | `RedirectUriRules.cpp` | `validate_redirect_uri` (registration), `match_redirect_uri` (authorisation and token requests), `https_uri_is_on_client_host` |
 | `ClientMetadata.cpp` | `ClientMetadata::validate`, `to_json`, `canonical_bytes`: RFC 7591 registration rules (ADR-0771) |
 | `HtmlText.cpp`, `HtmlLiteral.hpp`, `HtmlName.hpp`, `PagePath.hpp` | Page text: escaped at run time, or fixed and checked at compile time (ADR-0772) |
@@ -27,11 +27,11 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `AccountPages.cpp`, `AccountPageFrame.hpp`, `AccountDeviceRow.hpp`, `AccountSignInInput.hpp` | The account pages of `/_merovingian/account` (ADR-0796): sign-in, overview, devices, one device, device sign-out, password, deactivation, cross-signing reset and result pages; the six spec actions (`account_management_actions`, `account_management_action`, `account_action_takes_device`), `account_action_address` (every link, the post-sign-in redirect and the `m.oauth` URL), and the form field and action names. Every signed-in form carries `form_token`; a page whose token cannot be shown holds no form |
 | `UserCode.cpp` | The device authorization grant's user code (ADR-0805): `user_code_from_bytes` (rejection sampling over `BCDFGHJKLMNPQRSTVWXZ`), `normalise_user_code` (the rule 2 exception below) and `display_user_code` (`XXXX-XXXX`) |
 | `FormPostOrigin.cpp` | `form_post_origin`, `form_post_origin_is_accepted`: a page's form post must name this server's origin exactly, and `Sec-Fetch-Site`, when sent, `same-origin` (ADR-0784) |
-| `HandOffRedirect.cpp` | `hand_off_redirect_target` (`https`, loopback `http` or a private-use scheme, then the allowlist) and `hand_off_return_address` (every `loginToken` removed, the new one added) for the legacy SSO redirect's hand-off (ADR-0802) |
+| `HandOffRedirect.cpp` | `hand_off_redirect_target` (`https`, loopback `http` or a private-use scheme with no authority, then the allowlist) and `hand_off_return_address` (every `loginToken` removed, the new one added) for the legacy SSO redirect's hand-off (ADR-0802) |
 | `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
 | `FormContentType.cpp` | `api_form_content_type_is_accepted`: the token and revocation endpoints take `application/x-www-form-urlencoded` only, with at most a `charset=utf-8` parameter |
 | `AccessTokenLifetime.hpp` | `access_token_lifetime_ms` (the configured lifetime, or one hour when it is 0: an OAuth access token always expires, ADR-0791) and `expires_in_seconds` |
-| `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control or bidirectional formatting character) and `ascii_lower` |
+| `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control, bidirectional formatting or invisible character, by code point) and `ascii_lower` |
 
 ## Rules
 

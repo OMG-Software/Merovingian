@@ -339,6 +339,80 @@ SCENARIO("client_name is capped and refuses control and bidirectional characters
     }
 }
 
+SCENARIO("client_name refuses invisible characters that make two names look alike", "[oauth][metadata][security]")
+{
+    GIVEN("a name holding each invisible character, at the edges of each refused range, and names next to them")
+    {
+        auto const with_name = [](std::string name) {
+            auto object = Object{};
+            object.push_back(
+                merovingian::canonicaljson::make_member("client_uri", Value{std::string{"https://example.com/"}}));
+            auto uris = merovingian::canonicaljson::Array{};
+            uris.emplace_back(std::string{"https://example.com/cb"});
+            object.push_back(merovingian::canonicaljson::make_member("redirect_uris", Value{std::move(uris)}));
+            object.push_back(merovingian::canonicaljson::make_member("client_name", Value{std::move(name)}));
+            return ClientMetadata::validate(Value{std::move(object)});
+        };
+
+        WHEN("each is validated")
+        {
+            THEN("each invisible character is refused and its neighbours are registered")
+            {
+                // U+00AD, U+180E, U+200B, U+200D, U+2060, U+2064, U+FEFF, U+FFF9, U+FFFB, U+E0000, U+E0041, U+E007F.
+                for (auto const& bad : std::array<std::string, 12>{
+                         std::string{"Pay\xc2\xad"
+                                     "Pal"},
+                         std::string{"Pay\xe1\xa0\x8e"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x80\x8b"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x80\x8d"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x81\xa0"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x81\xa4"
+                                     "Pal"},
+                         std::string{"\xef\xbb\xbf"
+                                     "PayPal"},
+                         std::string{"Pay\xef\xbf\xb9"
+                                     "Pal"},
+                         std::string{"Pay\xef\xbf\xbb"
+                                     "Pal"},
+                         std::string{"Pay\xf3\xa0\x80\x80"
+                                     "Pal"},
+                         std::string{"PayPal\xf3\xa0\x81\x81"},
+                         std::string{"PayPal\xf3\xa0\x81\xbf"},
+                     })
+                {
+                    INFO(bad);
+                    REQUIRE(refusal_code(with_name(bad)) == merovingian::oauth::error_invalid_client_metadata);
+                }
+                // U+00AC, U+00AE, U+200A, U+2065 (unassigned, outside both ranges), U+FFFC, U+E0080, U+1F600.
+                for (auto const& good : std::array<std::string, 7>{
+                         std::string{"Pay\xc2\xac"
+                                     "Pal"},
+                         std::string{"Pay\xc2\xae"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x80\x8a"
+                                     "Pal"},
+                         std::string{"Pay\xe2\x81\xa5"
+                                     "Pal"},
+                         std::string{"Pay\xef\xbf\xbc"
+                                     "Pal"},
+                         std::string{"Pay\xf3\xa0\x82\x80"
+                                     "Pal"},
+                         std::string{"Pay\xf0\x9f\x98\x80"
+                                     "Pal"},
+                     })
+                {
+                    INFO(good);
+                    REQUIRE(std::holds_alternative<ClientMetadata>(with_name(good)));
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("policy_uri and tos_uri must be https on the client host", "[oauth][metadata][security]")
 {
     GIVEN("policy and terms URIs on http, another host, with userinfo, and a subdomain")
