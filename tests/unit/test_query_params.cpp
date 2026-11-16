@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <optional>
 #include <string>
 
 SCENARIO("Query parameter parser extracts key-value pairs from URL query strings", "[core][http][query]")
@@ -272,6 +273,28 @@ SCENARIO("Sync timeout query parameter rejects overflowing values", "[core][quer
             THEN("the largest representable value still parses")
             {
                 REQUIRE(maximal.timeout == 18446744073709551615ULL);
+            }
+        }
+    }
+}
+
+SCENARIO("The sync use_state_after parameter is read as sent and absent when not sent", "[core][query]")
+{
+    GIVEN("sync targets with use_state_after true, false, another value, and none")
+    {
+        WHEN("the query parameters are parsed")
+        {
+            auto const enabled = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=true");
+            auto const disabled = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=false");
+            auto const other = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=1");
+            auto const absent = merovingian::core::parse_query_params("/_matrix/client/v3/sync");
+
+            THEN("true turns it on, anything else leaves it off, and an absent one stays absent")
+            {
+                REQUIRE(enabled.use_state_after == std::optional<bool>{true});
+                REQUIRE(disabled.use_state_after == std::optional<bool>{false});
+                REQUIRE(other.use_state_after == std::optional<bool>{false});
+                REQUIRE_FALSE(absent.use_state_after.has_value());
             }
         }
     }

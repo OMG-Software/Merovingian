@@ -17,6 +17,8 @@ struct SyncRequest final
     std::optional<std::string> filter{};
     // GET /sync `set_presence`, as sent (validated by the caller: it is client input).
     std::optional<std::string> set_presence{};
+    // GET /sync `use_state_after`: whether a room reports `state_after` rather than `state`.
+    std::optional<bool> use_state_after{};
 };
 
 } // namespace merovingian::core

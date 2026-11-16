@@ -709,6 +709,7 @@ shell = find_program('sh')
       'conformance/test_sync_archive_conformance.cpp',
       'conformance/test_sync_state_conformance.cpp',
       'conformance/test_lazy_load_members_conformance.cpp',
+      'conformance/test_sync_state_after_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_ignoring_users_conformance.cpp',
       'conformance/test_client_txn_scope_conformance.cpp',
