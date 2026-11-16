@@ -3,6 +3,7 @@ oauth_sources = files(
   'ClientMetadata.cpp',
   'ClientUri.cpp',
   'DisplayText.cpp',
+  'FormPostOrigin.cpp',
   'HandOffAllowlist.cpp',
   'HtmlText.cpp',
   'OAuthBaseUrl.cpp',

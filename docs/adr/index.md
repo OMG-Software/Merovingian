@@ -663,3 +663,8 @@
 * [0779 - An OAuth client ID is a keyed hash of the accepted metadata](0779-an-oauth-client-id-is-a-keyed-hash-of-the-accepted-metadata.md)
 * [0780 - OAuth registrations are capped, and idle clients are evicted least recently used first](0780-oauth-registrations-are-capped-and-idle-clients-are-evicted-least-recently-used-first.md)
 * [0781 - OAuth endpoints answer OAuth errors with no-store, from one helper](0781-oauth-endpoints-answer-oauth-errors-with-no-store-from-one-helper.md)
+* [0782 - Pending authorisations and authorization codes are in memory, hashed, bounded and never evicted](0782-pending-authorisations-and-authorization-codes-are-in-memory-hashed-bounded-and-never-evicted.md)
+* [0783 - Login verification and account creation are one function each, shared by the Matrix routes and the OAuth pages](0783-login-verification-and-account-creation-are-one-function-each-shared-by-the-matrix-routes-and-the-oauth-pages.md)
+* [0784 - OAuth pages use a same-origin referrer policy, and a form post must name this server's origin](0784-oauth-pages-use-a-same-origin-referrer-policy-and-a-form-post-must-name-this-server-s-origin.md)
+* [0785 - An OAuth page response is marked in its type and gets no CORS headers](0785-an-oauth-page-response-is-marked-in-its-type-and-gets-no-cors-headers.md)
+* [0786 - The query of an OAuth request is never logged](0786-the-query-of-an-oauth-request-is-never-logged.md)

@@ -19,7 +19,10 @@
 #include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/AuthorizationGrant.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/PendingAuthorisation.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
 #include "merovingian/homeserver/RuntimeStartResult.hpp"
 
@@ -35,6 +38,7 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -383,6 +387,8 @@ SCENARIO("The retention sweep deletes OAuth clients unused for 30 days, never on
         REQUIRE(merovingian::homeserver::login_local_user(runtime, user_id, "CorrectHorse7!Battery", "OAUTHDEV").ok);
 
         auto const now = std::chrono::system_clock::now();
+        auto const now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
         auto const day = std::chrono::hours{24};
         REQUIRE(merovingian::database::store_oauth_client(persistent, oauth_client_at("old-idle", now - (31 * day))) ==
                 merovingian::database::OAuthClientStoreResult::inserted);
@@ -409,9 +415,42 @@ SCENARIO("The retention sweep deletes OAuth clients unused for 30 days, never on
                 REQUIRE(next == merovingian::homeserver::retention_sweep_interval);
             }
 
-            AND_THEN("the seam for pending authorisations names no client yet")
+            AND_THEN("no pending authorisation or code names a client")
             {
-                REQUIRE_FALSE(merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "recent-idle"));
+                REQUIRE_FALSE(
+                    merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "recent-idle", now_ms));
+            }
+        }
+
+        WHEN("a pending authorisation names the idle client and an unredeemed code another, and the sweep runs")
+        {
+            auto authorisation = merovingian::homeserver::PendingAuthorisation{};
+            authorisation.client_id = "old-idle";
+            REQUIRE(std::holds_alternative<std::string>(runtime.oauth_pending_authorisations.create(
+                std::move(authorisation), "browser-token", "198.51.100.7", now_ms)));
+            REQUIRE(
+                merovingian::database::store_oauth_client(persistent, oauth_client_at("old-coded", now - (31 * day))) ==
+                merovingian::database::OAuthClientStoreResult::inserted);
+            auto grant = merovingian::homeserver::AuthorizationGrant{};
+            grant.client_id = "old-coded";
+            REQUIRE(std::holds_alternative<std::string>(runtime.oauth_codes.issue(std::move(grant), now_ms)));
+            REQUIRE(merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-idle", now_ms));
+            REQUIRE(merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-coded", now_ms));
+            std::ignore = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+
+            THEN("both clients are kept")
+            {
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-idle") != nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-idle'") == 1);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "old-coded") != nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'old-coded'") == 1);
+            }
+
+            AND_THEN("once the authorisation's ten minutes are over, the seam answers false for that client")
+            {
+                auto const expired_ms = now_ms + merovingian::homeserver::PendingAuthorisationStore::lifetime_ms;
+                REQUIRE_FALSE(
+                    merovingian::homeserver::oauth_client_has_pending_authorisation(runtime, "old-idle", expired_ms));
             }
         }
     }

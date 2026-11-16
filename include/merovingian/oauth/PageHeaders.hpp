@@ -22,7 +22,7 @@ namespace merovingian::oauth
 //  - `Content-Security-Policy: default-src 'none'; style-src 'sha256-<base64 of SHA-256(page_style())>';
 //    base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. When hashing fails the style source is `'none'`,
 //    so the page loses its style, never its policy;
-//  - `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+//  - `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` (ADR-0784), `Cache-Control: no-store`.
 [[nodiscard]] auto page_headers() -> std::vector<std::pair<std::string, std::string>>;
 
 // page_headers() for a page whose form post the server answers with a redirect to `redirect_target`, the client's

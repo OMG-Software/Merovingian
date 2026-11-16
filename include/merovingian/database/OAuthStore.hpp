@@ -53,8 +53,9 @@ inline constexpr auto oauth_client_touch_interval_ms = std::uint64_t{24U} * 60U 
 // is repeated, or names a client with a session (never deleted: spec "Client registration"), or the write fails.
 [[nodiscard]] auto delete_oauth_clients(PersistentStore& store, std::span<std::string const> client_ids) -> bool;
 // The clients with no session, least recently used first, at most `max`, and only those last used before
-// `used_before_ms` (pass UINT64_MAX for all). A client `excluded` answers true for (phase 5: a pending authorisation
-// names it) is skipped and does not count against `max`. Costs the clients walked, not the session table.
+// `used_before_ms` (pass UINT64_MAX for all). A client `excluded` answers true for (a pending authorisation or an
+// unredeemed code names it) is skipped and does not count against `max`. The walk stops after
+// `max_idle_client_rows_examined` clients, whatever it found. Costs the clients walked, not the session table.
 [[nodiscard]] auto oauth_clients_without_sessions(PersistentStore const& store, std::size_t max,
                                                   std::uint64_t used_before_ms,
                                                   std::function<bool(std::string_view)> const& excluded = {})

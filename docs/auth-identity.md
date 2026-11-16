@@ -1099,6 +1099,33 @@ true, without authentication, by `register_oauth_client` (`homeserver/OAuthClien
 - `find_registered_oauth_client` reads a client back for later phases: unknown, unparsable or no longer valid metadata
   is "no client"; a row that fails validation is logged without its content.
 
+## OAuth 2.0 authorisation building blocks (phase 5a)
+
+Phase 5a adds what the authorisation pages of phase 5b call; no route serves them yet.
+
+- **Pending authorisations** (`PendingAuthorisationStore`, ADR-0782): a validated authorization request kept in memory
+  for 10 minutes under a fresh 32-byte identifier, returned once, of which only the hash is kept. It is found only with
+  the identifier and the browser token, compared in constant time; a wrong token answers as an unknown identifier. At
+  most 8192, and 16 per client address key; at a cap expired entries are purged, then the request is refused. Live
+  entries are never evicted. The authenticated user is recorded on it, and it is consumed once.
+- **Authorization codes** (`AuthorizationCodeStore`): 32 random bytes, kept as a hash, valid 60 seconds, bound to the
+  client, redirect URI, PKCE challenge, user, device and scope. At most 8192, never evicted. Redemption answers fresh
+  (with the grant), replayed (with the user and device, until the code's own expiry) or unknown.
+- **The retention sweep and the registration cap** keep a client that holds a live pending authorisation or an
+  unredeemed code (`oauth_client_has_pending_authorisation`, O(1)); the idle-client walk examines at most
+  `max_idle_client_rows_examined` rows.
+- **Password verification** (`verify_password_login`, ADR-0783) is the password check of `POST /login`, unchanged and
+  shared: the failed-login throttle, the Argon2id admission slot, the dummy hash for an unknown user, the verification
+  with `runtime.mutex` released and the re-validation, then the account-state gate (deactivated; locked; a suspended
+  account may log in, as on `/login`). It creates no device and no token. Its outcomes are what `/login` tells apart:
+  verified, invalid login, throttled (429 with a delay), busy (429 with a delay) and deactivated.
+- **Account creation** (`create_local_account`, ADR-0783) makes `POST /register`'s username checks and every
+  registration gate, with the caller's client key given to the registration policy, and creates no device, token or
+  session. `POST /register` calls it with `127.0.0.1`, the address its policy has always been judged for. The
+  registration token is the token file's, checked with Argon2id and not counted, so no attempt spends it.
+- **Form posts** are accepted only from this server's origin (`oauth::form_post_origin_is_accepted`, ADR-0784), the
+  pages send `Referrer-Policy: same-origin`, and the query of an OAuth request is never logged (ADR-0786).
+
 ## Next starting points
 
 1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.

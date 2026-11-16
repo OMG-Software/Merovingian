@@ -273,7 +273,11 @@ SCENARIO("The page headers allow exactly the fixed style block by its hash", "[o
                             "'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
                 REQUIRE(header(headers, "Content-Type") == "text/html; charset=utf-8");
                 REQUIRE(header(headers, "X-Frame-Options") == "DENY");
-                REQUIRE(header(headers, "Referrer-Policy") == "no-referrer");
+                // ADR-0784: same-origin, in the header and in the page's own meta element, which must agree: a
+                // same-origin form post then carries a Referer naming this server, and no other origin sees one.
+                REQUIRE(header(headers, "Referrer-Policy") == "same-origin");
+                REQUIRE(html.find("<meta name=\"referrer\" content=\"same-origin\">") != std::string::npos);
+                REQUIRE(html.find("no-referrer") == std::string::npos);
                 REQUIRE(header(headers, "Cache-Control") == "no-store");
                 REQUIRE(headers.size() == 5U);
             }

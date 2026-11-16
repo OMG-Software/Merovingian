@@ -85,6 +85,11 @@ is full.
   `access_token`/`refresh_token`/`session_token` — needed because
   `GET /_matrix/client/v1/register/m.login.registration_token/validity`
   passes the plaintext registration token as `?token=`.
+- `sanitized_http_target` drops the whole query, `?` included, of a target whose path is `/_merovingian/oauth2` or
+  `/_merovingian/account`, alone or followed by `/` (ADR-0786): the OAuth pages and endpoints carry `state`, `code`,
+  `login_hint` and pending authorisation identifiers under names no marker covers. Every request-target log site
+  (`request.received`, `request.rejected`, `request.route_not_found`, `request.auth.*`, `rate_limit.exceeded` and the
+  transport's lines) goes through it; audit rows already drop every query (`sanitized_audit_target`).
 - Stable request-correlation fields (`request_id`, `trace_id`, `span_id`) for
   local HTTP router diagnostics.
 - Health, metric, and hardening snapshot helpers.

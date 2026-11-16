@@ -14,20 +14,24 @@
 #include "merovingian/database/PersistentOAuthClient.hpp"
 #include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/homeserver/AuthorizationGrant.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
+#include "merovingian/homeserver/PendingAuthorisation.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 namespace
 {
@@ -63,6 +67,32 @@ auto seed_client(db::PersistentStore& store, std::string client_id, std::uint64_
     REQUIRE(db::store_oauth_client(store, db::PersistentOAuthClient{std::move(client_id), web_client("seeded"),
                                                                     last_used_at_ms, last_used_at_ms}) ==
             db::OAuthClientStoreResult::inserted);
+}
+
+// Now in milliseconds since the epoch: the registration cap asks the stores at the wall-clock time.
+[[nodiscard]] auto now_ms() -> std::uint64_t
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
+// Stores a live pending authorisation for `client_id`, as GET /authorize will.
+auto hold_pending_authorisation(hs::HomeserverRuntime& runtime, std::string client_id) -> void
+{
+    auto authorisation = hs::PendingAuthorisation{};
+    authorisation.client_id = std::move(client_id);
+    auto const created = runtime.oauth_pending_authorisations.create(std::move(authorisation), "browser-token",
+                                                                     "198.51.100.7", now_ms());
+    REQUIRE(std::holds_alternative<std::string>(created));
+}
+
+// Mints a live, unredeemed authorisation code for `client_id`, as an approval will.
+auto hold_unredeemed_code(hs::HomeserverRuntime& runtime, std::string client_id) -> void
+{
+    auto grant = hs::AuthorizationGrant{};
+    grant.client_id = std::move(client_id);
+    REQUIRE(std::holds_alternative<std::string>(runtime.oauth_codes.issue(std::move(grant), now_ms())));
 }
 
 } // namespace
@@ -285,9 +315,8 @@ SCENARIO("at the registration cap idle clients go least recently used first, and
         seed_client(store, "idle-newer", 4U);
         REQUIRE(db::store_oauth_session(
             store, db::PersistentOAuthSession{"@alice:example.org", "DEVICE", "with-session", "openid", 1U}));
-        rt.homeserver.test_oauth_pending_authorisation = [](std::string_view client_id) {
-            return client_id == "pending";
-        };
+        // A real pending authorisation names the client (phase 5a, ADR-0782).
+        hold_pending_authorisation(rt.homeserver, "pending");
 
         WHEN("one client registers")
         {
@@ -333,9 +362,8 @@ SCENARIO("at the registration cap idle clients go least recently used first, and
         seed_client(store, "pending", 2U);
         REQUIRE(db::store_oauth_session(
             store, db::PersistentOAuthSession{"@alice:example.org", "DEVICE", "with-session", "openid", 1U}));
-        rt.homeserver.test_oauth_pending_authorisation = [](std::string_view client_id) {
-            return client_id == "pending";
-        };
+        // A live, unredeemed authorisation code names the client (phase 5a, ADR-0782).
+        hold_unredeemed_code(rt.homeserver, "pending");
 
         WHEN("a new client registers")
         {

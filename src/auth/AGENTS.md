@@ -68,6 +68,17 @@ failures must not feed the login tables either. A successful login clears only t
 source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
 path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
 
+## One password check, one account creation (ADR-0783)
+
+A password login is checked only by `verify_login_credentials` (`src/homeserver/AuthService.cpp`), which `POST /login`
+(`login_local_user`) and the OAuth 2.0 login page (`verify_password_login`) both call. Its order is fixed: log
+`login.started`; the throttle; an Argon2id slot; the stored hash or the dummy hash; the hash with the lock released;
+re-find the user and require its hash unchanged; count a failure against the claimed ID or clear the source's
+failures. The account-state gate is `account_state_refusal`, one function called after it (`/login` calls it after
+its device checks, so keep it out of the verification). A password account is created only by
+`register_password_account`, through `register_local_user` or `create_local_account` (the username checks of
+`/register` first). Never copy any of these steps into a route or a page: change the shared function.
+
 ## Session lookup and retention
 
 `LocalDatabase::sessions` is a `homeserver::SessionTable`: `find` narrows by an index of token-hash digests and then calls

@@ -388,7 +388,8 @@ namespace
         -> void
     {
         append_header_if_missing(response.headers, "X-Content-Type-Options", "nosniff");
-        if (cors.allowed_origins.empty())
+        // An OAuth 2.0 page is same-origin only: no CORS header may let another origin read it (ADR-0785).
+        if (response.page || cors.allowed_origins.empty())
         {
             return;
         }
@@ -3093,13 +3094,10 @@ namespace
         return json_serialize(json_obj(std::move(members)));
     }
 
+    // The one normalisation of a typed identifier, shared with the OAuth 2.0 login page (ADR-0783).
     [[nodiscard]] auto matrix_user_id(std::string_view server_name, std::string_view user) -> std::string
     {
-        if (user.starts_with("@"))
-        {
-            return std::string{user};
-        }
-        return "@" + std::string{user} + ":" + std::string{server_name};
+        return login_identifier_user_id(server_name, user);
     }
 
     [[nodiscard]] auto parse_login_body(std::string_view body, std::string_view server_name)
@@ -8135,6 +8133,11 @@ namespace
 
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
     {
+        // A page is served as built, never re-encoded as JSON (ADR-0785).
+        if (r.page)
+        {
+            return r;
+        }
         if (r.status != 200U)
         {
             return err(r.status, error_code_for(r), r.body);
@@ -15609,30 +15612,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a user ID");
             }
         }
-        if (!auth::localpart_is_valid_new(*body->localpart))
-        {
-            return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
-        }
-        // The server's own localparts (the remote media cache owner) are never given to an
-        // account; answer as for a name already in use (security audit run-1).
-        if (auth::localpart_is_reserved(*body->localpart))
-        {
-            return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
-        }
-        // Spec: "normal users who attempt to create users ... inside an
-        // application service-defined namespace will receive ... M_EXCLUSIVE
-        // ... but only if the application service has defined the namespace
-        // as exclusive." This path is reached only for an ordinary
-        // (non-appservice) registration — the m.login.application_service
-        // branch above already returned.
-        if (auto const desired_user_id = "@" + *body->localpart + ":" + rt.homeserver.config.server().server_name;
-            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
-            rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
-        {
-            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
-        }
-        auto const result =
-            register_local_user(rt.homeserver, *body->localpart, body->password, body->registration_token);
+        // The username checks (not valid, reserved, an appservice's exclusive namespace or sender) and every
+        // registration gate, shared with the OAuth 2.0 account page (ADR-0783). This path is reached only for an
+        // ordinary (non-appservice) registration: the m.login.application_service branch above already returned.
+        // The registration policy is judged for the fixed address 127.0.0.1 here, as it always has been.
+        auto const result = create_local_account(
+            rt.homeserver, {*body->localpart, body->password, body->registration_token, "127.0.0.1"});
         if (!result.ok)
         {
             // A refusal that names its own errcode (M_WEAK_PASSWORD, ADR-0236) keeps it.
@@ -22269,9 +22254,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (result.status == DispatchResult::Status::complete)
     {
-        apply_cors_headers(req, result.response, rt.cors);
+        apply_client_response_headers(req, result.response, rt.cors);
     }
     return result;
+}
+
+auto apply_client_response_headers(LocalHttpRequest const& req, LocalHttpResponse& response,
+                                   config::CorsConfig const& cors) -> void
+{
+    apply_cors_headers(req, response, cors);
 }
 
 auto device_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t

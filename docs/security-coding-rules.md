@@ -1033,6 +1033,29 @@ quickly finding everything a given `AGENTS.md` file contributed.
   use breaks the spec's MUST NOT; the body is attacker-chosen text (CWE-117) (ADR-0779, ADR-0780).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Pending authorisations and authorization codes are kept only as the hash of a 32-byte random secret, found through
+  a digest index and a constant-time comparison, bounded, and never evicted while live; a wrong browser token answers
+  as an unknown identifier.**
+  Why: a stored secret is a live grant to whoever reads memory or a dump (CWE-312); a timing or answer difference
+  tells an attacker which identifiers exist (CWE-208, CWE-204); evicting a live entry lets an unauthenticated flood
+  cancel every real login (CWE-400) (ADR-0782).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A password is checked only through `verify_login_credentials` (POST /login, `verify_password_login`) and a
+  password account is created only through `register_password_account` (`register_local_user`,
+  `create_local_account`).** Never copy the throttle, admission, dummy-hash, re-validation or account-state steps.
+  Why: a check present on one path and missing on the other is an authentication bypass (CWE-287) or an account
+  enumeration oracle (CWE-204) (ADR-0783).
+  Source: `src/auth/AGENTS.md`.
+
+- **An OAuth page sends `Referrer-Policy: same-origin`, gets no CORS header (`LocalHttpResponse::page`), and accepts
+  a form post only when `oauth::form_post_origin_is_accepted` does; the query of `/_merovingian/oauth2/*` and
+  `/_merovingian/account/*` is never logged.**
+  Why: a cross-site post forges a login or a consent (CWE-352); a CORS header lets another origin read a page that
+  holds a pending authorisation identifier (CWE-942); the query holds a state, a code or a login hint under names the
+  marker redaction misses (CWE-532) (ADR-0784, ADR-0785, ADR-0786).
+  Source: `src/oauth/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.

@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 namespace merovingian::homeserver
@@ -29,12 +30,13 @@ inline constexpr auto expired_access_token_grace = std::chrono::hours{24 * 7};
 // with a session is never deleted: "The server MUST NOT delete client registrations that have an active session."
 inline constexpr auto oauth_client_retention = std::chrono::hours{24 * 30};
 
-// Whether an authorisation request still pending names `client_id`, so its client must not be deleted under it.
-// Phase 5 of the OAuth 2.0 work keeps pending authorisations; until then none exist and this is false unless a test
-// set `HomeserverRuntime::test_oauth_pending_authorisation`. The retention sweep and the registration cap
-// (`register_oauth_client`) both ask it before deleting a client. Called with HomeserverRuntime::mutex held.
-[[nodiscard]] auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id)
-    -> bool;
+// Whether, at `now_ms` (milliseconds since the epoch), a live pending authorisation or a live unredeemed
+// authorisation code names `client_id`, so its client must not be deleted under it (ADR-0780, ADR-0782). O(1): it asks
+// `HomeserverRuntime::oauth_pending_authorisations` and `oauth_codes`, never scans them. The retention sweep and the
+// registration cap (`register_oauth_client`) both ask it before deleting a client. Called with
+// HomeserverRuntime::mutex held.
+[[nodiscard]] auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id,
+                                                          std::uint64_t now_ms) -> bool;
 
 // One sweep at `now`:
 //  - deletes the sessions and tokens that can no longer authenticate (revoked or long-expired access tokens,

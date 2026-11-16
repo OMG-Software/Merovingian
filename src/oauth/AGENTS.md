@@ -22,6 +22,7 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `OAuthPaths.hpp` | Every OAuth route path: the `PagePath` constants under `/_merovingian/oauth2/` and `/_merovingian/account`, and the two `auth_metadata` paths (ADR-0773) |
 | `OAuthBaseUrl.cpp` | `OAuthBaseUrl::read`: `server.public_baseurl` as an `https` URL with a host and no query; `issuer()` (one trailing slash) and `url(PagePath)` (ADR-0773) |
 | `ServerMetadata.cpp`, `ServerMetadataOptions.hpp` | `server_metadata`: the `auth_metadata` document, device grant, `prompt=create` and account management fields only when their option is on |
+| `FormPostOrigin.cpp` | `form_post_origin`, `form_post_origin_is_accepted`: a page's form post must name this server's origin exactly, and `Sec-Fetch-Site`, when sent, `same-origin` (ADR-0784) |
 | `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
 | `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control or bidirectional formatting character) and `ascii_lower` |
 
@@ -42,7 +43,9 @@ Pure functions and value types for the built-in OAuth 2.0 API
    `HtmlLiteral`, `HtmlName` or `PagePath`. Never concatenate a value into markup, add a `<script>`, an event-handler
    attribute, a `style=` attribute or a resource from another origin, or link to a scheme other than `https`
    (ADR-0763, ADR-0772).
-6. **Every page response carries `page_headers()`.** A page whose form post is answered with a redirect to the client
+6. **Every page response carries `page_headers()`** (`Referrer-Policy: same-origin`, as the page's own meta element
+   says; ADR-0784), **and the handler marks it `LocalHttpResponse::page`** (ADR-0785). A form post is accepted only
+   when `form_post_origin_is_accepted` says so. A page whose form post is answered with a redirect to the client
    passes the matched `ParsedUri` to `page_headers(target)`; nothing else adds a policy source.
 7. **The style block and its hash are one text.** Change `page_style()` only in `PageHeaders.cpp`; the hash is
    computed from it, and `test_oauth_page.cpp` proves the policy names it.
@@ -59,6 +62,8 @@ Pure functions and value types for the built-in OAuth 2.0 API
 `tests/unit/test_oauth_pkce.cpp` (`[oauth][pkce]`), `test_oauth_scope.cpp` (`[oauth][scope]`),
 `test_oauth_redirect_uri.cpp` (`[oauth][uri]`, `[oauth][redirect]`), `test_oauth_client_metadata.cpp`
 (`[oauth][metadata]`), `test_oauth_page.cpp` (`[oauth][page]`), `test_oauth_server_metadata.cpp` (`[oauth][urls]`,
-`[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`). The served document:
+`[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`),
+`test_oauth_form_post_origin.cpp` (`[oauth][form-origin]`), `test_oauth_page_response.cpp`
+(`[oauth][page-response]`). The served document:
 `tests/conformance/test_oauth_metadata_conformance.cpp` and `tests/integration/test_oauth_metadata_flow.cpp`
 (`[oauth]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`, `fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.

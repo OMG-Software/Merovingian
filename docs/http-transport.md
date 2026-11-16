@@ -961,6 +961,13 @@ transport's own body cap is still refused by the connection handler. With `serve
 `404 M_UNRECOGNIZED`. Every OAuth answer is built by `oauth_json_response` or `oauth_error_response`
 (`application/json`, `Cache-Control: no-store`); the 429, 405, 404 and not-started 503 stay Matrix-shaped.
 
+The OAuth HTML pages (phase 5b) are marked `LocalHttpResponse::page`: `apply_client_response_headers`, the boundary
+that adds the CORS headers, gives a page only `X-Content-Type-Options: nosniff`, and the client API's `wrap()` returns
+a page unchanged (ADR-0785). A page sends `Referrer-Policy: same-origin`, and a form post to one is accepted only when
+`Origin` equals the base URL's origin (`https://`, lower-case host, a port only when not 443) and `Sec-Fetch-Site`,
+when sent, is `same-origin` (`oauth::form_post_origin_is_accepted`, ADR-0784). No log line keeps the query of a target
+under `/_merovingian/oauth2` or `/_merovingian/account` (`sanitized_http_target`, ADR-0786).
+
 ### Admin routes
 
 `/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on

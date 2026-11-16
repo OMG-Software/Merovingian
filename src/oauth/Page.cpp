@@ -87,7 +87,7 @@ auto Page::render() const -> std::string
 {
     auto html = std::string{"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
                             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-                            "<meta name=\"referrer\" content=\"no-referrer\">\n<title>"};
+                            "<meta name=\"referrer\" content=\"same-origin\">\n<title>"};
     html.append(m_title.html());
     html.append("</title>\n<style>");
     html.append(page_style());

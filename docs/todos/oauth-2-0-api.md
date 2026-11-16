@@ -220,8 +220,8 @@ migrates and serves it on SQLite and on PostgreSQL.
 
 Every page is fixed HTML rendered by one function that accepts only escaped fragments (ADR-0763). Every page sends
 `Content-Security-Policy` (`default-src 'none'`, a hashed inline style, `frame-ancestors 'none'`),
-`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. A page that posts a form
-checks the `Origin` header.
+`X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and `Cache-Control: no-store`. A page that posts a form
+checks `Origin` and `Sec-Fetch-Site` with `oauth::form_post_origin_is_accepted` (ADR-0784).
 
 ### Account pages and the `m.oauth` stage
 

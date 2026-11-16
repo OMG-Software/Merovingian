@@ -29,7 +29,7 @@ distinct name and value pairs, and a password input never carries a value.
 
 `page_headers()` sends `default-src 'none'; style-src 'sha256-…'; base-uri 'none'; frame-ancestors 'none';
 form-action 'self'`, the hash computed from the one fixed style block, with `X-Frame-Options: DENY`,
-`Referrer-Policy: no-referrer` and `Cache-Control: no-store`. `page_headers(target)` adds to `form-action` only
+`Referrer-Policy: no-referrer` (since amended to `same-origin` by [ADR-0784](0784-oauth-pages-use-a-same-origin-referrer-policy-and-a-form-post-must-name-this-server-s-origin.md)) and `Cache-Control: no-store`. `page_headers(target)` adds to `form-action` only
 `ParsedUri::csp_source()` of the matched redirect URI: `scheme://host[:port]`, or `scheme:` for a private-use scheme,
 built from fields the reader limited to characters that cannot end a source or a directive. As defence in depth it
 adds nothing for an authority scheme other than `http` or `https`, or for a scheme without a `.`.

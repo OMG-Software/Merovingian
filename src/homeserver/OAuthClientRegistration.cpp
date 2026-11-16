@@ -12,10 +12,13 @@
 #include "merovingian/crypto/TokenKey.hpp"
 #include "merovingian/database/OAuthClientStoreResult.hpp"
 #include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentOAuthClient.hpp"
+#include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/OAuthJsonResponse.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
 #include "merovingian/oauth/ApplicationType.hpp"
 #include "merovingian/oauth/OAuthErrorCodes.hpp"
@@ -37,6 +40,12 @@
 
 namespace merovingian::homeserver
 {
+
+// The evictions one registration may make must fit in the idle-client walk after it skipped every client a pending
+// authorisation or an unredeemed code can name (ADR-0782).
+static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes +
+                  max_oauth_client_evictions_per_registration <=
+              database::max_idle_client_rows_examined);
 namespace
 {
 
@@ -171,8 +180,9 @@ namespace
             return false;
         }
         auto const& homeserver = runtime.homeserver;
-        auto const pending = [&homeserver](std::string_view client_id) {
-            return oauth_client_has_pending_authorisation(homeserver, client_id);
+        auto const now_ms = wall_clock_ms();
+        auto const pending = [&homeserver, now_ms](std::string_view client_id) {
+            return oauth_client_has_pending_authorisation(homeserver, client_id, now_ms);
         };
         auto const idle =
             database::oauth_clients_without_sessions(store, needed, std::numeric_limits<std::uint64_t>::max(), pending);

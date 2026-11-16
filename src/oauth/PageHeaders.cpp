@@ -82,7 +82,7 @@ namespace
             {"Content-Type",            "text/html; charset=utf-8"},
             {"Content-Security-Policy", std::move(policy)         },
             {"X-Frame-Options",         "DENY"                    },
-            {"Referrer-Policy",         "no-referrer"             },
+            {"Referrer-Policy",         "same-origin"             },
             {"Cache-Control",           "no-store"                },
         };
     }

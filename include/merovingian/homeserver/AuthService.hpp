@@ -5,6 +5,7 @@
 #include "merovingian/auth/AccountState.hpp"
 #include "merovingian/config/RegistrationSecurityConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
+#include "merovingian/homeserver/AccountCreationRequest.hpp"
 #include "merovingian/homeserver/AccountSummary.hpp"
 #include "merovingian/homeserver/AdminAuthResult.hpp"
 #include "merovingian/homeserver/DeactivationAudit.hpp"
@@ -12,6 +13,8 @@
 #include "merovingian/homeserver/LocalSession.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
+#include "merovingian/homeserver/PasswordLoginRequest.hpp"
+#include "merovingian/homeserver/PasswordLoginVerification.hpp"
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/SessionRefreshResult.hpp"
 #include "merovingian/homeserver/SsoRedirectResult.hpp"
@@ -27,6 +30,14 @@ namespace merovingian::homeserver
 
 [[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
                                        std::string_view password, std::string_view registration_token = {})
+    -> OperationResult;
+// Creates a password account and nothing else: no device, no token, no session (ADR-0783). The username checks POST
+// /register makes after user-interactive auth (not valid: 400 M_INVALID_USERNAME; reserved: 400 M_USER_IN_USE; an
+// application service's exclusive namespace or sender: 400 M_EXCLUSIVE), then every gate of register_local_user with
+// `request.client_key` given to the registration policy. A refusal sets `status`, `reason` and, where the status
+// cannot name it, `errcode`. POST /register calls it with "127.0.0.1". The caller holds runtime.mutex through a
+// RequestLockScope.
+[[nodiscard]] auto create_local_account(HomeserverRuntime& runtime, AccountCreationRequest const& request)
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
@@ -51,6 +62,19 @@ namespace merovingian::homeserver
 [[nodiscard]] auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id,
                                           std::string_view device_id, bool with_ttl = false,
                                           std::string_view display_name = {}) -> OperationResult;
+// The full user ID a typed login identifier names: unchanged when it starts with `@`, else `@<identifier>:<server>`.
+// POST /login and the OAuth 2.0 login page both normalise through it (ADR-0783).
+[[nodiscard]] auto login_identifier_user_id(std::string_view server_name, std::string_view identifier) -> std::string;
+// The password check POST /login makes, for a caller that wants no session (the OAuth 2.0 login page, ADR-0783), then
+// the account-state gate. In order: the failed-login throttle (`throttled`), an Argon2id admission slot (`busy`), the
+// stored hash or the dummy hash for an unknown user, the verification with runtime.mutex released, the re-validation
+// that the user and its hash are unchanged (else `invalid_login`, counted as a failed attempt), then deactivated
+// (`account_deactivated`) and locked (`invalid_login`); a suspended account is `verified`, as POST /login lets it log
+// in (spec v1.19 "Account suspension"). Creates no device and no token. The caller holds
+// runtime.mutex, published through a RequestLockScope as the request dispatchers publish it, exactly as for
+// login_local_user: the verification releases it with RuntimeLockRelease and takes it back.
+[[nodiscard]] auto verify_password_login(HomeserverRuntime& runtime, PasswordLoginRequest const& request)
+    -> PasswordLoginVerification;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's

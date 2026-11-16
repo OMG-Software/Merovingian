@@ -851,6 +851,62 @@ namespace
         return true;
     }
 
+    // Why the account may not log in, or nothing (ADR-0783). A deactivated account can never log in again (spec: POST
+    // /account/deactivate, "removing all ability for the user to login again"); it is checked before the reversible
+    // locked and suspended states because it outranks them and is permanent. Then auth::login_policy: a locked account
+    // is answered "invalid login", as a wrong password is; a suspended one may log in (spec v1.19 "Account
+    // suspension"), its session then refused by the M_USER_SUSPENDED request gate. Each refusal is logged and audited
+    // as login.rejected. Shared by complete_login, login_local_user_by_id and verify_password_login, so the gate is one
+    // piece of code.
+    struct AccountStateRefusal final
+    {
+        bool deactivated{false};
+        OperationResult result{};
+    };
+
+    [[nodiscard]] auto account_state_refusal(HomeserverRuntime& runtime, LocalUser const& user,
+                                             std::string_view device_id) -> std::optional<AccountStateRefusal>
+    {
+        if (user.deactivated)
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "account deactivated",  false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "403:account deactivated");
+            return AccountStateRefusal{true, make_operation_result(false, {}, "account deactivated", 403U)};
+        }
+
+        auto state = auth::AccountState::active;
+        if (user.locked)
+        {
+            state = auth::AccountState::locked;
+        }
+        if (user.suspended)
+        {
+            state = auth::AccountState::suspended;
+        }
+        auto const login = auth::login_policy({user.user_id, state});
+        if (!login.allowed)
+        {
+            // Account locked or suspended: still a 403, not a 400.
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"status",    "403",                  false},
+                                     {"reason",    login.reason,           false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "403:" + login.reason);
+            return AccountStateRefusal{false, make_operation_result(false, {}, "invalid login", 403U)};
+        }
+        return std::nullopt;
+    }
+
     // Shared tail of login_local_user() and login_appservice_user(): device
     // validation, account-state (locked/suspended) policy, token issuance,
     // and session persistence. The two callers differ only in how they got
@@ -884,46 +940,10 @@ namespace
             return make_operation_result(false, {}, "too many devices", 403U);
         }
 
-        // A deactivated account can never log in again (spec: POST
-        // /account/deactivate, "removing all ability for the user to login
-        // again"). Checked before the reversible locked/suspended states because
-        // it outranks them and is permanent.
-        if (user.deactivated)
+        // Deactivated, locked or suspended (the shared gate above).
+        if (auto refusal = account_state_refusal(runtime, user, device_id); refusal.has_value())
         {
-            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                                 {
-                                     {"user_id",   user.user_id,           false},
-                                     {"device_id", std::string{device_id}, false},
-                                     {"reason",    "account deactivated",  false}
-            },
-                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                                 "login.rejected", user.user_id, std::string{device_id}, "403:account deactivated");
-            return make_operation_result(false, {}, "account deactivated", 403U);
-        }
-
-        auto state = auth::AccountState::active;
-        if (user.locked)
-        {
-            state = auth::AccountState::locked;
-        }
-        if (user.suspended)
-        {
-            state = auth::AccountState::suspended;
-        }
-        auto const login = auth::login_policy({user.user_id, state});
-        if (!login.allowed)
-        {
-            // Account locked or suspended: still a 403, not a 400.
-            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                                 {
-                                     {"user_id",   user.user_id,           false},
-                                     {"device_id", std::string{device_id}, false},
-                                     {"status",    "403",                  false},
-                                     {"reason",    login.reason,           false}
-            },
-                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                                 "login.rejected", user.user_id, std::string{device_id}, "403:" + login.reason);
-            return make_operation_result(false, {}, "invalid login", 403U);
+            return std::move(refusal->result);
         }
 
         auto const token = issue_token();
@@ -1110,55 +1130,112 @@ namespace
     return hash;
 }
 
+namespace
+{
+
+    // The registration gates every password account passes (ADR-0783), in this order: the registration switch and
+    // token requirement, the trust-and-safety registration policy for `client_key`, the registration token (Argon2id
+    // inside an admission slot, runtime.mutex released), then make_user (user ID, password policy, reserved, exists,
+    // hash, store). Shared by register_local_user and create_local_account.
+    [[nodiscard]] auto register_password_account(HomeserverRuntime& runtime, std::string_view localpart,
+                                                 std::string_view password, std::string_view registration_token,
+                                                 std::string_view client_key) -> OperationResult;
+
+} // namespace
+
 auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
                          std::string_view registration_token) -> OperationResult
 {
-    auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
-    auto const& registration = runtime.config.security().registration;
-    auto const policy =
-        auth::registration_policy({registration.enabled, registration.require_token, !registration_token.empty()});
-    if (!policy.allowed)
-    {
-        auto const status = policy.reason == "registration token required" ? 403U : 400U;
-        auto const reason = policy.reason == "registration disabled" ? "registration_disabled" : policy.reason;
-        return make_operation_result(false, {}, reason, static_cast<std::uint16_t>(status));
-    }
-
-    auto const local_rule = find_policy_rule(runtime, "registration", user_id);
-    auto const blocked_by_local_policy = local_rule.has_value() && local_rule->action != "allow";
-    auto const decision = trust_safety::evaluate_registration_policy(
-        {user_id, "127.0.0.1", runtime.config.security().registration.enabled, blocked_by_local_policy,
-         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::registration, user_id)});
-    if (!decision.allowed)
-    {
-        return make_operation_result(false, {}, decision.reason.code, 403U);
-    }
-
-    if (registration.require_token)
-    {
-        // AUTH-4: registration-token verification is Argon2id and must respect
-        // the same admission cap as /login. Shed load with 429 before doing any
-        // hash work.
-        auto const argon_slot = runtime.argon2id_admission->try_acquire();
-        if (!argon_slot)
-        {
-            return argon2id_admission_refusal();
-        }
-        auto const expected_hash = load_hashed_registration_token(registration);
-        auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
-            // AUTH-4: registration-token verification is also Argon2id; release
-            // the runtime mutex while it runs.
-            auto const released = merovingian::homeserver::RuntimeLockRelease{};
-            return !expected_hash.empty() && auth::registration_token_matches(expected_hash, registration_token);
-        }();
-        if (!token_ok)
-        {
-            return make_operation_result(false, {}, "registration token rejected", 403U);
-        }
-    }
-
-    return make_user(runtime, localpart, password, false, "created");
+    // The registration policy has always been judged for the fixed address 127.0.0.1 on this path; kept so.
+    return register_password_account(runtime, localpart, password, registration_token, "127.0.0.1");
 }
+
+auto create_local_account(HomeserverRuntime& runtime, AccountCreationRequest const& request) -> OperationResult
+{
+    // The username checks POST /register makes after user-interactive auth, in its order and with its answers.
+    if (!auth::localpart_is_valid_new(request.localpart))
+    {
+        auto refused = make_operation_result(false, {}, "desired username is not valid", 400U);
+        refused.errcode = "M_INVALID_USERNAME";
+        return refused;
+    }
+    // The server's own localparts (the remote media cache owner) are never given to an account; answered as for a
+    // name already in use (security audit run-1).
+    if (auth::localpart_is_reserved(request.localpart))
+    {
+        auto refused = make_operation_result(false, {}, "desired username is already taken", 400U);
+        refused.errcode = "M_USER_IN_USE";
+        return refused;
+    }
+    // Spec (Application Service API): a user may not create an account inside a namespace an application service
+    // holds exclusively, nor take an application service's sender.
+    auto const& server_name = runtime.config.server().server_name;
+    if (auto const desired_user_id = "@" + std::string{request.localpart} + ":" + server_name;
+        runtime.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
+        runtime.appservices.is_sender_user_id(desired_user_id, server_name))
+    {
+        auto refused = make_operation_result(false, {}, "this username is reserved for a registered appservice", 400U);
+        refused.errcode = "M_EXCLUSIVE";
+        return refused;
+    }
+    return register_password_account(runtime, request.localpart, request.password, request.registration_token,
+                                     request.client_key);
+}
+
+namespace
+{
+
+    auto register_password_account(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
+                                   std::string_view registration_token, std::string_view client_key) -> OperationResult
+    {
+        auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
+        auto const& registration = runtime.config.security().registration;
+        auto const policy =
+            auth::registration_policy({registration.enabled, registration.require_token, !registration_token.empty()});
+        if (!policy.allowed)
+        {
+            auto const status = policy.reason == "registration token required" ? 403U : 400U;
+            auto const reason = policy.reason == "registration disabled" ? "registration_disabled" : policy.reason;
+            return make_operation_result(false, {}, reason, static_cast<std::uint16_t>(status));
+        }
+
+        auto const local_rule = find_policy_rule(runtime, "registration", user_id);
+        auto const blocked_by_local_policy = local_rule.has_value() && local_rule->action != "allow";
+        auto const decision = trust_safety::evaluate_registration_policy(
+            {user_id, std::string{client_key}, runtime.config.security().registration.enabled, blocked_by_local_policy,
+             resolve_policy_server_hook(runtime, trust_safety::PolicySurface::registration, user_id)});
+        if (!decision.allowed)
+        {
+            return make_operation_result(false, {}, decision.reason.code, 403U);
+        }
+
+        if (registration.require_token)
+        {
+            // AUTH-4: registration-token verification is Argon2id and must respect
+            // the same admission cap as /login. Shed load with 429 before doing any
+            // hash work.
+            auto const argon_slot = runtime.argon2id_admission->try_acquire();
+            if (!argon_slot)
+            {
+                return argon2id_admission_refusal();
+            }
+            auto const expected_hash = load_hashed_registration_token(registration);
+            auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
+                // AUTH-4: registration-token verification is also Argon2id; release
+                // the runtime mutex while it runs.
+                auto const released = merovingian::homeserver::RuntimeLockRelease{};
+                return !expected_hash.empty() && auth::registration_token_matches(expected_hash, registration_token);
+            }();
+            if (!token_ok)
+            {
+                return make_operation_result(false, {}, "registration token rejected", 403U);
+            }
+        }
+
+        return make_user(runtime, localpart, password, false, "created");
+    }
+
+} // namespace
 
 auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password)
     -> OperationResult
@@ -1196,106 +1273,181 @@ auto register_appservice_user(HomeserverRuntime& runtime, std::string_view local
                      /*enforce_password_policy=*/false);
 }
 
+namespace
+{
+
+    // The password check of a login (ADR-0783), shared by POST /login (login_local_user) and the OAuth 2.0 login page
+    // (verify_password_login). In this order, which must not change (src/auth/AGENTS.md):
+    //  1. log login.started;
+    //  2. the failed-login throttle, (account, source) and per account: a refusal is not a failure and costs no hash;
+    //  3. an Argon2id admission slot: none free is `busy`, never a failed attempt;
+    //  4. snapshot the stored hash, or the dummy hash for an unknown user, so the time does not reveal which accounts
+    //     exist (the dummy's first use hashes, inside the slot: ADR-0246);
+    //  5. release runtime.mutex around only the Argon2id verification;
+    //  6. re-take it and re-validate: the user still exists and its stored hash is still the snapshot;
+    //  7. on any failure count it against the claimed user ID (existing or not) and audit login.rejected; on success
+    //     clear this source's failures only, never the per-account ceiling.
+    // The account-state gate is not here: /login applies it in login_local_user_by_id after its device checks.
+    [[nodiscard]] auto verify_login_credentials(HomeserverRuntime& runtime, PasswordLoginRequest const& request)
+        -> PasswordLoginVerification
+    {
+        auto const user_id = request.user_id;
+        auto const device_id = request.device_id;
+        log_diagnostic("login.started",
+                       {
+                           {"user_id",   std::string{user_id},   false},
+                           {"device_id", std::string{device_id}, false}
+        });
+
+        // #487, AUTH-2: failures are counted per (account, client source) and per
+        // account. A refusal here is before the password is looked at, so it neither
+        // counts as a failure nor costs any Argon2id work.
+        if (auto const retry_after_ms = login_lockout_remaining_ms(runtime, user_id, request.client_source);
+            retry_after_ms > 0U)
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.throttled",
+                                 {
+                                     {"user_id",        std::string{user_id},           false},
+                                     {"device_id",      std::string{device_id},         false},
+                                     {"retry_after_ms", std::to_string(retry_after_ms), false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.throttled", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
+                                 "429:too many failed login attempts");
+            return {PasswordLoginVerification::Outcome::throttled,
+                    {},
+                    static_cast<std::uint32_t>(
+                        std::min<std::uint64_t>(retry_after_ms, std::numeric_limits<std::uint32_t>::max()))};
+        }
+
+        // Snapshot the claimed identity and the hash to verify against. The user
+        // pointer itself must not outlive the RuntimeLockRelease below: the vector
+        // may be reallocated while runtime.mutex is dropped around Argon2id.
+        auto const verified_user_id = std::string{user_id};
+        // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
+        // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
+        // an admission-saturated pile-on does not also exhaust the lockout budget.
+        // Taken before the dummy hash below: its first use hashes, and that hash
+        // must count against the cap too (ADR-0246).
+        auto const argon_slot = runtime.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            return {PasswordLoginVerification::Outcome::busy, {}, argon2id_admission_retry_after_ms};
+        }
+        // An unknown user is verified against the dummy hash so the response time
+        // does not reveal which accounts exist. The dummy is absent only if hashing
+        // it failed at first use; there is then nothing to verify against and the
+        // login is refused like any other bad credential.
+        auto const password_hash = [&]() -> std::optional<std::string> {
+            if (auto const* initial_user = find_user(runtime.database, verified_user_id); initial_user != nullptr)
+            {
+                return initial_user->password_hash;
+            }
+            if (auto const* dummy = dummy_password_hash(); dummy != nullptr)
+            {
+                return *dummy;
+            }
+            return std::nullopt;
+        }();
+        // AUTH-4: release the runtime mutex around Argon2id verification so a pile
+        // of login attempts cannot serialise every other request. Snapshot the hash
+        // by value first; then verify outside the lock.
+        auto password_valid = false;
+        {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            password_valid = password_hash.has_value() && auth::password_matches(*password_hash, request.password);
+        }
+        // RuntimeLockRelease has re-acquired the lock. Re-find the user and insist
+        // the stored password hash is still the one we just verified. A concurrent
+        // password change (or account deletion) during Argon2id must not issue a
+        // session against the old credentials.
+        auto const* user = find_user(runtime.database, verified_user_id);
+        if (user == nullptr || !password_valid || user->password_hash != *password_hash)
+        {
+            // Counted against the *claimed* user_id whether or not it exists, so the
+            // lockout cannot be used to probe which accounts are real.
+            record_failed_login(runtime, verified_user_id, request.client_source);
+            auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   std::string{user_id},   false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"status",    "403",                  false},
+                                     {"reason",    audit_reason,           false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
+                                 std::string{"403:"} + audit_reason);
+            return {PasswordLoginVerification::Outcome::invalid_login, {}, 0U};
+        }
+        // A correct password clears this source's failure history, so an interrupted
+        // legitimate login attempt cannot accumulate toward a lockout. The
+        // per-account ceiling is deliberately left alone.
+        clear_failed_logins(runtime, user->user_id, request.client_source);
+        return {PasswordLoginVerification::Outcome::verified, user->user_id, 0U};
+    }
+
+} // namespace
+
+auto login_identifier_user_id(std::string_view server_name, std::string_view identifier) -> std::string
+{
+    if (identifier.starts_with("@"))
+    {
+        return std::string{identifier};
+    }
+    return "@" + std::string{identifier} + ":" + std::string{server_name};
+}
+
+auto verify_password_login(HomeserverRuntime& runtime, PasswordLoginRequest const& request) -> PasswordLoginVerification
+{
+    auto verified = verify_login_credentials(runtime, request);
+    if (verified.outcome != PasswordLoginVerification::Outcome::verified)
+    {
+        return verified;
+    }
+    // The lock has been held since the re-validation inside verify_login_credentials, so the user is still there.
+    auto const* user = find_user(runtime.database, verified.user_id);
+    if (user == nullptr)
+    {
+        return {PasswordLoginVerification::Outcome::invalid_login, {}, 0U};
+    }
+    if (auto const refusal = account_state_refusal(runtime, *user, request.device_id); refusal.has_value())
+    {
+        return {refusal->deactivated ? PasswordLoginVerification::Outcome::account_deactivated
+                                     : PasswordLoginVerification::Outcome::invalid_login,
+                {},
+                0U};
+    }
+    return verified;
+}
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                       std::string_view device_id, bool with_ttl, std::string_view client_source,
                       std::string_view display_name) -> OperationResult
 {
-    log_diagnostic("login.started",
-                   {
-                       {"user_id",   std::string{user_id},   false},
-                       {"device_id", std::string{device_id}, false}
-    });
-
-    // #487, AUTH-2: failures are counted per (account, client source) and per
-    // account. A refusal here is before the password is looked at, so it neither
-    // counts as a failure nor costs any Argon2id work.
-    if (auto const retry_after_ms = login_lockout_remaining_ms(runtime, user_id, client_source); retry_after_ms > 0U)
+    // The password check is shared with the OAuth 2.0 login page (verify_password_login, ADR-0783); the account-state
+    // gate stays in login_local_user_by_id, after the device checks, where /login has always applied it.
+    auto const verified = verify_login_credentials(runtime, {user_id, password, client_source, device_id});
+    switch (verified.outcome)
     {
-        log_diagnostic_audit(runtime.database, "auth", "login.throttled",
-                             {
-                                 {"user_id",        std::string{user_id},           false},
-                                 {"device_id",      std::string{device_id},         false},
-                                 {"retry_after_ms", std::to_string(retry_after_ms), false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.throttled", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
-                             "429:too many failed login attempts");
+    case PasswordLoginVerification::Outcome::verified:
+        return login_local_user_by_id(runtime, verified.user_id, device_id, with_ttl, display_name);
+    case PasswordLoginVerification::Outcome::throttled: {
         auto throttled = make_operation_result(false, {}, "too many failed login attempts", 429U);
-        // Carry the delay already computed above so the caller can render the
-        // Matrix-standard M_LIMIT_EXCEEDED with retry_after_ms rather than a
-        // 429 a compliant client cannot schedule a retry from.
-        throttled.retry_after_ms = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+        // Carry the delay already computed so the caller can render the Matrix-standard M_LIMIT_EXCEEDED with
+        // retry_after_ms rather than a 429 a compliant client cannot schedule a retry from.
+        throttled.retry_after_ms = verified.retry_after_ms;
         return throttled;
     }
-
-    // Snapshot the claimed identity and the hash to verify against. The user
-    // pointer itself must not outlive the RuntimeLockRelease below: the vector
-    // may be reallocated while runtime.mutex is dropped around Argon2id.
-    auto const verified_user_id = std::string{user_id};
-    // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
-    // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
-    // an admission-saturated pile-on does not also exhaust the lockout budget.
-    // Taken before the dummy hash below: its first use hashes, and that hash
-    // must count against the cap too (ADR-0246).
-    auto const argon_slot = runtime.argon2id_admission->try_acquire();
-    if (!argon_slot)
-    {
+    case PasswordLoginVerification::Outcome::busy:
         return argon2id_admission_refusal();
+    case PasswordLoginVerification::Outcome::invalid_login:
+    case PasswordLoginVerification::Outcome::account_deactivated:
+        break;
     }
-    // An unknown user is verified against the dummy hash so the response time
-    // does not reveal which accounts exist. The dummy is absent only if hashing
-    // it failed at first use; there is then nothing to verify against and the
-    // login is refused like any other bad credential.
-    auto const password_hash = [&]() -> std::optional<std::string> {
-        if (auto const* initial_user = find_user(runtime.database, verified_user_id); initial_user != nullptr)
-        {
-            return initial_user->password_hash;
-        }
-        if (auto const* dummy = dummy_password_hash(); dummy != nullptr)
-        {
-            return *dummy;
-        }
-        return std::nullopt;
-    }();
-    // AUTH-4: release the runtime mutex around Argon2id verification so a pile
-    // of login attempts cannot serialise every other request. Snapshot the hash
-    // by value first; then verify outside the lock.
-    auto password_valid = false;
-    {
-        auto const released = merovingian::homeserver::RuntimeLockRelease{};
-        password_valid = password_hash.has_value() && auth::password_matches(*password_hash, password);
-    }
-    // RuntimeLockRelease has re-acquired the lock. Re-find the user and insist
-    // the stored password hash is still the one we just verified. A concurrent
-    // password change (or account deletion) during Argon2id must not issue a
-    // session against the old credentials.
-    auto* user = find_user(runtime.database, verified_user_id);
-    if (user == nullptr || !password_valid || user->password_hash != *password_hash)
-    {
-        // Counted against the *claimed* user_id whether or not it exists, so the
-        // lockout cannot be used to probe which accounts are real.
-        record_failed_login(runtime, verified_user_id, client_source);
-        auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
-        // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   std::string{user_id},   false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"status",    "403",                  false},
-                                 {"reason",    audit_reason,           false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", audit_claimed_user_id(user_id), audit_claimed_device_id(device_id),
-                             std::string{"403:"} + audit_reason);
-        return make_operation_result(false, {}, "invalid login", 403U);
-    }
-    // A correct password clears this source's failure history, so an interrupted
-    // legitimate login attempt cannot accumulate toward a lockout. The
-    // per-account ceiling is deliberately left alone.
-    clear_failed_logins(runtime, user->user_id, client_source);
-    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl, display_name);
+    // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
+    return make_operation_result(false, {}, "invalid login", 403U);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -1347,44 +1499,11 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
         return make_operation_result(false, {}, "too many devices", 403U);
     }
 
-    // See the deactivation gate in the shared helper above: permanent and
-    // outranking the reversible moderation states.
-    if (user->deactivated)
+    // The account-state gate shared with complete_login and verify_password_login: deactivated (permanent, and
+    // outranking the reversible moderation states), then locked or suspended.
+    if (auto refusal = account_state_refusal(runtime, *user, device_id); refusal.has_value())
     {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   std::string{user_id},   false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"reason",    "account deactivated",  false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:account deactivated");
-        return make_operation_result(false, {}, "account deactivated", 403U);
-    }
-
-    auto state = auth::AccountState::active;
-    if (user->locked)
-    {
-        state = auth::AccountState::locked;
-    }
-    if (user->suspended)
-    {
-        state = auth::AccountState::suspended;
-    }
-    auto const login = auth::login_policy({user->user_id, state});
-    if (!login.allowed)
-    {
-        // Account locked or suspended: still a 403, not a 400.
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,          false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"status",    "403",                  false},
-                                 {"reason",    login.reason,           false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "403:" + login.reason);
-        return make_operation_result(false, {}, "invalid login", 403U);
+        return std::move(refusal->result);
     }
 
     auto const token = issue_token();

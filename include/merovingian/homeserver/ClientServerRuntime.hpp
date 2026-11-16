@@ -175,6 +175,11 @@ auto run_presence_idle_sweep(ClientServerRuntime& runtime) -> std::chrono::milli
 // again on the media fetch pool.
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 ClientServerDispatchOptions const& options) -> DispatchResult;
+// The headers the client-server boundary adds to every complete response: `X-Content-Type-Options: nosniff`, then
+// the CORS headers `cors` allows (spec v1.19 "Web Browser Clients"), except on an OAuth 2.0 page
+// (`LocalHttpResponse::page`, ADR-0785), which gets none of them. A header the response already holds is kept.
+auto apply_client_response_headers(LocalHttpRequest const& request, LocalHttpResponse& response,
+                                   config::CorsConfig const& cors) -> void;
 // HTTP-1 / HTTP-6 (ADR-0077): decides from the request head alone whether a
 // media upload may have its body read under the raised
 // security.media.max_upload_size cap. `head` is the request with an empty

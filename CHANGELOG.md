@@ -32,8 +32,17 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * At most 10000 OAuth clients are held: at the cap idle ones go least recently used first, else 503 (ADR-0780).
 * `/_merovingian/oauth2/*` and `/_merovingian/account*` take the `auth_sensitive` rate limit; `201 Created` has its
   reason phrase.
+* In-memory, hashed, bounded OAuth 2.0 pending authorisations and authorization codes that never evict a live entry;
+  the sweep and the client cap keep a client that holds one (ADR-0782).
+* The password check of `POST /login` and the account creation of `POST /register` are each one function, shared
+  with the coming OAuth 2.0 pages; both routes answer as before (ADR-0783).
+* OAuth 2.0 pages send `Referrer-Policy: same-origin`, get no CORS headers, and accept a form post only from this
+  server's origin (ADR-0784, ADR-0785).
 
 ## Security Fixes
+
+* The query of a `/_merovingian/oauth2/*` or `/_merovingian/account*` request is never logged, so a state, code or
+  login hint cannot reach the log (ADR-0786).
 
 * A response header that would frame the message (`Content-Length`, `Connection`, ...) or holds CR or LF now turns
   the response into a 500 instead of being written or silently dropped (ADR-0767).

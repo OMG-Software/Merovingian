@@ -98,7 +98,7 @@ auto OAuthTables::idle_clients(std::size_t max, std::uint64_t used_before_ms,
     auto walked = std::uint64_t{0U};
     for (auto const& [last_used_at_ms, client_id] : idle_)
     {
-        if (chosen.size() >= max || last_used_at_ms >= used_before_ms)
+        if (chosen.size() >= max || last_used_at_ms >= used_before_ms || walked >= max_idle_client_rows_examined)
         {
             break;
         }

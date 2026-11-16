@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/database/PreparedStatement.hpp"
+#include "merovingian/oauth/OAuthPaths.hpp"
 #include "merovingian/observability/AdminControlSurface.hpp"
 #include "merovingian/observability/AdminOperation.hpp"
 #include "merovingian/observability/AdminSurface.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/AuditLogEvent.hpp"
 #include "merovingian/observability/AuditSinkFields.hpp"
+#include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/DropEpisodePolicy.hpp"
 #include "merovingian/observability/HealthCheckSnapshot.hpp"
 #include "merovingian/observability/HealthStatus.hpp"
@@ -14,16 +16,16 @@
 #include "merovingian/observability/LowSeverityFlushPolicy.hpp"
 #include "merovingian/observability/MetricSample.hpp"
 #include "merovingian/observability/MetricType.hpp"
+#include "merovingian/observability/Observability.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogEvent.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
-#include "merovingian/observability/BoundedText.hpp"
-#include "merovingian/observability/Observability.hpp"
 #include "merovingian/platform/HardeningSelfCheck.hpp"
 #include "merovingian/platform/HardeningStatus.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -361,6 +363,52 @@ SCENARIO("A logged request target redacts a sensitive query parameter whose name
                 REQUIRE(lower.find("foo=bar") != std::string::npos);
                 REQUIRE(upper.find("secret-token") == std::string::npos);
                 REQUIRE(malformed.find("access%5Gtoken=visible") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("A logged request target drops the whole query of an OAuth 2.0 page or endpoint",
+         "[observability][logging][security][oauth]")
+{
+    GIVEN("every OAuth 2.0 path this server serves, each with a query of unmarked names")
+    {
+        auto const paths = std::array{merovingian::oauth::register_path, merovingian::oauth::authorize_path,
+                                      merovingian::oauth::token_path,    merovingian::oauth::revoke_path,
+                                      merovingian::oauth::device_path,   merovingian::oauth::link_path,
+                                      merovingian::oauth::account_path};
+
+        WHEN("each is sanitised for logging, with a query and with a sub-path and a query")
+        {
+            THEN("only the path is kept: no '?', no state, no code, no login hint")
+            {
+                for (auto const& path : paths)
+                {
+                    auto const target = std::string{path.view()} + "?state=s3cret&code=c0de&login_hint=alice";
+                    REQUIRE(merovingian::observability::sanitized_http_target(target) == path.view());
+                    auto const nested = std::string{path.view()} + "/next?x=private";
+                    REQUIRE(merovingian::observability::sanitized_http_target(nested) ==
+                            std::string{path.view()} + "/next");
+                }
+                REQUIRE(merovingian::observability::sanitized_http_target("/_merovingian/oauth2?state=s") ==
+                        "/_merovingian/oauth2");
+                REQUIRE(merovingian::observability::sanitized_http_target("/_merovingian/account?id=x") ==
+                        "/_merovingian/account");
+            }
+        }
+
+        WHEN("a path only begins with the same letters, or is another /_merovingian path")
+        {
+            auto const lookalike = merovingian::observability::sanitized_http_target("/_merovingian/oauth2x?foo=bar");
+            auto const account_lookalike =
+                merovingian::observability::sanitized_http_target("/_merovingian/accounts?foo=bar");
+            auto const health = merovingian::observability::sanitized_http_target("/_merovingian/health?foo=bar");
+
+            THEN("its query is logged as before, through the marker redaction")
+            {
+                REQUIRE(lookalike == "/_merovingian/oauth2x?foo=bar");
+                REQUIRE(account_lookalike == "/_merovingian/accounts?foo=bar");
+                REQUIRE(health == "/_merovingian/health?foo=bar");
             }
         }
     }

@@ -4,12 +4,15 @@
 #include "merovingian/homeserver/RetentionSweep.hpp"
 
 #include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
+#include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -28,6 +31,11 @@
 
 namespace merovingian::homeserver
 {
+
+// A batch of the client sweep must fit in the idle-client walk after it skipped every client a pending authorisation
+// or an unredeemed code can name, or a walk that stopped at its bound could hide a client that may go (ADR-0782).
+static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes + retention_batch_rows <=
+              database::max_idle_client_rows_examined);
 
 namespace
 {
@@ -183,8 +191,8 @@ namespace
             return true;
         }
         auto const used_before_ms = now_ms - keep_ms;
-        auto const pending = [&runtime](std::string_view client_id) {
-            return oauth_client_has_pending_authorisation(runtime, client_id);
+        auto const pending = [&runtime, now_ms](std::string_view client_id) {
+            return oauth_client_has_pending_authorisation(runtime, client_id, now_ms);
         };
         auto batches = std::size_t{0U};
         auto deleted = std::size_t{0U};
@@ -216,11 +224,12 @@ namespace
 
 } // namespace
 
-// The seam phase 5 fills in: no authorisation request is kept yet, so none can name a client. A test stands in for one
-// through `test_oauth_pending_authorisation`, which production never sets.
-auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id) -> bool
+// Two lookups by client ID, each answered from the latest expiry the store holds for the client: no scan.
+auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id,
+                                            std::uint64_t now_ms) -> bool
 {
-    return runtime.test_oauth_pending_authorisation && runtime.test_oauth_pending_authorisation(client_id);
+    return runtime.oauth_pending_authorisations.holds_live_entry_for_client(client_id, now_ms) ||
+           runtime.oauth_codes.holds_unredeemed_code_for_client(client_id, now_ms);
 }
 
 auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now, StopFlag const& stop)

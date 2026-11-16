@@ -20,6 +20,15 @@
 namespace merovingian::database
 {
 
+// The most idle clients one `OAuthTables::idle_clients` call examines (ADR-0782). The walk runs under `runtime.mutex`
+// and skips every client a pending authorisation or an unredeemed code names, so without a bound its cost was bounded
+// only by the client cap. 16 896 is the 8192 pending authorisations plus the 8192 codes the homeserver can hold (each
+// names one client, so at most 16 384 clients are skipped) plus 512, more than any caller asks for
+// (`retention_batch_rows` 500; `RetentionSweep.cpp` and `OAuthClientRegistration.cpp` assert it): a walk that stops
+// here has therefore already found `max` clients or every idle one. A walk that finds nothing within it answers
+// "nothing can go".
+inline constexpr auto max_idle_client_rows_examined = std::size_t{16'896U};
+
 // The in-memory copy of `oauth_clients` and `oauth_sessions` (migration 002, ADR-0776, ADR-0777). The class owns the
 // rows and shows them read-only, so a writer that bypasses it does not compile and its indexes cannot drift from the
 // rows. A client is found by ID and a session by (user, device) with one hash lookup; a user's sessions through a
@@ -48,9 +57,10 @@ public:
     // an active session").
     auto erase_client(std::string_view client_id) -> bool;
 
-    // The held clients no session names, least recently used first (ties by ID), stopping at `max` IDs or at the
-    // first client used at or after `used_before_ms`. A client `excluded` answers true for is skipped. Costs the
-    // clients walked, counted in `rows_examined`, never the session table.
+    // The held clients no session names, least recently used first (ties by ID), stopping at `max` IDs, at the
+    // first client used at or after `used_before_ms`, or once `max_idle_client_rows_examined` clients were examined.
+    // A client `excluded` answers true for is skipped. Costs the clients walked, counted in `rows_examined`, never the
+    // session table.
     [[nodiscard]] auto idle_clients(std::size_t max, std::uint64_t used_before_ms,
                                     std::function<bool(std::string_view)> const& excluded) const
         -> std::vector<std::string>;

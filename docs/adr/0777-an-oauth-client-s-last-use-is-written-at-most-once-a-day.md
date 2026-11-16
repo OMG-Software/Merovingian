@@ -36,7 +36,7 @@ value (a clock that stepped back) or within `oauth_client_touch_interval_ms` (24
 `oauth_clients_without_sessions` walks only the oldest sessionless clients and never reads the session table. A
 client with a session is never in that set, and `delete_oauth_clients` refuses one, so neither the sweep nor the cap
 can delete it (the spec: "The server MUST NOT delete client registrations that have an active session"). The sweep
-asks `oauth_client_has_pending_authorisation` too; it is false until phase 5 keeps pending authorisations.
+asks `oauth_client_has_pending_authorisation` too; it was false until phase 5 kept pending authorisations, and is answered from the stores since [ADR-0782](0782-pending-authorisations-and-authorization-codes-are-in-memory-hashed-bounded-and-never-evicted.md).
 
 ### Positive Consequences
 

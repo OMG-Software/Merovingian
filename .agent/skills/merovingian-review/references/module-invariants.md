@@ -182,8 +182,11 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - Work under the lock is linear in request input. Per-user row counts are capped with the documented errcodes:
   `400 M_TOO_LARGE` (ADR-0173). `#Work under the runtime lock is bounded by the request`
 - OAuth answers come from `oauth_json_response` / `oauth_error_response`; client IDs only from `oauth_client_id_of`;
-  registrations are capped and never evict a client with a session (ADR-0779 to ADR-0781).
-  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
+  registrations are capped and never evict a client with a session (ADR-0779 to ADR-0781). Pending authorisations
+  and codes live only in their hashed, bounded, never-evicting stores (ADR-0782); a password is checked only by
+  `verify_login_credentials` and a session-less account made only by `create_local_account` (ADR-0783); a page is
+  marked `LocalHttpResponse::page` and gets no CORS header (ADR-0785); an OAuth target's query is never logged
+  (ADR-0786). `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`
@@ -250,7 +253,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 - Client addresses only through `ParsedUri::read`; redirect URIs matched byte for byte by `match_redirect_uri`
   (ADR-0770). No redirect before the client and its redirect URI are validated.
 - HTML only through `Page` with `HtmlText` or compile-time parts; every page sends `page_headers()`; only a matched
-  redirect URI adds a `form-action` source (ADR-0772). PKCE `S256` only, constant-time.
+  redirect URI adds a `form-action` source (ADR-0772). PKCE `S256` only, constant-time. Pages send
+  `Referrer-Policy: same-origin`, and a form post is accepted only by `form_post_origin_is_accepted` (ADR-0784).
 - Every absolute OAuth address comes from `OAuthBaseUrl` with a path from `OAuthPaths.hpp` (ADR-0773). A hand-off
   allowlist entry is an https origin or a bare private-use scheme, never a prefix (ADR-0774).
 

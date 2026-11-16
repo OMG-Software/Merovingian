@@ -8,6 +8,7 @@
 #include "merovingian/database/BoundValue.hpp"
 #include "merovingian/database/OAuthClientStoreResult.hpp"
 #include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/OAuthTables.hpp"
 #include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentOAuthClient.hpp"
 #include "merovingian/database/PersistentOAuthSession.hpp"
@@ -526,5 +527,61 @@ SCENARIO("OAuth clients and sessions survive a SQLite reopen, and a device delet
             }
         }
         std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("The idle-client walk stops after a fixed number of rows however many clients are skipped",
+         "[database][oauth][oauth-store][retention][oauth-walk-bound]")
+{
+    GIVEN("more idle clients than the walk examines, held in the in-memory tables")
+    {
+        auto tables = merovingian::database::OAuthTables{};
+        auto const held = merovingian::database::max_idle_client_rows_examined + 8U;
+        for (auto index = std::size_t{0U}; index < held; ++index)
+        {
+            REQUIRE(tables.insert_client(client("client-" + std::to_string(index), 1000U + index)));
+        }
+
+        WHEN("every client is excluded")
+        {
+            auto const before = tables.rows_examined();
+            auto const idle = tables.idle_clients(1U, all_times, [](std::string_view) {
+                return true;
+            });
+            auto const examined = tables.rows_examined() - before;
+
+            THEN("nothing is offered and exactly the bound was examined")
+            {
+                REQUIRE(idle.empty());
+                REQUIRE(examined == merovingian::database::max_idle_client_rows_examined);
+            }
+        }
+
+        WHEN("every client but the last one inside the bound is excluded")
+        {
+            auto const last_inside =
+                "client-" + std::to_string(merovingian::database::max_idle_client_rows_examined - 1U);
+            auto const idle = tables.idle_clients(1U, all_times, [&last_inside](std::string_view id) {
+                return id != last_inside;
+            });
+
+            THEN("that client is found")
+            {
+                REQUIRE(idle == std::vector<std::string>{last_inside});
+            }
+        }
+
+        WHEN("every client but the first one past the bound is excluded")
+        {
+            auto const first_outside = "client-" + std::to_string(merovingian::database::max_idle_client_rows_examined);
+            auto const idle = tables.idle_clients(1U, all_times, [&first_outside](std::string_view id) {
+                return id != first_outside;
+            });
+
+            THEN("the walk stops before it and offers nothing")
+            {
+                REQUIRE(idle.empty());
+            }
+        }
     }
 }
