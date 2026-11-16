@@ -61,6 +61,12 @@ Pure functions and value types for the built-in OAuth 2.0 API
 10. **A hand-off allowlist entry is an origin or a bare scheme, never a prefix** (ADR-0774).
 11. **Client metadata is validated once, by `ClientMetadata::validate`,** also when a stored registration is read back.
     The client ID is a keyed hash of `canonical_bytes()` (phase 4); do not hash anything else for it.
+12. **No default member initialiser holds page text** (ADR-0800). Clang 18 does not constant-evaluate a consteval call
+    in a default member initialiser: it compiles `HtmlText message{"..."}` there and runs the `HtmlLiteral` check when
+    the member is initialised, so a bad literal throws during a request instead of failing the build. No data member
+    whose type names `HtmlText`, `HtmlLiteral`, `HtmlName` or `PagePath` may have an initialiser other than empty
+    braces; give the text where the object is built. `page-text-member-initialiser-tooling`
+    (`tests/tooling/test_page_text_member_initialisers.py`) scans `src/` and `include/` for it.
 
 ## Tests
 

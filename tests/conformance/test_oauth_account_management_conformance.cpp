@@ -28,6 +28,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -238,11 +239,14 @@ SCENARIO(
                 REQUIRE(challenge.status == 401U);
                 auto const* flows = object_member_as_array(body, "flows");
                 REQUIRE(flows != nullptr);
-                REQUIRE(flows->size() == 1U);
-                auto const* flow = std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
-                REQUIRE(flow != nullptr);
-                // Spec: "the response body includes m.oauth in the flows list".
-                REQUIRE(string_array(*flow, "stages") == std::vector<std::string>{"m.oauth"});
+                // Spec: "the response body includes m.oauth in the flows list". The list may hold other flows (this
+                // server adds the pre-standard stage name as a second one, ADR-0799); one of them is m.oauth alone.
+                auto const oauth_flows =
+                    std::ranges::count_if(*flows, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* flow = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                        return flow != nullptr && string_array(*flow, "stages") == std::vector<std::string>{"m.oauth"};
+                    });
+                REQUIRE(oauth_flows == 1);
                 auto const* params = object_of(body, "params");
                 REQUIRE(params != nullptr);
                 auto const* oauth_params = object_of(*params, "m.oauth");

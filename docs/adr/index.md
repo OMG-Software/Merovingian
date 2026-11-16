@@ -680,3 +680,5 @@
 * [0796 - The account pages keep a fixed 15-minute session in memory, bound to a strict cookie and a form token](0796-the-account-pages-keep-a-fixed-15-minute-session-in-memory-bound-to-a-strict-cookie-and-a-form-token.md)
 * [0797 - An OAuth session replaces its cross-signing keys through the m.oauth stage and a one-use approval](0797-an-oauth-session-replaces-its-cross-signing-keys-through-the-m-oauth-stage-and-a-one-use-approval.md)
 * [0798 - Account-page actions share the client API's cores, and every password change ends account-page access](0798-account-page-actions-share-the-client-api-cores-and-every-password-change-ends-account-page-access.md)
+* [0799 - The m.oauth stage accepts a polling retry without a session and reuses the user's live session](0799-the-m-oauth-stage-accepts-a-polling-retry-without-a-session-and-reuses-the-user-s-live-session.md)
+* [0800 - No default member initialiser holds OAuth page text, because clang 18 runs it at run time](0800-no-default-member-initialiser-holds-oauth-page-text-because-clang-18-runs-it-at-run-time.md)

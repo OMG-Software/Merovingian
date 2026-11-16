@@ -649,9 +649,11 @@ SCENARIO("An OAuth session replaces its cross-signing keys through the m.oauth s
             {
                 CHECK(repeat.status == 200U);
                 REQUIRE(challenge.status == 401U);
-                CHECK(contains(challenge.body, R"("flows":[{"stages":["m.oauth"]}])"));
                 CHECK(contains(challenge.body,
-                               std::string{R"("params":{"m.oauth":{"url":")"} + std::string{reset_url} + R"("}})"));
+                               R"("flows":[{"stages":["m.oauth"]},{"stages":["org.matrix.cross_signing_reset"]}])"));
+                CHECK(contains(challenge.body, std::string{R"("params":{"m.oauth":{"url":")"} + std::string{reset_url} +
+                                                   R"("},"org.matrix.cross_signing_reset":{"url":")" +
+                                                   std::string{reset_url} + R"("}})"));
                 REQUIRE_FALSE(session.empty());
                 CHECK(before_approval.status == 401U);
                 CHECK(member(before_approval, "session") == session);
@@ -662,6 +664,105 @@ SCENARIO("An OAuth session replaces its cross-signing keys through the m.oauth s
                 CHECK(audit_count(rt, "cross_signing.reset_used") == 1U);
                 CHECK(second.status == 401U);
                 CHECK(contains(second.body, "m.oauth"));
+            }
+        }
+    }
+}
+
+SCENARIO("A client polling the replacing upload with no auth holds one session and succeeds once after approval",
+         "[integration][oauth][oauth-account][oauth-uia]")
+{
+    GIVEN("alice signed in through OAuth with her first cross-signing keys, and on the account page")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        auto const oauth = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
+        REQUIRE(oauth.ok);
+        auto const upload = [&](std::string const& members) {
+            return send(rt, "POST", std::string{upload_path}, oauth.access_token, "{" + members + "}");
+        };
+        REQUIRE(upload(make_cross_signing_set(std::string{alice_id}).selected_members(true, true, true)).status ==
+                200U);
+        auto const alice = account_sign_in(rt, "alice", alice_password);
+        REQUIRE_FALSE(alice.form_token.empty());
+        auto const approve = [&]() {
+            return post_account(rt, session_form(alice, "approve_cross_signing_reset"), alice.browser).status;
+        };
+        auto const reset_sessions = [&]() {
+            return std::ranges::count_if(rt.uia_sessions, [](auto const& session) {
+                return session.owner == alice_id && session.purpose == "cross_signing_reset";
+            });
+        };
+        auto const replacement = make_cross_signing_set(std::string{alice_id}).master_member();
+
+        WHEN("the same replacing upload is sent sixty times with no auth, then once more after the approval")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            auto session_ids = std::vector<std::string>{};
+            for (auto poll = 0; poll < 60; ++poll)
+            {
+                auto const answer = upload(replacement);
+                statuses.push_back(static_cast<std::uint16_t>(answer.status));
+                session_ids.push_back(member(answer, "session"));
+            }
+            auto const sessions_before_approval = reset_sessions();
+            auto const approved = approve();
+            auto const accepted = upload(replacement);
+            auto const after = upload(make_cross_signing_set(std::string{alice_id}).master_member());
+
+            THEN("every poll is the challenge naming one session; the poll after the approval stores the keys once")
+            {
+                CHECK(std::ranges::all_of(statuses, [](std::uint16_t status) {
+                    return status == 401U;
+                }));
+                REQUIRE_FALSE(session_ids.front().empty());
+                CHECK(std::ranges::all_of(session_ids, [&](std::string const& id) {
+                    return id == session_ids.front();
+                }));
+                CHECK(sessions_before_approval == 1);
+                CHECK(approved == 200U);
+                CHECK(accepted.status == 200U);
+                CHECK_FALSE(approval_held(rt, alice_id));
+                CHECK(audit_count(rt, "cross_signing.reset_used") == 1U);
+                CHECK(after.status == 401U);
+                CHECK(member(after, "session") == session_ids.front());
+            }
+        }
+
+        WHEN("after an approval, the retry carries an auth dict without a session, or the pre-standard stage name")
+        {
+            REQUIRE(approve() == 200U);
+            auto const no_session = upload(replacement + R"(,"auth":{"type":"m.oauth"})");
+            auto const session =
+                member(upload(make_cross_signing_set(std::string{alice_id}).master_member()), "session");
+            REQUIRE(approve() == 200U);
+            auto const unstable =
+                upload(make_cross_signing_set(std::string{alice_id}).master_member() +
+                       R"(,"auth":{"type":"org.matrix.cross_signing_reset","session":")" + session + R"("})");
+
+            THEN("both complete the stage, each spending one approval")
+            {
+                CHECK(no_session.status == 200U);
+                REQUIRE_FALSE(session.empty());
+                CHECK(unstable.status == 200U);
+                CHECK_FALSE(approval_held(rt, alice_id));
+                CHECK(audit_count(rt, "cross_signing.reset_used") == 2U);
+            }
+        }
+
+        WHEN("after an approval, the retry names a session this server did not issue, or sends auth that is no object")
+        {
+            REQUIRE(approve() == 200U);
+            auto const foreign = upload(replacement + R"(,"auth":{"session":"not-a-session-of-ours"})");
+            auto const not_object = upload(replacement + R"(,"auth":"m.oauth")");
+
+            THEN("each gets the challenge and the approval stays")
+            {
+                CHECK(foreign.status == 401U);
+                CHECK(contains(foreign.body, "m.oauth"));
+                CHECK(not_object.status == 401U);
+                CHECK(approval_held(rt, alice_id));
+                CHECK(audit_count(rt, "cross_signing.reset_used") == 0U);
             }
         }
     }

@@ -189,7 +189,10 @@ Rules (ADR-0796 to ADR-0798):
 - **The `m.oauth` stage** (`oauth_cross_signing_reset_stage` in `ClientServerRuntime.cpp`) is offered only to an OAuth
   session's replacing upload; a legacy session keeps `m.login.password` and never touches an approval. The approval is
   taken into a `TakenResetApproval`, which restores it on every way out; `spend()` only after `store_key_api_payload`
-  succeeds. A password stage from an OAuth session is answered with the challenge and never checked.
+  succeeds. A password stage from an OAuth session is answered with the challenge and never checked. A retry with no
+  `auth` or no `session` completes the stage when an approval is live (clients poll that way); a `session` this server
+  did not issue for this does not. The challenge names `live_uia_session` before issuing one, so polling never costs a
+  session per request (ADR-0799); keep both when changing the stage.
 - Log `user_id` only (`account.page.*`); never a password, the cookie, a form token or the query.
 
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the

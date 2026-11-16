@@ -158,6 +158,12 @@ shell = find_program('sh')
   )
 
   test(
+    'page-text-member-initialiser-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_page_text_member_initialisers.py'],
+  )
+
+  test(
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],

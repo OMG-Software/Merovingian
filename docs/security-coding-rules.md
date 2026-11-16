@@ -1020,6 +1020,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
   injection on the login page (CWE-79), and a policy source built from raw input can add directives (CWE-116).
   Source: `src/oauth/AGENTS.md`.
 
+- **No data member of type `HtmlText`, `HtmlLiteral`, `HtmlName` or `PagePath` has a default member initialiser other
+  than empty braces** (`page-text-member-initialiser-tooling`).
+  Why: clang 18 compiles the compile-time text check there as a run-time call, so text that needs escaping is found
+  only when a request throws, not when the build runs (ADR-0800).
+  Source: `src/oauth/AGENTS.md`.
+
 - **PKCE is `S256` only, compared in constant time.**
   Why: `plain` sends the verifier through the browser, which defeats PKCE, and a variable-time comparison leaks how
   much of a guess matched (CWE-208).
@@ -1082,11 +1088,12 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **An account-page form is accepted only with this server's `Origin`, the `__Host-mv-account` session and that
   session's form token (constant time); each page action calls the client API's own function; every password change,
   reset and deactivation ends the user's account-page sessions and reset approvals; a cross-signing reset approval is
-  spent only by a stored upload and is never usable by a password session or with a password stage.**
+  spent only by a stored upload and is never usable by a password session or with a password stage; the `m.oauth`
+  challenge reuses the user's live UIA session, so a polling client costs one session.**
   Why: a forged post signs out a device or deactivates an account (CWE-352); one session's token must not act for
   another; a copied action drifts and misses a revocation step (CWE-613); a page session or approval that outlives a
   password change keeps a stolen credential's reach (CWE-613); a token alone must not replace a user's cross-signing
-  identity (CWE-306) (ADR-0796, ADR-0797, ADR-0798).
+  identity (CWE-306); a session issued per poll fills the user's UIA pool (CWE-770) (ADR-0796 to ADR-0799).
   Source: `src/homeserver/AGENTS.md`.
 
 ## HTTP and network boundary

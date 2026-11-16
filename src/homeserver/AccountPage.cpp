@@ -419,9 +419,9 @@ namespace
     struct PasswordFailure final
     {
         std::uint16_t status{status_unauthorized};
-        // A default member initialiser is not constant-evaluated: the HtmlLiteral check runs at run time here, so the
-        // text holds nothing that would need escaping.
-        oauth::HtmlText message{"That is not the password of this account."};
+        // No default member initialiser: clang 18 does not constant-evaluate an HtmlLiteral there (src/oauth/AGENTS.md
+        // rule 12, ADR-0800), so every return below names its text.
+        oauth::HtmlText message;
         std::optional<std::uint32_t> retry_after_seconds{};
     };
 
@@ -446,7 +446,7 @@ namespace
         case Outcome::account_deactivated:
             break;
         }
-        return {};
+        return {status_unauthorized, oauth::HtmlText{"That is not the password of this account."}, std::nullopt};
     }
 
     [[nodiscard]] auto with_retry_after(LocalHttpResponse response, std::optional<std::uint32_t> seconds)

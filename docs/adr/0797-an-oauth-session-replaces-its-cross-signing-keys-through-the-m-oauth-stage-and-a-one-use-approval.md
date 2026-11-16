@@ -8,6 +8,11 @@ Technical Story: phase 8 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md).
 [ADR-0794](0794-a-uia-endpoint-refuses-an-oauth-session-and-cross-signing-upload-follows-the-spec-exemptions.md) for
 `POST /keys/device_signing/upload`.
 
+Amended by [ADR-0799](0799-the-m-oauth-stage-accepts-a-polling-retry-without-a-session-and-reuses-the-user-s-live-session.md)
+(2026-11-16): with a live approval a retry with no `auth`, or no `session`, also completes the stage; the challenge
+reuses the user's live session and offers `org.matrix.cross_signing_reset` as a second flow. The decision below is
+otherwise unchanged.
+
 ## Context and Problem Statement
 
 ADR-0794 refused every UIA endpoint to an OAuth session with 403 until the account pages existed. The spec's

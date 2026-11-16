@@ -60,6 +60,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   valid 10 minutes, spent only by a stored upload (ADR-0797).
 * Each account-page action calls the client API's own function; a page password change logs every session out and
   keeps the devices (ADR-0798).
+* The `m.oauth` stage accepts a polling retry with no `auth` once approved, reuses the user's live UIA session, and
+  also offers its pre-standard name `org.matrix.cross_signing_reset` (ADR-0799).
+* A tooling test refuses a default member initialiser holding OAuth page text, which clang 18 checks only at run
+  time (ADR-0800).
 
 ## Security Fixes
 

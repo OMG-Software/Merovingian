@@ -2265,6 +2265,24 @@ namespace
         });
     }
 
+    // The newest live session this server issued to `owner` for `purpose`, or nullopt. A challenge that may be
+    // repeated by polling (the `m.oauth` stage, ADR-0799) names it instead of issuing another, so the owner holds one
+    // session for the purpose at a time. One pass over the pool, which is capped at `max_uia_sessions`.
+    [[nodiscard]] auto live_uia_session(ClientServerRuntime const& rt, std::string_view purpose, std::string_view owner)
+        -> std::optional<std::string>
+    {
+        auto const now_ms = wall_clock_milliseconds();
+        for (auto session = rt.uia_sessions.rbegin(); session != rt.uia_sessions.rend(); ++session)
+        {
+            if (!session->session_id.empty() && session->purpose == purpose && session->owner == owner &&
+                (now_ms <= session->created_at_ms || now_ms - session->created_at_ms <= uia_session_ttl_ms))
+            {
+                return session->session_id;
+            }
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto normalize_threepid_address(std::string_view medium, std::string_view address) -> std::string
     {
         if (medium == "email")
@@ -13458,14 +13476,25 @@ namespace
         std::uint64_t approval_expires_at_ms{0U};
     };
 
+    // The name the `m.oauth` stage had before spec v1.17, offered as a second flow with the same parameters for clients
+    // that still look for it (ADR-0799).
+    constexpr auto cross_signing_reset_unstable_stage = std::string_view{"org.matrix.cross_signing_reset"};
+
     // The `m.oauth` User-Interactive Authentication stage of a replacing cross-signing upload from an OAuth session
-    // (spec v1.19 "OAuth authentication" and "Account management"; ADR-0797). nullopt when the stage cannot be offered
-    // (OAuth off, or no usable `server.public_baseurl`): the caller keeps the ADR-0794 403.
+    // (spec v1.19 "OAuth authentication" and "Account management"; ADR-0797, ADR-0799). nullopt when the stage cannot
+    // be offered (OAuth off, or no usable `server.public_baseurl`): the caller keeps the ADR-0794 403.
     //
-    // The stage is complete only when the `auth` dict carries a session this server issued to this user for this
-    // purpose, its `type` is absent or `m.oauth` (a password stage is answered with the challenge and never checked:
-    // an OAuth session cannot complete the upload with a password), and the user approved the reset on the account page
-    // in the last ten minutes. The approval is taken here and spent only by a stored upload.
+    // The stage is complete when the user approved the reset on the account page in the last ten minutes and the
+    // request either names a session this server issued to this user for this purpose, or names no session at all
+    // (no `auth` dict, or one without `session`): a client that polls by resending the same upload is accepted once
+    // the approval exists (ADR-0799). The approval is a per-user flag any of the user's OAuth sessions may spend once,
+    // so the session ID adds no secret. A `type` other than absent, `m.oauth` or the pre-standard name (a password
+    // stage) is answered with the challenge and never checked: an OAuth session cannot complete the upload with a
+    // password. So is a `session` this server did not issue to this user for this purpose. The approval is taken here
+    // and spent only by a stored upload.
+    //
+    // A challenge reuses the user's newest live session for this purpose before issuing one, so a client polling
+    // before the approval holds one session, not one per poll (a session lives ten minutes; ADR-0799).
     [[nodiscard]] auto oauth_cross_signing_reset_stage(ClientServerRuntime& rt, LocalHttpRequest const& req,
                                                        std::string_view user,
                                                        std::optional<canonicaljson::Object> const& body)
@@ -13484,30 +13513,54 @@ namespace
         auto const challenge = [base_url](std::string_view session) {
             auto const url = oauth::account_action_address(base_url->url(oauth::account_path),
                                                            oauth::account_action_cross_signing_reset);
+            auto const flow = [](std::string_view stage) {
+                return json_obj({json_member("stages", json_arr({json_str(std::string{stage})}))});
+            };
+            auto const params = [&url]() {
+                return json_obj({json_member("url", json_str(url))});
+            };
             auto const body_json = json_obj({
-                json_member("flows", json_arr({json_obj({json_member("stages", json_arr({json_str("m.oauth")}))})})),
+                json_member("flows", json_arr({flow("m.oauth"), flow(cross_signing_reset_unstable_stage)})),
                 json_member("params",
-                            json_obj({json_member("m.oauth", json_obj({json_member("url", json_str(url))}))})),
+                            json_obj({json_member("m.oauth", params()),
+                                      json_member(std::string{cross_signing_reset_unstable_stage}, params())})),
                 json_member("session", json_str(std::string{session})),
             });
             return OAuthResetStage{resp(401U, json_serialize(body_json)), 0U};
         };
+        // `auth`, when present, must be an object, and its `type` and `session`, when present, strings: anything else
+        // is answered with the challenge, as a foreign session is.
+        auto const* const auth_value = body.has_value() ? object_member(*body, "auth") : nullptr;
         auto const* const auth = body.has_value() ? object_member_object(*body, "auth") : nullptr;
+        auto const* const type_value = auth != nullptr ? object_member(*auth, "type") : nullptr;
         auto const* const type = auth != nullptr ? string_member(*auth, "type") : nullptr;
+        auto const* const session_value = auth != nullptr ? object_member(*auth, "session") : nullptr;
         auto const* const session = auth != nullptr ? string_member(*auth, "session") : nullptr;
-        if (session != nullptr && uia_session_is_valid(rt, cross_signing_reset_uia_purpose, *session, user))
+        auto const well_formed = (auth_value == nullptr || auth != nullptr) &&
+                                 (type_value == nullptr || type != nullptr) &&
+                                 (session_value == nullptr || session != nullptr);
+        auto const issued_session =
+            session != nullptr && uia_session_is_valid(rt, cross_signing_reset_uia_purpose, *session, user);
+        auto const names_this_stage =
+            type == nullptr || *type == "m.oauth" || *type == cross_signing_reset_unstable_stage;
+        if (well_formed && names_this_stage && (session_value == nullptr || issued_session))
         {
-            if (type == nullptr || *type == "m.oauth")
+            if (auto const expires_at_ms =
+                    rt.homeserver.cross_signing_reset_approvals.take(user, oauth_wall_clock_ms());
+                expires_at_ms.has_value())
             {
-                if (auto const expires_at_ms =
-                        rt.homeserver.cross_signing_reset_approvals.take(user, oauth_wall_clock_ms());
-                    expires_at_ms.has_value())
-                {
-                    return OAuthResetStage{std::nullopt, *expires_at_ms};
-                }
+                return OAuthResetStage{std::nullopt, *expires_at_ms};
             }
-            // Not approved yet, or another stage: the same session, so the client keeps waiting on it.
+        }
+        // Not approved yet, another stage, or a session this server did not issue for this: the challenge, naming the
+        // session the request named when it is a live one, else the user's newest live one, so polling issues none.
+        if (issued_session)
+        {
             return challenge(*session);
+        }
+        if (auto const live = live_uia_session(rt, cross_signing_reset_uia_purpose, user); live.has_value())
+        {
+            return challenge(*live);
         }
         auto const issued = issue_uia_session(rt, cross_signing_reset_uia_purpose, user);
         if (!issued.has_value())

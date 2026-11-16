@@ -9,7 +9,9 @@ namespace merovingian::oauth
 
 // Page text fixed at compile time: a string literal of printable ASCII (space to `~`) holding none of `& < > " '`,
 // so it needs no escaping. The constructor is consteval: a value that is not a constant expression, or that breaks
-// the rule, does not compile (ADR-0772). Text known only at run time goes through HtmlText::escape.
+// the rule, does not compile (ADR-0772). Text known only at run time goes through HtmlText::escape. Clang 18 does not
+// apply this in a default member initialiser, where the check runs at run time instead; such initialisers are refused
+// by a tooling test (ADR-0800). The same holds for HtmlName and PagePath.
 class HtmlLiteral final
 {
 public:

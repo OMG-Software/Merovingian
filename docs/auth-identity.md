@@ -1242,13 +1242,16 @@ the spec's "Account management" names: `account_management_uri` and all six `org
 - **Ending page access.** `end_account_page_access` ends every account-page session of the user and withdraws any
   cross-signing reset approval; `change_local_user_password`, the reset, the page change and `deactivate_user_account`
   call it.
-- **Cross-signing reset (ADR-0797).** The reset page records `CrossSigningResetApprovals::approve` (10 minutes, one
-  per user) and audits `cross_signing.reset_approved`. A replacing upload from an OAuth session is answered 401
-  `{"flows":[{"stages":["m.oauth"]}],"params":{"m.oauth":{"url":"<account page>?action=org.matrix.cross_signing_reset"}},"session":"<id>"}`
-  with a UIA session of purpose `cross_signing_reset`. A retry with that session and `type` absent or `m.oauth` takes
-  the approval; it goes back unless the keys are stored, and a stored upload audits `cross_signing.reset_used`. A
-  password stage from an OAuth session is never checked; a legacy session keeps `m.login.password` and never touches
-  an approval.
+- **Cross-signing reset (ADR-0797, ADR-0799).** The reset page records `CrossSigningResetApprovals::approve` (10
+  minutes, one per user) and audits `cross_signing.reset_approved`. A replacing upload from an OAuth session is
+  answered 401 with two flows, `m.oauth` and its pre-standard name `org.matrix.cross_signing_reset`, each with the URL
+  `<account page>?action=org.matrix.cross_signing_reset` in `params`, and a UIA session of purpose
+  `cross_signing_reset`: the session the request named if it is live, else the user's newest live one, else a new one,
+  so a client that polls holds one session. With a live approval, a retry with no `auth`, an `auth` without `session`,
+  or one naming that session, with `type` absent or either stage name, takes the approval; it goes back unless the keys
+  are stored, and a stored upload audits `cross_signing.reset_used`. A `session` this server did not issue for this,
+  and a password stage, get the challenge; a password from an OAuth session is never checked; a legacy session keeps
+  `m.login.password` and never touches an approval.
 - **Logging.** Under `oauth`, `account.page.*` events with `user_id` only. Never a password, a cookie, a form token or
   the query (`sanitized_http_target` drops it, ADR-0786).
 
