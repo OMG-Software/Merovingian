@@ -6,6 +6,10 @@
 
 Technical Story: phase 3 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md), the `oauth_clients` retention rule
 
+Amended by [ADR-0808](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md): the retention sweep
+first deletes the session rows whose device holds no live token, so a client whose sessions all ended becomes idle and
+ages out here.
+
 ## Context and Problem Statement
 
 The retention sweep deletes a client registration that has no session and has not been used for 30 days, and

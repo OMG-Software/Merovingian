@@ -179,6 +179,42 @@ namespace
         return done;
     }
 
+    // Returns true when every OAuth session row whose device holds no live credential was deleted (or there was none),
+    // false when the sweep stopped at its batch cap or was asked to stop (ADR-0808). Each batch is chosen and deleted
+    // in one hold of the lock, so a grant between batches is seen: a re-granted device holds live tokens again.
+    [[nodiscard]] auto sweep_oauth_sessions(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now,
+                                            StopFlag const& stop) -> bool
+    {
+        auto batches = std::size_t{0U};
+        auto deleted = std::size_t{0U};
+        auto done = false;
+        while (batches < retention_max_batches && !stop.stop_requested())
+        {
+            auto const guard = RuntimeLock{runtime.mutex};
+            auto const ended = database::oauth_sessions_without_live_credentials(runtime.database.persistent_store, now,
+                                                                                 retention_batch_rows);
+            if (ended.empty())
+            {
+                done = true;
+                break;
+            }
+            auto const removed =
+                database::delete_oauth_sessions_without_live_credentials(runtime.database.persistent_store, ended, now);
+            if (!removed.has_value())
+            {
+                LOG_WARNING("Retention sweep could not delete a batch of ended OAuth 2.0 sessions; will retry");
+                return true;
+            }
+            deleted += *removed;
+            ++batches;
+        }
+        if (deleted != 0U)
+        {
+            LOG_INFO("Retention sweep deleted ended OAuth 2.0 sessions; sessions=" + std::to_string(deleted));
+        }
+        return done;
+    }
+
     // Returns true when every expired sessionless client was deleted (or there was none), false when the sweep
     // stopped at its batch cap or was asked to stop. Each batch is chosen and deleted in one hold of the lock, so a
     // session granted between batches is seen by the next choice: delete_oauth_clients refuses a client with one.
@@ -242,8 +278,10 @@ auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::
 {
     auto const credentials_done = sweep_credentials(runtime, now, stop);
     auto const audit_done = sweep_audit_log(runtime, now, stop);
+    // Before the clients, so a client whose only session ended this way may go in the same sweep.
+    auto const sessions_done = sweep_oauth_sessions(runtime, now, stop);
     auto const oauth_done = sweep_oauth_clients(runtime, now, stop);
-    if (credentials_done && audit_done && oauth_done)
+    if (credentials_done && audit_done && sessions_done && oauth_done)
     {
         return std::chrono::duration_cast<std::chrono::milliseconds>(retention_sweep_interval);
     }

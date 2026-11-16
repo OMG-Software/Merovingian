@@ -547,3 +547,72 @@ SCENARIO("Every way a device is deleted deletes its OAuth session row", "[integr
         }
     }
 }
+
+SCENARIO("The retention sweep deletes an OAuth session row once its device holds no live token",
+         "[integration][sqlite][retention][oauth][oauth-session-end]")
+{
+    GIVEN("two clients unused for 31 days, one session whose refresh token expires in an hour, one in 90 days")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto database = TemporarySqliteDatabase{};
+        auto started = merovingian::homeserver::start_runtime(sqlite_config(database.path(), 365U));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& persistent = runtime.database.persistent_store;
+        auto const registration = merovingian::homeserver::register_local_user(
+            runtime, "alice", "CorrectHorse7!Battery", merovingian::tests::registration_token);
+        REQUIRE(registration.ok);
+        auto const user_id = std::string{registration.value};
+        auto const now = std::chrono::system_clock::now();
+        auto const day = std::chrono::hours{24};
+        auto const add_session = [&](std::string const& device, std::string const& client,
+                                     std::chrono::system_clock::time_point refresh_expires_at) {
+            REQUIRE(merovingian::database::store_oauth_client(persistent, oauth_client_at(client, now - (31 * day))) ==
+                    merovingian::database::OAuthClientStoreResult::inserted);
+            REQUIRE(merovingian::database::store_oauth_session(persistent, oauth_session_of(user_id, device, client)));
+            REQUIRE(merovingian::database::store_access_token(
+                persistent, {user_id, device, "token-hash:v4:access-" + device, false, now + std::chrono::minutes{5}}));
+            REQUIRE(merovingian::database::store_refresh_token(
+                persistent, {user_id, device, "token-hash:v4:refresh-" + device, false, refresh_expires_at}));
+        };
+        add_session("DEVENDING", "client-ending", now + std::chrono::hours{1});
+        add_session("DEVLIVE", "client-live", now + (90 * day));
+        auto const session_rows = [&database](std::string const& device) {
+            return durable_row_count(database.path(), "oauth_sessions", "device_id = '" + device + "'");
+        };
+
+        WHEN("the sweep runs while both refresh tokens are live")
+        {
+            std::ignore = merovingian::homeserver::run_retention_sweep(runtime, now, never_stopped);
+
+            THEN("both sessions and both clients are kept")
+            {
+                REQUIRE(session_rows("DEVENDING") == 1);
+                REQUIRE(session_rows("DEVLIVE") == 1);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-ending") != nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-live") != nullptr);
+            }
+        }
+
+        WHEN("the sweep runs two hours later, when one refresh token has expired")
+        {
+            std::ignore =
+                merovingian::homeserver::run_retention_sweep(runtime, now + std::chrono::hours{2}, never_stopped);
+
+            THEN("that session's row goes, from the database and from memory, and its client goes with it")
+            {
+                REQUIRE(session_rows("DEVENDING") == 0);
+                REQUIRE(merovingian::database::find_oauth_session(persistent, user_id, "DEVENDING") == nullptr);
+                REQUIRE(durable_row_count(database.path(), "oauth_clients", "client_id = 'client-ending'") == 0);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-ending") == nullptr);
+            }
+
+            THEN("the session whose refresh token is live, and its client, are kept")
+            {
+                REQUIRE(session_rows("DEVLIVE") == 1);
+                REQUIRE(merovingian::database::find_oauth_session(persistent, user_id, "DEVLIVE") != nullptr);
+                REQUIRE(merovingian::database::find_oauth_client(persistent, "client-live") != nullptr);
+            }
+        }
+    }
+}

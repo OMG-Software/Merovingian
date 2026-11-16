@@ -6,6 +6,10 @@
 
 Technical Story: phase 3 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md), proposal P3
 
+Amended by [ADR-0808](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md): a session row is also
+deleted, in the same transaction, wherever every token of its device is revoked, and by the retention sweep once its
+device holds no live token.
+
 ## Context and Problem Statement
 
 The OAuth 2.0 API needs to know which devices were created by an OAuth grant, with which client and which scope, so

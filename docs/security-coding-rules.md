@@ -645,6 +645,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   spec forbids deleting a client registration that has an active session (ADR-0776, ADR-0777).
   Source: `src/database/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
+- **An OAuth session row never outlives every credential of its device.** A path that revokes all of a device's or a
+  user's tokens calls `revoke_user_credentials`, `revoke_device_tokens` or `revoke_device_credentials`, which delete
+  the matching `oauth_sessions` rows in the same transaction; the retention sweep deletes a row whose device holds no
+  live token, judging it again in the hold that deletes it.
+  Why: a row left behind keeps an ended session's client from being evicted or aged out, and keeps judging a device
+  with no live credential as an OAuth device at the UIA gate (ADR-0808, CWE-613).
+  Source: `src/database/AGENTS.md`.
+
 - **A change to a stored event's JSON or status forgets the room in `ResolvedStateMemo`, and a memo hit is still applied
   through the normal write path.**
   Why: a resolution reads both, and `current_state` has other writers, so a stale or skipped result leaves state a

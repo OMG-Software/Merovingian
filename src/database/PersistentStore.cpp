@@ -1773,6 +1773,8 @@ auto has_room_membership_row(PersistentStore const& store, std::string_view room
                              {std::string{user_id},   false},
                              {std::string{device_id}, false}
     }));
+    // No credential of the device is left, so its OAuth session row goes in the same transaction (ADR-0808).
+    statements.push_back(delete_oauth_session_of_device_statement(user_id, device_id));
     if (!commit_persistent_transaction(store, statements))
     {
         return false;
@@ -1780,6 +1782,7 @@ auto has_room_membership_row(PersistentStore const& store, std::string_view room
     std::ignore = store.access_tokens.revoke_hash(access_token_hash);
     std::ignore = store.access_tokens.revoke_for_device(user_id, device_id);
     std::ignore = store.refresh_tokens.revoke_for_device(user_id, device_id);
+    std::ignore = store.oauth.erase_session(user_id, device_id);
     return true;
 }
 
@@ -2397,6 +2400,100 @@ namespace
         revoked += store.refresh_tokens.revoke_for_user_except_device(user_id, keep_device_id);
     }
     return revoked;
+}
+
+// ADR-0808: an `oauth_sessions` row never outlives every credential of its device, so ending all of a device's or a
+// user's tokens deletes the matching rows in the same transaction, and memory follows only the commit.
+[[nodiscard]] auto revoke_user_credentials(PersistentStore& store, std::string_view user_id,
+                                           std::optional<std::string_view> keep_device_id) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    if (keep_device_id.has_value())
+    {
+        statements.push_back(record_statement(
+            "revoke_user_access_tokens_except_device",
+            "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+            "device_id <> $3",
+            {
+                {"true",                       false},
+                {std::string{user_id},         false},
+                {std::string{*keep_device_id}, false}
+        }));
+        statements.push_back(record_statement(
+            "revoke_user_refresh_tokens_except_device",
+            "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+            "device_id <> $3",
+            {
+                {"true",                       false},
+                {std::string{user_id},         false},
+                {std::string{*keep_device_id}, false}
+        }));
+    }
+    else
+    {
+        statements.push_back(record_statement("revoke_user_access_tokens",
+                                              "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2",
+                                              {
+                                                  {"true",               false},
+                                                  {std::string{user_id}, false}
+        }));
+        statements.push_back(record_statement("revoke_user_refresh_tokens",
+                                              "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2",
+                                              {
+                                                  {"true",               false},
+                                                  {std::string{user_id}, false}
+        }));
+    }
+    statements.push_back(delete_oauth_sessions_of_user_statement(user_id, keep_device_id));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    if (keep_device_id.has_value())
+    {
+        std::ignore = store.access_tokens.revoke_for_user_except_device(user_id, *keep_device_id);
+        std::ignore = store.refresh_tokens.revoke_for_user_except_device(user_id, *keep_device_id);
+    }
+    else
+    {
+        std::ignore = store.access_tokens.revoke_for_user(user_id);
+        std::ignore = store.refresh_tokens.revoke_for_user(user_id);
+    }
+    forget_oauth_sessions_of_user(store, user_id, keep_device_id);
+    return true;
+}
+
+[[nodiscard]] auto revoke_device_tokens(PersistentStore& store, std::string_view user_id, std::string_view device_id)
+    -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        record_statement("revoke_device_access_tokens",
+                         "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
+    }));
+    statements.push_back(
+        record_statement("revoke_device_refresh_tokens",
+                         "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                         "device_id = $3",
+                         {
+                             {"true",                 false},
+                             {std::string{user_id},   false},
+                             {std::string{device_id}, false}
+    }));
+    statements.push_back(delete_oauth_session_of_device_statement(user_id, device_id));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    std::ignore = store.access_tokens.revoke_for_device(user_id, device_id);
+    std::ignore = store.refresh_tokens.revoke_for_device(user_id, device_id);
+    std::ignore = store.oauth.erase_session(user_id, device_id);
+    return true;
 }
 
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,

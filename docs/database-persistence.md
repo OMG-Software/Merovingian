@@ -65,7 +65,12 @@ value. Test fixtures that do not exercise persistence select it through
     session row is written in the caller's transaction
     (`prepare_oauth_session_insert`, then `remember_oauth_session` after the
     commit) and deleted by `delete_device` in the transaction that deletes the
-    device. No foreign keys: no v1 table declares one, and the deleting
+    device. It is also deleted in the transaction that revokes every token of
+    its device (`revoke_user_credentials`, `revoke_device_tokens`,
+    `revoke_device_credentials`), and by the retention sweep once its device
+    holds no access or refresh token that is neither revoked nor expired
+    ([ADR-0808](adr/0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md)).
+    No foreign keys: no v1 table declares one, and the deleting
     transaction removes dependent rows explicitly.
   - In memory: `PersistentStore::oauth` (`OAuthTables`), hydrated on both
     backends, with sessions by (user, device), a per-user index, a session

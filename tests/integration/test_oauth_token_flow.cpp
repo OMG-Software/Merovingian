@@ -17,6 +17,7 @@
 #include "merovingian/database/OAuthStore.hpp"
 #include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentStore.hpp"
+#include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -30,6 +31,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -936,6 +938,176 @@ SCENARIO("A password change ends a sign-in waiting for approval and a code not y
             {
                 CHECK(answer.ok);
                 CHECK(oauth_row(rt, oauth_test_device) != nullptr);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto signed_in_client(hs::ClientServerRuntime& rt, std::string_view client_id) -> OAuthTokenAnswer
+{
+    auto answer = oauth_sign_in(rt, client_id, "alice", alice_password);
+    REQUIRE(answer.ok);
+    REQUIRE(oauth_row(rt, oauth_test_device) != nullptr);
+    return answer;
+}
+
+[[nodiscard]] auto password_auth() -> std::string
+{
+    return R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":")" +
+           std::string{alice_password} + R"("})";
+}
+
+} // namespace
+
+SCENARIO("Ending every credential of a device deletes its OAuth session row with them",
+         "[integration][oauth][oauth-token][oauth-session-end][security]")
+{
+    GIVEN("alice with an OAuth session on OAUTHDEV01 and a legacy session on PWDEVICE")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        auto const answer = signed_in_client(rt, fixture.client_id);
+        auto const legacy = legacy_login(rt, "PWDEVICE");
+        REQUIRE(legacy.status == 200U);
+        auto const legacy_token = member(legacy, "access_token");
+
+        WHEN("she changes her password with POST /account/password and logout_devices")
+        {
+            auto const changed =
+                send(rt, "POST", "/_matrix/client/v3/account/password", legacy_token,
+                     R"({"auth":)" + password_auth() + R"(,"new_password":"NewAlicePass42!y","logout_devices":true})");
+
+            THEN("the OAuth device's tokens and its session row are gone, and the caller's device keeps working")
+            {
+                REQUIRE(changed.status == 200U);
+                CHECK(whoami_status(rt, answer.access_token) == 401U);
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+                CHECK_FALSE(db::oauth_client_has_session(rt.homeserver.database.persistent_store, fixture.client_id));
+                CHECK(whoami_status(rt, legacy_token) == 200U);
+            }
+        }
+
+        WHEN("she changes her password on the account page")
+        {
+            REQUIRE(hs::change_password_on_account_page(rt.homeserver, alice_id, "NewAlicePass42!y").ok);
+
+            THEN("the tokens and the session row are gone")
+            {
+                CHECK(whoami_status(rt, answer.access_token) == 401U);
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+            }
+        }
+
+        WHEN("her password is reset by email with every device signed out")
+        {
+            REQUIRE(hs::reset_local_user_password(rt.homeserver, alice_id, "NewAlicePass42!y", true).ok);
+
+            THEN("the tokens and the session row are gone")
+            {
+                CHECK(whoami_status(rt, answer.access_token) == 401U);
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+            }
+        }
+
+        WHEN("her password is reset by email keeping her devices")
+        {
+            REQUIRE(hs::reset_local_user_password(rt.homeserver, alice_id, "NewAlicePass42!y", false).ok);
+
+            THEN("the OAuth session keeps its tokens and its row")
+            {
+                CHECK(whoami_status(rt, answer.access_token) == 200U);
+                CHECK(oauth_row(rt, oauth_test_device) != nullptr);
+            }
+        }
+
+        WHEN("she deactivates her account")
+        {
+            auto const deactivated = send(rt, "POST", "/_matrix/client/v3/account/deactivate", legacy_token,
+                                          R"({"auth":)" + password_auth() + "}");
+
+            THEN("the tokens and the session row are gone")
+            {
+                REQUIRE(deactivated.status == 200U);
+                CHECK(whoami_status(rt, answer.access_token) == 401U);
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+            }
+        }
+
+        WHEN("the client refreshes, and the spent refresh token is presented again")
+        {
+            auto const refreshed = read_token_answer(
+                post_oauth_form(rt, oauth_token_path, refresh_grant_fields(fixture.client_id, answer.refresh_token)));
+            REQUIRE(refreshed.ok);
+            REQUIRE(whoami_status(rt, refreshed.access_token) == 200U);
+            auto const reused =
+                post_oauth_form(rt, oauth_token_path, refresh_grant_fields(fixture.client_id, answer.refresh_token));
+
+            THEN("reuse ends the session: its tokens and its row are gone, and the device is no OAuth device")
+            {
+                CHECK(oauth_error(reused) == "invalid_grant");
+                CHECK(whoami_status(rt, refreshed.access_token) == 401U);
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+            }
+        }
+
+        WHEN("the store cannot commit while the user's and the device's credentials are ended")
+        {
+            auto& store = rt.homeserver.database.persistent_store;
+            auto const backend = store.backend;
+            store.backend = db::PersistentStoreBackend::sqlite;
+            store.sqlite_path.clear();
+            auto const user_ended = db::revoke_user_credentials(store, alice_id, std::nullopt);
+            auto const device_ended = db::revoke_device_tokens(store, alice_id, oauth_test_device);
+            store.backend = backend;
+
+            THEN("both fail, and the tokens and the session row are all still there")
+            {
+                CHECK_FALSE(user_ended);
+                CHECK_FALSE(device_ended);
+                CHECK(oauth_row(rt, oauth_test_device) != nullptr);
+                CHECK(whoami_status(rt, answer.access_token) == 200U);
+                CHECK(whoami_status(rt, legacy_token) == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("A client whose only session ended with its credentials is evicted at the registration cap",
+         "[integration][oauth][oauth-token][oauth-session-end][cap]")
+{
+    GIVEN("alice signed in to Test App, at a cap of one client")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        std::ignore = signed_in_client(rt, fixture.client_id);
+        rt.limits.max_oauth_clients = 1U;
+        auto const other_client = std::string{
+            R"({"client_uri":"https://other.example.com/","redirect_uris":[)"
+            R"("https://other.example.com/cb"],"token_endpoint_auth_method":"none","client_name":"Other"})"};
+
+        WHEN("her password is changed on the account page, then another client registers")
+        {
+            REQUIRE(hs::change_password_on_account_page(rt.homeserver, alice_id, "NewAlicePass42!y").ok);
+            auto const registered = post_client_registration(rt, other_client);
+
+            THEN("the ended session no longer protects Test App, which is evicted")
+            {
+                CHECK(registered.status == 201U);
+                CHECK(db::find_oauth_client(rt.homeserver.database.persistent_store, fixture.client_id) == nullptr);
+            }
+        }
+
+        WHEN("another client registers while her session is live")
+        {
+            auto const refused = post_client_registration(rt, other_client);
+
+            THEN("Test App is kept and the new client refused")
+            {
+                CHECK(refused.status == 503U);
+                CHECK(db::find_oauth_client(rt.homeserver.database.persistent_store, fixture.client_id) != nullptr);
             }
         }
     }

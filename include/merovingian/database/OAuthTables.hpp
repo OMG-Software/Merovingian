@@ -76,6 +76,9 @@ public:
     // Every session of `user_id`, in no particular order. Costs the user's own sessions, counted in
     // `rows_examined`.
     [[nodiscard]] auto sessions_of_user(std::string_view user_id) const -> std::vector<PersistentOAuthSession>;
+    // Calls `visit` with (user_id, device_id) of every session, in no particular order. Costs every session, counted
+    // in `rows_examined`; only the retention sweep calls it (ADR-0808). `visit` must not change the table.
+    auto for_each_session(std::function<void(std::string_view, std::string_view)> const& visit) const -> void;
 
     // Adds `session`. False, and nothing changes, when (user, device) already holds one. The client need not be
     // held (hydration may load the sessions first); a held client named by it stops being idle.

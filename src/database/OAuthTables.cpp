@@ -140,6 +140,15 @@ auto OAuthTables::sessions_of_user(std::string_view user_id) const -> std::vecto
     return rows;
 }
 
+auto OAuthTables::for_each_session(std::function<void(std::string_view, std::string_view)> const& visit) const -> void
+{
+    for (auto const& [key, session] : sessions_)
+    {
+        visit(session.user_id, session.device_id);
+    }
+    rows_examined_.add(sessions_.size());
+}
+
 auto OAuthTables::insert_session(PersistentOAuthSession session) -> bool
 {
     auto key = session_key(session.user_id, session.device_id);

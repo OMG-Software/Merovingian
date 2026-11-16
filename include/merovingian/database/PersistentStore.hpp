@@ -805,6 +805,16 @@ auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> 
 // "restore" helper: revocation is one-way by design. Do not add one.
 [[nodiscard]] auto revoke_tokens_for_user_except_device(PersistentStore& store, std::string_view user_id,
                                                         std::string_view keep_device_id) -> std::size_t;
+// Revokes every access and refresh token of `user_id` (but those of `keep_device_id`, if given) and deletes the
+// matching `oauth_sessions` rows, in one transaction; memory changes only after the commit. False when the commit
+// failed, and then nothing changed. The path every password change, reset, deactivation and logout of all devices
+// takes, so no OAuth session row outlives its device's credentials (ADR-0808).
+[[nodiscard]] auto revoke_user_credentials(PersistentStore& store, std::string_view user_id,
+                                           std::optional<std::string_view> keep_device_id) -> bool;
+// Revokes every access and refresh token of the device and deletes its `oauth_sessions` row, in one transaction
+// (ADR-0808). False when the commit failed, and then nothing changed.
+[[nodiscard]] auto revoke_device_tokens(PersistentStore& store, std::string_view user_id, std::string_view device_id)
+    -> bool;
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
                                               std::string_view device_id, std::string_view display_name) -> bool;
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;

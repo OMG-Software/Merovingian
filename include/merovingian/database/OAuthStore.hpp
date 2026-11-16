@@ -7,6 +7,7 @@
 #include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PreparedStatement.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -14,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::database
@@ -93,5 +95,27 @@ inline constexpr auto oauth_client_touch_interval_ms = std::uint64_t{24U} * 60U 
 // row, so the two never disagree after a commit or a failed one.
 [[nodiscard]] auto delete_oauth_session_of_device_statement(std::string_view user_id, std::string_view device_id)
     -> PreparedStatement;
+
+// The `oauth_sessions` DELETE for every session of `user_id` but the one of `keep_device_id`, if given, for a
+// transaction that revokes the same tokens (ADR-0808). The memory half is `forget_oauth_sessions_of_user`.
+[[nodiscard]] auto delete_oauth_sessions_of_user_statement(std::string_view user_id,
+                                                           std::optional<std::string_view> keep_device_id)
+    -> PreparedStatement;
+// Erases from memory what `delete_oauth_sessions_of_user_statement` deleted, after its commit.
+auto forget_oauth_sessions_of_user(PersistentStore& store, std::string_view user_id,
+                                   std::optional<std::string_view> keep_device_id) -> void;
+
+// At most `max` sessions, as (user_id, device_id), whose device holds no access or refresh token that is neither
+// revoked nor expired at `now` (ADR-0808): the session has ended, and the row only keeps its client from eviction.
+// Walks every session (counted in the table's `rows_examined`) and each one's own tokens.
+[[nodiscard]] auto oauth_sessions_without_live_credentials(PersistentStore const& store,
+                                                           std::chrono::system_clock::time_point now, std::size_t max)
+    -> std::vector<std::pair<std::string, std::string>>;
+// Deletes, in one transaction, the sessions of `candidates` that still have no live credential at `now` (a grant
+// since they were chosen is kept), then erases them from memory. Returns how many were deleted, or nullopt when the
+// commit failed and nothing changed.
+[[nodiscard]] auto delete_oauth_sessions_without_live_credentials(
+    PersistentStore& store, std::span<std::pair<std::string, std::string> const> candidates,
+    std::chrono::system_clock::time_point now) -> std::optional<std::size_t>;
 
 } // namespace merovingian::database

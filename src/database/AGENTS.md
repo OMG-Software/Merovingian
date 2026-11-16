@@ -205,7 +205,13 @@ commits it with the device and tokens, and only then calls `remember_oauth_sessi
 `delete_oauth_session_of_device_statement` and erases the memory row after the commit. A new device-deleting path does
 the same. **Whatever replaces a device's credentials replaces its `oauth_sessions` row in the same transaction**
 (ADR-0792): `store_oauth_grant` deletes the device's earlier tokens and row and inserts the new ones, and
-`store_device_and_access_token` (a legacy login) deletes the row, so the device is then a legacy device. The grant's
+`store_device_and_access_token` (a legacy login) deletes the row, so the device is then a legacy device. **A row never
+outlives every credential of its device** (ADR-0808): `revoke_user_credentials`, `revoke_device_tokens` and
+`revoke_device_credentials` delete the matching rows in the transaction that revokes the tokens, and the retention
+sweep deletes a row whose device holds no access or refresh token that is neither revoked nor expired
+(`oauth_sessions_without_live_credentials`, then `delete_oauth_sessions_without_live_credentials`, which judges each
+again). A new path that revokes all of a device's or a user's tokens uses one of those functions, never the
+single-table revokes. The grant's
 `oauth.session.granted` audit row is in the same transaction (ADR-0629's pattern: `audit_insert_statement`, then
 `remember_audit_event` after the commit). Neither table is read by the federation worker.
 

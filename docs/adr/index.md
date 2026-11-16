@@ -689,3 +689,4 @@
 * [0805 - Device authorisations and user codes are held in memory, capped, and guessing is throttled per address](0805-device-authorisations-and-user-codes-are-held-in-memory-capped-and-guessing-is-throttled-per-address.md)
 * [0806 - A device sign-in warns first, creates no account, and runs in one browser at a time](0806-a-device-sign-in-warns-first-creates-no-account-and-runs-in-one-browser-at-a-time.md)
 * [0807 - An OAuth sign-in carries the credential stamp of its password check and ends when it changes](0807-an-oauth-sign-in-carries-the-credential-stamp-of-its-password-check-and-ends-when-it-changes.md)
+* [0808 - An OAuth session row ends with the last credential of its device](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md)

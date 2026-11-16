@@ -6,6 +6,9 @@
 
 Technical Story: phase 4 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md)
 
+Amended by [ADR-0808](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md): a client whose sessions
+all ended with their devices' credentials has no session row left, so it is idle and may be evicted at the cap.
+
 ## Context and Problem Statement
 
 Client registration is unauthenticated. The `auth_sensitive` rate limit bounds one address, but many addresses can

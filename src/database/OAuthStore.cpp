@@ -8,8 +8,12 @@
 #include "merovingian/database/PersistentStore.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -216,6 +220,94 @@ auto delete_oauth_session_of_device_statement(std::string_view user_id, std::str
         "DELETE FROM oauth_sessions WHERE user_id = $1 AND device_id = $2",
         {text(user_id), text(device_id)}
     };
+}
+
+auto delete_oauth_sessions_of_user_statement(std::string_view user_id, std::optional<std::string_view> keep_device_id)
+    -> PreparedStatement
+{
+    if (keep_device_id.has_value())
+    {
+        return {
+            "delete_oauth_sessions_of_user_except_device",
+            "DELETE FROM oauth_sessions WHERE user_id = $1 AND device_id <> $2",
+            {text(user_id), text(*keep_device_id)}
+        };
+    }
+    return {"delete_oauth_sessions_of_user", "DELETE FROM oauth_sessions WHERE user_id = $1", {text(user_id)}};
+}
+
+auto forget_oauth_sessions_of_user(PersistentStore& store, std::string_view user_id,
+                                   std::optional<std::string_view> keep_device_id) -> void
+{
+    for (auto const& session : store.oauth.sessions_of_user(user_id))
+    {
+        if (!keep_device_id.has_value() || session.device_id != *keep_device_id)
+        {
+            std::ignore = store.oauth.erase_session(session.user_id, session.device_id);
+        }
+    }
+}
+
+namespace
+{
+
+    // Whether the device still holds a credential that authenticates: an access token or a refresh token that is
+    // neither revoked nor expired. Either keeps the session active (spec: a client with an active session is never
+    // deleted), and an access token alone still makes the device an OAuth device to the UIA gate.
+    [[nodiscard]] auto device_has_live_credential(PersistentStore const& store, std::string_view user_id,
+                                                  std::string_view device_id, std::chrono::system_clock::time_point now)
+        -> bool
+    {
+        return store.refresh_tokens.has_live_for_device(user_id, device_id, now) ||
+               store.access_tokens.has_live_for_device(user_id, device_id, now);
+    }
+
+} // namespace
+
+auto oauth_sessions_without_live_credentials(PersistentStore const& store, std::chrono::system_clock::time_point now,
+                                             std::size_t max) -> std::vector<std::pair<std::string, std::string>>
+{
+    auto ended = std::vector<std::pair<std::string, std::string>>{};
+    if (max == 0U)
+    {
+        return ended;
+    }
+    store.oauth.for_each_session([&](std::string_view user_id, std::string_view device_id) {
+        if (ended.size() < max && !device_has_live_credential(store, user_id, device_id, now))
+        {
+            ended.emplace_back(std::string{user_id}, std::string{device_id});
+        }
+    });
+    return ended;
+}
+
+auto delete_oauth_sessions_without_live_credentials(PersistentStore& store,
+                                                    std::span<std::pair<std::string, std::string> const> candidates,
+                                                    std::chrono::system_clock::time_point now)
+    -> std::optional<std::size_t>
+{
+    auto statements = std::vector<PreparedStatement>{};
+    auto chosen = std::vector<std::pair<std::string, std::string>>{};
+    for (auto const& [user_id, device_id] : candidates)
+    {
+        // Judged again in this hold of the lock: a grant since the candidates were chosen replaced the row and its
+        // tokens, and that session is live.
+        if (store.oauth.find_session(user_id, device_id) != nullptr &&
+            !device_has_live_credential(store, user_id, device_id, now))
+        {
+            statements.push_back(delete_oauth_session_of_device_statement(user_id, device_id));
+            chosen.emplace_back(user_id, device_id);
+        }
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return std::nullopt;
+    }
+    for (auto const& [user_id, device_id] : chosen)
+    {
+        std::ignore = store.oauth.erase_session(user_id, device_id);
+    }
+    return chosen.size();
 }
 
 } // namespace merovingian::database

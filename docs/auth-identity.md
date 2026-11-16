@@ -1073,7 +1073,11 @@ The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-
 - `oauth_sessions`: one row per OAuth device, keyed by (user ID, device ID), naming its client and granted scope (at
   most 2048 bytes). A device is an OAuth device exactly when it has a row. The row is written in the transaction that
   writes the device and its tokens (phase 6), and deleted in the transaction that deletes the device, which covers
-  `POST /logout`, `POST /logout/all`, `DELETE /devices/{deviceId}` and `POST /delete_devices`.
+  `POST /logout`, `POST /logout/all`, `DELETE /devices/{deviceId}` and `POST /delete_devices`. It is also deleted with
+  the tokens wherever every token of its device is revoked and the device kept: a password change with
+  `logout_devices`, a reset or account-page change, deactivation and refresh-token reuse. The hourly sweep deletes the
+  row of a device that holds no live access or refresh token, before it judges the clients, so a client whose sessions
+  all ended is idle and can be evicted or aged out (ADR-0808).
 
 Neither table is read by the federation worker.
 

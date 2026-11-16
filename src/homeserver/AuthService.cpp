@@ -1870,8 +1870,8 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     // a password change, so presenting one ends the device's session.
     if (refresh->revoked)
     {
-        std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
-        std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        // With the device's OAuth session row, in one transaction (ADR-0808).
+        std::ignore = database::revoke_device_tokens(runtime.database.persistent_store, user_id, device_id);
         if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
         {
             append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.reuse_detected",
@@ -2376,8 +2376,8 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
-    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    // With the user's OAuth session rows, in one transaction (ADR-0808).
+    std::ignore = database::revoke_user_credentials(runtime.database.persistent_store, session->user_id, std::nullopt);
     if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
     {
         return make_operation_result(false, {}, "session revocation persistence failed", 500U);
@@ -2532,8 +2532,8 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
     // What must not pass is a persistence failure, which store_* surfaces by
     // leaving the row unchanged; both calls are re-checked below against the
     // store to make the outcome, not the return count, the thing that decides.
-    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
-    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+    // With the user's OAuth session rows, in one transaction (ADR-0808).
+    std::ignore = database::revoke_user_credentials(runtime.database.persistent_store, user_id, std::nullopt);
     if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id))
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
@@ -2645,8 +2645,8 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     // Revoke only when a token is still live, so a repeated delete of a gone device writes nothing.
     if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
     {
-        std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
-        std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        // With the device's OAuth session row, in one transaction (ADR-0808).
+        std::ignore = database::revoke_device_tokens(runtime.database.persistent_store, user_id, device_id);
         if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
         {
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
@@ -2752,8 +2752,9 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         // password change is the action a user takes *after* a compromise, and it
         // was handing the attacker's revoked token back. This call never touches
         // the caller's device, so no revoked credential is ever reinstated.
-        std::ignore = database::revoke_tokens_for_user_except_device(runtime.database.persistent_store, user_id,
-                                                                     session->device_id);
+        // With the other devices' OAuth session rows, in one transaction (ADR-0808).
+        std::ignore = database::revoke_user_credentials(runtime.database.persistent_store, user_id,
+                                                        std::string_view{session->device_id});
         if (!user_tokens_except_device_are_revoked(runtime.database.persistent_store, user_id, session->device_id))
         {
             return make_operation_result(false, {}, "token revocation persistence failed", 500U);
@@ -2852,8 +2853,8 @@ namespace
         {
             // Spec (POST /account/password): with logout_devices the server revokes the access tokens of all the
             // user's devices; there is no device to keep, so none is spared.
-            std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
-            std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+            // With the user's OAuth session rows, in one transaction (ADR-0808).
+            std::ignore = database::revoke_user_credentials(runtime.database.persistent_store, user_id, std::nullopt);
             if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id) ||
                 !database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
             {
