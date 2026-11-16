@@ -156,5 +156,10 @@ run_target fuzz-inbound-pdu        "$builddir/tests/fuzz/fuzz-inbound-pdu"
 run_target fuzz-ipc-frame          "$builddir/tests/fuzz/fuzz-ipc-frame"
 run_target fuzz-appservice-yaml    "$builddir/tests/fuzz/fuzz-appservice-yaml"
 run_target fuzz-push-glob          "$builddir/tests/fuzz/fuzz-push-glob"
+run_target fuzz-form-fields        "$builddir/tests/fuzz/fuzz-form-fields"
+run_target fuzz-request-cookies    "$builddir/tests/fuzz/fuzz-request-cookies"
+run_target fuzz-oauth-scope        "$builddir/tests/fuzz/fuzz-oauth-scope"
+run_target fuzz-oauth-redirect-uri "$builddir/tests/fuzz/fuzz-oauth-redirect-uri"
+run_target fuzz-oauth-client-metadata "$builddir/tests/fuzz/fuzz-oauth-client-metadata"
 
 printf 'All fuzz targets completed cleanly.\n'
