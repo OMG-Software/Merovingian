@@ -107,6 +107,7 @@
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OAuthClock.hpp"
 #include "merovingian/homeserver/OAuthDeviceAuthorization.hpp"
+#include "merovingian/homeserver/OAuthPageResponse.hpp"
 #include "merovingian/homeserver/OAuthRevocation.hpp"
 #include "merovingian/homeserver/OAuthTokenEndpoint.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
@@ -22755,6 +22756,28 @@ auto media_upload_authentication_refusal(ClientServerRuntime& rt, LocalHttpReque
     return dispatch_err(head, rt, 401U, errcode, "unauthenticated").response;
 }
 
+// Whether the request was routed to one of the server's own HTML pages: the authorisation, device link and account
+// pages, and the legacy SSO redirects while they hand off to those pages (ADR-0802). Judged on the same path, method
+// and configuration the routes match on, so an exception escaping a page handler is answered with a page (ADR-0803).
+static auto request_serves_page(ClientServerRuntime const& rt, LocalHttpRequest const& req, std::string_view path)
+    -> bool
+{
+    if (req.method != "GET" && req.method != "POST")
+    {
+        return false;
+    }
+    auto const& oauth_config = rt.homeserver.config.server().oauth;
+    if (oauth_config.enabled && (path == oauth::authorize_path.view() || path == oauth::account_path.view() ||
+                                 (path == oauth::link_path.view() && oauth_config.device_grant_enabled)))
+    {
+        return true;
+    }
+    auto constexpr sso_redirect = std::string_view{"/_matrix/client/v3/login/sso/redirect"};
+    return req.method == "GET" && legacy_login_hand_off_enabled(oauth_config) &&
+           (path == sso_redirect ||
+            (path.starts_with(sso_redirect) && path.substr(sso_redirect.size()).starts_with('/')));
+}
+
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
 {
     return handle_client_server_request(rt, req, ClientServerDispatchOptions{.can_wait = can_wait});
@@ -22807,6 +22830,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                            {"type",   core::current_exception_type_name(), false}
         },
                        observability::LogEventSeverity::error);
+        if (request_serves_page(rt, req, path))
+        {
+            // A browser is on the other end: a fixed page with the pages' own headers, and no CORS header (ADR-0785).
+            return DispatchResult{DispatchResult::Status::complete,
+                                  oauth_error_page_response(500U, oauth::HtmlText{"Something went wrong"},
+                                                            oauth::HtmlText{"The server could not answer this page. "
+                                                                            "Try again later."}),
+                                  {}};
+        }
         result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "internal server error");
         apply_cors_headers(req, result.response, rt.cors);
         return result;

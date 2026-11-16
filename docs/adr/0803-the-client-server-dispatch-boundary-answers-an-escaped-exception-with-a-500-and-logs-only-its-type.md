@@ -6,6 +6,9 @@
 
 Technical Story: part 0 of the device authorization grant work (plan P11 in `docs/todos/oauth-2-0-api.md`).
 
+Amended by [ADR-0810](0810-an-exception-escaping-one-of-the-server-s-own-pages-is-answered-with-a-fixed-error-page.md):
+a request routed to one of the server's own HTML pages is answered with a fixed error page instead of the JSON 500.
+
 ## Context and Problem Statement
 
 Handlers return errors as values, but a handler can still throw: `std::bad_alloc`, a standard library precondition, a

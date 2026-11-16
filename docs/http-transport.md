@@ -586,7 +586,10 @@ An exception a client-server handler lets escape is answered at the dispatch bou
 with `500 M_UNKNOWN` and the fixed text `internal server error`, the request's CORS headers, and a kept connection,
 whichever pool ran the request (ADR-0803). The runtime lock is released by the unwinding and taken afresh only to
 build the answer. A `std::overflow_error` from the sync stream counter keeps its answer, `sync stream counter
-exhausted` (ADR-0315). See `observability-audit.md` for the log line, which never carries the exception's message.
+exhausted` (ADR-0315). A request routed to one of the server's own HTML pages (the authorisation, device link and
+account pages, and the legacy SSO redirects while they hand off to them) is answered instead with a fixed 500 error
+page under the pages' own headers and no CORS header (ADR-0810). See `observability-audit.md` for the log line, which
+never carries the exception's message.
 
 The public client-server and internal local-router entry points also
 preflight the **path portion**, before the first `?`, for literal NUL and

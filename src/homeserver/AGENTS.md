@@ -90,6 +90,9 @@ answers `500 M_UNKNOWN` (`internal server error`) and logs as `request.exception
 and `core::current_exception_type_name()`. Never log `what()` of a request's exception, and never add a catch-all in a
 handler or a transport call site in its place: handlers still return errors as values, and this is the backstop.
 `HomeserverRuntime::test_client_request_hook` is the test seam that makes a request throw.
+A request `request_serves_page` names (the authorisation, device link and account pages, and the SSO redirects while
+they hand off) gets a fixed HTML error page instead (`oauth_error_page_response`, ADR-0810); a new page route must be
+added there too.
 
 ## Architecture boundaries
 

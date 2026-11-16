@@ -7,6 +7,7 @@
 #include "../support/ConsoleLogCapture.hpp"
 #include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/OAuthRegistrationSupport.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
@@ -15,9 +16,11 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
+#include "merovingian/homeserver/LocalHttpRequest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <future>
 #include <stdexcept>
 #include <string>
@@ -194,6 +197,67 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
             {
                 REQUIRE(answered.response.status == 401U);
                 REQUIRE(contains(answered.response.body, "M_MISSING_TOKEN"));
+            }
+        }
+    }
+}
+
+SCENARIO("An exception escaping one of the server's own pages is answered with a page",
+         "[homeserver][request-exception][oauth][oauth-page]")
+{
+    GIVEN("a runtime with the OAuth 2.0 API and the device grant on, whose every request throws")
+    {
+        auto config = merovingian::tests::oauth_registration_config();
+        config.server().oauth.device_grant_enabled = true;
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.rate_limit_engine.reset();
+        runtime.homeserver.test_client_request_hook = [](std::string_view) {
+            throw std::runtime_error{std::string{secret_text}};
+        };
+
+        WHEN("a browser opens each page: authorisation, device link, account, and the SSO redirects")
+        {
+            auto const targets = std::array{
+                std::string_view{"/_merovingian/oauth2/authorize?client_id=x"},
+                std::string_view{"/_merovingian/oauth2/link"},
+                std::string_view{"/_merovingian/account?action=org.matrix.profile"},
+                std::string_view{"/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fapp.example.com%2F"},
+                std::string_view{
+                    "/_matrix/client/v3/login/sso/redirect/oidc?redirectUrl=https%3A%2F%2Fapp.example.com%2F"},
+            };
+            THEN("each answer is a 500 HTML page with the pages' headers, no CORS header and nothing of the message")
+            {
+                for (auto const target : targets)
+                {
+                    INFO(target);
+                    auto const answered =
+                        merovingian::homeserver::handle_client_server_request(runtime, {"GET", std::string{target}});
+                    REQUIRE(answered.response.status == 500U);
+                    CHECK(answered.response.page);
+                    CHECK(merovingian::tests::response_header(answered.response, "Content-Type")
+                              .starts_with("text/html"));
+                    CHECK_FALSE(
+                        merovingian::tests::response_header(answered.response, "Content-Security-Policy").empty());
+                    CHECK(
+                        merovingian::tests::response_header(answered.response, "Access-Control-Allow-Origin").empty());
+                    CHECK_FALSE(contains(answered.response.body, "M_UNKNOWN"));
+                    CHECK_FALSE(contains(answered.response.body, secret_text));
+                }
+                REQUIRE(lock_is_free_for_another_thread(runtime));
+            }
+        }
+        WHEN("an OAuth API endpoint that answers JSON throws")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{"POST", "/_merovingian/oauth2/token"};
+            request.headers.push_back({"Content-Type", "application/x-www-form-urlencoded"});
+            auto const answered = merovingian::homeserver::handle_client_server_request(runtime, request);
+            THEN("it keeps the JSON 500 M_UNKNOWN")
+            {
+                REQUIRE(answered.response.status == 500U);
+                CHECK_FALSE(answered.response.page);
+                CHECK(contains(answered.response.body, R"("errcode":"M_UNKNOWN")"));
             }
         }
     }

@@ -104,6 +104,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   keys succeeds without it, and an application service never needs it, as the spec says (ADR-0794).
 * The code grant names the session a replayed code ends before it commits, so no step that can fail follows the
   commit (ADR-0792).
+* An exception escaping the authorisation, device link, account or SSO hand-off page is answered with an HTML error
+  page under the pages' headers, not JSON (ADR-0810).
 * The OAuth refresh grant lists a device after a restart with its stored display name, not its device ID.
 
 ## Release notes
