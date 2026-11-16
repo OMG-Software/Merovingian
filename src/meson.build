@@ -4,6 +4,8 @@ subdir('crypto')
 # canonicaljson before auth: auth links it (Identity.cpp, OidcDiscovery.cpp).
 subdir('canonicaljson')
 subdir('auth')
+# oauth after auth: it links auth (device_id_is_valid), canonicaljson and crypto.
+subdir('oauth')
 # http and platform before email, and email before config: config validation
 # calls email's address and relay-URL checks, and email sends through libcurl.
 subdir('http')

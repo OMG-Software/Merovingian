@@ -434,6 +434,8 @@ shell = find_program('sh')
       'unit/test_core_form_fields.cpp',
       'unit/test_core_host_cookie.cpp',
       'unit/test_core_request_cookies.cpp',
+      'unit/test_oauth_pkce.cpp',
+      'unit/test_oauth_scope.cpp',
       'unit/test_http_request_limits.cpp',
       'unit/test_inbound_ingestion.cpp',
       'unit/test_join_routing.cpp',
@@ -591,7 +593,7 @@ shell = find_program('sh')
     cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
     link_args: password_hash_cost_link_args,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)

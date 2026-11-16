@@ -649,3 +649,5 @@
 * [0765 - A form body is read strictly and refused whole](0765-a-form-body-is-read-strictly-and-refused-whole.md)
 * [0766 - A malformed or repeated cookie makes only its own name unusable](0766-a-malformed-or-repeated-cookie-makes-only-its-own-name-unusable.md)
 * [0767 - A response head the formatter cannot write safely is refused with a 500](0767-a-response-head-the-formatter-cannot-write-safely-is-refused-with-a-500.md)
+* [0768 - The `oauth` module is pure, and carries the wire error beside `core::Error`](0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)
+* [0769 - An OAuth scope needs the API token and exactly one device token of ten or more unreserved characters](0769-an-oauth-scope-needs-the-api-token-and-exactly-one-device-token-of-ten-or-more-unreserved-characters.md)

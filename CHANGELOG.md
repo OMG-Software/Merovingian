@@ -11,6 +11,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   `docs/todos/oauth-2-0-api.md`. Nothing the server does has changed yet (ADR-0760 to ADR-0764).
 * Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, for the OAuth 2.0
   pages and endpoints; no route uses them yet (ADR-0765, ADR-0766).
+* A module `oauth` of pure OAuth 2.0 building blocks, not yet served: PKCE `S256` and the scope parser
+  (ADR-0768, ADR-0769).
+* `crypto::sha256` for protocols that name SHA-256.
 
 ## Security Fixes
 

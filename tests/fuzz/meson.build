@@ -76,6 +76,15 @@ fuzz_targets = [
     link_with: [core_lib],
   ),
   executable(
+    'fuzz-oauth-scope',
+    sources: files('fuzz_oauth_scope.cpp'),
+    include_directories: [inc, include_directories('.')],
+    cpp_args: fuzz_sanitizer_args,
+    link_args: fuzz_sanitizer_args,
+    dependencies: [libsodium_dep, openssl_dep],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+  ),
+  executable(
     'fuzz-srv-record',
     sources: files('fuzz_srv_record.cpp'),
     include_directories: inc,

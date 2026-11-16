@@ -18,6 +18,7 @@ or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for b
 | `ConstantTime.cpp` | Constant-time byte comparison (wraps `sodium_memcmp`) |
 | `Random.cpp` | Bounded random byte generation (wraps `randombytes_buf`) |
 | `GenericHash.cpp` | Domain-separated BLAKE2b hashing helpers |
+| `Sha256.cpp` | `sha256`: SHA-256 for protocols that name it (PKCE `S256`, the page policy's style hash); a hash of the project's own choosing uses `GenericHash` |
 | `Encoding.cpp` | Hex and base64 (URL-safe and original) encoding wrappers |
 | `MasterKey.cpp` | Loads and validates the operator master key into locked memory; fails closed if it cannot be locked |
 | `SecretBox.cpp` | `SecretBoxKey` — encrypts server signing secrets at rest (`secretbox:v1:` format) |
@@ -59,6 +60,7 @@ Do **not** bypass this interface by calling libsodium functions directly.
 - Access-token hashing — the `crypto_generichash` call over the token stays in `src/auth/Token.cpp`;
   only the `v3`/`v4` HMAC key it uses is derived here, in `TokenKey.cpp`
 - SHA-256 content/reference hashes — used directly in `src/events/` via the canonical JSON pipeline
+  (every other SHA-256 goes through `crypto::sha256`)
 
 ## Key spec sections
 
