@@ -287,6 +287,9 @@ escape, a field with no `=` or an empty name, an empty field (`&&`), a raw byte 
 NUL or invalid UTF-8, and a repeated name each refuse the whole body. `+` is a space; an empty body is an empty set.
 Caps, each refused rather than cut: 64 KiB of body, 64 fields, 64 bytes of decoded name, 8 KiB of decoded value.
 `parse_query_params` stays lenient and is not for these bodies.
+`core::FormFields::parse_query` reads the query of the browser pages (`/_merovingian/oauth2/authorize`,
+`/_merovingian/oauth2/link`, `/_merovingian/account` and the legacy SSO redirect's hand-off) the same way, except that a
+bare name with no `=` and an empty field count as not sent (RFC 6749 section 3.1); the bare name is still checked.
 
 `core::RequestCookies::parse` reads a `Cookie` header (RFC 6265 section 4.2.1) without percent-decoding (ADR-0766).
 A sibling host under the same parent domain can add cookies to what the browser sends, so a malformed or repeated

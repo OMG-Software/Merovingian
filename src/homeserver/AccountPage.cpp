@@ -394,7 +394,7 @@ namespace
 
     [[nodiscard]] auto handle_get(AccountContext const& context) -> LocalHttpResponse
     {
-        auto parsed = core::FormFields::parse(request_target_query(context.request.target));
+        auto parsed = core::FormFields::parse_query(request_target_query(context.request.target));
         auto const* const fields = std::get_if<core::FormFields>(&parsed);
         // An unreadable query (a parameter sent twice, a bad escape) asks for nothing: the overview.
         auto const requested =

@@ -58,6 +58,14 @@ public:
     // ErrorCode::invalid_argument: a cap above is exceeded. Either message is fixed text, never input.
     [[nodiscard]] static auto parse(std::string_view body) -> std::variant<FormFields, Error>;
 
+    // The fields of a page's request query (the part after `?`, without it), read as `parse` reads a body except that
+    // a bare name with no `=` and an empty field (`&&`, a leading or trailing `&`) count as not sent: RFC 6749 section
+    // 3.1, "Parameters sent without a value MUST be treated as if they were omitted from the request". A bare name is
+    // still decoded and checked, so a malformed escape, NUL or invalid UTF-8 in it refuses the query, and every other
+    // refusal and cap of `parse` holds; a bare name repeated, or beside a sent field of that name, is not a repeat.
+    // Only for the queries of the browser pages (ADR-0765): a body is read with `parse`.
+    [[nodiscard]] static auto parse_query(std::string_view query) -> std::variant<FormFields, Error>;
+
     // The decoded value of field `name`, or nullopt when it was not sent. The view lives as long as this object.
     [[nodiscard]] auto find(std::string_view name) const noexcept -> std::optional<std::string_view>;
 
@@ -68,6 +76,14 @@ public:
     [[nodiscard]] auto fields() const noexcept -> std::vector<std::pair<std::string, std::string>> const&;
 
 private:
+    // Omission: whether a bare name or an empty field is refused (`parse`) or counts as not sent (`parse_query`).
+    enum class Omission : unsigned char
+    {
+        refused,
+        not_sent,
+    };
+
+    [[nodiscard]] static auto read(std::string_view text, Omission omission) -> std::variant<FormFields, Error>;
     auto wipe() noexcept -> void;
 
     std::vector<std::pair<std::string, std::string>> m_fields{};

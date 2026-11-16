@@ -269,6 +269,63 @@ SCENARIO("A form body is read up to each cap and refused one past it", "[core][f
     }
 }
 
+SCENARIO("A page query counts a bare name and an empty field as not sent", "[core][form][form-query]")
+{
+    GIVEN("queries with bare names and empty fields beside real fields")
+    {
+        WHEN("each is read as a page query and as a body")
+        {
+            auto const bare = FormFields::parse_query("prompt&client_id=abc&&state=x%20y&");
+            auto const bare_body = FormFields::parse("prompt&client_id=abc&&state=x%20y&");
+            auto const leading = FormFields::parse_query("&client_id=abc");
+            auto const only_bare = FormFields::parse_query("state&state&&");
+            auto const bare_and_sent = FormFields::parse_query("state&state=one");
+
+            THEN("the page query keeps only the fields with a value, and the body is refused")
+            {
+                REQUIRE(refusal_code(bare) == ErrorCode::none);
+                auto const& fields = std::get<FormFields>(bare);
+                CHECK(fields.size() == 2U);
+                CHECK(fields.find("client_id") == "abc");
+                CHECK(fields.find("state") == "x y");
+                CHECK_FALSE(fields.find("prompt").has_value());
+                CHECK(refusal_code(bare_body) == ErrorCode::parse_failure);
+                REQUIRE(refusal_code(leading) == ErrorCode::none);
+                CHECK(std::get<FormFields>(leading).find("client_id") == "abc");
+                REQUIRE(refusal_code(only_bare) == ErrorCode::none);
+                CHECK(std::get<FormFields>(only_bare).empty());
+                REQUIRE(refusal_code(bare_and_sent) == ErrorCode::none);
+                CHECK(std::get<FormFields>(bare_and_sent).find("state") == "one");
+            }
+        }
+        WHEN("a page query breaks any other rule")
+        {
+            THEN("it is refused as a body would be")
+            {
+                for (auto const query : std::array<std::string_view, 9>{
+                         "a=1&a=2",
+                         "=x",
+                         "a=%zz",
+                         "bad%zz&a=1",
+                         "a%00&b=1",
+                         "a=%00",
+                         "a=%ff",
+                         "a b=1",
+                         "x&a=1&a=2",
+                     })
+                {
+                    INFO(query);
+                    CHECK(refusal_code(FormFields::parse_query(query)) == ErrorCode::parse_failure);
+                }
+                auto const long_bare = std::string(FormFields::max_name_bytes + 1U, 'n') + "&a=1";
+                CHECK(refusal_code(FormFields::parse_query(long_bare)) == ErrorCode::parse_failure);
+                CHECK(refusal_code(FormFields::parse_query(repeated("a&", FormFields::max_fields))) ==
+                      ErrorCode::invalid_argument);
+            }
+        }
+    }
+}
+
 SCENARIO("Moving a form keeps its fields and empties the source", "[core][form]")
 {
     GIVEN("a parsed form")

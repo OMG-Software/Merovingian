@@ -956,7 +956,7 @@ namespace
     {
         auto& runtime = rt.homeserver;
         // Step 1: the client and its redirect URI. Nothing here is ever sent to an address.
-        auto parsed = core::FormFields::parse(request_target_query(request.target));
+        auto parsed = core::FormFields::parse_query(request_target_query(request.target));
         auto const* fields = std::get_if<core::FormFields>(&parsed);
         if (fields == nullptr)
         {
@@ -1127,7 +1127,7 @@ namespace
     // browser cookie the form post needs. Nothing is looked up: the user confirms the code by sending the form.
     [[nodiscard]] auto handle_link_get(LocalHttpRequest const& request) -> LocalHttpResponse
     {
-        auto parsed = core::FormFields::parse(request_target_query(request.target));
+        auto parsed = core::FormFields::parse_query(request_target_query(request.target));
         auto const* fields = std::get_if<core::FormFields>(&parsed);
         auto prefill = std::optional<std::string>{};
         if (fields != nullptr)
@@ -1282,7 +1282,7 @@ auto handle_oauth_link(ClientServerRuntime& runtime, LocalHttpRequest const& req
 auto handle_login_hand_off(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
 {
     auto& runtime = rt.homeserver;
-    auto parsed = core::FormFields::parse(request_target_query(request.target));
+    auto parsed = core::FormFields::parse_query(request_target_query(request.target));
     auto const* fields = std::get_if<core::FormFields>(&parsed);
     if (fields == nullptr)
     {

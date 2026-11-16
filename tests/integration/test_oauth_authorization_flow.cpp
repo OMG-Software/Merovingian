@@ -546,6 +546,43 @@ SCENARIO("An authorisation request whose client or redirect URI cannot be valida
     }
 }
 
+SCENARIO("An authorisation request with a bare name or an empty field reads them as not sent",
+         "[integration][oauth][oauth-authorize][form-query]")
+{
+    GIVEN("a registered client")
+    {
+        auto fixture = make_fixture(false);
+        auto& rt = fixture.started.runtime;
+        auto const query = form_encode(oauth_authorize_parameters(fixture.client_id));
+        auto const raw = [&](std::string const& target_query) {
+            return authorize_request(rt, "GET", std::string{oauth_authorize_path} + "?" + target_query, {},
+                                     BrowserContext{});
+        };
+
+        WHEN("the well-formed request is sent with a bare name, a doubled & and a trailing &")
+        {
+            auto const answer = raw("prompt&" + query + "&&ui_locales&");
+
+            THEN("it is the sign-in page, as for the request without them")
+            {
+                CHECK(answer.status == 200U);
+                CHECK(answer.page);
+                CHECK_FALSE(response_header(answer, "Set-Cookie").empty());
+            }
+        }
+        WHEN("a bare name holds a malformed escape")
+        {
+            auto const answer = raw("bad%zz&" + query);
+
+            THEN("it is still refused as a 400 page")
+            {
+                CHECK(answer.status == 400U);
+                CHECK(response_header(answer, "Location").empty());
+            }
+        }
+    }
+}
+
 SCENARIO("A refused authorisation request is redirected to the client with the error and the state",
          "[integration][oauth][oauth-authorize]")
 {

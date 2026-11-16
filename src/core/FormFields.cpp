@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace merovingian::core
 {
@@ -92,6 +93,18 @@ namespace
         return decoded.find('\0') == std::string_view::npos && utf8_is_valid(decoded);
     }
 
+    // A bare name (a query field with no `=`) is not kept, but it must still be well formed: the same escapes, bytes,
+    // UTF-8 and length as a kept name.
+    [[nodiscard]] auto bare_name_is_acceptable(std::string_view encoded) -> bool
+    {
+        auto decoded = std::string{};
+        decoded.reserve(encoded.size());
+        auto const acceptable = decode_component(encoded, decoded) && decoded.size() <= FormFields::max_name_bytes &&
+                                decoded_text_is_acceptable(decoded);
+        wipe_string(decoded);
+        return acceptable;
+    }
+
 } // namespace
 
 FormFields::~FormFields() noexcept
@@ -122,6 +135,16 @@ auto FormFields::wipe() noexcept -> void
 
 auto FormFields::parse(std::string_view body) -> std::variant<FormFields, Error>
 {
+    return read(body, Omission::refused);
+}
+
+auto FormFields::parse_query(std::string_view query) -> std::variant<FormFields, Error>
+{
+    return read(query, Omission::not_sent);
+}
+
+auto FormFields::read(std::string_view body, Omission omission) -> std::variant<FormFields, Error>
+{
     if (body.size() > max_body_bytes)
     {
         return over_limit("body size");
@@ -145,6 +168,19 @@ auto FormFields::parse(std::string_view body) -> std::variant<FormFields, Error>
         auto const separator = remaining.find('&');
         auto const field = remaining.substr(0U, separator);
         auto const equals = field.find('=');
+        if (omission == Omission::not_sent && (field.empty() || equals == std::string_view::npos))
+        {
+            if (!field.empty() && !bare_name_is_acceptable(field))
+            {
+                return malformed();
+            }
+            if (separator == std::string_view::npos)
+            {
+                break;
+            }
+            remaining.remove_prefix(separator + 1U);
+            continue;
+        }
         if (field.empty() || equals == std::string_view::npos || equals == 0U)
         {
             return malformed();

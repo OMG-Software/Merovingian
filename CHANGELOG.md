@@ -116,6 +116,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * A native client on an `http://[::1]` redirect URI completes its sign-in: CSP cannot name an IPv6 host, so
   `form-action` gets `http:` for it (ADR-0811).
 * The hand-off confirmation page shows the destination's port, so two loopback applications are told apart.
+* The page queries of `/authorize`, `/link`, `/account` and the SSO redirect read a bare name or an empty field as
+  not sent, as RFC 6749 section 3.1 asks, instead of refusing the request (ADR-0765).
 
 ## Release notes
 

@@ -5,6 +5,12 @@
 
 Technical Story: phase 1 of the OAuth 2.0 API plan (`docs/todos/oauth-2-0-api.md`)
 
+Amended 2026-11-16 (review finding 13): the query strings of the browser pages (`/_merovingian/oauth2/authorize`,
+`/_merovingian/oauth2/link`, `/_merovingian/account` and the legacy SSO redirect) are read with
+`FormFields::parse_query`, which counts a bare name with no `=` and an empty field (`&&`, a leading or trailing `&`)
+as not sent, as RFC 6749 section 3.1 asks of a parameter sent without a value. The bare name is still decoded and
+checked, and every other refusal holds. A request body is still read with `parse`, which refuses both.
+
 ## Context and Problem Statement
 
 The OAuth 2.0 token and revocation endpoints and the authentication pages read `application/x-www-form-urlencoded`
