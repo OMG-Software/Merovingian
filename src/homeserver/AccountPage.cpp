@@ -133,8 +133,8 @@ namespace
     }
 
     // The action and device the browser asked for, each only when valid: `action` one of the six spec actions, and
-    // `device_id` only with a device action and only one `auth::device_id_is_valid` accepts (spec: "Actions which don't
-    // support the device ID will ignore it").
+    // `device_id` only with a device action or the cross-signing reset (ADR-0809) and only one
+    // `auth::device_id_is_valid` accepts (spec: "Actions which don't support the device ID will ignore it").
     struct RequestedPage final
     {
         std::optional<std::string_view> action{};
@@ -146,7 +146,7 @@ namespace
     {
         auto page = RequestedPage{};
         page.action = oauth::account_management_action(action);
-        if (page.action.has_value() && oauth::account_action_takes_device(*page.action) && device_id.has_value() &&
+        if (page.action.has_value() && oauth::account_action_carries_device(*page.action) && device_id.has_value() &&
             auth::device_id_is_valid(*device_id))
         {
             page.device_id = std::string{*device_id};
@@ -313,6 +313,25 @@ namespace
         return found;
     }
 
+    // The device a cross-signing reset approval may be bound to: one of the user's own devices that holds an OAuth
+    // session (ADR-0809). Anything else (another user's device, an unknown one, a legacy device) is nullopt and is
+    // never shown.
+    [[nodiscard]] auto reset_requesting_device(HomeserverRuntime const& runtime, std::string_view user_id,
+                                               std::optional<std::string_view> device_id)
+        -> std::optional<OwnedDeviceRow>
+    {
+        if (!device_id.has_value() || !auth::device_id_is_valid(*device_id))
+        {
+            return std::nullopt;
+        }
+        auto device = user_device(runtime, user_id, *device_id);
+        if (!device.has_value() || !device->oauth_session)
+        {
+            return std::nullopt;
+        }
+        return device;
+    }
+
     [[nodiscard]] auto unknown_device_response(AccountContext const& context, SignedIn const& signed_in)
         -> LocalHttpResponse
     {
@@ -357,7 +376,12 @@ namespace
         }
         if (action == oauth::account_action_cross_signing_reset)
         {
-            return oauth_plain_page(status_ok, oauth::account_cross_signing_reset_page(frame));
+            auto const device = reset_requesting_device(
+                runtime, user_id,
+                requested.device_id.has_value() ? std::optional<std::string_view>{*requested.device_id} : std::nullopt);
+            auto const view =
+                device.has_value() ? std::optional<oauth::AccountDeviceRow>{view_of(*device)} : std::nullopt;
+            return oauth_plain_page(status_ok, oauth::account_cross_signing_reset_page(frame, view));
         }
         auto const profile = database::find_profile(runtime.database.persistent_store, user_id);
         auto display_name = std::optional<std::string_view>{};
@@ -712,12 +736,27 @@ namespace
             oauth::HtmlText{"Your account is deactivated and every session of it is signed out."});
     }
 
-    [[nodiscard]] auto handle_approve_reset(AccountContext const& context, SignedIn const& signed_in)
-        -> LocalHttpResponse
+    [[nodiscard]] auto handle_approve_reset(AccountContext const& context, SignedIn const& signed_in,
+                                            core::FormFields const& fields) -> LocalHttpResponse
     {
         auto& runtime = context.rt.homeserver;
         auto const& user_id = signed_in.session.user_id;
-        if (!runtime.cross_signing_reset_approvals.approve(user_id, oauth_wall_clock_ms()))
+        // The page carries the device it named (ADR-0809). A posted device that is no longer one of the user's OAuth
+        // devices is refused, never widened into an approval any session could use.
+        auto const posted_device = fields.find(oauth::account_device_field.view());
+        auto bound_device = std::string{};
+        if (posted_device.has_value())
+        {
+            auto const device = reset_requesting_device(runtime, user_id, posted_device);
+            if (!device.has_value())
+            {
+                return result_page(context, signed_in, status_bad_request, oauth::HtmlText{"Reset not allowed"},
+                                   oauth::HtmlText{"The device that asked for the reset is no longer signed in to your "
+                                                   "account. Nothing was allowed."});
+            }
+            bound_device = device->device_id;
+        }
+        if (!runtime.cross_signing_reset_approvals.approve(user_id, bound_device, oauth_wall_clock_ms()))
         {
             return with_retry_after(result_page(context, signed_in, status_unavailable,
                                                 oauth::HtmlText{"Reset not allowed"},
@@ -725,7 +764,7 @@ namespace
                                     1U);
         }
         append_local_audit(runtime.database, observability::AuditCategory::auth, "cross_signing.reset_approved",
-                           user_id, user_id, "account page");
+                           user_id, user_id, bound_device.empty() ? "account page" : "account page; bound to a device");
         log_account("account.page.cross_signing_reset_approved", user_id, observability::LogEventSeverity::info);
         return result_page(context, signed_in, status_ok, oauth::HtmlText{"Reset allowed"},
                            oauth::HtmlText{"Return to your application to finish the reset. The permission lasts 10 "
@@ -796,7 +835,7 @@ namespace
         }
         if (action == oauth::account_post_approve_reset.view())
         {
-            return handle_approve_reset(context, *signed_in);
+            return handle_approve_reset(context, *signed_in, *fields);
         }
         return form_refused(oauth::HtmlText{"This form asked for something this page does not do."});
     }

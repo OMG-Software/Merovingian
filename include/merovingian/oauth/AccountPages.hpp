@@ -46,6 +46,9 @@ inline constexpr auto account_action_cross_signing_reset = std::string_view{"org
     -> std::optional<std::string_view>;
 // Whether `action` takes the `device_id` parameter (spec: "Actions which don't support the device ID will ignore it").
 [[nodiscard]] auto account_action_takes_device(std::string_view action) noexcept -> bool;
+// Whether `action` carries a `device_id` through the sign-in: the device actions, and the cross-signing reset, whose
+// approval is bound to the device that asked for it (ADR-0809).
+[[nodiscard]] auto account_action_carries_device(std::string_view action) noexcept -> bool;
 
 // The address of the account page for `action` and, when given, `device_id`: `account_url` (`OAuthBaseUrl::url(
 // account_path)`) with `?action=` and `&device_id=`, each value percent-encoded (`percent_encode_redirect_value`) so
@@ -92,8 +95,11 @@ inline constexpr auto account_post_approve_reset = HtmlName{"approve_cross_signi
 // `org.matrix.account_deactivate`: what deactivation does, and the password again.
 [[nodiscard]] auto account_deactivate_page(AccountPageFrame const& frame, std::optional<HtmlText> const& error) -> Page;
 // `org.matrix.cross_signing_reset`: that the user's encryption identity will be replaced and other users will see them
-// as unverified, and the approve button.
-[[nodiscard]] auto account_cross_signing_reset_page(AccountPageFrame const& frame) -> Page;
+// as unverified, and the approve button. With `device` (one of the user's OAuth devices, the one that asked), the page
+// names the device and its client and the form carries its ID, so only that device may use the approval; without, it
+// says that any application signed in with OAuth may use it (ADR-0809).
+[[nodiscard]] auto account_cross_signing_reset_page(AccountPageFrame const& frame,
+                                                    std::optional<AccountDeviceRow> const& device) -> Page;
 // A signed-in page that reports what was done (or what failed): `title`, `message` and the links back.
 [[nodiscard]] auto account_result_page(AccountPageFrame const& frame, HtmlText title, HtmlText const& message) -> Page;
 // A page with no session: `title`, `message` and a link to sign in again at `account_url`.

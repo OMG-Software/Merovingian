@@ -1104,12 +1104,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **An account-page form is accepted only with this server's `Origin`, the `__Host-mv-account` session and that
   session's form token (constant time); each page action calls the client API's own function; every password change,
   reset and deactivation ends the user's account-page sessions and reset approvals; a cross-signing reset approval is
-  spent only by a stored upload and is never usable by a password session or with a password stage; the `m.oauth`
-  challenge reuses the user's live UIA session, so a polling client costs one session.**
+  spent only by a stored upload and is never usable by a password session or with a password stage; an approval given
+  on a page that named the requesting OAuth device is spent only by that device, and a `device_id` that is not one of
+  the user's OAuth devices is never shown or bound; the `m.oauth` challenge reuses the user's live UIA session, so a
+  polling client costs one session.**
   Why: a forged post signs out a device or deactivates an account (CWE-352); one session's token must not act for
   another; a copied action drifts and misses a revocation step (CWE-613); a page session or approval that outlives a
   password change keeps a stolen credential's reach (CWE-613); a token alone must not replace a user's cross-signing
-  identity (CWE-306); a session issued per poll fills the user's UIA pool (CWE-770) (ADR-0796 to ADR-0799).
+  identity (CWE-306); another of the user's OAuth sessions must not spend an approval given for the device that asked
+  (CWE-863); a session issued per poll fills the user's UIA pool (CWE-770) (ADR-0796 to ADR-0799, ADR-0809).
   Source: `src/homeserver/AGENTS.md`.
 
 - **With `server.oauth.legacy_api_enabled=false` no legacy route issues a user a new session or lists the legacy

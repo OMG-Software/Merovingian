@@ -7,6 +7,9 @@
 Technical Story: phase 9 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md), part 0. Amends
 [ADR-0797](0797-an-oauth-session-replaces-its-cross-signing-keys-through-the-m-oauth-stage-and-a-one-use-approval.md).
 
+Amended by [ADR-0809](0809-a-cross-signing-reset-approval-is-bound-to-the-oauth-device-that-asked-for-it.md) (2026-11-16): a
+retry without a session completes the stage only with an approval that is unbound or bound to the retrying device.
+
 ## Context and Problem Statement
 
 ADR-0797 completed the `m.oauth` stage of a replacing `POST /keys/device_signing/upload` only when the retry carried an

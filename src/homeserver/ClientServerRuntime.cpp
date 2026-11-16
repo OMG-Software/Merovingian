@@ -13449,9 +13449,11 @@ namespace
     class TakenResetApproval final
     {
     public:
-        TakenResetApproval(ClientServerRuntime& rt, std::string_view user_id, std::uint64_t expires_at_ms)
+        TakenResetApproval(ClientServerRuntime& rt, std::string_view user_id, std::string_view bound_device_id,
+                           std::uint64_t expires_at_ms)
             : m_rt{&rt}
             , m_user_id{user_id}
+            , m_bound_device_id{bound_device_id}
             , m_expires_at_ms{expires_at_ms}
         {
         }
@@ -13467,7 +13469,7 @@ namespace
             }
             try
             {
-                m_rt->homeserver.cross_signing_reset_approvals.restore(m_user_id, m_expires_at_ms,
+                m_rt->homeserver.cross_signing_reset_approvals.restore(m_user_id, m_bound_device_id, m_expires_at_ms,
                                                                        oauth_wall_clock_ms());
             }
             catch (...)
@@ -13488,6 +13490,8 @@ namespace
     private:
         ClientServerRuntime* m_rt;
         std::string m_user_id;
+        // The device the approval was bound to (empty: unbound), so a restored approval keeps its binding (ADR-0809).
+        std::string m_bound_device_id;
         std::uint64_t m_expires_at_ms;
         bool m_spent{false};
     };
@@ -13498,6 +13502,7 @@ namespace
     {
         std::optional<LocalHttpResponse> answer{};
         std::uint64_t approval_expires_at_ms{0U};
+        std::string approval_device_id{};
     };
 
     // The name the `m.oauth` stage had before spec v1.17, offered as a second flow with the same parameters for clients
@@ -13511,16 +13516,18 @@ namespace
     // The stage is complete when the user approved the reset on the account page in the last ten minutes and the
     // request either names a session this server issued to this user for this purpose, or names no session at all
     // (no `auth` dict, or one without `session`): a client that polls by resending the same upload is accepted once
-    // the approval exists (ADR-0799). The approval is a per-user flag any of the user's OAuth sessions may spend once,
-    // so the session ID adds no secret. A `type` other than absent, `m.oauth` or the pre-standard name (a password
-    // stage) is answered with the challenge and never checked: an OAuth session cannot complete the upload with a
-    // password. So is a `session` this server did not issue to this user for this purpose. The approval is taken here
-    // and spent only by a stored upload.
+    // the approval exists (ADR-0799). The challenge URL carries the requesting device's `device_id` (spec "Account
+    // management URL parameters": a Matrix-specific action may take it), so the page can bind the approval to that
+    // device; a bound approval is spent only by that device's upload, an unbound one by any of the user's OAuth
+    // sessions (ADR-0809). The session ID adds no secret. A `type` other than absent, `m.oauth` or the pre-standard
+    // name (a password stage) is answered with the challenge and never checked: an OAuth session cannot complete the
+    // upload with a password. So is a `session` this server did not issue to this user for this purpose. The approval
+    // is taken here and spent only by a stored upload.
     //
     // A challenge reuses the user's newest live session for this purpose before issuing one, so a client polling
     // before the approval holds one session, not one per poll (a session lives ten minutes; ADR-0799).
     [[nodiscard]] auto oauth_cross_signing_reset_stage(ClientServerRuntime& rt, LocalHttpRequest const& req,
-                                                       std::string_view user,
+                                                       std::string_view user, std::string_view device_id,
                                                        std::optional<canonicaljson::Object> const& body)
         -> std::optional<OAuthResetStage>
     {
@@ -13534,9 +13541,9 @@ namespace
         {
             return std::nullopt;
         }
-        auto const challenge = [base_url](std::string_view session) {
+        auto const challenge = [base_url, device_id](std::string_view session) {
             auto const url = oauth::account_action_address(base_url->url(oauth::account_path),
-                                                           oauth::account_action_cross_signing_reset);
+                                                           oauth::account_action_cross_signing_reset, device_id);
             auto const flow = [](std::string_view stage) {
                 return json_obj({json_member("stages", json_arr({json_str(std::string{stage})}))});
             };
@@ -13550,7 +13557,7 @@ namespace
                                       json_member(std::string{cross_signing_reset_unstable_stage}, params())})),
                 json_member("session", json_str(std::string{session})),
             });
-            return OAuthResetStage{resp(401U, json_serialize(body_json)), 0U};
+            return OAuthResetStage{resp(401U, json_serialize(body_json)), 0U, {}};
         };
         // `auth`, when present, must be an object, and its `type` and `session`, when present, strings: anything else
         // is answered with the challenge, as a foreign session is.
@@ -13569,11 +13576,12 @@ namespace
             type == nullptr || *type == "m.oauth" || *type == cross_signing_reset_unstable_stage;
         if (well_formed && names_this_stage && (session_value == nullptr || issued_session))
         {
-            if (auto const expires_at_ms =
-                    rt.homeserver.cross_signing_reset_approvals.take(user, oauth_wall_clock_ms());
-                expires_at_ms.has_value())
+            auto& approvals = rt.homeserver.cross_signing_reset_approvals;
+            auto const now_ms = oauth_wall_clock_ms();
+            auto bound_device = approvals.bound_device(user, now_ms).value_or(std::string{});
+            if (auto const expires_at_ms = approvals.take(user, device_id, now_ms); expires_at_ms.has_value())
             {
-                return OAuthResetStage{std::nullopt, *expires_at_ms};
+                return OAuthResetStage{std::nullopt, *expires_at_ms, std::move(bound_device)};
             }
         }
         // Not approved yet, another stage, or a session this server did not issue for this: the challenge, naming the
@@ -13589,11 +13597,11 @@ namespace
         auto const issued = issue_uia_session(rt, cross_signing_reset_uia_purpose, user);
         if (!issued.has_value())
         {
-            return OAuthResetStage{uia_pool_full_response(rt, req).response, 0U};
+            return OAuthResetStage{uia_pool_full_response(rt, req).response, 0U, {}};
         }
         if (issued->empty())
         {
-            return OAuthResetStage{err(500U, "M_UNKNOWN", "no authentication session could be issued"), 0U};
+            return OAuthResetStage{err(500U, "M_UNKNOWN", "no authentication session could be issued"), 0U, {}};
         }
         return challenge(*issued);
     }
@@ -13616,7 +13624,7 @@ namespace
         {
             if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
             {
-                auto const stage = oauth_cross_signing_reset_stage(rt, req, user, cs_body);
+                auto const stage = oauth_cross_signing_reset_stage(rt, req, user, device_id, cs_body);
                 if (!stage.has_value())
                 {
                     return err(403U, "M_FORBIDDEN", *refusal);
@@ -13625,7 +13633,7 @@ namespace
                 {
                     return *stage->answer;
                 }
-                taken_approval.emplace(rt, user, stage->approval_expires_at_ms);
+                taken_approval.emplace(rt, user, stage->approval_device_id, stage->approval_expires_at_ms);
             }
             else
             {

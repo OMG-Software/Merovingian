@@ -159,7 +159,7 @@ SCENARIO("Every signed-in account page escapes the user, the server and every de
                 merovingian::oauth::account_unknown_device_page(frame).render(),
                 merovingian::oauth::account_password_page(frame, HtmlText{"An error."}).render(),
                 merovingian::oauth::account_deactivate_page(frame, std::nullopt).render(),
-                merovingian::oauth::account_cross_signing_reset_page(frame).render(),
+                merovingian::oauth::account_cross_signing_reset_page(frame, std::nullopt).render(),
                 merovingian::oauth::account_result_page(frame, HtmlText{"Done"}, HtmlText{"It was done."}).render(),
             };
 
@@ -201,7 +201,7 @@ SCENARIO("An account page shows fixed text for a value it cannot show, and no fo
         {
             auto const device_html = merovingian::oauth::account_device_page(frame, device).render();
             auto const overview = merovingian::oauth::account_overview_page(tokenless, std::nullopt).render();
-            auto const reset = merovingian::oauth::account_cross_signing_reset_page(tokenless).render();
+            auto const reset = merovingian::oauth::account_cross_signing_reset_page(tokenless, std::nullopt).render();
             auto const remove = merovingian::oauth::account_device_delete_page(tokenless, device).render();
 
             THEN("fixed text replaces each value, and a page with no token shows no form")

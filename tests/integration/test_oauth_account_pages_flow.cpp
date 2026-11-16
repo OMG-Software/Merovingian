@@ -49,8 +49,9 @@ constexpr auto alice_id = std::string_view{"@alice:example.org"};
 constexpr auto bob_password = std::string_view{"BobPass99!xyz"};
 constexpr auto bob_id = std::string_view{"@bob:example.org"};
 constexpr auto upload_path = std::string_view{"/_matrix/client/v3/keys/device_signing/upload"};
-constexpr auto reset_url =
-    std::string_view{"https://matrix.example.org/_merovingian/account?action=org.matrix.cross_signing_reset"};
+// The challenge names the requesting device (ADR-0809); the fixture's OAuth device is OAUTHDEV01.
+constexpr auto reset_url = std::string_view{
+    "https://matrix.example.org/_merovingian/account?action=org.matrix.cross_signing_reset&device_id=OAUTHDEV01"};
 
 [[nodiscard]] auto account_config(bool oauth_enabled = true) -> merovingian::config::Config
 {
@@ -796,10 +797,10 @@ SCENARIO("A cross-signing reset approval is not usable expired, by a refused upl
         WHEN("each misuse is tried")
         {
             // An approval granted just over ten minutes ago.
-            REQUIRE(approvals.approve(alice_id, now - hs::CrossSigningResetApprovals::lifetime_ms));
+            REQUIRE(approvals.approve(alice_id, {}, now - hs::CrossSigningResetApprovals::lifetime_ms));
             auto const expired = upload(oauth.access_token, replacement.master_member() + session_auth);
             // A live approval, then an upload that takes it and is refused (bob's key) before anything is stored.
-            REQUIRE(approvals.approve(alice_id, now));
+            REQUIRE(approvals.approve(alice_id, {}, now));
             auto const refused =
                 upload(oauth.access_token, make_cross_signing_set(std::string{bob_id}).master_member() + session_auth);
             auto const held_after_refusal = approval_held(rt, alice_id);
@@ -853,6 +854,139 @@ SCENARIO("The OAuth server metadata names the account page and its six actions",
                 {
                     CHECK(contains(response.body, std::string{"\""} + action + "\""));
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("A cross-signing reset approval given for the device that asked is spent only by that device",
+         "[integration][oauth][oauth-account][oauth-uia][reset-binding][security]")
+{
+    GIVEN("alice signed in through OAuth on OAUTHDEV01 and OAUTHDEV0B, with a password on LEGACYDEV, and keys held")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        auto const device_a = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
+        REQUIRE(device_a.ok);
+        auto const device_b = oauth_sign_in(rt, fixture.client_id, "alice", alice_password,
+                                            with_parameter(oauth_authorize_parameters(fixture.client_id), "scope",
+                                                           oauth_scope_for_device("OAUTHDEV0B")));
+        REQUIRE(device_b.ok);
+        REQUIRE_FALSE(password_login(rt, "alice", alice_password, "LEGACYDEV").empty());
+        REQUIRE_FALSE(password_login(rt, "bob", bob_password, "BOBDEV").empty());
+        auto const upload = [&](std::string const& token, std::string const& members) {
+            return send(rt, "POST", std::string{upload_path}, token, "{" + members + "}");
+        };
+        REQUIRE(upload(device_a.access_token,
+                       make_cross_signing_set(std::string{alice_id}).selected_members(true, true, true))
+                    .status == 200U);
+        auto const alice = account_sign_in(rt, "alice", alice_password);
+        REQUIRE_FALSE(alice.form_token.empty());
+        auto const reset_page = [&](std::string_view device) {
+            return get_account(rt, "action=org.matrix.cross_signing_reset&device_id=" + std::string{device},
+                               alice.browser);
+        };
+
+        WHEN("OAUTHDEV0B's replacing upload is challenged, and alice opens the URL it names")
+        {
+            auto const challenge =
+                upload(device_b.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
+            auto const page = reset_page("OAUTHDEV0B");
+
+            THEN("the URL carries OAUTHDEV0B, and the page names the device and its client and carries its ID")
+            {
+                REQUIRE(challenge.status == 401U);
+                CHECK(contains(challenge.body, "action=org.matrix.cross_signing_reset&device_id=OAUTHDEV0B"));
+                REQUIRE(page.status == 200U);
+                CHECK(contains(page.body, "Only this device can use the permission"));
+                CHECK(contains(page.body, "OAUTHDEV0B"));
+                CHECK(contains(page.body, "Test App"));
+                CHECK(contains(page.body, R"(name="device_id" value="OAUTHDEV0B")"));
+            }
+        }
+
+        WHEN("alice approves for OAUTHDEV0B, then OAUTHDEV01 polls its upload, then OAUTHDEV0B does")
+        {
+            auto const approved = post_account(rt,
+                                               session_form(alice, "approve_cross_signing_reset",
+                                                            {
+                                                                {"device_id", "OAUTHDEV0B"}
+            }),
+                                               alice.browser);
+            auto const by_a =
+                upload(device_a.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
+            auto const held_after_a = approval_held(rt, alice_id);
+            auto const by_b =
+                upload(device_b.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
+
+            THEN("OAUTHDEV01 is challenged and leaves the approval; OAUTHDEV0B spends it")
+            {
+                CHECK(approved.status == 200U);
+                CHECK(by_a.status == 401U);
+                CHECK(held_after_a);
+                CHECK(by_b.status == 200U);
+                CHECK_FALSE(approval_held(rt, alice_id));
+                CHECK(audit_count(rt, "cross_signing.reset_used") == 1U);
+            }
+        }
+
+        WHEN("alice approves with no device, then OAUTHDEV01 polls its upload")
+        {
+            auto const page = get_account(rt, "action=org.matrix.cross_signing_reset", alice.browser);
+            auto const approved = post_account(rt, session_form(alice, "approve_cross_signing_reset"), alice.browser);
+            auto const by_a =
+                upload(device_a.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
+
+            THEN("the page says any OAuth application may use it, and any of her OAuth sessions spends it as before")
+            {
+                CHECK(contains(page.body, "Any application signed in to your account"));
+                CHECK_FALSE(contains(page.body, R"(name="device_id")"));
+                CHECK(approved.status == 200U);
+                CHECK(by_a.status == 200U);
+                CHECK_FALSE(approval_held(rt, alice_id));
+            }
+        }
+
+        WHEN("the page is asked for with bob's device, a legacy device of alice's, and an unknown device")
+        {
+            auto const bobs = reset_page("BOBDEV");
+            auto const legacy = reset_page("LEGACYDEV");
+            auto const unknown = reset_page("NOSUCHDEV");
+
+            THEN("each device is ignored and never shown: the page is the unbound one")
+            {
+                for (auto const* page : {&bobs, &legacy, &unknown})
+                {
+                    CHECK(page->status == 200U);
+                    CHECK(contains(page->body, "Any application signed in to your account"));
+                    CHECK_FALSE(contains(page->body, R"(name="device_id")"));
+                }
+                CHECK_FALSE(contains(bobs.body, "BOBDEV"));
+                CHECK_FALSE(contains(legacy.body, "LEGACYDEV"));
+                CHECK_FALSE(contains(unknown.body, "NOSUCHDEV"));
+            }
+        }
+
+        WHEN("an approval is posted naming a device that is not one of her OAuth devices")
+        {
+            auto const for_legacy = post_account(rt,
+                                                 session_form(alice, "approve_cross_signing_reset",
+                                                              {
+                                                                  {"device_id", "LEGACYDEV"}
+            }),
+                                                 alice.browser);
+            auto const for_bobs = post_account(rt,
+                                               session_form(alice, "approve_cross_signing_reset",
+                                                            {
+                                                                {"device_id", "BOBDEV"}
+            }),
+                                               alice.browser);
+
+            THEN("nothing is approved")
+            {
+                CHECK(for_legacy.status == 400U);
+                CHECK(for_bobs.status == 400U);
+                CHECK_FALSE(approval_held(rt, alice_id));
             }
         }
     }

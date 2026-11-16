@@ -1263,6 +1263,13 @@ the spec's "Account management" names: `account_management_uri` and all six `org
   are stored, and a stored upload audits `cross_signing.reset_used`. A `session` this server did not issue for this,
   and a password stage, get the challenge; a password from an OAuth session is never checked; a legacy session keeps
   `m.login.password` and never touches an approval.
+- **The device that asked (ADR-0809).** The challenge URL also carries `&device_id=` with the requesting device (the
+  spec lets a Matrix-specific action take it). When that names one of the signed-in user's own OAuth devices, the reset
+  page names the device and its client and its form carries the ID: the approval is bound, and only that device's
+  upload takes it (another device's poll gets the challenge and leaves it). Any other `device_id` is ignored and never
+  shown; the page then says that any application signed in through this server's sign-in page can use the permission,
+  and the approval is unbound as before. A posted `device_id` that is no longer one of the user's OAuth devices is a
+  400 page with nothing approved.
 - **Logging.** Under `oauth`, `account.page.*` events with `user_id` only. Never a password, a cookie, a form token or
   the query (`sanitized_http_target` drops it, ADR-0786).
 

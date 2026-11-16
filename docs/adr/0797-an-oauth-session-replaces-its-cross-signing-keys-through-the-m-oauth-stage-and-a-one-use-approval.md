@@ -13,6 +13,10 @@ Amended by [ADR-0799](0799-the-m-oauth-stage-accepts-a-polling-retry-without-a-s
 reuses the user's live session and offers `org.matrix.cross_signing_reset` as a second flow. The decision below is
 otherwise unchanged.
 
+Amended by [ADR-0809](0809-a-cross-signing-reset-approval-is-bound-to-the-oauth-device-that-asked-for-it.md) (2026-11-16): the
+challenge URL carries the requesting device, and an approval given on a page that named one of the user's OAuth devices
+is spent only by that device's upload.
+
 ## Context and Problem Statement
 
 ADR-0794 refused every UIA endpoint to an OAuth session with 403 until the account pages existed. The spec's

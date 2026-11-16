@@ -209,7 +209,10 @@ Rules (ADR-0796 to ADR-0798):
   succeeds. A password stage from an OAuth session is answered with the challenge and never checked. A retry with no
   `auth` or no `session` completes the stage when an approval is live (clients poll that way); a `session` this server
   did not issue for this does not. The challenge names `live_uia_session` before issuing one, so polling never costs a
-  session per request (ADR-0799); keep both when changing the stage.
+  session per request (ADR-0799); keep both when changing the stage. The challenge URL carries the requesting device,
+  and the reset page binds the approval to it only when it is one of the user's OAuth devices
+  (`reset_requesting_device`); a bound approval is taken only by that device's upload and restored bound (ADR-0809).
+  Never show or bind a `device_id` that check refuses.
 - Log `user_id` only (`account.page.*`); never a password, the cookie, a form token or the query.
 
 The legacy API switch (`server.oauth.legacy_api_enabled`, ADR-0801) is decided by `legacy_auth_refusal`

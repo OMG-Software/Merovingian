@@ -87,6 +87,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   and an unpolled device approval: they are refused, not granted (ADR-0807).
 * An OAuth session's row now goes with the last credential of its device (a password change, reset, deactivation,
   refresh-token reuse or expiry), so its client can be evicted or aged out (ADR-0808).
+* A cross-signing reset approved on a page that named the asking OAuth device can be used only by that device; the
+  `m.oauth` URL now carries `device_id` (ADR-0809).
 
 ## Bug fixes
 

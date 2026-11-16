@@ -25,6 +25,10 @@ namespace merovingian::homeserver
 // so a failed store does not spend it and two concurrent uploads cannot both use one approval: `runtime.mutex`
 // serialises every use, and the second upload finds nothing to take.
 //
+// An approval may be bound to one of the user's OAuth devices, the one whose upload asked for it (the `device_id` of
+// the `m.oauth` challenge URL, ADR-0809): only that device's upload may take it. An approval with an empty device is
+// unbound and any of the user's OAuth sessions may take it, as before.
+//
 // Bounded at `max_approvals`; expired approvals are removed at the start of every operation, soonest first, at the cost
 // of those removed. Every operation takes the current time, so a test needs no clock.
 class CrossSigningResetApprovals final
@@ -37,18 +41,26 @@ public:
     // bounded at 4096 (`AccountSessionStore::max_sessions`).
     static constexpr auto max_approvals = std::size_t{4096U};
 
-    // Records an approval for `user_id` valid until `now_ms + lifetime_ms`, replacing any the user holds. False, with
-    // nothing recorded, for an empty user ID or at `max_approvals` approvals of other users.
-    [[nodiscard]] auto approve(std::string_view user_id, std::uint64_t now_ms) -> bool;
+    // Records an approval for `user_id` valid until `now_ms + lifetime_ms`, bound to `device_id` (empty: unbound),
+    // replacing any the user holds. False, with nothing recorded, for an empty user ID or at `max_approvals` approvals
+    // of other users.
+    [[nodiscard]] auto approve(std::string_view user_id, std::string_view device_id, std::uint64_t now_ms) -> bool;
 
     // Whether `user_id` holds a live approval.
     [[nodiscard]] auto holds(std::string_view user_id, std::uint64_t now_ms) -> bool;
 
-    // Removes the user's live approval and returns its expiry, or nullopt when there is none.
-    [[nodiscard]] auto take(std::string_view user_id, std::uint64_t now_ms) -> std::optional<std::uint64_t>;
+    // The device the user's live approval is bound to: empty when unbound, nullopt when there is no live approval.
+    [[nodiscard]] auto bound_device(std::string_view user_id, std::uint64_t now_ms) -> std::optional<std::string>;
 
-    // Gives back an approval `take` returned, unless it has expired since or the user approved again meanwhile.
-    auto restore(std::string_view user_id, std::uint64_t expires_at_ms, std::uint64_t now_ms) -> void;
+    // Removes the user's live approval and returns its expiry, or nullopt when there is none or it is bound to a device
+    // other than `device_id` (which then keeps it).
+    [[nodiscard]] auto take(std::string_view user_id, std::string_view device_id, std::uint64_t now_ms)
+        -> std::optional<std::uint64_t>;
+
+    // Gives back an approval `take` returned, with the device it was bound to, unless it has expired since or the user
+    // approved again meanwhile.
+    auto restore(std::string_view user_id, std::string_view bound_device_id, std::uint64_t expires_at_ms,
+                 std::uint64_t now_ms) -> void;
 
     // Removes the user's approval, live or not (a password change, a deactivation).
     auto withdraw(std::string_view user_id) -> void;
@@ -64,10 +76,12 @@ private:
     struct Approval final
     {
         std::uint64_t expires_at_ms{0U};
+        // Empty when unbound.
+        std::string device_id{};
         ExpiryIndex::iterator expiry{};
     };
 
-    auto record(std::string_view user_id, std::uint64_t expires_at_ms) -> void;
+    auto record(std::string_view user_id, std::string_view device_id, std::uint64_t expires_at_ms) -> void;
 
     std::unordered_map<std::string, Approval, database::detail::StateGroupKeyHash, std::equal_to<>> m_by_user{};
     // expiry -> user, soonest first, so `erase_expired` costs only what it removes.

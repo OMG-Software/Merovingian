@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -29,15 +30,15 @@ SCENARIO("A cross-signing reset approval lives ten minutes and is taken once", "
     GIVEN("an approval of alice")
     {
         auto approvals = CrossSigningResetApprovals{};
-        REQUIRE(approvals.approve(alice, start_ms));
+        REQUIRE(approvals.approve(alice, {}, start_ms));
 
         WHEN("it is read, taken twice, and read at its end")
         {
             auto const held_before_end =
                 approvals.holds(alice, start_ms + CrossSigningResetApprovals::lifetime_ms - 1U);
             auto const bob_holds = approvals.holds(bob, start_ms + 1U);
-            auto const first = approvals.take(alice, start_ms + 1U);
-            auto const second = approvals.take(alice, start_ms + 2U);
+            auto const first = approvals.take(alice, {}, start_ms + 1U);
+            auto const second = approvals.take(alice, {}, start_ms + 2U);
 
             THEN("it is alice's alone, the first take returns its expiry and the second finds nothing")
             {
@@ -53,7 +54,7 @@ SCENARIO("A cross-signing reset approval lives ten minutes and is taken once", "
         WHEN("it is read at its end")
         {
             auto const held = approvals.holds(alice, start_ms + CrossSigningResetApprovals::lifetime_ms);
-            auto const taken = approvals.take(alice, start_ms + CrossSigningResetApprovals::lifetime_ms);
+            auto const taken = approvals.take(alice, {}, start_ms + CrossSigningResetApprovals::lifetime_ms);
 
             THEN("it has expired")
             {
@@ -70,24 +71,24 @@ SCENARIO("A taken approval goes back only while it is live and the user has not 
     GIVEN("an approval of alice taken by an upload")
     {
         auto approvals = CrossSigningResetApprovals{};
-        REQUIRE(approvals.approve(alice, start_ms));
-        auto const expiry = approvals.take(alice, start_ms + 1U);
+        REQUIRE(approvals.approve(alice, {}, start_ms));
+        auto const expiry = approvals.take(alice, {}, start_ms + 1U);
         REQUIRE(expiry.has_value());
 
         WHEN("the upload is refused and gives it back")
         {
-            approvals.restore(alice, *expiry, start_ms + 2U);
+            approvals.restore(alice, {}, *expiry, start_ms + 2U);
 
             THEN("alice holds it again with its first expiry")
             {
                 CHECK(approvals.holds(alice, start_ms + 3U));
-                CHECK(approvals.take(alice, start_ms + 3U) == expiry);
+                CHECK(approvals.take(alice, {}, start_ms + 3U) == expiry);
             }
         }
 
         WHEN("it is given back after its expiry")
         {
-            approvals.restore(alice, *expiry, *expiry);
+            approvals.restore(alice, {}, *expiry, *expiry);
 
             THEN("nothing is held")
             {
@@ -98,12 +99,12 @@ SCENARIO("A taken approval goes back only while it is live and the user has not 
 
         WHEN("alice approves again before the upload gives it back")
         {
-            REQUIRE(approvals.approve(alice, start_ms + 100U));
-            approvals.restore(alice, *expiry, start_ms + 101U);
+            REQUIRE(approvals.approve(alice, {}, start_ms + 100U));
+            approvals.restore(alice, {}, *expiry, start_ms + 101U);
 
             THEN("the newer approval stays")
             {
-                CHECK(approvals.take(alice, start_ms + 102U) ==
+                CHECK(approvals.take(alice, {}, start_ms + 102U) ==
                       start_ms + 100U + CrossSigningResetApprovals::lifetime_ms);
             }
         }
@@ -115,19 +116,20 @@ SCENARIO("An approval is withdrawn, replaced by a newer one, and bounded", "[oau
     GIVEN("approvals of alice and bob")
     {
         auto approvals = CrossSigningResetApprovals{};
-        REQUIRE(approvals.approve(alice, start_ms));
-        REQUIRE(approvals.approve(bob, start_ms));
+        REQUIRE(approvals.approve(alice, {}, start_ms));
+        REQUIRE(approvals.approve(bob, {}, start_ms));
 
         WHEN("alice's is withdrawn and bob approves again")
         {
             approvals.withdraw(alice);
-            REQUIRE(approvals.approve(bob, start_ms + 50U));
+            REQUIRE(approvals.approve(bob, {}, start_ms + 50U));
 
             THEN("alice holds none and bob one, with the later expiry")
             {
                 CHECK_FALSE(approvals.holds(alice, start_ms + 1U));
                 CHECK(approvals.size() == 1U);
-                CHECK(approvals.take(bob, start_ms + 51U) == start_ms + 50U + CrossSigningResetApprovals::lifetime_ms);
+                CHECK(approvals.take(bob, {}, start_ms + 51U) ==
+                      start_ms + 50U + CrossSigningResetApprovals::lifetime_ms);
             }
         }
     }
@@ -137,15 +139,15 @@ SCENARIO("An approval is withdrawn, replaced by a newer one, and bounded", "[oau
         auto approvals = CrossSigningResetApprovals{};
         for (auto index = std::size_t{0U}; index < CrossSigningResetApprovals::max_approvals; ++index)
         {
-            REQUIRE(approvals.approve("@user" + std::to_string(index) + ":example.org", start_ms));
+            REQUIRE(approvals.approve("@user" + std::to_string(index) + ":example.org", {}, start_ms));
         }
 
         WHEN("alice approves while they live, then after they expire, and an empty user approves")
         {
-            auto const refused = approvals.approve(alice, start_ms + 1U);
-            auto const repeat = approvals.approve("@user0:example.org", start_ms + 1U);
-            auto const empty = approvals.approve({}, start_ms + 1U);
-            auto const later = approvals.approve(alice, start_ms + CrossSigningResetApprovals::lifetime_ms);
+            auto const refused = approvals.approve(alice, {}, start_ms + 1U);
+            auto const repeat = approvals.approve("@user0:example.org", {}, start_ms + 1U);
+            auto const empty = approvals.approve({}, {}, start_ms + 1U);
+            auto const later = approvals.approve(alice, {}, start_ms + CrossSigningResetApprovals::lifetime_ms);
 
             THEN("a new user is refused at the cap, a held user may approve again, and the cap frees on expiry")
             {
@@ -154,6 +156,61 @@ SCENARIO("An approval is withdrawn, replaced by a newer one, and bounded", "[oau
                 CHECK_FALSE(empty);
                 CHECK(later);
                 CHECK(approvals.holds(alice, start_ms + CrossSigningResetApprovals::lifetime_ms));
+            }
+        }
+    }
+}
+
+SCENARIO("An approval bound to a device is taken only by that device's upload", "[oauth][oauth-reset-approval]")
+{
+    GIVEN("alice's approval bound to her device DEVB")
+    {
+        auto approvals = CrossSigningResetApprovals{};
+        REQUIRE(approvals.approve(alice, "DEVB", start_ms));
+
+        WHEN("device DEVA's upload tries to take it, then DEVB's")
+        {
+            auto const by_a = approvals.take(alice, "DEVA", start_ms + 1U);
+            auto const bound = approvals.bound_device(alice, start_ms + 1U);
+            auto const by_b = approvals.take(alice, "DEVB", start_ms + 2U);
+
+            THEN("DEVA takes nothing and leaves it, and DEVB takes it")
+            {
+                CHECK_FALSE(by_a.has_value());
+                CHECK(bound == std::optional<std::string>{"DEVB"});
+                CHECK(by_b == start_ms + CrossSigningResetApprovals::lifetime_ms);
+                CHECK_FALSE(approvals.holds(alice, start_ms + 3U));
+            }
+        }
+
+        WHEN("DEVB takes it and gives it back")
+        {
+            auto const expiry = approvals.take(alice, "DEVB", start_ms + 1U);
+            REQUIRE(expiry.has_value());
+            approvals.restore(alice, "DEVB", *expiry, start_ms + 2U);
+
+            THEN("it is still bound to DEVB")
+            {
+                CHECK_FALSE(approvals.take(alice, "DEVA", start_ms + 3U).has_value());
+                CHECK(approvals.take(alice, "DEVB", start_ms + 4U) == expiry);
+            }
+        }
+    }
+
+    GIVEN("alice's unbound approval")
+    {
+        auto approvals = CrossSigningResetApprovals{};
+        REQUIRE(approvals.approve(alice, {}, start_ms));
+
+        WHEN("device DEVA's upload takes it")
+        {
+            auto const bound = approvals.bound_device(alice, start_ms + 1U);
+            auto const by_a = approvals.take(alice, "DEVA", start_ms + 1U);
+
+            THEN("any device may take it, as before")
+            {
+                CHECK(bound == std::optional<std::string>{""});
+                CHECK(by_a.has_value());
             }
         }
     }

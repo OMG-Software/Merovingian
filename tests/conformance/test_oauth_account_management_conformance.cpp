@@ -253,8 +253,11 @@ SCENARIO(
                 REQUIRE(oauth_params != nullptr);
                 auto const* url = string_member(*oauth_params, "url");
                 REQUIRE(url != nullptr);
-                // Spec SHOULD: the org.matrix.cross_signing_reset action in the URL of the m.oauth UIA type.
-                REQUIRE(*url == std::string{oauth_account_url} + "?action=org.matrix.cross_signing_reset");
+                // Spec SHOULD: the org.matrix.cross_signing_reset action in the URL of the m.oauth UIA type. Spec
+                // (account management URL parameters): "For Matrix-specific actions, the user's device ID" MAY be
+                // carried as device_id; the server names the device that asked (ADR-0809).
+                REQUIRE(*url == std::string{oauth_account_url} + "?action=org.matrix.cross_signing_reset&device_id=" +
+                                    std::string{oauth_test_device});
                 REQUIRE(approved.status == 200U);
                 // Spec: "the client submits an auth dict with just the session ... to complete the stage".
                 REQUIRE(completed.status == 200U);

@@ -166,6 +166,11 @@ auto account_action_takes_device(std::string_view action) noexcept -> bool
     return action == account_action_device_view || action == account_action_device_delete;
 }
 
+auto account_action_carries_device(std::string_view action) noexcept -> bool
+{
+    return account_action_takes_device(action) || action == account_action_cross_signing_reset;
+}
+
 auto account_sign_in_page(AccountSignInInput const& input) -> Page
 {
     auto page = Page{HtmlText{"Sign in to manage your account"}};
@@ -184,7 +189,7 @@ auto account_sign_in_page(AccountSignInInput const& input) -> Page
         {
             form.hidden(account_next_action_field, std::move(*text));
         }
-        if (input.next_device_id.has_value() && account_action_takes_device(*action))
+        if (input.next_device_id.has_value() && account_action_carries_device(*action))
         {
             if (auto text = HtmlText::escape(*input.next_device_id); text.has_value())
             {
@@ -330,18 +335,34 @@ auto account_deactivate_page(AccountPageFrame const& frame, std::optional<HtmlTe
     return page;
 }
 
-auto account_cross_signing_reset_page(AccountPageFrame const& frame) -> Page
+auto account_cross_signing_reset_page(AccountPageFrame const& frame, std::optional<AccountDeviceRow> const& device)
+    -> Page
 {
     auto page = Page{HtmlText{"Reset your encryption identity"}};
     add_signed_in_as(page, frame);
     page.paragraph(HtmlText{"Your application asked to replace your encryption identity (your cross-signing keys). If "
                             "you allow it, the people you talk to will see you as unverified until they verify you "
                             "again, and your other devices must be verified again."});
+    auto device_value = device.has_value() ? HtmlText::escape(device->device_id) : std::nullopt;
+    if (device_value.has_value())
+    {
+        page.paragraph(HtmlText{"The reset was asked for by this device. Only this device can use the permission:"});
+        page.details(device_details(*device));
+    }
+    else
+    {
+        page.paragraph(HtmlText{"The request did not say which device asked for the reset. Any application signed in "
+                                "to your account through the sign-in page of this server can use the permission."});
+    }
     page.paragraph(
         HtmlText{"Allow it only if you started the reset in your application. The permission lasts 10 minutes "
                  "and is used by one reset."});
     if (auto form = session_form(frame); form.has_value())
     {
+        if (device_value.has_value())
+        {
+            form->hidden(account_device_field, std::move(*device_value));
+        }
         std::ignore = form->button(SubmitButton{action_field, account_post_approve_reset, HtmlText{"Allow the reset"}});
         std::ignore = page.form(*form);
     }

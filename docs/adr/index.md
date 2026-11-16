@@ -690,3 +690,4 @@
 * [0806 - A device sign-in warns first, creates no account, and runs in one browser at a time](0806-a-device-sign-in-warns-first-creates-no-account-and-runs-in-one-browser-at-a-time.md)
 * [0807 - An OAuth sign-in carries the credential stamp of its password check and ends when it changes](0807-an-oauth-sign-in-carries-the-credential-stamp-of-its-password-check-and-ends-when-it-changes.md)
 * [0808 - An OAuth session row ends with the last credential of its device](0808-an-oauth-session-row-ends-with-the-last-credential-of-its-device.md)
+* [0809 - A cross-signing reset approval is bound to the OAuth device that asked for it](0809-a-cross-signing-reset-approval-is-bound-to-the-oauth-device-that-asked-for-it.md)
