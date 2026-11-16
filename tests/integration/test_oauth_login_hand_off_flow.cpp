@@ -48,9 +48,9 @@ constexpr auto app_return = std::string_view{"https://app.example.com/cb?a=1&log
     return config;
 }
 
-[[nodiscard]] auto start(merovingian::config::Config config) -> hs::ClientServerStartResult
+[[nodiscard]] auto start(merovingian::config::Config const& config) -> hs::ClientServerStartResult
 {
-    auto started = hs::start_client_server(std::move(config));
+    auto started = hs::start_client_server(config);
     REQUIRE(started.started);
     // Every request comes from one address; the built-in limits are not what this file tests.
     started.runtime.rate_limit_engine.reset();
@@ -180,6 +180,8 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
 {
     GIVEN("a server with the hand-off on")
     {
+        // OAuth and the legacy API both on, with the default empty hand-off allowlist: the hand-off still accepts an
+        // https redirectUrl, so `app_return` needs no entry.
         auto started = start(hand_off_config());
         auto& rt = started.runtime;
 
@@ -191,6 +193,8 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
 
             THEN("the login page is answered with the browser cookie and no redirect")
             {
+                // The hand-off starts a pending authorisation through the same path as /authorize, so it gets the
+                // same 64-character identifier and cookie. It never redirects before the user has confirmed.
                 REQUIRE(hand_off.response.status == 200U);
                 REQUIRE(hand_off.pending.size() == 64U);
                 REQUIRE(hand_off.browser.cookie.size() == 64U);
@@ -210,6 +214,8 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
                     CHECK(contains(confirmation.body, R"(value="approve")"));
                     CHECK(
                         contains(response_header(confirmation, "Content-Security-Policy"), "https://app.example.com"));
+                    // Signing in is not consent: no token exists until she continues, so an application that sent her
+                    // here cannot collect one from the sign-in alone.
                     CHECK(response_header(confirmation, "Location").empty());
                     CHECK(audit_count(rt.homeserver, "auth.login_token.issued") == 0U);
                 }
@@ -221,8 +227,12 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
                                                    {"action", "approve"}
                     });
                     auto const answer = redirect_answer(approved);
+                    // Read without `at`, so a missing token is an empty string that fails the size REQUIRE below
+                    // instead of throwing in the WHEN before any check has run.
                     auto const token =
                         answer.parameters.contains("loginToken") ? answer.parameters.at("loginToken") : std::string{};
+                    // The token is redeemed twice and the page approved again, all before the THEN, to prove both are
+                    // single-use: the token at POST /login, the pending authorisation at the confirmation page.
                     auto const first = token_login(rt, token);
                     auto const second = token_login(rt, token);
                     auto const replayed_page = post(rt, hand_off,
@@ -233,10 +243,14 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
                     THEN("the browser is sent to redirectUrl with one new loginToken, which logs in once")
                     {
                         REQUIRE(approved.status == 303U);
+                        // The Location holds a live login token: no cache may keep it, and the address must not be
+                        // sent on as a Referer.
                         CHECK(response_header(approved, "Cache-Control") == "no-store");
                         CHECK(response_header(approved, "Referrer-Policy") == "no-referrer");
                         CHECK(answer.base == "https://app.example.com/cb");
                         CHECK(answer.separator == '?');
+                        // The application's own parameter survives; the `loginToken=stale` it sent is removed, not
+                        // kept beside the new one, so the application reads exactly one loginToken, the new one.
                         CHECK(answer.parameters.at("a") == "1");
                         REQUIRE(token.size() == 64U);
                         CHECK(token != "stale");
@@ -273,6 +287,7 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
 
             AND_WHEN("the wrong password is sent")
             {
+                // A failed sign-in must not reach the confirmation step: the page holds no approve button.
                 auto const refused = post(rt, hand_off,
                                           {
                                               {"action",   "login"         },
@@ -290,6 +305,8 @@ SCENARIO("The SSO redirect signs alice in, confirms, and returns one single-use 
 
             AND_WHEN("another browser posts the approval")
             {
+                // The pending identifier is right and the cookie is well formed but not the one it is bound to: a
+                // leaked identifier alone must not let another browser continue the sign-in (ADR-0788).
                 auto stranger = hand_off;
                 stranger.browser.cookie = std::string(64U, 'a');
                 auto const refused = post(rt, stranger,

@@ -111,7 +111,7 @@ auto PendingAuthorisationStore::bound_entry(std::string_view identifier, std::st
 auto PendingAuthorisationStore::find(std::string_view identifier, std::string_view browser_token, std::uint64_t now_ms)
     -> std::optional<PendingAuthorisation>
 {
-    auto const [entry, identifier_hash] = bound_entry(identifier, browser_token, now_ms);
+    auto* const entry = bound_entry(identifier, browser_token, now_ms).first;
     if (entry == nullptr)
     {
         return std::nullopt;
@@ -123,7 +123,7 @@ auto PendingAuthorisationStore::record_user(std::string_view identifier, std::st
                                             std::string_view user_id, std::string_view credential_stamp,
                                             std::uint64_t now_ms) -> bool
 {
-    auto const [entry, identifier_hash] = bound_entry(identifier, browser_token, now_ms);
+    auto* const entry = bound_entry(identifier, browser_token, now_ms).first;
     if (entry == nullptr)
     {
         return false;

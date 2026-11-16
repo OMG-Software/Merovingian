@@ -233,6 +233,8 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
 {
     GIVEN("a server with the device grant on and a device client")
     {
+        // The fixture's device client is registered for the device grant; the web client it also registers is not
+        // used here. The clock is the device grant's test clock, moved by `advance`, so no step sleeps.
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
 
@@ -244,6 +246,8 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
             {
                 REQUIRE(device.response.status == 200U);
                 auto const body = parse_object(device.response.body);
+                // The device code is a full OAuth secret (32 random bytes in hex, `make_oauth_secret`). The user code
+                // is short enough to type and is shown as XXXX-XXXX (ADR-0805).
                 REQUIRE(device.device_code.size() == 64U);
                 REQUIRE(device.user_code.size() == 9U);
                 CHECK(device.user_code[4] == '-');
@@ -256,12 +260,15 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
                 REQUIRE(interval != nullptr);
                 CHECK(*expires_in == 600);
                 CHECK(*interval == 5);
+                // POST /device is a JSON API answer and keeps the dispatcher's CORS headers; it holds a secret, so it
+                // is never cached. The link page below is a page and gets no CORS header (ADR-0785).
                 CHECK(response_header(device.response, "Cache-Control") == "no-store");
                 CHECK_FALSE(response_header(device.response, "Access-Control-Allow-Origin").empty());
             }
 
             AND_WHEN("it polls before alice answers")
             {
+                // RFC 8628 section 3.5: a pending answer is an OAuth error (400), and the device keeps polling.
                 auto const pending = poll(rt, fixture.client_id, device.device_code);
 
                 THEN("it hears authorization_pending")
@@ -273,6 +280,8 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
 
             AND_WHEN("alice opens the complete link, sends the prefilled code and signs in")
             {
+                // The complete link only prefills the form: the code is still posted by the browser, so a link cannot
+                // attach a browser to a device sign-in without the user sending it.
                 auto const query = "user_code=" + device.user_code;
                 auto [page, browser] = open_link(rt, query);
                 auto const login = post_link(rt, browser, device.user_code);
@@ -282,14 +291,19 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
                 THEN("the link page is prefilled and sets the cookie, the login page offers no registration, and the "
                      "consent page warns before it names the code, the client, alice and the device")
                 {
+                    // The link page sets the same 64-character browser cookie as /authorize: the sign-in that follows
+                    // goes through the /authorize form posts, which find the pending entry with it.
                     REQUIRE(page.status == 200U);
                     CHECK(contains(page.body, "value=\"" + device.user_code + "\""));
                     CHECK(browser.cookie.size() == 64U);
                     CHECK(response_header(page, "Access-Control-Allow-Origin").empty());
                     REQUIRE(login.status == 200U);
                     CHECK(contains(login.body, R"(autocomplete="current-password")"));
+                    // A device sign-in never creates an account, so its login page offers no registration.
                     CHECK_FALSE(contains(login.body, R"(value="show_register")"));
                     REQUIRE(consent.status == 200U);
+                    // The warning that the device, not this browser, will be signed in comes before the code and the
+                    // client (ADR-0806): a user tricked into typing someone else's code reads it first.
                     auto const warning = consent.body.find("not this browser");
                     auto const code = consent.body.find(device.user_code);
                     REQUIRE(warning != std::string::npos);
@@ -299,11 +313,14 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
                     CHECK(contains(consent.body, "app.example.com"));
                     CHECK(contains(consent.body, alice_id));
                     CHECK(contains(consent.body, tv_device));
+                    // Nothing is redirected in the device flow: the answer goes to the device's poll, not the browser.
                     CHECK(response_header(consent, "Location").empty());
                 }
 
                 AND_WHEN("she allows it and the device polls once its interval has passed, then again")
                 {
+                    // Each poll waits out the five-second interval, so neither answer can be slow_down. The second
+                    // poll proves the code is spent by the first: the store drops an approved entry when it is taken.
                     auto const approved = answer(rt, browser, pending, "approve");
                     advance(rt, 5'000U);
                     auto const granted = poll(rt, fixture.client_id, device.device_code);
@@ -332,6 +349,8 @@ SCENARIO("A device signs in with a user code that alice types and allows", "[int
 
                 AND_WHEN("she denies it and the device polls twice")
                 {
+                    // Polled twice so the denial is shown to be kept for the device, not answered once and forgotten.
+                    // Typing the code again afterwards must not reopen the sign-in.
                     auto const denied = answer(rt, browser, pending, "deny");
                     advance(rt, 5'000U);
                     auto const first = poll(rt, fixture.client_id, device.device_code);
@@ -398,7 +417,7 @@ SCENARIO("A device that polls too fast is slowed down, and one that waits too lo
         {
             advance(rt, hs::DeviceAuthorisationStore::lifetime_ms);
             auto const late = poll(rt, fixture.client_id, device.device_code);
-            auto [page, browser] = open_link(rt);
+            auto browser = open_link(rt).second;
             auto const typed = post_link(rt, browser, device.user_code);
 
             THEN("the device hears expired_token and the code is the wrong-code page")
@@ -512,7 +531,7 @@ SCENARIO("The link page throttles wrong codes per address and refuses foreign or
                 wrong.push_back(post_link(rt, browser, typed).status);
             }
             auto const right = post_link(rt, browser, device.user_code);
-            auto [other_page, other_browser] = open_link(rt, {}, "203.0.113.50");
+            auto other_browser = open_link(rt, {}, "203.0.113.50").second;
             auto const elsewhere = post_link(rt, other_browser, device.user_code);
 
             THEN("each wrong code is the same 400 page, the right one is then 429 with Retry-After, and another "
@@ -582,14 +601,14 @@ SCENARIO("One browser at a time signs in for a user code", "[integration][oauth]
         auto& rt = fixture.started.runtime;
         auto const device = start_device(rt, fixture.client_id);
         REQUIRE(device.response.status == 200U);
-        auto [first_page, first] = open_link(rt);
+        auto first = open_link(rt).second;
         auto const first_login = post_link(rt, first, device.user_code);
         REQUIRE(first_login.status == 200U);
         auto const first_pending = pending_of(first_login);
 
         WHEN("a second browser types the code at once")
         {
-            auto [second_page, second] = open_link(rt, {}, "203.0.113.50");
+            auto second = open_link(rt, {}, "203.0.113.50").second;
             auto const busy = post_link(rt, second, device.user_code);
 
             THEN("it is 409 with Retry-After and gets no sign-in")
@@ -603,7 +622,7 @@ SCENARIO("One browser at a time signs in for a user code", "[integration][oauth]
         WHEN("the lease lapses, a second browser takes over, and the first then signs in")
         {
             advance(rt, hs::DeviceAuthorisationStore::attachment_lease_ms);
-            auto [second_page, second] = open_link(rt, {}, "203.0.113.50");
+            auto second = open_link(rt, {}, "203.0.113.50").second;
             auto const second_login = post_link(rt, second, device.user_code);
             auto const first_consent = sign_in(rt, first, first_pending);
             auto const second_consent = sign_in(rt, second, pending_of(second_login));
@@ -633,7 +652,7 @@ SCENARIO("One browser at a time signs in for a user code", "[integration][oauth]
         WHEN("it approves after another browser took the code over")
         {
             advance(rt, hs::DeviceAuthorisationStore::attachment_lease_ms);
-            auto [other_page, other] = open_link(rt, {}, "203.0.113.50");
+            auto other = open_link(rt, {}, "203.0.113.50").second;
             auto const taken = post_link(rt, other, device.user_code);
             auto const approved = answer(rt, step.browser, step.pending, "approve");
             advance(rt, 5'000U);

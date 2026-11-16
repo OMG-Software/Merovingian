@@ -162,6 +162,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 {
     GIVEN("alice and a registered web client")
     {
+        // The fixture registers alice and the one web client every request below names, so a failure here is the
+        // page's, not the setup's. Each WHEN starts its own pending authorisation from this runtime.
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
 
@@ -172,8 +174,13 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
             THEN("the login page is answered with a pending identifier and the browser cookie")
             {
                 REQUIRE(page.response.status == 200U);
+                // Both are 32 random bytes in hex (`make_oauth_secret`): a shorter value would be guessable, and the
+                // pending entry is found only with the two together (ADR-0788).
                 REQUIRE(page.pending.size() == 64U);
                 REQUIRE(page.browser.cookie.size() == 64U);
+                // The `__Host-` cookie name is honoured by a browser only with Secure, Path=/ and no Domain. Lax, not
+                // Strict, so the cookie still travels on the top-level navigation from the client's site; Max-Age
+                // matches the pending authorisation's ten minutes.
                 auto const set_cookie = response_header(page.response, "Set-Cookie");
                 CHECK(contains(set_cookie, "; Secure"));
                 CHECK(contains(set_cookie, "; HttpOnly"));
@@ -183,6 +190,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
                 CHECK_FALSE(contains(set_cookie, "Domain="));
                 CHECK(response_header(page.response, "Cache-Control") == "no-store");
                 CHECK(contains(page.response.body, R"(autocomplete="current-password")"));
+                // A page response is marked as one, so the dispatch boundary adds no CORS header (ADR-0785): another
+                // origin must not be able to read the page and its pending identifier.
                 CHECK_FALSE(has_header(page.response, "Access-Control-"));
                 // The login page posts only to this server: no redirect origin in its form-action.
                 CHECK_FALSE(contains(response_header(page.response, "Content-Security-Policy"), "app.example.com"));
@@ -194,6 +203,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
                 THEN("the consent page names her and the device, and its policy may post to the redirect origin")
                 {
+                    // The consent form's answer is a 303 to the client, so its form-action must name the matched
+                    // redirect origin; only this page widens the policy, and only to that one origin.
                     REQUIRE(consent.status == 200U);
                     CHECK(contains(consent.body, "@alice:example.org"));
                     CHECK(contains(consent.body, std::string{oauth_test_device}));
@@ -215,6 +226,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
                         CHECK(answer.base == oauth_client_redirect);
                         CHECK(answer.separator == '?');
                         REQUIRE(answer.parameters.contains("code"));
+                        // The state holds a space and an `&`: it comes back intact only if the redirect percent-encodes
+                        // it, so a value cannot split into, or forge, another parameter of the answer.
                         CHECK(answer.parameters.at("state") == "st-123 & more");
                         CHECK_FALSE(answer.parameters.contains("error"));
                         CHECK(audit_count(rt.homeserver, "oauth.authorization.granted") == 1U);
@@ -222,6 +235,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
                     THEN("the code is bound to the client, the redirect URI, the challenge, alice and the device")
                     {
+                        // Redeemed straight from the store, not through the token endpoint, so this pins what the
+                        // approval recorded; the token endpoint later checks each field against its own request.
                         auto const redeemed =
                             rt.homeserver.oauth_codes.redeem(answer.parameters.at("code"), hs::oauth_wall_clock_ms());
                         REQUIRE(redeemed.outcome == hs::AuthorizationCodeRedemption::Outcome::fresh);
@@ -235,6 +250,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
                     THEN("no device, token or OAuth session exists yet")
                     {
+                        // An approval leaves one authorization code and nothing else: the token endpoint creates the
+                        // device and the session, so an unredeemed code must not already sign anyone in.
                         auto const& store = rt.homeserver.database.persistent_store;
                         CHECK_FALSE(db::has_user_device(store, fixture.alice, oauth_test_device));
                         CHECK(db::oauth_sessions_of_user(store, fixture.alice).empty());
@@ -246,6 +263,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
                     THEN("approving again is the expired page and sends nothing")
                     {
+                        // The approval consumed the pending entry; a second post with the same pending identifier and
+                        // cookie must not mint a second code for the same consent.
                         auto const replay = act(rt, page, "approve");
                         CHECK(replay.status == 400U);
                         CHECK(response_header(replay, "Location").empty());
@@ -271,6 +290,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
             AND_WHEN("approve is posted before anyone signs in")
             {
+                // Skipping the login form must not reach the consent step: a code needs a user the password check
+                // recorded on the pending entry.
                 auto const early = act(rt, page, "approve");
 
                 THEN("it is the expired page and no code is issued")
@@ -287,6 +308,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
                 THEN("the client is told access_denied, and nothing is audited for nobody")
                 {
+                    // A denial is a durable audit row only after a sign-in: before one there is no user to record it
+                    // against, and the client is still told, so it does not wait for an answer.
                     REQUIRE(denied.status == 303U);
                     CHECK(redirect_answer(denied).parameters.at("error") == "access_denied");
                     CHECK(audit_count(rt.homeserver, "oauth.authorization.denied") == 0U);
@@ -318,6 +341,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
             THEN("her username is prefilled, and a hint for another server is ignored")
             {
+                // Same localpart, other server: `login_hint_username` takes the localpart only from a user ID of this
+                // server, so the second page must not prefill `alice` for an account that is not hers.
                 CHECK(contains(page.response.body, R"(value="alice")"));
                 CHECK_FALSE(contains(other.response.body, R"(value="alice")"));
             }
@@ -330,6 +355,8 @@ SCENARIO("A browser signs in, consents and is sent back to the client with a cod
 
             THEN("the browser keeps its cookie value and gets another pending identifier")
             {
+                // A well-formed cookie the request carries is reused, so two tabs of one browser do not overwrite each
+                // other's binding; each request still gets its own pending entry.
                 CHECK(cookie_of(second.response) == first.browser.cookie);
                 CHECK(second.pending != first.pending);
             }
@@ -406,6 +433,8 @@ SCENARIO("An account is created from the authorisation pages when the server acc
 {
     GIVEN("a server with token registration and a client")
     {
+        // `prompt=create` opens the registration form instead of the login form. The REQUIREs prove that form is what
+        // was served, so every WHEN below posts to a registration the page actually offered.
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
         auto const page =
@@ -414,6 +443,8 @@ SCENARIO("An account is created from the authorisation pages when the server acc
         REQUIRE(contains(page.response.body, R"(autocomplete="new-password")"));
         REQUIRE(contains(page.response.body, R"(name="registration_token")"));
 
+        // Every post is for "carol" with the same password; only the token and the confirmation vary, so each WHEN
+        // isolates one reason for refusal. The pending entry and cookie are the page's, as a browser would send them.
         auto const register_with = [&](std::string_view token, std::string_view confirmation) {
             return post_authorize(rt,
                                   {
@@ -444,6 +475,8 @@ SCENARIO("An account is created from the authorisation pages when the server acc
 
             THEN("the form is shown again with a fixed message, her username and no password")
             {
+                // Only the username is refilled. A secret the user typed is never written back into page markup, so
+                // the refusal page's source cannot leak it.
                 CHECK(refused.status == 403U);
                 CHECK(contains(refused.body, "registration token is not valid"));
                 CHECK(contains(refused.body, R"(value="carol")"));
@@ -457,6 +490,7 @@ SCENARIO("An account is created from the authorisation pages when the server acc
 
             THEN("the form is shown again")
             {
+                // A missing token is a malformed form (400), not a wrong token (403): this server requires one.
                 CHECK(refused.status == 400U);
                 CHECK(contains(refused.body, "Fill in every field"));
             }
@@ -479,11 +513,14 @@ SCENARIO("An account is created from the authorisation pages when the server acc
 
     GIVEN("a server that does not accept new accounts")
     {
+        // Without token registration the fixture registers no alice; nothing here needs an existing account.
         auto fixture = make_fixture(false);
         auto& rt = fixture.started.runtime;
 
         WHEN("prompt=create is asked for and a registration is posted anyway")
         {
+            // The post is sent although the page offered no form: hiding the form is not the control, refusing the
+            // post is. It carries no registration token because none could be valid here.
             auto const page =
                 start_page(rt, with_parameter(oauth_authorize_parameters(fixture.client_id), "prompt", "create"));
             auto const posted = post_authorize(rt,
@@ -552,11 +589,10 @@ SCENARIO("An authorisation request with a bare name or an empty field reads them
     GIVEN("a registered client")
     {
         auto fixture = make_fixture(false);
-        auto& rt = fixture.started.runtime;
         auto const query = form_encode(oauth_authorize_parameters(fixture.client_id));
         auto const raw = [&](std::string const& target_query) {
-            return authorize_request(rt, "GET", std::string{oauth_authorize_path} + "?" + target_query, {},
-                                     BrowserContext{});
+            return authorize_request(fixture.started.runtime, "GET",
+                                     std::string{oauth_authorize_path} + "?" + target_query, {}, BrowserContext{});
         };
 
         WHEN("the well-formed request is sent with a bare name, a doubled & and a trailing &")

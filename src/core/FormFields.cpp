@@ -54,18 +54,25 @@ namespace
     // unwiped copy. False for a malformed escape or a raw byte a conforming encoder escapes.
     [[nodiscard]] auto decode_component(std::string_view encoded, std::string& out) -> bool
     {
-        for (auto index = std::size_t{0U}; index < encoded.size(); ++index)
+        // A `%XX` escape is three bytes of input for one byte of output; everything else is one for one.
+        constexpr auto escape_bytes = std::size_t{3U};
+        // Each turn consumes one item and advances by exactly the bytes it read, so no branch depends on a step
+        // taken elsewhere.
+        auto index = std::size_t{0U};
+        while (index < encoded.size())
         {
             auto const character = encoded[index];
             auto const byte = static_cast<unsigned char>(character);
             if (character == '+')
             {
                 out.push_back(' ');
+                ++index;
                 continue;
             }
             if (character == '%')
             {
-                if (encoded.size() - index < 3U)
+                // A truncated escape at the end of the input is refused before either digit is read.
+                if (encoded.size() - index < escape_bytes)
                 {
                     return false;
                 }
@@ -76,14 +83,16 @@ namespace
                     return false;
                 }
                 out.push_back(static_cast<char>((*high << 4U) | *low));
-                index += 2U;
+                index += escape_bytes;
                 continue;
             }
+            // A conforming encoder escapes every byte outside the visible ASCII range, so a raw one is refused.
             if (byte < 0x21U || byte > 0x7EU)
             {
                 return false;
             }
             out.push_back(character);
+            ++index;
         }
         return true;
     }

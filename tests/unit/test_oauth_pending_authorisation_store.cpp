@@ -68,9 +68,13 @@ constexpr auto browser = std::string_view{"browser-binding-token"};
 SCENARIO("A pending authorisation is stored under a fresh identifier and read back only with its browser token",
          "[oauth][oauth-pending]")
 {
+    // The store draws identifiers from libsodium's random generator and hashes them, so the library is
+    // initialised before any GIVEN runs.
     REQUIRE(sodium_init() >= 0);
     GIVEN("a store holding one request")
     {
+        // `request_for` fills user_id, client_address_key and created_at_ms with wrong values on purpose: the store
+        // must overwrite them, so a caller can never pre-sign-in a request or misstate its address or age.
         auto store = PendingAuthorisationStore{};
         auto const identifier = identifier_of(create(store, "client-a", "198.51.100.7", start_ms));
 
@@ -80,6 +84,8 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
 
             THEN("the request comes back as stored, with the fields the store owns set by the store")
             {
+                // Every field the client chose must survive unchanged: the code, the redirect and the token request
+                // are later checked against these values.
                 REQUIRE(found.has_value());
                 CHECK(found->client_id == "client-a");
                 CHECK(found->redirect_uri == "https://app.example.org/callback");
@@ -90,6 +96,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
                 CHECK(found->scope == "urn:matrix:client:api:* urn:matrix:client:device:DEVICEID");
                 CHECK(found->create_account);
                 CHECK(found->login_hint == std::optional<std::string>{"@alice:example.org"});
+                // No one has signed in yet, whatever the request said; the address and the time are the store's.
                 CHECK(found->user_id.empty());
                 CHECK(found->client_address_key == "198.51.100.7");
                 CHECK(found->created_at_ms == start_ms);
@@ -99,6 +106,8 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
             {
                 REQUIRE(identifier.size() == 64U);
                 CHECK(identifier.find_first_not_of("0123456789abcdef") == std::string::npos);
+                // 32 random bytes in hex. The store keys entries by the hash, so a copy of its memory does not give
+                // the identifiers a browser could post (ADR-0782).
                 CHECK(merovingian::homeserver::oauth_secret_hash(identifier) != std::optional<std::string>{identifier});
             }
         }
@@ -107,6 +116,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
         {
             auto const wrong_token = store.find(identifier, "another-browser", start_ms + 1U);
             auto const unknown = store.find(std::string(64U, 'a'), browser, start_ms + 1U);
+            // An empty token is tried too: only the one token the entry was bound to may match, never an empty value.
             auto const empty_token = store.find(identifier, "", start_ms + 1U);
 
             THEN("both answer alike, nothing, and the entry is still held")
@@ -114,6 +124,8 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
                 CHECK_FALSE(wrong_token.has_value());
                 CHECK_FALSE(unknown.has_value());
                 CHECK_FALSE(empty_token.has_value());
+                // A failed lookup must not remove the entry: otherwise anyone holding a leaked identifier could end
+                // another browser's sign-in by sending it with any wrong cookie.
                 CHECK(store.size() == 1U);
                 CHECK(store.find(identifier, browser, start_ms + 2U).has_value());
             }
@@ -121,6 +133,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
 
         WHEN("a wrong browser token tries to record a user and to consume it")
         {
+            // The two writes an attacker would want: attach their own account to the victim's request, or spend it.
             auto const recorded =
                 store.record_user(identifier, "another-browser", "@mallory:example.org", "stamp", start_ms);
             auto const consumed = store.consume(identifier, "another-browser", start_ms);
@@ -139,6 +152,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
         {
             REQUIRE(store.record_user(identifier, browser, "@alice:example.org", "stamp", start_ms + 10U));
             auto const consumed = store.consume(identifier, browser, start_ms + 20U);
+            // Consumed twice: an approval is one use, so a replayed approve form finds nothing.
             auto const again = store.consume(identifier, browser, start_ms + 30U);
 
             THEN("the consumed entry names the user, and it is gone")
@@ -148,6 +162,8 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
                 CHECK(consumed->credential_stamp == "stamp");
                 CHECK_FALSE(again.has_value());
                 CHECK(store.size() == 0U);
+                // The per-client index forgets it too: a stale entry there would make the client look busy to the
+                // registration cap and the retention sweep, which ask that index.
                 CHECK(store.live_count_for_client("client-a", start_ms + 30U) == 0U);
             }
         }
@@ -159,6 +175,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
 
         WHEN("a request is offered with no browser token")
         {
+            // An entry bound to nothing could be continued by any browser that learns its identifier.
             auto const created = store.create(request_for("client-a"), "", "198.51.100.7", start_ms);
 
             THEN("it is refused and nothing is stored")

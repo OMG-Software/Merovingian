@@ -864,6 +864,9 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
 {
     GIVEN("alice signed in through OAuth on OAUTHDEV01 and OAUTHDEV0B, with a password on LEGACYDEV, and keys held")
     {
+        // Two OAuth devices of one user, so a binding to one can be told from a binding to "any OAuth session";
+        // a password device (LEGACYDEV) and another user's device (BOBDEV) are the IDs the reset page must refuse to
+        // bind (ADR-0809).
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
         auto const device_a = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
@@ -877,6 +880,9 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
         auto const upload = [&](std::string const& token, std::string const& members) {
             return send(rt, "POST", std::string{upload_path}, token, "{" + members + "}");
         };
+        // alice's first upload holds no earlier keys to replace, so it needs no stage. Once it is stored, every
+        // upload below brings a new master key and is a replacing upload, which an OAuth session must pass through
+        // the `m.oauth` stage and an approval to make.
         REQUIRE(upload(device_a.access_token,
                        make_cross_signing_set(std::string{alice_id}).selected_members(true, true, true))
                     .status == 200U);
@@ -895,6 +901,8 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
 
             THEN("the URL carries OAUTHDEV0B, and the page names the device and its client and carries its ID")
             {
+                // The page must name the device and its client: alice is approving for one application, and the
+                // page is where she can see which one before she does.
                 REQUIRE(challenge.status == 401U);
                 CHECK(contains(challenge.body, "action=org.matrix.cross_signing_reset&device_id=OAUTHDEV0B"));
                 REQUIRE(page.status == 200U);
@@ -915,6 +923,8 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
                                                alice.browser);
             auto const by_a =
                 upload(device_a.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
+            // Read between the two uploads: OAUTHDEV01's refused upload must leave the approval in place, not take
+            // it and drop it, or the device it was given for could no longer use it.
             auto const held_after_a = approval_held(rt, alice_id);
             auto const by_b =
                 upload(device_b.access_token, make_cross_signing_set(std::string{alice_id}).master_member());
@@ -924,6 +934,7 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
                 CHECK(approved.status == 200U);
                 CHECK(by_a.status == 401U);
                 CHECK(held_after_a);
+                // The bound device spends it once: the approval is gone and the use is a durable audit row.
                 CHECK(by_b.status == 200U);
                 CHECK_FALSE(approval_held(rt, alice_id));
                 CHECK(audit_count(rt, "cross_signing.reset_used") == 1U);
@@ -932,6 +943,7 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
 
         WHEN("alice approves with no device, then OAUTHDEV01 polls its upload")
         {
+            // Without `device_id` the approval is the unbound kind; binding narrows it, it is not required.
             auto const page = get_account(rt, "action=org.matrix.cross_signing_reset", alice.browser);
             auto const approved = post_account(rt, session_form(alice, "approve_cross_signing_reset"), alice.browser);
             auto const by_a =
@@ -955,6 +967,8 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
 
             THEN("each device is ignored and never shown: the page is the unbound one")
             {
+                // The device ID comes from the URL, which anyone can write. A device the check refuses is never
+                // echoed into the page, so a crafted link cannot show alice a device the approval is not bound to.
                 for (auto const* page : {&bobs, &legacy, &unknown})
                 {
                     CHECK(page->status == 200U);
@@ -984,6 +998,8 @@ SCENARIO("A cross-signing reset approval given for the device that asked is spen
 
             THEN("nothing is approved")
             {
+                // A refused device is a 400, not a fallback to an unbound approval: falling back would let any of her
+                // OAuth sessions spend an approval she meant for one device.
                 CHECK(for_legacy.status == 400U);
                 CHECK(for_bobs.status == 400U);
                 CHECK_FALSE(approval_held(rt, alice_id));

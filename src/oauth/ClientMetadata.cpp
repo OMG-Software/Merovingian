@@ -155,6 +155,8 @@ ClientMetadata::ClientMetadata(ClientUri client_uri)
 
 auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::variant<ClientMetadata, OAuthRefusal>
 {
+    // The shape of the document first. The member cap bounds every loop below, and a repeated key is refused rather
+    // than resolved, so the client and this server cannot disagree about which of two values was registered.
     auto const* object = std::get_if<Object>(&request.storage());
     if (object == nullptr)
     {
@@ -169,6 +171,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         return refuse(core::ErrorCode::parse_failure, "The client metadata repeats a key.");
     }
 
+    // Only the keys this server acts on are picked out. Every other key, `logo_uri` and the localised `name#lang`
+    // forms included, is left behind and is never stored or returned.
     auto known = KnownMembers{};
     for (auto const& member : *object)
     {
@@ -199,6 +203,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
     }
     auto metadata = ClientMetadata{std::move(std::get<ClientUri>(client_uri))};
 
+    // `web` when omitted, as the spec's client metadata table says. The type is read before the redirect URIs
+    // because it decides which forms of redirect URI the client may register.
     if (known.application_type != nullptr)
     {
         auto const* type = as_string(known.application_type);
@@ -216,6 +222,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         }
     }
 
+    // Only public clients exist here: a client that asks for a secret-based method is refused rather than
+    // registered as `none` without being told.
     if (known.token_endpoint_auth_method != nullptr)
     {
         auto const* method = as_string(known.token_endpoint_auth_method);
@@ -241,6 +249,7 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         {
             return wrong_type();
         }
+        // One bad URI refuses the whole registration: a client is never registered with part of what it asked for.
         for (auto const& uri : *uris)
         {
             auto validated = validate_redirect_uri(uri, metadata.m_application_type, metadata.m_client_uri);
@@ -249,12 +258,16 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
                 return std::move(*refusal);
             }
         }
+        // Sorted and deduplicated so that the same set in any order gives the same canonical bytes, and so the same
+        // client ID (ADR-0779).
         std::ranges::sort(*uris);
         auto const duplicates = std::ranges::unique(*uris);
         uris->erase(duplicates.begin(), duplicates.end());
         metadata.m_redirect_uris = std::move(*uris);
     }
 
+    // `["authorization_code"]` when omitted (RFC 7591 section 2). Unknown grant types are dropped, not refused,
+    // and the known ones are stored in one fixed order, again for the canonical form.
     auto requested_grants = std::vector<std::string>{std::string{grant_type_authorization_code}};
     if (known.grant_types != nullptr)
     {
@@ -283,6 +296,7 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         return refuse(core::ErrorCode::parse_failure, "The grant_types hold no grant type this server supports.");
     }
 
+    // `["code"]` when omitted. `code` is the only response type this server issues; any other is dropped.
     auto requested_responses = std::vector<std::string>{std::string{response_type_code}};
     if (known.response_types != nullptr)
     {
@@ -303,6 +317,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         metadata.m_response_types.emplace_back(response_type_code);
     }
 
+    // The pieces must agree: a client that may use the authorization code grant needs the `code` response type
+    // and somewhere to be sent back to. A client with only the device grant needs neither.
     if (metadata.has_grant_type(grant_type_authorization_code))
     {
         if (metadata.m_response_types.empty())
@@ -316,6 +332,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         }
     }
 
+    // The name is shown to the user on the consent page, so it is bounded to one line and may hold no control,
+    // bidirectional or invisible character that could disguise it.
     if (known.client_name != nullptr)
     {
         auto const* name = as_string(known.client_name);
@@ -335,6 +353,8 @@ auto ClientMetadata::validate(canonicaljson::Value const& request) -> std::varia
         metadata.m_client_name = *name;
     }
 
+    // The policy and terms links are shown beside the name, so each must be `https` on the client's own host or a
+    // subdomain of it: a client cannot lend itself another site's standing.
     for (auto const& [value, target] : std::array{
              std::pair{known.policy_uri, &metadata.m_policy_uri},
              std::pair{known.tos_uri,    &metadata.m_tos_uri   }

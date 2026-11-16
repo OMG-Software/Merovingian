@@ -74,10 +74,14 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
 {
     GIVEN("a runtime whose whoami request throws a standard exception carrying request data")
     {
+        // The hook runs after the rate limit and before authentication, so a request with no token reaches it. The
+        // limiter is removed so the repeated requests of this scenario are never answered 429 before the hook.
         auto started = merovingian::homeserver::start_client_server(test_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         runtime.rate_limit_engine.reset();
+        // The message stands for request data a real exception may quote (a parser quoting its input, a path), so
+        // it must reach neither the client nor the log.
         runtime.homeserver.test_client_request_hook = [](std::string_view path) {
             if (path == throwing_path)
             {
@@ -87,6 +91,7 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
 
         WHEN("the request is made")
         {
+            // Captured around the request only, so the log checks below see this request's lines and no start-up.
             auto const capture = merovingian::tests::ConsoleLogCapture{};
             auto const answered =
                 merovingian::homeserver::handle_client_server_request(runtime, {"GET", std::string{throwing_path}});
@@ -102,12 +107,15 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
             THEN("one error line names the route and the type, never the message")
             {
                 REQUIRE(capture.has_line("ERROR", "request.exception"));
+                // The route and the type are enough to find the handler; the message is what must not be there.
                 REQUIRE(contains(log, throwing_path));
                 REQUIRE(contains(log, "runtime_error"));
                 REQUIRE_FALSE(contains(log, secret_text));
             }
             THEN("the runtime lock is released")
             {
+                // Both checks: the runtime mutex records recursion per thread, so this thread holding it at any depth
+                // and another thread being unable to take it are separate ways the unwinding could leak it.
                 REQUIRE_FALSE(runtime.homeserver.mutex.held_by_current_thread());
                 REQUIRE(lock_is_free_for_another_thread(runtime));
             }
@@ -117,6 +125,8 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
         {
             std::ignore =
                 merovingian::homeserver::handle_client_server_request(runtime, {"GET", std::string{throwing_path}});
+            // The first answer is ignored; what matters is that the runtime still serves after the unwinding. A lock
+            // leaked by the first request would make this one block or fail.
             auto const versions =
                 merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/versions"});
 
@@ -135,6 +145,7 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
         auto& runtime = started.runtime;
         runtime.rate_limit_engine.reset();
         runtime.homeserver.test_client_request_hook = [](std::string_view path) {
+            // Not derived from std::exception: the boundary catches everything, not only what has a what().
             if (path == throwing_path)
             {
                 throw 42;
@@ -175,6 +186,7 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
 
             THEN("the existing sync stream counter answer is kept")
             {
+                // std::overflow_error has its own earlier catch (ADR-0315), which the catch-all must not take over.
                 REQUIRE(answered.response.status == 500U);
                 REQUIRE(contains(answered.response.body, "sync stream counter exhausted"));
             }
@@ -190,6 +202,8 @@ SCENARIO("An exception a client-server handler lets escape is answered with a 50
 
         WHEN("the same request is made without a token")
         {
+            // The control: without the hook the same request is the handler's 401, so the 500s above came from the
+            // hook's exception and not from the request itself.
             auto const answered =
                 merovingian::homeserver::handle_client_server_request(runtime, {"GET", std::string{throwing_path}});
 

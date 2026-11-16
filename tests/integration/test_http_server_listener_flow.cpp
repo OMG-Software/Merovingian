@@ -12,12 +12,12 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/core/FileDescriptor.hpp"
 #include "merovingian/core/SocketHandle.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HttpConnectionDispatcher.hpp"
 #include "merovingian/homeserver/HttpServeStats.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/HttpServer.hpp"
 #include "merovingian/homeserver/Tls.hpp"
 #include "merovingian/net/ShutdownSignal.hpp"
@@ -869,6 +869,8 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
 {
     GIVEN("an SSO-enabled runtime and a plain and a TLS listener")
     {
+        // A throwaway certificate: the client below does not verify it, because this scenario is about the bytes of
+        // the response head, not about certificate trust.
         auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
                                                                             certificate.private_key_file);
@@ -878,6 +880,7 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
         auto runtime_result = merovingian::homeserver::start_client_server(config);
         REQUIRE(runtime_result.started);
 
+        // Port 0 lets the kernel pick a free loopback port, so parallel test processes never collide.
         auto plain_acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(plain_acceptor.bind("127.0.0.1", 0U).ok);
         auto tls_acceptor = merovingian::net::TcpAcceptor{};
@@ -889,6 +892,9 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
         auto runtime = std::move(runtime_result.runtime);
         auto plain_pool = merovingian::net::ThreadPool{2U};
         auto tls_pool = merovingian::net::ThreadPool{2U};
+        // The redirectUrl is under the allowlist entry `sso_redirect_config` sets, so the handler answers with its
+        // 302 rather than a refusal. `Connection: close` makes the end of the response the end of the stream, which is
+        // what the plain side reads up to.
         auto const request = std::string{"GET /_matrix/client/v3/login/sso/redirect?redirectUrl="
                                          "https%3A%2F%2Fclient.example.com%2Fdone HTTP/1.1\r\n"
                                          "Host: localhost\r\nConnection: close\r\n\r\n"};
@@ -923,6 +929,8 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
                     }
                 }
             } server_threads_guard{shutdown, plain_thread, tls_thread};
+            // The guard fires the shutdown and joins both server threads even when a REQUIRE below fails; a joinable
+            // std::thread destroyed during unwinding would call std::terminate instead of reporting the failure.
 
             auto const plain_fd = connect_loopback(plain_acceptor.bound_port());
             REQUIRE(plain_fd >= 0);
@@ -930,6 +938,8 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
             auto const plain_response = receive_until_close(plain_fd);
             ::close(plain_fd);
 
+            // The same request bytes go over TLS; only the transport differs, so a difference between the two heads
+            // can come only from the TLS write path.
             auto client_context = std::unique_ptr<SSL_CTX, SslContextDeleter>{SSL_CTX_new(TLS_client_method())};
             REQUIRE(client_context != nullptr);
             SSL_CTX_set_verify(client_context.get(), SSL_VERIFY_NONE, nullptr);
@@ -944,6 +954,7 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
             auto tls_reader = TlsResponseReader{};
             auto const tls_response = receive_tls_response(*client_tls, tls_reader);
 
+            // Both answers are read, so the servers are stopped before any assertion: the THEN checks only bytes.
             shutdown.fire();
             plain_thread.join();
             tls_thread.join();
@@ -963,6 +974,8 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
                     }
                     return found;
                 };
+                // Each header is counted, not just found: a header the handler set and the formatter added again would
+                // pass a find but reach a browser twice. A redirect has no body, hence Content-Length 0.
                 for (auto const* response : {&plain_response, &tls_response})
                 {
                     REQUIRE(response->starts_with("HTTP/1.1 302 Found\r\n"));
@@ -973,6 +986,7 @@ SCENARIO("merovingian-server writes a redirect with its reason phrase and one Co
                     REQUIRE(count(head, "\r\nX-Content-Type-Options: nosniff") == 1U);
                     REQUIRE(count(head, "\r\nContent-Length: 0\r\n") == 1U);
                 }
+                // One formatter serves both listeners (ADR-0767), so the two heads are byte for byte the same.
                 REQUIRE(head_of(plain_response) == head_of(tls_response));
             }
         }

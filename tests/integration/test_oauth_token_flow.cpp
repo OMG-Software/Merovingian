@@ -463,6 +463,8 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
         auto& rt = fixture.started.runtime;
         auto const session = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
         REQUIRE(session.ok);
+        // A legacy session of the same user, with its own refresh token, so each WHEN can show the two kinds of
+        // refresh token are not interchangeable (ADR-0793): neither endpoint may rotate the other's sessions.
         auto const legacy = legacy_login(rt, "LEGACYDEV");
         REQUIRE(legacy.status == 200U);
         auto const legacy_refresh = member(legacy, "refresh_token");
@@ -476,17 +478,22 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
             THEN("new tokens with the granted scope are issued, and they work")
             {
                 REQUIRE(rotated.ok);
+                // 3600 is the configuration's default access token lifetime; an OAuth access token always has one
+                // (ADR-0791). The scope is the one granted, not widened by the refresh.
                 CHECK(rotated.token_type == "Bearer");
                 CHECK(rotated.expires_in == 3600);
                 CHECK(rotated.scope == oauth_test_scope);
                 CHECK(rotated.access_token != session.access_token);
                 CHECK(rotated.refresh_token != session.refresh_token);
                 CHECK(whoami_status(rt, rotated.access_token) == 200U);
+                // Rotation replaces the tokens, not the session: its `oauth_sessions` row is still there.
                 CHECK(oauth_row(rt, oauth_test_device) != nullptr);
             }
         }
         WHEN("the runtime's device list lost the device, as after a restart, and the client refreshes")
         {
+            // Only the runtime's in-memory list is emptied; the device row and the tokens stay in the store, as
+            // they would across a restart that did not rebuild the list.
             std::erase_if(rt.devices, [](auto const& device) {
                 return device.user_id == alice_id && device.device_id == oauth_test_device;
             });
@@ -499,6 +506,8 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
             {
                 REQUIRE(rotated.ok);
                 REQUIRE(healed != rt.devices.end());
+                // The fixture's client is named "Test App", which the grant stored as the device's display name;
+                // healing from the device ID instead would show the user an opaque ID in their device list.
                 CHECK(healed->display_name == "Test App");
             }
         }
@@ -509,6 +518,8 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
             REQUIRE_FALSE(other_client.empty());
             auto const refused =
                 post_oauth_form(rt, oauth_token_path, refresh_grant_fields(other_client, session.refresh_token));
+            // The owning client refreshes with the same token afterwards: that only works if the refused attempt
+            // neither rotated nor revoked it, so a client that learns another's token cannot spend it either way.
             auto const after =
                 post_oauth_form(rt, oauth_token_path, refresh_grant_fields(fixture.client_id, session.refresh_token));
             THEN("it is invalid_grant and nothing was rotated")
@@ -533,6 +544,8 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
         }
         WHEN("the OAuth refresh token is presented to POST /refresh")
         {
+            // The reverse direction: POST /refresh must not rotate an OAuth session outside the token endpoint's
+            // client check. The follow-up refresh shows the token is still the current one.
             auto const refused = send(rt, "POST", "/_matrix/client/v3/refresh", {},
                                       R"({"refresh_token":")" + session.refresh_token + R"("})");
             auto const after =
@@ -555,6 +568,8 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
                 post_oauth_form(rt, oauth_token_path, refresh_grant_fields("not-a-client", session.refresh_token));
             THEN("they are invalid_request and invalid_client")
             {
+                // Only public clients exist, so the client ID is all a client presents: a missing one is a malformed
+                // request, an unknown one a client error, and the token alone is never enough.
                 CHECK(oauth_error(missing) == "invalid_request");
                 CHECK(oauth_error(unknown) == "invalid_client");
             }
@@ -667,6 +682,9 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
         auto const session = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
         REQUIRE(session.ok);
 
+        // What "ended" means, shared by both revocation paths: the access token, the device, the `oauth_sessions` row
+        // and the refresh token all go, as with POST /logout (ADR-0795). Checking only the access token would miss a
+        // refresh token that could mint a new one.
         auto const check_ended = [&](hs::LocalHttpResponse const& response) {
             REQUIRE(response.status == 200U);
             CHECK(response.body.empty());
@@ -695,6 +713,8 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
         }
         WHEN("the refresh token is revoked with an unknown hint and no client ID")
         {
+            // RFC 7009 section 2.1: the hint only speeds the lookup, so an unknown one is ignored. No client ID is
+            // needed: holding the token is enough to end its session (ADR-0795).
             auto const response = post_oauth_form(rt, oauth_revoke_path,
                                                   {
                                                       {"token",           session.refresh_token},
@@ -707,6 +727,8 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
         }
         WHEN("an unknown token is revoked, or the same token twice")
         {
+            // RFC 7009 section 2.2: an invalid token is not an error, so a token never issued and one already
+            // revoked both get the plain 200 a live token gets.
             auto const unknown = post_oauth_form(rt, oauth_revoke_path,
                                                  {
                                                      {"token", std::string(68U, 'a')}
@@ -730,6 +752,8 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
         }
         WHEN("the token is missing, the body is JSON, or a client_secret is sent")
         {
+            // Each refusal is checked against a live session: the whoami below proves a refused request ended
+            // nothing. Only public clients exist, so a client_secret is refused rather than ignored.
             auto const missing = post_oauth_form(rt, oauth_revoke_path,
                                                  {
                                                      {"token_type_hint", "access_token"}
@@ -754,6 +778,8 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
     {
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
+        // Revocation is not limited to OAuth sessions: a legacy token presented here is ended the same way, so a
+        // client holding either kind can always sign itself out.
         auto const legacy = legacy_login(rt, "LEGACYDEV");
         REQUIRE(legacy.status == 200U);
         WHEN("its access token is revoked")
@@ -1033,9 +1059,14 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
         auto fixture = make_fixture();
         auto& rt = fixture.started.runtime;
         auto const answer = signed_in_client(rt, fixture.client_id);
+        // The legacy session makes the UIA calls below, which refuse an OAuth session (ADR-0794), and is the
+        // device that must survive where the caller's own device is kept.
         auto const legacy = legacy_login(rt, "PWDEVICE");
         REQUIRE(legacy.status == 200U);
         auto const legacy_token = member(legacy, "access_token");
+
+        // Every WHEN ends OAUTHDEV01's credentials by a different path; each must take the `oauth_sessions` row with
+        // them (ADR-0808), or the row would outlive the session and keep naming a device that can no longer sign in.
 
         WHEN("she changes her password with POST /account/password and logout_devices")
         {
@@ -1048,6 +1079,8 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
                 REQUIRE(changed.status == 200U);
                 CHECK(whoami_status(rt, answer.access_token) == 401U);
                 CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+                // With no session row left the client counts as unused, which is what the retention sweep and the
+                // registration cap look for.
                 CHECK_FALSE(db::oauth_client_has_session(rt.homeserver.database.persistent_store, fixture.client_id));
                 CHECK(whoami_status(rt, legacy_token) == 200U);
             }
@@ -1055,6 +1088,8 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
 
         WHEN("she changes her password on the account page")
         {
+            // Called directly: the account page's form checks belong to its own flow file. This is the core the page
+            // calls, which ends the user's sessions without a calling device to keep.
             REQUIRE(hs::change_password_on_account_page(rt.homeserver, alice_id, "NewAlicePass42!y").ok);
 
             THEN("the tokens and the session row are gone")
@@ -1077,6 +1112,8 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
 
         WHEN("her password is reset by email keeping her devices")
         {
+            // The control case: a password change that ends no credential must leave the row, so the row is tied
+            // to the credentials, not to the password.
             REQUIRE(hs::reset_local_user_password(rt.homeserver, alice_id, "NewAlicePass42!y", false).ok);
 
             THEN("the OAuth session keeps its tokens and its row")
@@ -1101,6 +1138,8 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
 
         WHEN("the client refreshes, and the spent refresh token is presented again")
         {
+            // A spent refresh token presented again is reuse: the token may have leaked, so the whole session ends,
+            // including the access token the first refresh just issued.
             auto const refreshed = read_token_answer(
                 post_oauth_form(rt, oauth_token_path, refresh_grant_fields(fixture.client_id, answer.refresh_token)));
             REQUIRE(refreshed.ok);
@@ -1118,6 +1157,8 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
 
         WHEN("the store cannot commit while the user's and the device's credentials are ended")
         {
+            // The SQLite backend with no path refuses every transaction, so both ends fail without writing. The
+            // backend is put back before the THEN, so the checks read the store as it was.
             auto& store = rt.homeserver.database.persistent_store;
             auto const backend = store.backend;
             store.backend = db::PersistentStoreBackend::sqlite;
@@ -1130,6 +1171,7 @@ SCENARIO("Ending every credential of a device deletes its OAuth session row with
             {
                 CHECK_FALSE(user_ended);
                 CHECK_FALSE(device_ended);
+                // All or nothing: a failed end must not delete the row while the tokens it describes still work.
                 CHECK(oauth_row(rt, oauth_test_device) != nullptr);
                 CHECK(whoami_status(rt, answer.access_token) == 200U);
                 CHECK(whoami_status(rt, legacy_token) == 200U);

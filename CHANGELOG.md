@@ -135,6 +135,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   tables of migration 002 were left behind and the next open failed creating them.
 * The compile-time checks of `HtmlLiteral`, `HtmlName` and `PagePath` throw `std::logic_error`, not a string
   literal, so a check that does run at run time is caught as a standard exception.
+* The percent-escape decoders of `FormFields` and `ParsedUri` advance by the bytes each branch read, and
+  `ClientMetadata::validate` and `ParsedUri::read` say why each step is there (CodeQL).
+* `PendingAuthorisationStore::find` and `record_user` no longer name a hash they do not use; twelve long OAuth
+  test scenarios gained comments and three test helpers were tidied (CodeQL).
 
 ## Release notes
 

@@ -54,23 +54,29 @@ namespace
     // Path (`extra` = "/") or query (`extra` = "/?") characters, with `%XX` escapes checked.
     [[nodiscard]] auto component_is_valid(std::string_view component, std::string_view extra) noexcept -> bool
     {
-        for (auto index = std::size_t{0U}; index < component.size(); ++index)
+        // A `%XX` escape is three bytes; every other accepted character is one.
+        constexpr auto escape_bytes = std::size_t{3U};
+        // Each turn checks one item and advances by exactly the bytes it read.
+        auto index = std::size_t{0U};
+        while (index < component.size())
         {
             auto const value = component[index];
             if (value == '%')
             {
-                if (index + 2U >= component.size() || !is_hex_digit(component[index + 1U]) ||
+                // Both hex digits must be inside the component: a truncated escape is refused, never read past.
+                if (component.size() - index < escape_bytes || !is_hex_digit(component[index + 1U]) ||
                     !is_hex_digit(component[index + 2U]))
                 {
                     return false;
                 }
-                index += 2U;
+                index += escape_bytes;
                 continue;
             }
             if (!is_pchar_literal(value) && extra.find(value) == std::string_view::npos)
             {
                 return false;
             }
+            ++index;
         }
         return true;
     }
@@ -220,6 +226,8 @@ namespace
 
 auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Error>
 {
+    // Whole-text checks first, so every later step reads bounded, printable ASCII. Nothing is trimmed, lower-cased
+    // or decoded: the text kept in `m_text` is the text given, and a redirect URI is later matched byte for byte.
     if (text.size() > max_uri_bytes)
     {
         return core::Error{core::ErrorCode::invalid_argument, "The URI is too long."};
@@ -235,11 +243,14 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
     {
         return parse_error("The URI holds a byte outside printable ASCII.");
     }
+    // A fragment is refused, not dropped: RFC 6749 section 3.1.2 forbids one in a redirect URI, and no other
+    // address a client registers needs one.
     if (text.find('#') != std::string_view::npos)
     {
         return parse_error("The URI has a fragment.");
     }
 
+    // The scheme is everything before the first colon: a letter, then scheme characters (RFC 3986 section 3.1).
     auto const colon = text.find(':');
     if (colon == std::string_view::npos || colon == 0U)
     {
@@ -259,6 +270,8 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
     uri.m_text = std::string{text};
     uri.m_scheme = std::string{scheme};
 
+    // `//` introduces an authority, which ends at the first `/` or `?`. A URI without one (a private-use scheme
+    // such as `com.example.app:/callback`) keeps `m_has_authority` false and has no host or port.
     auto rest = text.substr(colon + 1U);
     if (rest.starts_with("//"))
     {
@@ -266,6 +279,7 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
         auto const authority_end = rest.find_first_of("/?");
         auto const authority = rest.substr(0U, authority_end);
         rest = authority_end == std::string_view::npos ? std::string_view{} : rest.substr(authority_end);
+        // Userinfo is refused outright: `https://trusted.example@evil.example/` shows one host and names another.
         if (authority.find('@') != std::string_view::npos)
         {
             return parse_error("The URI has userinfo.");
@@ -275,6 +289,8 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
         auto port_text = std::optional<std::string_view>{};
         if (authority.starts_with('['))
         {
+            // A bracketed IPv6 literal: the host is the brackets and what they hold, and only `:port` may follow.
+            // The colons inside the brackets are part of the address, so the port is looked for after `]`.
             auto const close = authority.find(']');
             if (close == std::string_view::npos)
             {
@@ -297,6 +313,7 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
         }
         else
         {
+            // A registered name or IPv4 literal holds no colon, so the first colon starts the port.
             auto const port_colon = authority.find(':');
             host = authority.substr(0U, port_colon);
             if (port_colon != std::string_view::npos)
@@ -308,6 +325,7 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
                 return parse_error("The URI host is malformed.");
             }
         }
+        // A port, when written, is 1 to 65535 with no leading zero; `host:` with nothing after the colon is refused.
         if (port_text.has_value())
         {
             auto const port = parse_port(*port_text);
@@ -321,6 +339,8 @@ auto ParsedUri::read(std::string_view text) -> std::variant<ParsedUri, core::Err
         uri.m_host = std::string{host};
     }
 
+    // What is left is the path and, after the first `?`, the query. Both are checked character by character and
+    // kept as written: a `%XX` escape must be well formed but is never decoded here.
     auto const question = rest.find('?');
     auto const path = rest.substr(0U, question);
     if (!component_is_valid(path, "/"))

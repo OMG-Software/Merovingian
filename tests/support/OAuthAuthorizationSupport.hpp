@@ -206,17 +206,24 @@ struct BrowserContext final
         }
         return -1;
     };
+    // A `%XX` escape is three bytes of input for one byte of output; everything else is one for one.
+    constexpr auto escape_bytes = std::size_t{3U};
     auto out = std::string{};
-    for (auto index = std::size_t{0U}; index < text.size(); ++index)
+    // Each turn consumes one item and advances by exactly the bytes it read. A `%` without two hex digits after it
+    // is kept as a literal byte, and `+` reads as a space.
+    auto index = std::size_t{0U};
+    while (index < text.size())
     {
-        if (text[index] == '%' && index + 2U < text.size() && hex(text[index + 1U]) >= 0 && hex(text[index + 2U]) >= 0)
+        if (text[index] == '%' && text.size() - index >= escape_bytes && hex(text[index + 1U]) >= 0 &&
+            hex(text[index + 2U]) >= 0)
         {
             out.push_back(static_cast<char>((hex(text[index + 1U]) * 16) + hex(text[index + 2U])));
-            index += 2U;
+            index += escape_bytes;
         }
         else
         {
             out.push_back(text[index] == '+' ? ' ' : text[index]);
+            ++index;
         }
     }
     return out;

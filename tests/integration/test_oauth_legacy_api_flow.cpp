@@ -120,6 +120,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 {
     GIVEN("a server with the OAuth 2.0 API on, the legacy API off and login tokens on")
     {
+        // Login tokens are on in this config, so every refusal below comes from the legacy switch alone
+        // (`legacy_auth_refusal`), not from a feature that is off anyway.
         auto started = start(false);
         auto& rt = started.runtime;
 
@@ -129,6 +131,7 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
             THEN("it is 404 M_UNRECOGNIZED")
             {
+                // The route answers as if it did not exist, not with an empty list of flows.
                 REQUIRE(response.status == 404U);
                 CHECK(member(response, "errcode") == "M_UNRECOGNIZED");
             }
@@ -136,12 +139,15 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("alice logs in with her right password, or with a login token")
         {
+            // The password is right and the login token is made up; both get the same 404, because the switch is
+            // asked before any credential is judged. A wrong password would prove nothing about that order.
             auto const password = send(rt, "POST", "/_matrix/client/v3/login", {}, password_login_body("NEWDEV"));
             auto const token = send(rt, "POST", "/_matrix/client/v3/login", {},
                                     R"({"type":"m.login.token","token":"0123456789abcdef"})");
 
             THEN("each is 404 M_UNRECOGNIZED and no device is created")
             {
+                // The device check catches a refusal that is answered only after the session was written.
                 REQUIRE(password.status == 404U);
                 CHECK(member(password, "errcode") == "M_UNRECOGNIZED");
                 REQUIRE(token.status == 404U);
@@ -153,6 +159,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("a user registers with a complete registration-token stage")
         {
+            // The stage is complete and the token valid, so a 403 here can only be the switch, not UIA asking for
+            // another stage: registration would hand carol a session, which the legacy API may no longer issue.
             auto const response = send(
                 rt, "POST", "/_matrix/client/v3/register", {},
                 R"({"username":"carol","password":"CarolPass99!x","auth":{"type":"m.login.registration_token","token":")" +
@@ -168,6 +176,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("the appservice logs in one of its users")
         {
+            // Application Service API, "Server admin style permissions": without the legacy API a server MUST answer
+            // m.login.application_service at /login with this 400, whatever the token and user.
             auto const response = send(
                 rt, "POST", "/_matrix/client/v3/login", bridge().as_token(),
                 R"({"type":"m.login.application_service","identifier":{"type":"m.id.user","user":"_bridge_ann"}})");
@@ -181,6 +191,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("the appservice registers a user without inhibit_login, and with inhibit_login false")
         {
+            // An absent inhibit_login means false, so both ask for a session with the new user; the spec requires
+            // the 400 unless it is true. The refusal must come before the user is written, not after.
             auto const absent = send(rt, "POST", "/_matrix/client/v3/register", bridge().as_token(),
                                      R"({"type":"m.login.application_service","username":"_bridge_ann"})");
             auto const negative =
@@ -199,6 +211,7 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("the appservice registers a user with inhibit_login true")
         {
+            // The one registration left: it creates the user and issues nothing, so bridges keep working.
             auto const response =
                 send(rt, "POST", "/_matrix/client/v3/register", bridge().as_token(),
                      R"({"type":"m.login.application_service","username":"_bridge_ann","inhibit_login":true})");
@@ -214,6 +227,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("a browser follows either SSO redirect endpoint")
         {
+            // Two routes, with and without an identity provider ID; each asks the switch on its own, so both are
+            // tried. The redirectUrl is well formed, so a refusal is not a bad parameter.
             auto const plain = send(
                 rt, "GET", "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fapp.example.com%2F", {});
             auto const with_idp =
@@ -231,12 +246,15 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("a signed-in user asks for a login token and reads the capabilities")
         {
+            // POST /login is refused here, so the session is issued directly, as one held from before the switch.
             auto const session = legacy_session(rt, "LEGACYDEV");
             auto const get_token = send(rt, "POST", "/_matrix/client/v1/login/get_token", session.access_token, "{}");
             auto const capabilities = send(rt, "GET", "/_matrix/client/v3/capabilities", session.access_token);
 
             THEN("get_token is 404 M_UNRECOGNIZED and the capability says it is not enabled")
             {
+                // The capability must agree with the route, or a client would offer a QR or login-token flow that
+                // always fails.
                 REQUIRE(get_token.status == 404U);
                 CHECK(member(get_token, "errcode") == "M_UNRECOGNIZED");
                 REQUIRE(capabilities.status == 200U);
@@ -246,6 +264,8 @@ SCENARIO("With the legacy API off no legacy endpoint lists the logins or issues 
 
         WHEN("the endpoints the switch leaves alone are called")
         {
+            // The switch covers only what lists the logins or issues a session; an availability check does neither,
+            // and a 404 here would mean the switch reaches further than it should.
             auto const available = send(rt, "GET", "/_matrix/client/v3/register/available?username=dave", {});
 
             THEN("they answer as before")
