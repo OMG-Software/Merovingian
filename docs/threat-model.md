@@ -3324,3 +3324,16 @@ directly, so these are unverified: the browser's handling of the `__Host-` cooki
 Chromium's `form-action` lets the 303 after a form post through to the client, IPv6 loopback redirects, and a client's
 deep links to the account pages. Milestone A in [the OAuth 2.0 plan](todos/oauth-2-0-api.md) (Element X on iOS and
 Android against a server built from this branch) closes this item.
+
+### MatrixRTC transport discovery (1.1.1, ADR-0822)
+
+New surface: `server.rtc.livekit.service_url` is advertised in an unauthenticated document, the `org.matrix.msc4143.rtc_foci`
+member of `/.well-known/matrix/client`, and by two routes, `GET /_matrix/client/v1/rtc/transports` and its MSC4143
+unstable path, which need an access token and are rate limited like any client route. Disclosed: an address the
+operator chose for their MatrixRTC authorisation service, public by design because clients must be told where it is.
+Threats: an attacker steering clients to a service of their choosing, or injecting into the document. Mitigations: the
+value comes only from the operator's configuration file, never from a request; it is refused at parse time unless it
+is an absolute `https` URL with a host, no userinfo, query or fragment, no whitespace and a path that does not end in `/`;
+every body is built with the JSON serializer, never by concatenating the URL into a string; and the server never
+fetches the URL, so it adds no outbound request and no SSRF path. Residual risk: an operator who points it at a service
+they do not control hands that service the OpenID tokens clients send it.
