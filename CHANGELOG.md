@@ -24,8 +24,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   absence no longer walks every row it missed under the runtime lock.
 * `use_state_after`: a room joined and left inside one sync window now gets its whole readable state as of the leave in
   `state_after`, not a delta that hid the create event, power levels and join rules (ADR-0765).
-* The sync row of `docs/todos/capability-gaps.md` no longer claims a limited incremental sync gives no gap state, and tracks
-  the `state_after` limit after a state fork (ADR-0764).
+* The sync row of `docs/todos/capability-gaps.md` no longer says a limited sync gives no gap state, and tracks the
+  `state_after` limit after a state fork (ADR-0764).
 
 ## Release notes
 
