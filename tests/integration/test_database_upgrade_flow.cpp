@@ -1327,13 +1327,15 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
         auto const signing_key = sqlite_fixture_signing_key(path, expected.server_name);
         // The release wrote schema v1: one ledger row, and none of version 2's tables.
         auto const ledger_rows_before = sqlite_count(path, "SELECT count(*) FROM schema_migrations");
-        auto const oauth_objects_before = sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'");
+        auto const oauth_objects_before =
+            sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
             auto const migrated = merovingian::database::migrate_sqlite_schema_to(
                 path.string(), merovingian::database::current_schema_version());
-            // Version 2's tables take a row and give it back; the runtime is not started yet, so nothing else holds the file.
+            // Version 2's tables take a row and give it back; the runtime is not started yet, so nothing else holds the
+            // file.
             auto const oauth_tables_usable =
                 sqlite_execute(path, "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
                 sqlite_count(path, "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
@@ -1343,7 +1345,8 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
             REQUIRE(started.started);
             auto const view = view_fixture(started.runtime, expected);
 
-            THEN("the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
+            THEN(
+                "the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
             {
                 REQUIRE(migrated.ok);
                 REQUIRE(expected.schema_version == 1);
@@ -1402,14 +1405,16 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
             // Version 2's tables take a row and give it back; the runtime is not started yet.
             auto const oauth_tables_usable =
                 pg_execute(scratch.conninfo(), "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
-                pg_count(scratch.conninfo(), "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") ==
+                    1 &&
                 pg_execute(scratch.conninfo(), "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 postgresql_fixture_config(uri_file, master_key, expected.server_name));
             REQUIRE(started.started);
             auto const view = view_fixture(started.runtime, expected);
 
-            THEN("the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
+            THEN(
+                "the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
             {
                 REQUIRE(migrated.ok);
                 REQUIRE(expected.schema_version == 1);
