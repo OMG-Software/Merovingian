@@ -830,8 +830,11 @@ homeserver serves. It is **off by default**: `GET /_matrix/client/v1/auth_metada
 and its unstable form `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata`
 answer `404 M_UNRECOGNIZED`, as the spec asks of a server without the API. With
 `server.oauth.enabled=true` both answer the server metadata. In 1.1.0 the API
-is being built in phases; this release serves the metadata, and the endpoints it
-names follow. Until they do, a client that follows the metadata cannot log in,
+is being built in phases; this release serves the metadata and client
+registration (`POST /_merovingian/oauth2/register`), and the other endpoints it
+names follow. At most 10000 client registrations are held; once every held one
+is in use, a new client is answered `503 temporarily_unavailable` until one is
+freed. Until they do, a client that follows the metadata cannot log in,
 so leave the API off.
 
 No address is configured. The issuer is `server.public_baseurl` with one

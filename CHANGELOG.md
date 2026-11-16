@@ -27,6 +27,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   deletes its OAuth session in the same transaction (ADR-0776, ADR-0778).
 * The retention sweep deletes OAuth clients with no session unused for 30 days, never one with a session, and a
   client's last use is written at most once a day (ADR-0777).
+* `POST /_merovingian/oauth2/register` registers OAuth 2.0 clients (RFC 7591); the client ID is a keyed hash of the
+  accepted metadata, so a repeat registration is the same client (ADR-0779, ADR-0781).
+* At most 10000 OAuth clients are held: at the cap idle ones go least recently used first, else 503 (ADR-0780).
+* `/_merovingian/oauth2/*` and `/_merovingian/account*` take the `auth_sensitive` rate limit; `201 Created` has its
+  reason phrase.
 
 ## Security Fixes
 
@@ -43,8 +48,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
-keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token, registration and
-revocation endpoints, which later 1.1.0 changes serve; leave `server.oauth.enabled` off until then. 1.1.0 migrates
+keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token and revocation endpoints,
+which later 1.1.0 changes serve (registration is served now); leave `server.oauth.enabled` off until then. 1.1.0 migrates
 the database: on first start it applies migration 002, which adds two empty tables and changes no existing one. A
 1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go back.
 

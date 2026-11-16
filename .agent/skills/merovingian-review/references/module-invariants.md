@@ -181,6 +181,9 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   secret into an owned `SecretBuffer` first. `src/homeserver/AGENTS.md#The runtime lock and blocking calls`
 - Work under the lock is linear in request input. Per-user row counts are capped with the documented errcodes:
   `400 M_TOO_LARGE` (ADR-0173). `#Work under the runtime lock is bounded by the request`
+- OAuth answers come from `oauth_json_response` / `oauth_error_response`; client IDs only from `oauth_client_id_of`;
+  registrations are capped and never evict a client with a session (ADR-0779 to ADR-0781).
+  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`

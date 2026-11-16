@@ -8,6 +8,7 @@ crypto_sources = files(
   'IpcStreamCipher.cpp',
   'LibraryVersions.cpp',
   'MasterKey.cpp',
+  'OAuthClientId.cpp',
   'Random.cpp',
   'RefusingEd25519Provider.cpp',
   'RuntimeEd25519Provider.cpp',

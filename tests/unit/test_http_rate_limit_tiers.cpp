@@ -63,6 +63,12 @@ SCENARIO("Rate-limit tiers classify client-server routes explicitly", "[http][ra
                 REQUIRE(tier_of("/_matrix/client/v3/register/email/requestToken") == RateLimitTier::auth_sensitive);
                 // Method-agnostic: a GET against /login is the same surface.
                 REQUIRE(tier_of("/_matrix/client/v3/login/sso/redirect") == RateLimitTier::auth_sensitive);
+                // The OAuth 2.0 API under this server's own namespace: every endpoint and page.
+                REQUIRE(tier_of("/_merovingian/oauth2/register") == RateLimitTier::auth_sensitive);
+                REQUIRE(tier_of("/_merovingian/oauth2/authorize?client_id=x") == RateLimitTier::auth_sensitive);
+                REQUIRE(tier_of("/_merovingian/oauth2/token") == RateLimitTier::auth_sensitive);
+                REQUIRE(tier_of("/_merovingian/oauth2/revoke") == RateLimitTier::auth_sensitive);
+                REQUIRE(tier_of("/_merovingian/account") == RateLimitTier::auth_sensitive);
 
                 // media: both media trees.
                 REQUIRE(tier_of("/_matrix/media/v3/download/a/b") == RateLimitTier::media);

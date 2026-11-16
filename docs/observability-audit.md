@@ -541,6 +541,17 @@ and is never persisted. Its connection identifier data is limited to presence
 and byte length, and it contains no request bodies, tokens, event content, or
 encryption material.
 
+## OAuth 2.0 client registration diagnostics (ADR-0779, ADR-0780)
+
+`POST /_merovingian/oauth2/register` logs under the `oauth` module with the fields `client_id`, `application_type`
+and `client_host` (the host of `client_uri`) only, never the request body or any other metadata value:
+`oauth.client.registered` (info, a new row), `oauth.client.registered_again` (debug, a held client),
+`oauth.client.evicted` (info, idle clients removed at the cap, with `clients` and `limit` in place of the client fields), `oauth.client.cap_reached` (warning, a
+503), and `oauth.client.store_failed` and `oauth.client.touch_failed` (warning). A stored row that no longer
+validates is logged as `oauth.client.stored_metadata_refused` (warning, `client_id` only) each time it is read.
+Registration writes no audit row: it is unauthenticated, grants nothing, and is bounded by the `auth_sensitive` rate
+limit, whose 429s are audited as `rate_limit.exceeded`.
+
 ## Outbound client request diagnostics (F-76, ADR-0418)
 
 `http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:

@@ -660,3 +660,6 @@
 * [0776 - An OAuth session is a row keyed by user and device, and the token tables do not change](0776-an-oauth-session-is-a-row-keyed-by-user-and-device-and-the-token-tables-do-not-change.md)
 * [0777 - An OAuth client's last use is written at most once a day](0777-an-oauth-client-s-last-use-is-written-at-most-once-a-day.md)
 * [0778 - The schema is built from per-version tables, and each migration step from what its version adds](0778-the-schema-is-built-from-per-version-tables-and-each-migration-step-from-what-its-version-adds.md)
+* [0779 - An OAuth client ID is a keyed hash of the accepted metadata](0779-an-oauth-client-id-is-a-keyed-hash-of-the-accepted-metadata.md)
+* [0780 - OAuth registrations are capped, and idle clients are evicted least recently used first](0780-oauth-registrations-are-capped-and-idle-clients-are-evicted-least-recently-used-first.md)
+* [0781 - OAuth endpoints answer OAuth errors with no-store, from one helper](0781-oauth-endpoints-answer-oauth-errors-with-no-store-from-one-helper.md)

@@ -35,9 +35,16 @@ namespace merovingian::crypto
 [[nodiscard]] auto derive_token_hmac_key_v3(std::span<std::uint8_t const> master_key_material) noexcept
     -> std::optional<TokenHmacKey>;
 
+// Derive the key of the OAuth 2.0 client ID hash (plan P2, ADR-0779) from master key material, with a
+// domain-separation label of its own, so it is independent of both access-token keys and of every other derived
+// key. The same material always gives the same key, so a client keeps its ID across restarts. Returns nullopt if
+// libsodium is not initialised or the material is empty.
+[[nodiscard]] auto derive_oauth_client_id_key(std::span<std::uint8_t const> master_key_material) noexcept
+    -> std::optional<TokenHmacKey>;
+
 static_assert(SecureKeyBytes::key_bytes == crypto_generichash_KEYBYTES);
 
-// The token HMAC keys derived from the master key file at `path`, cached
+// The token HMAC keys (and the OAuth 2.0 client ID key) derived from the master key file at `path`, cached
 // against that file's identity (ISO-7: identity and bytes from one open).
 //
 // CRY-4, PR #509 review: these keys are on every authenticated request's path.

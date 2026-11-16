@@ -27,6 +27,8 @@ This is the largest and most complex module — read this file carefully before 
 | `AppserviceDelivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `ClientTxnPrune.cpp` | `prune_client_transactions`: the sweep the `client-txn-prune` `PeriodicJob` runs every hour, deleting to-device `client_txn_ids` records older than 7 days (F-54, ADR-0381) |
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names, a seam that is false until phase 5; ADR-0777), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
+| `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
+| `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response`: every OAuth JSON answer, with `no-store` (ADR-0781) |
 | `LoginTokenStore.cpp` | `LoginTokenStore`: the in-memory, bounded, single-use login tokens `POST /login/get_token` mints (CS8, ADR-0548). Hash only, constant-time scan, never evicts; guarded by `runtime.mutex` |
 | `SessionTable.cpp` | `SessionTable`: `LocalDatabase::sessions` with an index of token-hash digests, so `find_session` does not scan (ADR-0488), and an index by (user ID, device ID) behind `erase_device` (F-08), which a login on a held device and a refresh call after their database commit (ADR-0590); `rows_examined()` counts the sessions it visits |
 | `DeferredPduRetry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
@@ -107,6 +109,18 @@ authentication: `404 M_UNRECOGNIZED` while `server.oauth.enabled` is false, othe
 absolute OAuth address a handler writes comes from `oauth::OAuthBaseUrl` read from `server.public_baseurl`, with a path
 constant from `oauth/OAuthPaths.hpp`; never join the base URL and a path here. The two paths stay in the generic
 rate-limit tier (ADR-0775); the other OAuth endpoints take `auth_sensitive`.
+
+`POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
+authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
+
+- Every OAuth answer is built by `oauth_json_response` or `oauth_error_response` (`OAuthJsonResponse.cpp`):
+  `application/json`, `Cache-Control: no-store`, `{"error", "error_description"}`. Never build OAuth JSON by hand.
+- The client ID is `oauth_client_id_of` (keyed hash of `canonical_bytes()`, ADR-0779); never mint one another way.
+- At `ClientApiLimits::max_oauth_clients` a new client evicts at most `max_oauth_client_evictions_per_registration`
+  idle clients, never one with a session or one `oauth_client_has_pending_authorisation` names, else 503 with nothing
+  stored (ADR-0780). A repeat registration is never refused by the cap.
+- Log `client_id`, `application_type` and the `client_uri` host only; never the body.
+- Read a client back with `find_registered_oauth_client`, which re-validates the stored metadata.
 
 ## Password reset by email (ADR-0481)
 

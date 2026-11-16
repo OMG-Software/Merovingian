@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The authorization, token, registration and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration endpoint is served (see "OAuth 2.0 client registration" below); the authorization, token and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker
@@ -1076,6 +1076,28 @@ The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-
   `POST /logout`, `POST /logout/all`, `DELETE /devices/{deviceId}` and `POST /delete_devices`.
 
 Neither table is read by the federation worker.
+
+## OAuth 2.0 client registration
+
+`POST /_merovingian/oauth2/register` (spec "Client registration", RFC 7591) is served while `server.oauth.enabled` is
+true, without authentication, by `register_oauth_client` (`homeserver/OAuthClientRegistration.cpp`) under
+`runtime.mutex`, with no network call:
+
+- The body must be `application/json` (a `charset=utf-8` parameter is allowed), at most 16 KiB, and valid JSON;
+  otherwise `400 invalid_client_metadata`. `oauth::ClientMetadata::validate` judges it; a refusal is a 400 with its
+  code (`invalid_redirect_uri` or `invalid_client_metadata`).
+- The client ID is a keyed BLAKE2b hash of the canonical metadata, under a key derived from the master key with its
+  own label, as 43 URL-safe base64 characters (ADR-0779). The same metadata in any key order, with repeated list
+  entries or ignored members, is the same client: a repeat finds its row and only touches its last use.
+- The answer is `201` with `client_id`, `client_id_issued_at` (seconds, the row's first registration) and every
+  registered value of `ClientMetadata::to_json()`, with `Cache-Control: no-store`. Locale-tagged values and
+  `logo_uri` are not registered and not echoed.
+- At most 10000 clients are held (`ClientApiLimits::max_oauth_clients`). At the cap a new client evicts up to 8
+  least-recently-used clients that have no session and no pending authorisation; if that is not enough it is
+  `503 temporarily_unavailable` and nothing is stored (ADR-0780). A client with a session is never deleted.
+- Errors are `{"error", "error_description"}` from `oauth_error_response` (ADR-0781).
+- `find_registered_oauth_client` reads a client back for later phases: unknown, unparsable or no longer valid metadata
+  is "no client"; a row that fails validation is logged without its content.
 
 ## Next starting points
 

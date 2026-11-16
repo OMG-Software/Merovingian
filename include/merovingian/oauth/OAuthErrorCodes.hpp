@@ -15,5 +15,9 @@ inline constexpr std::string_view error_invalid_grant = "invalid_grant";
 inline constexpr std::string_view error_invalid_scope = "invalid_scope";
 inline constexpr std::string_view error_invalid_redirect_uri = "invalid_redirect_uri";
 inline constexpr std::string_view error_invalid_client_metadata = "invalid_client_metadata";
+// RFC 6749 section 4.1.2.1: the server cannot take the request now (the client registration cap, ADR-0780) or failed
+// in a way the client cannot fix.
+inline constexpr std::string_view error_temporarily_unavailable = "temporarily_unavailable";
+inline constexpr std::string_view error_server_error = "server_error";
 
 } // namespace merovingian::oauth

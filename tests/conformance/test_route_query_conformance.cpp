@@ -41,8 +41,12 @@ using merovingian::homeserver::ClientServerRuntime;
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
+    // The OAuth 2.0 API is on so that its fixed routes are served and can be checked like the others.
+    auto server = merovingian::config::ServerConfig{};
+    server.public_baseurl = "https://matrix.example.org";
+    server.oauth.enabled = true;
     return {
-        merovingian::config::ServerConfig{},
+        std::move(server),
         merovingian::config::ListenersConfig{},
         merovingian::tests::in_memory_database_config(),
         security,
@@ -105,12 +109,13 @@ SCENARIO("every client route that matched its whole target answers a request wit
         // Every route that was compared with `req.target == "..."`. A handler may answer anything
         // (a UIA challenge, a 400 for the empty body); what it may not do is answer as though the
         // route does not exist. /logout is last: it ends the session.
-        constexpr auto routes = std::array<Route, 32>{
+        constexpr auto routes = std::array<Route, 33>{
             {
              {"GET", "/.well-known/matrix/client", ""},
              {"GET", "/_matrix/client/versions", ""},
              {"GET", "/_matrix/client/v1/auth_metadata", ""},
              {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata", ""},
+             {"POST", "/_merovingian/oauth2/register", "{}"},
              {"POST", "/_matrix/client/v3/register/email/requestToken", "{}"},
              {"POST", "/_matrix/client/v3/register/msisdn/requestToken", "{}"},
              {"POST", "/_matrix/client/v3/register", "{}"},

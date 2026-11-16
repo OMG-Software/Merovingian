@@ -800,7 +800,7 @@ cap applies regardless of which room, device, or media ID appears in the URL.
 
 | Tier | Routes | Default per-IP policy |
 | --- | --- | --- |
-| `auth_sensitive` | `/login`, `/register`, `/refresh`, and every `*/requestToken` route (matched by suffix) — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
+| `auth_sensitive` | `/login`, `/register`, `/refresh`, every `*/requestToken` route (matched by suffix), `/_merovingian/oauth2/*` and `/_merovingian/account*` — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
 | `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 120/60s; thumbnail refinement 240/60s |
 | `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 3000/60s |
 | `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 3000/60s |
@@ -947,6 +947,19 @@ never double-counted.
 listener: `200` with the body `ok` while the dispatcher is running, `503` with `unavailable` after shutdown begins. It
 needs no token, is not rate-limited, reads one atomic flag and takes no lock (not `runtime.mutex`), so a long request
 cannot delay it. It says nothing of the database or the federation worker; `/_merovingian/admin/health` does.
+
+### OAuth 2.0 routes (ADR-0779 to ADR-0781)
+
+`POST /_merovingian/oauth2/register` goes through the client-server dispatcher like any route: a `static_routes` entry
+gives it its own rate-limit bucket, in the `auth_sensitive` tier (as do the later `/_merovingian/oauth2/*` and
+`/_merovingian/account*` paths), and a `client_static_route_allow` row answers any other method `405` with
+`Allow: POST`. It is answered before the authentication gate. `OPTIONS` is answered for it as for every path, and
+CORS headers are added at the same single boundary, so it carries exactly those of `/login`. The Matrix `M_NOT_JSON`
+gate covers only `/_matrix/client/`; the handler judges the JSON content type itself. A body over `max_body_bytes`
+on this path is answered `400 invalid_client_metadata` by the handler instead of `413 M_TOO_LARGE`; one over the
+transport's own body cap is still refused by the connection handler. With `server.oauth.enabled` off the route is
+`404 M_UNRECOGNIZED`. Every OAuth answer is built by `oauth_json_response` or `oauth_error_response`
+(`application/json`, `Cache-Control: no-store`); the 429, 405, 404 and not-started 503 stay Matrix-shaped.
 
 ### Admin routes
 

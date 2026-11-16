@@ -233,6 +233,10 @@ struct HomeserverRuntime final
     // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
     // request would (C21). Always empty in production.
     std::function<void()> test_after_upgrade_room_created{};
+    // Test-only: when set, `oauth_client_has_pending_authorisation` also answers true for each client ID it answers
+    // true for, so a test can stand in for an authorisation still pending before phase 5 of the OAuth 2.0 work keeps
+    // them. Called with runtime.mutex held; must not take it. Always empty in production.
+    std::function<bool(std::string_view)> test_oauth_pending_authorisation{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,

@@ -216,11 +216,11 @@ namespace
 
 } // namespace
 
-// The seam phase 5 fills in: no authorisation request is kept yet, so none can name a client.
-auto oauth_client_has_pending_authorisation([[maybe_unused]] HomeserverRuntime const& runtime,
-                                            [[maybe_unused]] std::string_view client_id) -> bool
+// The seam phase 5 fills in: no authorisation request is kept yet, so none can name a client. A test stands in for one
+// through `test_oauth_pending_authorisation`, which production never sets.
+auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id) -> bool
 {
-    return false;
+    return runtime.test_oauth_pending_authorisation && runtime.test_oauth_pending_authorisation(client_id);
 }
 
 auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now, StopFlag const& stop)

@@ -32,6 +32,9 @@ namespace
     // prevents key reuse across cryptographic purposes.
     constexpr auto k_context_v4 = std::string_view{"merovingian:access-token-hmac:1"};
     constexpr auto k_context_v3 = std::string_view{"merovingian:access-token-hmac:legacy-v3:1"};
+    // The OAuth 2.0 client ID key (ADR-0779). Its own label: a client ID is published, so the key that makes it
+    // must never be one that also hashes a secret.
+    constexpr auto k_context_oauth_client_id = std::string_view{"merovingian:oauth-client-id:1"};
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -74,6 +77,12 @@ auto derive_token_hmac_key(std::span<std::uint8_t const> master_key_material) no
 auto derive_token_hmac_key_v3(std::span<std::uint8_t const> master_key_material) noexcept -> std::optional<TokenHmacKey>
 {
     return derive_with_label(master_key_material, k_context_v3);
+}
+
+auto derive_oauth_client_id_key(std::span<std::uint8_t const> master_key_material) noexcept
+    -> std::optional<TokenHmacKey>
+{
+    return derive_with_label(master_key_material, k_context_oauth_client_id);
 }
 
 auto cached_token_hmac_keys(std::string_view path)
@@ -123,13 +132,15 @@ try
     auto const material = load_master_key_material(*opened);
     auto v3 = material.has_value() ? derive_token_hmac_key_v3(material->bytes()) : std::nullopt;
     auto v4 = material.has_value() ? derive_token_hmac_key(material->bytes()) : std::nullopt;
-    if (!v3.has_value() || !v4.has_value())
+    auto client_id = material.has_value() ? derive_oauth_client_id_key(material->bytes()) : std::nullopt;
+    if (!v3.has_value() || !v4.has_value() || !client_id.has_value())
     {
         cached_identity.clear();
         cached_keys.reset();
         return nullptr;
     }
-    cached_keys = std::make_shared<TokenHmacKeys const>(TokenHmacKeys{std::move(v3), std::move(v4)});
+    cached_keys = std::make_shared<TokenHmacKeys const>( // SHARED_PTR: reviewed — locked keys shared by readers
+        TokenHmacKeys{std::move(v3), std::move(v4), std::move(client_id)});
     cached_identity = opened->identity;
     return cached_keys;
 }

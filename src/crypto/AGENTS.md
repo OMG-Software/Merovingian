@@ -22,7 +22,8 @@ or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for b
 | `Encoding.cpp` | Hex and base64 (URL-safe and original) encoding wrappers |
 | `MasterKey.cpp` | Loads and validates the operator master key into locked memory; fails closed if it cannot be locked |
 | `SecretBox.cpp` | `SecretBoxKey` — encrypts server signing secrets at rest (`secretbox:v1:` format) |
-| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived key for `v3`/`v4` access-token hashing |
+| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived keys for `v3`/`v4` access-token hashing and the OAuth client ID (own label, ADR-0779), cached together |
+| `OAuthClientId.cpp` | `oauth_client_id`: keyed BLAKE2b of canonical OAuth client metadata, 43 URL-safe base64 characters (ADR-0779) |
 | `IpcAuthKey.cpp` | `IpcAuthKey` — master-key-derived key that authenticates the federation-worker IPC handshake |
 | `IpcStreamCipher.cpp` | `crypto_kx` session keys and `secretstream` AEAD framing for the IPC channel |
 

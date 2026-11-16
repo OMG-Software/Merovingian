@@ -27,6 +27,8 @@ homeserver_sources = files(
   'MediaService.cpp',
   'StreamedBody.cpp',
   'MediaUploadNotifier.cpp',
+  'OAuthClientRegistration.cpp',
+  'OAuthJsonResponse.cpp',
   'OperatorAdmin.cpp',
   'UrlPreviewService.cpp',
   'PeriodicJob.cpp',

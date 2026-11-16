@@ -1025,6 +1025,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   much of a guess matched (CWE-208).
   Source: `src/oauth/AGENTS.md`.
 
+- **A client ID is only ever the keyed hash of the accepted metadata (`oauth_client_id_of`), and the number of
+  registrations is capped: at the cap only idle clients without a session or pending authorisation are evicted, a
+  bounded number per request, else 503 with nothing stored. Registration logs the client ID, application type and
+  client host, never the body.**
+  Why: registration is unauthenticated, so without the cap rows grow without bound (CWE-770); deleting a client in
+  use breaks the spec's MUST NOT; the body is attacker-chosen text (CWE-117) (ADR-0779, ADR-0780).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
@@ -1895,7 +1903,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
 | `src/oauth/AGENTS.md` | OAuth 2.0 API |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Media; Sync |
+| `src/homeserver/AGENTS.md` | Authentication and authorization; OAuth 2.0 API; HTTP and network boundary; Federation; Media; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |

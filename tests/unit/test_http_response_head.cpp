@@ -144,6 +144,7 @@ SCENARIO("Statuses the server answers with carry their reason phrase", "[http][r
             THEN("each has its RFC 9110 phrase, and an unlisted status has none")
             {
                 REQUIRE(merovingian::http::reason_phrase(200U) == "OK");
+                REQUIRE(merovingian::http::reason_phrase(201U) == "Created");
                 REQUIRE(merovingian::http::reason_phrase(202U) == "Accepted");
                 REQUIRE(merovingian::http::reason_phrase(302U) == "Found");
                 REQUIRE(merovingian::http::reason_phrase(303U) == "See Other");

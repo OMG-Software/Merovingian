@@ -30,8 +30,9 @@ inline constexpr auto expired_access_token_grace = std::chrono::hours{24 * 7};
 inline constexpr auto oauth_client_retention = std::chrono::hours{24 * 30};
 
 // Whether an authorisation request still pending names `client_id`, so its client must not be deleted under it.
-// Phase 5 of the OAuth 2.0 work keeps pending authorisations; until then none exist and this is always false.
-// Called with HomeserverRuntime::mutex held.
+// Phase 5 of the OAuth 2.0 work keeps pending authorisations; until then none exist and this is false unless a test
+// set `HomeserverRuntime::test_oauth_pending_authorisation`. The retention sweep and the registration cap
+// (`register_oauth_client`) both ask it before deleting a client. Called with HomeserverRuntime::mutex held.
 [[nodiscard]] auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id)
     -> bool;
 

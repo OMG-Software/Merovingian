@@ -36,6 +36,8 @@ auto reason_phrase(std::uint16_t status) noexcept -> std::string_view
     {
     case 200U:
         return "OK";
+    case 201U:
+        return "Created";
     case 202U:
         return "Accepted";
     case 302U:

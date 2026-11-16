@@ -118,6 +118,11 @@ implementing custom cryptographic primitives.
   other key is derived from is actually materialised in process memory, and
   removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
   under load.
+- **The OAuth 2.0 client ID key** (`derive_oauth_client_id_key`, label `merovingian:oauth-client-id:1`) is derived
+  from the master key like the access-token keys and cached beside them in `TokenHmacKeys` from the same read; the
+  cache fails closed if any of the three cannot be derived. `oauth_client_id` (`OAuthClientId.cpp`) is the keyed
+  BLAKE2b-256 of the canonical client metadata, as unpadded URL-safe base64 (ADR-0779). The key is used for nothing
+  else.
 - **Master-key lock failure is fatal.** The secure-file reader rejects an
   unlocked `SecretBuffer` before returning material to
   `crypto::load_master_key_material()`; the loader also has a defensive lock

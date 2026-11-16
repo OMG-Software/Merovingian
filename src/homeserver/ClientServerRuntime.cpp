@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/MutualRoomsToken.hpp"
+#include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
 #include "merovingian/homeserver/OutboundDeadline.hpp"
@@ -4064,6 +4065,7 @@ namespace
             "/_matrix/client/v3/logout/all",
             "/_matrix/client/v1/auth_metadata",
             "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",
+            "/_merovingian/oauth2/register",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
             "/_matrix/client/v3/account/password/email/requestToken",
@@ -4160,6 +4162,7 @@ namespace
             {"/_matrix/client/v3/logout/all",                                               "POST"            },
             {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
             {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
+            {"/_merovingian/oauth2/register",                                               "POST"            },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
             {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
@@ -14479,6 +14482,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
                              "request.rejected", "<unknown>", req.target, "413:request body too large");
+        // OAuth 2.0 client registration answers every refused body as an OAuth error (ADR-0781). This gate runs before
+        // runtime.mutex is taken, so it answers with the fixed refusal, which reads no state.
+        if (request_path == oauth::register_path.view() && req.method == "POST" &&
+            rt.homeserver.config.server().oauth.enabled)
+        {
+            return DispatchResult{DispatchResult::Status::complete, oauth_client_metadata_too_large(), {}};
+        }
         return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "request body too large");
     }
     // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
@@ -16018,6 +16028,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         options.registration_enabled = rt.homeserver.config.security().registration.enabled;
         return dispatch_resp(req, rt, 200U,
                              json_serialize(oauth::server_metadata(std::get<oauth::OAuthBaseUrl>(base), options)));
+    }
+    // POST /_merovingian/oauth2/register (spec "Client registration", RFC 7591). Unauthenticated, so it is answered
+    // before the access-token gate; with the OAuth 2.0 API off the path is not served at all, so it is 404 whatever the
+    // method, as an unknown route is. Another method falls through to the 405 gate (client_static_route_allow).
+    // The handler is OAuthClientRegistration.cpp; its answers are OAuth errors, never Matrix ones (ADR-0781).
+    if (request_path == oauth::register_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete,
+                                  register_oauth_client(rt, request_header(req, "Content-Type"), req.body),
+                                  {}};
+        }
     }
     // The rest of the MSC2965 namespace (`auth_issuer`, from an earlier draft of the MSC) is not served. It is
     // answered 404 before the access-token gate, so a probe does not read a 401 as partial support.
