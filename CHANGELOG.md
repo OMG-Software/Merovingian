@@ -11,6 +11,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   carries `state_after` and no `state` (ADR-0763, ADR-0764, ADR-0765).
 * The 1.1 series has its cross-release upgrade fixture: `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3
   release, opened, migrated and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
+* The `use_state_after` scenarios asserting project choices, not spec rows, moved from the conformance suite to
+  `tests/integration/test_sync_state_after_flow.cpp`.
 
 ## Security Fixes
 

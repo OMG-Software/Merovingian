@@ -1004,6 +1004,7 @@ shell = find_program('sh')
       'integration/test_server_signing_key_lifecycle_flow.cpp',
       'integration/test_sync_dag_gap_flow.cpp',
       'integration/test_sync_handler_flow.cpp',
+      'integration/test_sync_state_after_flow.cpp',
       'integration/test_sync_stream_position_flow.cpp',
       'integration/test_turn_shared_secret_flow.cpp',
     ),

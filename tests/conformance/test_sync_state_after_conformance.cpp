@@ -3,17 +3,8 @@
 //
 // GET /_matrix/client/v3/sync `use_state_after` and the `state_after` section of joined and left rooms
 // (client-server-api.md, GET /sync, "Joined Room", "Left Room"; ADR-0763 to ADR-0765).
-#include "../support/InMemoryDatabaseConfig.hpp"
 #include "../support/JsonTestSupport.hpp"
-#include "../support/MasterKey.hpp"
-#include "../support/RegistrationToken.hpp"
-#include "merovingian/config/ClientRateLimitsConfig.hpp"
-#include "merovingian/config/Config.hpp"
-#include "merovingian/config/ListenersConfig.hpp"
-#include "merovingian/config/LogModulesConfig.hpp"
-#include "merovingian/config/SecurityConfig.hpp"
-#include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/core/QueryParams.hpp"
+#include "../support/SyncStateAfterSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 
@@ -33,232 +24,7 @@ namespace
 {
 
 using namespace merovingian::tests;
-using merovingian::canonicaljson::Object;
-using merovingian::homeserver::ClientServerRuntime;
-
-constexpr auto k_state_after = std::string_view{"&use_state_after=true"};
-constexpr auto k_state_before = std::string_view{"&use_state_after=false"};
-constexpr auto k_no_filter = std::string_view{"{}"};
-constexpr auto k_one_event = std::string_view{R"({"room":{"timeline":{"limit":1}}})"};
-constexpr auto k_lazy = std::string_view{R"({"room":{"state":{"lazy_load_members":true}}})"};
-constexpr auto k_lazy_one_event =
-    std::string_view{R"({"room":{"timeline":{"limit":1},"state":{"lazy_load_members":true}}})"};
-constexpr auto k_include_leave = std::string_view{R"({"room":{"include_leave":true}})"};
-
-[[nodiscard]] auto state_after_config() -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    merovingian::tests::enable_token_registration(security);
-    return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::tests::in_memory_database_config(),
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-    };
-}
-
-struct Reply final
-{
-    std::uint16_t status{0U};
-    std::string body{};
-};
-
-[[nodiscard]] auto call(ClientServerRuntime& rt, std::string method, std::string target, std::string const& token,
-                        std::string body = {}) -> Reply
-{
-    auto const result = merovingian::homeserver::handle_client_server_request(
-        rt, {std::move(method), std::move(target), token, std::move(body)}, /*can_wait=*/false);
-    return {static_cast<std::uint16_t>(result.response.status), result.response.body};
-}
-
-[[nodiscard]] auto user_id(std::string_view localpart) -> std::string
-{
-    return "@" + std::string{localpart} + ":example.org";
-}
-
-[[nodiscard]] auto register_user(ClientServerRuntime& rt, std::string const& localpart) -> std::string
-{
-    auto const registered =
-        call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!"));
-    REQUIRE(registered.status == 200U);
-    return *string_member(parse_object(registered.body), "access_token");
-}
-
-[[nodiscard]] auto create_room(ClientServerRuntime& rt, std::string const& token, std::string const& preset)
-    -> std::string
-{
-    auto const created = call(rt, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":")" + preset + R"("})");
-    REQUIRE(created.status == 200U);
-    return *string_member(parse_object(created.body), "room_id");
-}
-
-auto room_post(ClientServerRuntime& rt, std::string const& token, std::string const& room_id, std::string const& action,
-               std::string body = "{}") -> void
-{
-    REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/" + action, token, std::move(body)).status ==
-            200U);
-}
-
-auto say(ClientServerRuntime& rt, std::string const& token, std::string const& room_id, std::string const& text) -> void
-{
-    static auto counter = std::uint64_t{0U};
-    auto const sent =
-        call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/sa" + std::to_string(++counter),
-             token, R"({"msgtype":"m.text","body":")" + text + R"("})");
-    REQUIRE(sent.status == 200U);
-}
-
-auto set_topic(ClientServerRuntime& rt, std::string const& token, std::string const& room_id, std::string const& topic)
-    -> std::string
-{
-    auto const sent = call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic/", token,
-                           R"({"topic":")" + topic + R"("})");
-    REQUIRE(sent.status == 200U);
-    return *string_member(parse_object(sent.body), "event_id");
-}
-
-auto set_display_name(ClientServerRuntime& rt, std::string const& token, std::string const& room_id,
-                      std::string const& localpart, std::string const& name) -> void
-{
-    auto const sent =
-        call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/" + user_id(localpart), token,
-             R"({"membership":"join","displayname":")" + name + R"("})");
-    REQUIRE(sent.status == 200U);
-}
-
-struct Synced final
-{
-    Object body{};
-    std::string next_batch{};
-};
-
-[[nodiscard]] auto sync(ClientServerRuntime& rt, std::string const& token, std::string_view filter,
-                        std::string const& since = {}, std::string_view extra = {}) -> Synced
-{
-    auto target =
-        std::string{"/_matrix/client/v3/sync?filter="} + merovingian::core::percent_encode_path_component(filter);
-    if (!since.empty())
-    {
-        target += "&since=" + merovingian::core::percent_encode_path_component(since);
-    }
-    target += extra;
-    auto const reply = call(rt, "GET", target, token);
-    REQUIRE(reply.status == 200U);
-    auto body = parse_object(reply.body);
-    auto next = *string_member(body, "next_batch");
-    return {std::move(body), std::move(next)};
-}
-
-// rooms.<section>.<room_id>, or nullptr.
-[[nodiscard]] auto room_section(Synced const& synced, std::string_view section, std::string const& room_id)
-    -> Object const*
-{
-    auto const* rooms = object_member_as_object(synced.body, "rooms");
-    auto const* group = rooms == nullptr ? nullptr : object_member_as_object(*rooms, section);
-    return group == nullptr ? nullptr : object_member_as_object(*group, room_id);
-}
-
-[[nodiscard]] auto required_room(Synced const& synced, std::string_view section, std::string const& room_id)
-    -> Object const&
-{
-    auto const* room = room_section(synced, section, room_id);
-    REQUIRE(room != nullptr);
-    return *room;
-}
-
-// Whether `room` has the member `part`, whatever it holds.
-[[nodiscard]] auto has_part(Object const& room, std::string_view part) -> bool
-{
-    return object_member_as_object(room, part) != nullptr;
-}
-
-// The events of `room.<part>`, which must be present.
-[[nodiscard]] auto events_of(Object const& room, std::string_view part) -> std::vector<Object>
-{
-    auto const* section = object_member_as_object(room, part);
-    REQUIRE(section != nullptr);
-    auto const* events = object_member_as_array(*section, "events");
-    REQUIRE(events != nullptr);
-    auto out = std::vector<Object>{};
-    for (auto const& entry : *events)
-    {
-        out.push_back(std::get<Object>(entry.storage()));
-    }
-    return out;
-}
-
-using Keys = std::multiset<std::string>;
-
-[[nodiscard]] auto event_types(std::vector<Object> const& events) -> Keys
-{
-    auto types = Keys{};
-    for (auto const& event : events)
-    {
-        types.insert(*string_member(event, "type"));
-    }
-    return types;
-}
-
-// The state_key of every m.room.member event.
-[[nodiscard]] auto member_keys(std::vector<Object> const& events) -> Keys
-{
-    auto keys = Keys{};
-    for (auto const& event : events)
-    {
-        if (*string_member(event, "type") == "m.room.member")
-        {
-            keys.insert(*string_member(event, "state_key"));
-        }
-    }
-    return keys;
-}
-
-// `content.<field>` of the event of (type, state_key), or nullopt when `events` has none.
-[[nodiscard]] auto content_of(std::vector<Object> const& events, std::string_view type, std::string_view state_key,
-                              std::string_view field) -> std::optional<std::string>
-{
-    for (auto const& event : events)
-    {
-        auto const* key = string_member(event, "state_key");
-        if (*string_member(event, "type") == type && key != nullptr && *key == state_key)
-        {
-            auto const* content = object_member_as_object(event, "content");
-            auto const* value = content == nullptr ? nullptr : string_member(*content, field);
-            return value == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*value};
-        }
-    }
-    return std::nullopt;
-}
-
-// The `content.topic` of every m.room.topic event in `events`.
-[[nodiscard]] auto topics_in(std::vector<Object> const& events) -> std::vector<std::string>
-{
-    auto topics = std::vector<std::string>{};
-    for (auto const& event : events)
-    {
-        if (*string_member(event, "type") == "m.room.topic")
-        {
-            auto const* content = object_member_as_object(event, "content");
-            topics.push_back(*string_member(*content, "topic"));
-        }
-    }
-    return topics;
-}
-
-auto require_state_after_only(Object const& room) -> void
-{
-    REQUIRE(has_part(room, "state_after"));
-    REQUIRE_FALSE(has_part(room, "state"));
-}
-
-auto require_state_only(Object const& room) -> void
-{
-    REQUIRE(has_part(room, "state"));
-    REQUIRE_FALSE(has_part(room, "state_after"));
-}
+using namespace merovingian::tests::state_after_support;
 
 } // namespace
 
@@ -447,30 +213,6 @@ SCENARIO("An incremental sync's state_after holds what changed up to the end of 
                 REQUIRE(events_of(joined, "state_after").empty());
             }
         }
-        WHEN("nothing happened")
-        {
-            auto const synced = sync(rt, alice, k_no_filter, initial.next_batch, k_state_after);
-
-            THEN("the room is not reported")
-            {
-                REQUIRE(room_section(synced, "join", room) == nullptr);
-            }
-        }
-        WHEN("more state changes than one delta chain can hold happened")
-        {
-            for (auto index = 0; index < 120; ++index)
-            {
-                set_topic(rt, alice, room, "t" + std::to_string(index));
-            }
-            auto const synced = sync(rt, alice, k_one_event, initial.next_batch, k_state_after);
-
-            THEN("state_after still holds only the key that changed, with its last value")
-            {
-                auto const after = events_of(required_room(synced, "join", room), "state_after");
-                REQUIRE(event_types(after) == Keys{"m.room.topic"});
-                REQUIRE(topics_in(after) == std::vector<std::string>{"t119"});
-            }
-        }
     }
 }
 
@@ -585,43 +327,6 @@ SCENARIO("full_state=true returns the whole state in the section use_state_after
 }
 
 // Spec: Matrix Client-Server API v1.19
-// Endpoint / Section: GET /_matrix/client/v3/sync, query parameter `use_state_after`; Joined Room `state_after`
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
-//
-// A room the client had no state for: it joined inside the window, so a delta would tell it nothing.
-SCENARIO("state_after of a room joined in the window is the room's whole state",
-         "[conformance][client-server][sync][state-after]")
-{
-    GIVEN("a room bob joins after his first sync")
-    {
-        auto started = merovingian::homeserver::start_client_server(state_after_config());
-        REQUIRE(started.started);
-        auto& rt = started.runtime;
-        auto const alice = register_user(rt, "alice");
-        auto const bob = register_user(rt, "bob");
-        auto const room = create_room(rt, alice, "public_chat");
-        set_topic(rt, alice, room, "first");
-        auto const initial = sync(rt, bob, k_no_filter, {}, k_state_after);
-        room_post(rt, bob, room, "join");
-
-        WHEN("bob syncs with use_state_after=true")
-        {
-            auto const synced = sync(rt, bob, k_no_filter, initial.next_batch, k_state_after);
-            auto const& joined = required_room(synced, "join", room);
-
-            THEN("state_after holds all state, his own join included, and state is omitted")
-            {
-                require_state_after_only(joined);
-                auto const after = events_of(joined, "state_after");
-                REQUIRE(event_types(after).contains("m.room.create"));
-                REQUIRE(topics_in(after) == std::vector<std::string>{"first"});
-                REQUIRE(content_of(after, "m.room.member", user_id("bob"), "membership") == "join");
-            }
-        }
-    }
-}
-
-// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v3/sync, Left Room
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
@@ -706,10 +411,9 @@ SCENARIO("A left room answers state_after or state as use_state_after asks",
             auto const synced = sync(rt, dave, k_no_filter, synced_before.next_batch, extra);
             auto const& left = required_room(synced, "leave", room);
 
-            THEN("state_after is present and state is omitted; he is no longer a member, so it stays a delta")
+            THEN("state_after is present and state is omitted")
             {
                 require_state_after_only(left);
-                REQUIRE_FALSE(event_types(events_of(left, "state_after")).contains("m.room.create"));
             }
         }
         WHEN("dave makes an incremental sync with full_state=true and use_state_after=false")
@@ -859,20 +563,6 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(member_keys(after).empty());
             }
         }
-        WHEN("the response that carried carol's membership is lost and the client retries")
-        {
-            auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
-            say(rt, carol, room, "carol again");
-            auto const lost = sync(rt, alice, k_lazy, first.next_batch, k_state_after);
-            REQUIRE(member_keys(events_of(required_room(lost, "join", room), "state_after")) == Keys{user_id("carol")});
-            auto const retried = sync(rt, alice, k_lazy, first.next_batch, k_state_after);
-
-            THEN("it is sent again")
-            {
-                REQUIRE(member_keys(events_of(required_room(retried, "join", room), "state_after")) ==
-                        Keys{user_id("carol")});
-            }
-        }
         WHEN("bob speaks and then changes his display name in the same window")
         {
             auto const first = sync(rt, alice, k_lazy_one_event, {}, k_state_after);
@@ -929,26 +619,6 @@ SCENARIO("Lazy-loading selects the members of state_after", "[conformance][clien
                 REQUIRE(event_types(after).contains("m.room.create"));
                 REQUIRE(member_keys(after).contains(user_id("alice")));
                 REQUIRE_FALSE(member_keys(after).contains(user_id("carol")));
-            }
-        }
-        WHEN("the client acknowledged bob, and bob leaves and rejoins")
-        {
-            auto const bob_first = sync(rt, bob, k_lazy, {}, k_state_after);
-            say(rt, alice, room, "alice");
-            auto const bob_second = sync(rt, bob, k_lazy, bob_first.next_batch, k_state_after);
-            auto const bob_third = sync(rt, bob, k_lazy, bob_second.next_batch, k_state_after);
-            room_post(rt, bob, room, "leave");
-            auto const bob_left = sync(rt, bob, k_lazy, bob_third.next_batch, k_state_after);
-            room_post(rt, bob, room, "join");
-            say(rt, alice, room, "welcome back");
-            auto const rejoined = sync(rt, bob, k_lazy, bob_left.next_batch, k_state_after);
-            auto const after = events_of(required_room(rejoined, "join", room), "state_after");
-
-            THEN("the tracker is not consulted, and his own join is in state_after though the timeline carries it")
-            {
-                REQUIRE(member_keys(after).contains(user_id("alice")));
-                REQUIRE(content_of(after, "m.room.member", user_id("bob"), "membership") == "join");
-                REQUIRE(event_types(after).contains("m.room.create"));
             }
         }
     }
