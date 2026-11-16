@@ -4078,6 +4078,120 @@ SCENARIO("A snapshot whose auth chain the origin will not supply stores nothing 
     }
 }
 
+[[nodiscard]] auto event_fetches_of(std::vector<std::string> const& requests, std::string const& event_id)
+    -> std::size_t
+{
+    return count_requests_starting_with(requests, "GET /_matrix/federation/v1/event/" +
+                                                      core::percent_encode_path_component(event_id) + " ");
+}
+
+// Spec: server-server-api.md GET /state_ids and GET /event/{eventId}. A snapshot is usable only when every state event
+// it lists can be fetched, and the origin decides what it serves. ADR-0760: once the origin has not supplied a listed
+// state event, asking it again in the same recovery only repeats the refusal, so every later snapshot that lists the
+// event ends without the request. A later recovery (the deferred retry) asks again.
+SCENARIO("A recovery asks the origin for a listed state event it did not supply at most once",
+         "[pdu_ingestion][backfill][adr0760]")
+{
+    GIVEN("a PDU with two unknown prev_events, whose /state_ids answers both name a state event the origin refuses")
+    {
+        auto fixture = RecoveryFixture{"!adr0760-refused:local.example.org"};
+        auto const& room = fixture.room_id;
+        auto const first_gap = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        auto const second_gap = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 11);
+        auto const refused =
+            make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member, member_content("R"),
+                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 12);
+        auto const pdu =
+            make_remote_message_pdu(room, {first_gap.event_id, second_gap.event_id}, fixture.auth_ids(), 5, 20);
+
+        auto pdu_ids = fixture.genesis_state_ids();
+        pdu_ids.push_back(refused.event_id);
+        auto script = PeerScript{};
+        script.state_ids[first_gap.event_id] = make_state_ids_response(pdu_ids, fixture.auth_ids());
+        script.state_ids[second_gap.event_id] = make_state_ids_response(pdu_ids, fixture.auth_ids());
+        auto const peer = fixture.serve(script);
+
+        WHEN("the PDU is ingested")
+        {
+            auto const result = fixture.ingest(pdu);
+            auto const requests = peer->requests();
+
+            THEN("the state is asked at both gaps, but the refused event is asked for once")
+            {
+                CHECK(state_asked_at(requests, first_gap.event_id));
+                CHECK(state_asked_at(requests, second_gap.event_id));
+                CHECK(event_fetches_of(requests, refused.event_id) == 1U);
+            }
+
+            THEN("each prev_event the origin did not supply was asked for once, and the PDU is not placed")
+            {
+                CHECK(event_fetches_of(requests, first_gap.event_id) == 1U);
+                CHECK(event_fetches_of(requests, second_gap.event_id) == 1U);
+                CHECK(result.status != PduIngestionStatus::accepted);
+                CHECK_FALSE(stored_status(fixture.runtime(), refused.event_id).has_value());
+            }
+
+            AND_WHEN("the PDU is ingested again, as the deferred retry does")
+            {
+                std::ignore = fixture.ingest(pdu);
+                auto const later = peer->requests();
+
+                THEN("the new recovery asks the origin for the refused event again, once")
+                {
+                    CHECK(event_fetches_of(later, refused.event_id) == 2U);
+                }
+            }
+        }
+    }
+}
+
+// ADR-0760: phase 1 stores nothing until every listed event is in hand, so a later snapshot that would fetch the
+// events listed before a refused one again, only to discard them, ends before fetching any of them.
+SCENARIO("A later snapshot listing a state event the origin refused fetches none of its other events",
+         "[pdu_ingestion][backfill][adr0760]")
+{
+    GIVEN("two gaps whose /state_ids answers list a state event the origin serves before one it refuses")
+    {
+        auto fixture = RecoveryFixture{"!adr0760-refused-after:local.example.org"};
+        auto const& room = fixture.room_id;
+        auto const first_gap = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 10);
+        auto const second_gap = make_remote_message_pdu(room, {fixture.bob_member_id()}, fixture.auth_ids(), 4, 11);
+        auto const served = make_remote_event_pdu(room, "m.room.member", std::string{"@alice:remote.example.org"},
+                                                  "@alice:remote.example.org", member_content("A"),
+                                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 12);
+        auto const refused =
+            make_remote_event_pdu(room, "m.room.member", std::string{remote_member}, remote_member, member_content("R"),
+                                  {fixture.bob_member_id()}, fixture.auth_ids(), 4, 13);
+        auto const pdu =
+            make_remote_message_pdu(room, {first_gap.event_id, second_gap.event_id}, fixture.auth_ids(), 5, 20);
+
+        auto pdu_ids = fixture.genesis_state_ids();
+        pdu_ids.push_back(served.event_id);
+        pdu_ids.push_back(refused.event_id);
+        auto script = PeerScript{};
+        script.events[served.event_id] = served.json;
+        script.state_ids[first_gap.event_id] = make_state_ids_response(pdu_ids, fixture.auth_ids());
+        script.state_ids[second_gap.event_id] = make_state_ids_response(pdu_ids, fixture.auth_ids());
+        auto const peer = fixture.serve(script);
+
+        WHEN("the PDU is ingested")
+        {
+            auto const result = fixture.ingest(pdu);
+            auto const requests = peer->requests();
+
+            THEN("the state is asked at both gaps, but each listed event is fetched only by the first snapshot")
+            {
+                CHECK(state_asked_at(requests, first_gap.event_id));
+                CHECK(state_asked_at(requests, second_gap.event_id));
+                CHECK(event_fetches_of(requests, served.event_id) == 1U);
+                CHECK(event_fetches_of(requests, refused.event_id) == 1U);
+                CHECK(result.status != PduIngestionStatus::accepted);
+                CHECK_FALSE(stored_status(fixture.runtime(), served.event_id).has_value());
+            }
+        }
+    }
+}
+
 // Spec: server-server-api.md "Rejection": "Subsequent events from other servers
 // that reference rejected events should be allowed if they still pass the auth
 // rules"; and room version auth rule 2.3 (rooms/v10.md): an event whose

@@ -28,6 +28,7 @@
 #include "merovingian/homeserver/LocalRoom.hpp"
 #include "merovingian/homeserver/MediaUploadNotifier.hpp"
 #include "merovingian/homeserver/PendingFederatedJoin.hpp"
+#include "merovingian/homeserver/RecentlyUnreachableServers.hpp"
 #include "merovingian/homeserver/RemoteMediaFetchCoalescer.hpp"
 #include "merovingian/homeserver/RoomMembers.hpp"
 #include "merovingian/homeserver/RuntimeMutex.hpp"
@@ -362,6 +363,9 @@ struct HomeserverRuntime final
     // start-up snapshot on SQLite) and its sandbox are not asked to decide it again.
     bool federation_policy_decided_upstream{false};
     ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
+    // ADR-0761: servers that recently gave no answer to a client's remote profile lookup, so the lookups that follow
+    // are answered 502 at once instead of each waiting out the deadline. Guard every access with `mutex`.
+    RecentlyUnreachableServers profile_unreachable_servers{};
     // One fetch from the origin per remote media file at a time (ADR-0121). Its
     // mutex is a leaf: never waited on with `mutex` held. Held through a
     // unique_ptr so leads keep a stable address across a runtime move.

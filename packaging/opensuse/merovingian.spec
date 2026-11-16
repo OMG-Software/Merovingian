@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        1.0.2
+Version:        1.0.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -115,6 +115,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Nov 15 2026 James Chapman <claude@ping.me.uk> - 1.0.3-1
+- Merovingian 1.0.3
+
 * Sat Nov 14 2026 James Chapman <claude@ping.me.uk> - 1.0.2-1
 - Merovingian 1.0.2
 

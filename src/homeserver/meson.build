@@ -50,6 +50,7 @@ homeserver_sources = files(
   'StoredRoomVersion.cpp',
   'StreamTokenEpoch.cpp',
   'RemoteMediaFetchScope.cpp',
+  'RecentlyUnreachableServers.cpp',
   'RequestLockScope.cpp',
   'RuntimeLockRelease.cpp',
   'RestrictedJoin.cpp',

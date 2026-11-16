@@ -3,6 +3,31 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.0.3
+
+## Features
+
+* `docs/release-process.md` and the production milestone record that 1.0.1, like 1.0.0, was tagged without a green
+  Complement run, and that the 1.0.0 GitHub release is withdrawn (ADR-0744).
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* A backfill recovery asks the origin for a listed state event at most once: a later state snapshot listing one the
+  origin already refused ends without asking, so it is fetched and logged once, not once per gap (ADR-0760).
+* A remote profile lookup for a server that just gave no answer is answered 502 at once for the next 60 s, so client
+  lookups to a dead server no longer each hold an outbound slot for the whole deadline (ADR-0761).
+
+## Release notes
+
+1.0.3 cuts repeated federation work and log noise seen on a production server: a refused history event is asked for
+once per recovery, and a server that gives no answer to profile lookups is left alone for a minute. No configuration
+change is needed. 1.0.1 was also tagged without a green Complement run, and the 1.0.0 GitHub release is withdrawn
+because it ships the vulnerabilities 1.0.1 fixes; a 1.0.0 server should upgrade.
+
 # Version 1.0.2
 
 ## Features
