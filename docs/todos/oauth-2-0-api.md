@@ -136,7 +136,7 @@ lifetime of a code, rate limits, and what a revocation does to the device.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/_matrix/client/v1/auth_metadata` | GET | Metadata. Also served at `/_matrix/client/unstable/org.matrix.msc2965/auth_metadata`, which today is a fixed 404. |
+| `/_matrix/client/v1/auth_metadata` | GET | Metadata. Also served at `/_matrix/client/unstable/org.matrix.msc2965/auth_metadata`, with the same document. |
 | `/_merovingian/oauth2/register` | POST | Client registration, JSON. |
 | `/_merovingian/oauth2/authorize` | GET, POST | The authorisation request, then the login, registration and consent forms. |
 | `/_merovingian/oauth2/token` | POST | Code, refresh and device-code grants, form-encoded. |
@@ -148,13 +148,13 @@ lifetime of a code, rate limits, and what a revocation does to the device.
 Every route needs what `src/homeserver/AGENTS.md` lists under "Adding a new client-server endpoint": a handler ahead
 of the 405 and 404 gates, a `static_routes` entry, a `client_static_route_allow` row naming every method, a row in
 `tests/conformance/test_route_query_conformance.cpp`, and a rate-limit tier. All of them take the `auth_sensitive`
-tier. `auth_metadata`, the registration, token, revocation and device endpoints carry the CORS headers; the pages
+tier except `auth_metadata`, which the spec marks not rate-limited and stays in the generic tier (ADR-0775). `auth_metadata`, the registration, token, revocation and device endpoints carry the CORS headers; the pages
 carry none.
 
 ### Module layout
 
 - **`src/oauth/` and `include/merovingian/oauth/`**: a new module of pure functions with no runtime state. It holds
-  the metadata builder (replacing `auth/OidcDiscovery`), client metadata and redirect URI validation, the scope
+  the metadata builder (`ServerMetadata`, which replaced `auth/OidcDiscovery`), client metadata and redirect URI validation, the scope
   parser, PKCE verification and the page renderer. It gets an `AGENTS.md`, a `CLAUDE.md` and rows in the root
   `AGENTS.md`.
 - **`src/core/`**: a strict `application/x-www-form-urlencoded` parser (a malformed escape or a repeated parameter

@@ -88,7 +88,6 @@ private:
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_https_url(std::string_view url) noexcept -> bool;
-[[nodiscard]] auto is_valid_https_origin_url(std::string_view url) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto is_valid_media_acceptance_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool;

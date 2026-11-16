@@ -23,9 +23,9 @@
 // +-------------------------------------------------------------------------+
 
 #include "../FederationSigningTestSupport.hpp"
-#include "../support/MockIdentityServer.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/MockIdentityServer.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TlsMockServer.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
@@ -40,9 +40,9 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/events/EventSigner.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/http/Header.hpp"
 #include "merovingian/observability/LogLevel.hpp"
 #include "merovingian/observability/SingleLog.hpp"
@@ -106,30 +106,6 @@ struct ModuleLogLevelGuard final
     server.turn.username = "testuser";
     server.turn.password = "testpass";
     server.turn.ttl_seconds = 3600U;
-    return {
-        std::move(server),
-        merovingian::config::ListenersConfig{},
-        merovingian::tests::in_memory_database_config(),
-        std::move(security),
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-    };
-}
-
-[[nodiscard]] auto oidc_enabled_config() -> merovingian::config::Config
-{
-    auto security = merovingian::config::SecurityConfig{};
-    // A runtime refuses to mint a signing secret it cannot encrypt at rest
-    // (0.12.5 audit, finding 1), so every fixture needs a master key.
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    merovingian::tests::enable_token_registration(security);
-    auto server = merovingian::config::ServerConfig{};
-    server.oidc.enabled = true;
-    server.oidc.issuer = "https://account.example.com/";
-    server.oidc.authorization_endpoint = "https://account.example.com/oauth2/auth";
-    server.oidc.token_endpoint = "https://account.example.com/oauth2/token";
-    server.oidc.registration_endpoint = "https://account.example.com/oauth2/clients/register";
-    server.oidc.revocation_endpoint = "https://account.example.com/oauth2/revoke";
     return {
         std::move(server),
         merovingian::config::ListenersConfig{},
@@ -5265,7 +5241,8 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
     }
 }
 
-SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeserver][client-server]")
+SCENARIO("OAuth 2.0 discovery endpoints return 404 without authentication while the API is off",
+         "[homeserver][client-server]")
 {
     GIVEN("a started runtime")
     {
@@ -5280,7 +5257,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
 
             THEN("the response is 404, not 401")
             {
-                // We do not implement OIDC; the endpoint must be absent (404) rather
+                // The OAuth 2.0 API is off by default; the endpoint must be absent (404) rather
                 // than access-denied (401) so clients can probe and fall back gracefully.
                 REQUIRE(response.response.status == 404U);
             }
@@ -5305,33 +5282,6 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
             THEN("the response is 404, not 401")
             {
                 REQUIRE(response.response.status == 404U);
-            }
-        }
-    }
-}
-
-SCENARIO("GET /_matrix/client/v1/auth_metadata returns OIDC metadata when configured",
-         "[homeserver][client-server][oidc]")
-{
-    GIVEN("a started runtime with OIDC discovery configured")
-    {
-        auto started = merovingian::homeserver::start_client_server(oidc_enabled_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-
-        WHEN("the endpoint is called without a token")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v1/auth_metadata", {}, {}});
-
-            THEN("the response is 200 and contains the configured issuer")
-            {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("\"issuer\":\"https://account.example.com/\"") !=
-                        std::string::npos);
-                REQUIRE(response.response.body.find(
-                            "\"authorization_endpoint\":\"https://account.example.com/oauth2/auth\"") !=
-                        std::string::npos);
             }
         }
     }

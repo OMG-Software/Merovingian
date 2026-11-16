@@ -3,7 +3,9 @@ oauth_sources = files(
   'ClientMetadata.cpp',
   'ClientUri.cpp',
   'DisplayText.cpp',
+  'HandOffAllowlist.cpp',
   'HtmlText.cpp',
+  'OAuthBaseUrl.cpp',
   'Page.cpp',
   'PageForm.cpp',
   'PageHeaders.cpp',
@@ -11,6 +13,7 @@ oauth_sources = files(
   'Pkce.cpp',
   'RedirectUriRules.cpp',
   'ScopeParser.cpp',
+  'ServerMetadata.cpp',
 )
 
 # Pure functions only: no runtime state, no I/O, no logging (src/oauth/AGENTS.md).

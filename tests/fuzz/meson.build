@@ -41,7 +41,7 @@ fuzz_targets = [
     include_directories: inc,
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
-    link_with: [config_lib, http_lib, observability_lib, core_lib, platform_lib],
+    link_with: [config_lib, http_lib, oauth_lib, observability_lib, core_lib, platform_lib],
   ),
   executable(
     'fuzz-stream-token',
@@ -118,7 +118,7 @@ fuzz_targets = [
 fuzz_server_libs = [
   appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib,
   events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib,
-  observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib,
+  oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib,
 ]
 fuzz_server_deps = [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep]
 

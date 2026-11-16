@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery) returns RFC 8414 / Matrix v1.19 authorisation server metadata when `server.oidc.*` is configured; returns `404 M_UNRECOGNIZED` when OIDC is not configured. No OAuth 2.0 authorization-code / token / revocation flow is implemented yet.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The authorization, token, registration and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker

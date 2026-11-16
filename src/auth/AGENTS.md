@@ -11,7 +11,6 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `Token.cpp` | Token hashing (`hash_access_token_v2/v3/v4`), constant-time comparison |
 | `Identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `Password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
-| `OidcDiscovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
 | `FailureWindowTable.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `KeyApi.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 

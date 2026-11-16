@@ -23,7 +23,6 @@
 #include "merovingian/auth/KeyApi.hpp"
 #include "merovingian/auth/KeyApiEndpoint.hpp"
 #include "merovingian/auth/KeyApiRoute.hpp"
-#include "merovingian/auth/OidcDiscovery.hpp"
 #include "merovingian/auth/Password.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
 #include "merovingian/canonicaljson/ObjectMember.hpp"
@@ -139,6 +138,10 @@
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/media/Security.hpp"
+#include "merovingian/oauth/OAuthBaseUrl.hpp"
+#include "merovingian/oauth/OAuthPaths.hpp"
+#include "merovingian/oauth/ServerMetadata.hpp"
+#include "merovingian/oauth/ServerMetadataOptions.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/BoundedText.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
@@ -4060,6 +4063,7 @@ namespace
             "/_matrix/client/v3/logout",
             "/_matrix/client/v3/logout/all",
             "/_matrix/client/v1/auth_metadata",
+            "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
             "/_matrix/client/v3/account/password/email/requestToken",
@@ -4155,6 +4159,7 @@ namespace
             {"/_matrix/client/v3/logout",                                                   "POST"            },
             {"/_matrix/client/v3/logout/all",                                               "POST"            },
             {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
             {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
@@ -15989,23 +15994,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                    : dispatch_err(req, rt, r.status, r.status == 401U ? unauthenticated_errcode : "M_UNKNOWN", r.body);
     }
 
-    // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
-    // auth_issuer before login to detect OIDC support.  We do not implement
-    // OIDC, so return 404 for the whole msc2965 namespace before the
-    // access-token gate, otherwise the probes produce a misleading 401.
+    // GET /auth_metadata (spec "Server metadata discovery"), also at its MSC2965 unstable path, which clients still
+    // probe. Unauthenticated, so it is answered before the access-token gate; CORS is added at the boundary like
+    // every other answer. With the OAuth 2.0 API off both paths are 404 M_UNRECOGNIZED, the spec's answer of a server
+    // without it ("Authentication API discovery").
+    if (req.method == "GET" &&
+        (request_path == oauth::auth_metadata_path || request_path == oauth::auth_metadata_unstable_path))
+    {
+        auto const& server_config = rt.homeserver.config.server();
+        if (!server_config.oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "The OAuth 2.0 API is not enabled on this server.");
+        }
+        // validate() refused a base URL this cannot read when the API is on; a runtime built without validation
+        // answers 500 rather than advertise an address the reader refused.
+        auto base = oauth::OAuthBaseUrl::read(server_config.public_baseurl);
+        if (std::holds_alternative<core::Error>(base))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "The OAuth 2.0 base URL is not configured correctly.");
+        }
+        auto options = oauth::ServerMetadataOptions{};
+        options.device_grant_enabled = server_config.oauth.device_grant_enabled;
+        options.registration_enabled = rt.homeserver.config.security().registration.enabled;
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(oauth::server_metadata(std::get<oauth::OAuthBaseUrl>(base), options)));
+    }
+    // The rest of the MSC2965 namespace (`auth_issuer`, from an earlier draft of the MSC) is not served. It is
+    // answered 404 before the access-token gate, so a probe does not read a 401 as partial support.
     if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
     {
-        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
-    }
-    if (req.method == "GET" && request_path == "/_matrix/client/v1/auth_metadata")
-    {
-        auto const metadata = auth::make_auth_metadata(rt.homeserver.config.server().oidc);
-        if (!metadata.configured)
-        {
-            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
-        }
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(canonicaljson::Value{canonicaljson::Object{metadata.fields}}));
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
 
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};

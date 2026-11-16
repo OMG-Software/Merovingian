@@ -17,6 +17,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   canonical form (ADR-0770, ADR-0771).
 * The one HTML page renderer, which accepts only escaped text, and the headers every page carries (ADR-0772).
 * `crypto::sha256` for protocols that name SHA-256.
+* `server.oauth.enabled` serves the OAuth 2.0 server metadata at `auth_metadata` and its MSC2965 path; off, both
+  answer 404. The issuer is `server.public_baseurl`, endpoints sit under `/_merovingian/oauth2/` (ADR-0773, ADR-0775).
+* `server.oauth.legacy_api_enabled`, `server.oauth.device_grant_enabled` and `server.oauth.hand_off_redirect_allowlist`
+  (https origins or bare private-use schemes, never prefixes) are parsed and checked; all need a restart (ADR-0774).
+* With OAuth on, `server.public_baseurl` must be an https URL with a host and no query, and
+  `server.sso.authorization_url` is refused.
 
 ## Security Fixes
 
@@ -30,9 +36,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Release notes
 
-1.1.0 is in development and so far holds only the plan for the OAuth 2.0 API and the decisions behind it. When the
-feature lands, a configuration that sets any `server.oidc.*` key will be refused at start-up: remove those keys and
-set `server.oauth.enabled` instead.
+1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
+keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token, registration and
+revocation endpoints, which later 1.1.0 changes serve; leave `server.oauth.enabled` off until then.
 
 # Version 1.0.2
 

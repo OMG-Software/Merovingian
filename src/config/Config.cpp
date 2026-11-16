@@ -22,10 +22,13 @@
 #include "merovingian/config/ServerConfig.hpp"
 #include "merovingian/config/SizeLimitParseResult.hpp"
 #include "merovingian/config/SpecialUseIpRanges.hpp"
+#include "merovingian/core/Error.hpp"
 #include "merovingian/email/MailboxAddress.hpp"
 #include "merovingian/email/SmtpEndpoint.hpp"
 #include "merovingian/http/KeepAlive.hpp"
 #include "merovingian/http/RateLimit.hpp"
+#include "merovingian/oauth/HandOffAllowlist.hpp"
+#include "merovingian/oauth/OAuthBaseUrl.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -43,6 +46,7 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::config
@@ -333,24 +337,6 @@ auto is_valid_https_url(std::string_view url) noexcept -> bool
 
     auto const remainder = url.substr(https_scheme.size());
     return !remainder.empty() && remainder.find(' ') == std::string_view::npos;
-}
-
-auto is_valid_https_origin_url(std::string_view url) noexcept -> bool
-{
-    constexpr auto https_scheme = std::string_view{"https://"};
-    if (!starts_with(url, https_scheme))
-    {
-        return false;
-    }
-
-    auto const remainder = url.substr(https_scheme.size());
-    if (remainder.empty() || remainder.find(' ') != std::string_view::npos)
-    {
-        return false;
-    }
-
-    // RFC 8414: issuer URL has no query or fragment components.
-    return remainder.find('?') == std::string_view::npos && remainder.find('#') == std::string_view::npos;
 }
 
 auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
@@ -1188,38 +1174,48 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
     }
 
-    // OIDC discovery metadata. When enabled, all required Matrix v1.19 / RFC 8414
-    // fields must be present and use HTTPS. Partial configuration is rejected.
-    auto const& oidc = config.server().oidc;
-    if (oidc.enabled)
+    // The built-in OAuth 2.0 API (ADR-0760, ADR-0764). Every OAuth address is derived from public_baseurl, so with the
+    // API on it must be a base URL the OAuth reader accepts (ADR-0773). The other server.oauth.* keys mean nothing
+    // with the API off, and are refused rather than silently ignored.
+    auto const& oauth_config = config.server().oauth;
+    if (oauth_config.enabled)
     {
-        if (oidc.issuer.empty())
+        if (std::holds_alternative<core::Error>(oauth::OAuthBaseUrl::read(config.server().public_baseurl)))
         {
-            findings.push_back({"server.oidc.issuer", "OIDC enabled but issuer is missing"});
+            findings.push_back({"server.public_baseurl",
+                                "with server.oauth.enabled=true, server.public_baseurl must be an https URL with a "
+                                "host and no query, fragment or userinfo"});
         }
-        else if (!is_valid_https_origin_url(oidc.issuer))
+        // The built-in pages answer the SSO redirect (plan phase 9); an external SSO page beside them would give one
+        // redirect endpoint two owners.
+        if (!config.server().sso.authorization_url.empty())
         {
-            findings.push_back(
-                {"server.oidc.issuer", "OIDC issuer must be a valid HTTPS URL with no query or fragment"});
+            findings.push_back({"server.sso.authorization_url",
+                                "server.sso.authorization_url cannot be set while server.oauth.enabled=true"});
         }
-
-        auto const validate_oidc_endpoint = [&findings](std::string_view field, std::string_view url, bool required) {
-            if (required && url.empty())
-            {
-                findings.push_back({std::string{field}, "OIDC enabled but required endpoint is missing"});
-            }
-            if (!url.empty() && !is_valid_https_url(url))
-            {
-                findings.push_back({std::string{field}, "OIDC endpoint must use HTTPS"});
-            }
-        };
-
-        validate_oidc_endpoint("server.oidc.authorization_endpoint", oidc.authorization_endpoint, true);
-        validate_oidc_endpoint("server.oidc.token_endpoint", oidc.token_endpoint, true);
-        validate_oidc_endpoint("server.oidc.registration_endpoint", oidc.registration_endpoint, true);
-        validate_oidc_endpoint("server.oidc.revocation_endpoint", oidc.revocation_endpoint, true);
-        validate_oidc_endpoint("server.oidc.device_authorization_endpoint", oidc.device_authorization_endpoint, false);
-        validate_oidc_endpoint("server.oidc.account_management_uri", oidc.account_management_uri, false);
+    }
+    else
+    {
+        // ADR-0761: with neither API on no user could log in.
+        if (!oauth_config.legacy_api_enabled)
+        {
+            findings.push_back({"server.oauth.legacy_api_enabled",
+                                "server.oauth.legacy_api_enabled=false requires server.oauth.enabled=true"});
+        }
+        if (oauth_config.device_grant_enabled)
+        {
+            findings.push_back({"server.oauth.device_grant_enabled",
+                                "server.oauth.device_grant_enabled=true requires server.oauth.enabled=true"});
+        }
+        if (!oauth_config.hand_off_redirect_allowlist.empty())
+        {
+            findings.push_back({"server.oauth.hand_off_redirect_allowlist",
+                                "server.oauth.hand_off_redirect_allowlist requires server.oauth.enabled=true"});
+        }
+    }
+    if (auto const error = oauth::hand_off_allowlist_error(oauth_config.hand_off_redirect_allowlist); error.has_value())
+    {
+        findings.push_back({"server.oauth.hand_off_redirect_allowlist", error->message()});
     }
 
     // Identity Service API: every trusted server must be an HTTPS URL. An empty trusted list is valid — it means 3PID

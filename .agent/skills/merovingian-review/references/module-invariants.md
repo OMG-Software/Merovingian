@@ -246,6 +246,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   (ADR-0770). No redirect before the client and its redirect URI are validated.
 - HTML only through `Page` with `HtmlText` or compile-time parts; every page sends `page_headers()`; only a matched
   redirect URI adds a `form-action` source (ADR-0772). PKCE `S256` only, constant-time.
+- Every absolute OAuth address comes from `OAuthBaseUrl` with a path from `OAuthPaths.hpp` (ADR-0773). A hand-off
+  allowlist entry is an https origin or a bare private-use scheme, never a prefix (ADR-0774).
 
 ## src/observability
 

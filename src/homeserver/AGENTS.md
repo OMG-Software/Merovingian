@@ -100,6 +100,14 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
 
+## OAuth 2.0 API (ADR-0760, ADR-0773)
+
+`GET /_matrix/client/v1/auth_metadata` and its MSC2965 unstable path are answered in `ClientServerRuntime.cpp` before
+authentication: `404 M_UNRECOGNIZED` while `server.oauth.enabled` is false, otherwise `oauth::server_metadata`. Every
+absolute OAuth address a handler writes comes from `oauth::OAuthBaseUrl` read from `server.public_baseurl`, with a path
+constant from `oauth/OAuthPaths.hpp`; never join the base URL and a path here. The two paths stay in the generic
+rate-limit tier (ADR-0775); the other OAuth endpoints take `auth_sensitive`.
+
 ## Password reset by email (ADR-0481)
 
 `POST /account/password/email/requestToken`, the submit step and `POST /account/password` with `m.login.email.identity`

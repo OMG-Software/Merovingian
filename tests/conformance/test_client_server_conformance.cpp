@@ -28,9 +28,9 @@
 // +-------------------------------------------------------------------------+
 
 #include "../FederationSigningTestSupport.hpp"
-#include "../support/MockIdentityServer.hpp"
 #include "../support/JsonTestSupport.hpp"
 #include "../support/MasterKey.hpp"
+#include "../support/MockIdentityServer.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "../support/TlsMockServer.hpp"
 #include "merovingian/canonicaljson/CanonicalJsonError.hpp"
@@ -45,9 +45,9 @@
 #include "merovingian/federation/FederationRemoteRuntime.hpp"
 #include "merovingian/federation/InboundRequest.hpp"
 #include "merovingian/federation/OutboundTransactionSupport.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
-#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -4004,10 +4004,10 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
 
 // --- GET /_matrix/client/v1/auth_metadata ------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1auth_metadata
-// OIDC discovery is optional; unsupported servers should answer this
-// unauthenticated probe cleanly so clients do not mistake lack of OIDC for an
-// authentication failure.
-SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED when OIDC is unsupported",
+// The OAuth 2.0 API is optional; a server without it answers this
+// unauthenticated probe 404 M_UNRECOGNIZED so clients do not mistake its
+// absence for an authentication failure.
+SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED when the OAuth 2.0 API is off",
          "[conformance][client-server][session]")
 {
     GIVEN("a running client-server")
@@ -17695,21 +17695,21 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
 }
 
 // =============================================================================
-// OIDC DISCOVERY (MSC2965)
+// OAUTH 2.0 API DISCOVERY
 // =============================================================================
 
-// Spec: Matrix Client-Server API v1.19 — GET /auth_metadata (MSC2965)
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#openid-connect-discovery
+// Spec: Matrix Client-Server API v1.19 — Authentication API discovery
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#authentication-api-discovery
 //
-// Servers that do not support OIDC MUST return 404 M_UNRECOGNIZED so that
-// clients (Element, Cindy, etc.) can detect the absence of OIDC support and
-// fall back to password-based login. The server MUST NOT return 401 for this
-// unauthenticated discovery endpoint — returning 401 would mislead clients
-// into thinking OIDC is partially supported.
-SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers",
-         "[conformance][client-server][oidc][auth]")
+// A server without the OAuth 2.0 API SHOULD return 404 M_UNRECOGNIZED so that
+// clients (Element, Cinny, etc.) can detect its absence and fall back to the
+// legacy API. This unauthenticated discovery endpoint is never answered 401:
+// that would mislead clients into thinking the API is partially supported.
+// test_oauth_metadata_conformance.cpp covers the API switched on.
+SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED while the OAuth 2.0 API is off",
+         "[conformance][client-server][oauth][auth]")
 {
-    GIVEN("a running homeserver that does not implement OIDC")
+    GIVEN("a running homeserver with the OAuth 2.0 API left off")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -17721,8 +17721,8 @@ SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers"
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
-                // Spec: non-OIDC servers MUST return 404 M_UNRECOGNIZED so clients
-                // detect the absence of OIDC before attempting OIDC login.
+                // Spec SHOULD: a server without the OAuth 2.0 API returns 404 M_UNRECOGNIZED
+                // so clients detect its absence before attempting an OAuth login.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");

@@ -654,3 +654,6 @@
 * [0770 - OAuth addresses are read by a strict reader of our own and matched byte for byte](0770-oauth-addresses-are-read-by-a-strict-reader-of-our-own-and-matched-byte-for-byte.md)
 * [0771 - OAuth client metadata rules, and its canonical form](0771-oauth-client-metadata-rules-and-its-canonical-form.md)
 * [0772 - Page text is escaped by type, and the page policy names only a validated redirect origin](0772-page-text-is-escaped-by-type-and-the-page-policy-names-only-a-validated-redirect-origin.md)
+* [0773 - The OAuth issuer is `server.public_baseurl`, and the routes live under `/_merovingian/`](0773-the-oauth-issuer-is-public-baseurl-and-the-routes-live-under-merovingian.md)
+* [0774 - A hand-off allowlist entry is an https origin or a bare private-use scheme, never a prefix](0774-a-hand-off-allowlist-entry-is-an-https-origin-or-a-bare-private-use-scheme-never-a-prefix.md)
+* [0775 - `auth_metadata` stays in the generic rate-limit tier](0775-auth-metadata-stays-in-the-generic-rate-limit-tier.md)

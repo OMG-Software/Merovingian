@@ -393,7 +393,7 @@ lists have no server maximum (ADR-0332).
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v1/auth_metadata` | `getAuthMetadata` | none | - | 200, 404 |
 
-Implemented: returns RFC 8414 metadata when `server.oidc.*` is configured; `404 M_UNRECOGNIZED` otherwise.
+Implemented: returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. The MSC2965 path `/_matrix/client/unstable/org.matrix.msc2965/auth_metadata` answers the same. The endpoints the document names are served from later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md).
 | `POST` | `/_matrix/client/v1/login/get_token` | `generateLoginToken` | access token | required application/json | 200, 400, 401, 429 |
 | `GET` | `/_matrix/client/v3/account/whoami` | `getTokenOwner` | access token | - | 200, 401, 403, 429 |
 | `GET` | `/_matrix/client/v3/login` | `getLoginFlows` | none | - | 200, 404, 429 |

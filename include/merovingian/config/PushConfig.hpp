@@ -9,7 +9,7 @@ namespace merovingian::config
 
 // Push Gateway API delivery configuration (Matrix v1.19 push-gateway-api /
 // CS API push-notifications module). `enabled` gates the entire outbound
-// delivery path and defaults to false, mirroring OidcConfig's pattern, so
+// delivery path and defaults to false, like the other opt-in server features, so
 // merging this capability cannot cause an existing deployment to start
 // sending traffic to gateways on upgrade — an operator must explicitly opt
 // in. Timeouts mirror IdentityServerConfig's operator-tunable connect/total

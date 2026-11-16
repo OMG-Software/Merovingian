@@ -8,8 +8,8 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/config/Config.hpp"
-#include "merovingian/config/ConfigValidationFinding.hpp"
 #include "merovingian/config/ConfigParser.hpp"
+#include "merovingian/config/ConfigValidationFinding.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -269,6 +269,31 @@ SCENARIO("a malformed identity_providers key without a field segment is rejected
             THEN("a parse finding is reported rather than silently accepted")
             {
                 REQUIRE(contains_finding(result.findings, "server.sso.identity_providers.github"));
+            }
+        }
+    }
+}
+
+// Moved from the retired server.oidc.* tests: SSO, the identity server allowlist and the SSO redirect allowlist
+// still validate their URLs with this helper.
+SCENARIO("is_valid_https_url requires an HTTPS scheme and non-empty authority", "[config][sso][helpers]")
+{
+    GIVEN("a set of URLs to validate")
+    {
+        WHEN("checked")
+        {
+            THEN("HTTPS URLs are accepted")
+            {
+                REQUIRE(merovingian::config::is_valid_https_url("https://example.com/"));
+                REQUIRE(merovingian::config::is_valid_https_url("https://example.com/path?query=1"));
+            }
+
+            THEN("non-HTTPS, empty, and malformed URLs are rejected")
+            {
+                REQUIRE_FALSE(merovingian::config::is_valid_https_url("http://example.com/"));
+                REQUIRE_FALSE(merovingian::config::is_valid_https_url("https://"));
+                REQUIRE_FALSE(merovingian::config::is_valid_https_url(""));
+                REQUIRE_FALSE(merovingian::config::is_valid_https_url("https://exam ple.com/"));
             }
         }
     }

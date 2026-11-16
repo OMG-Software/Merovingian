@@ -48,6 +48,33 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertEqual(active.get("security.media.remote_fetch_enabled"), "true")
         self.assertEqual(active.get("security.media.remote_fetch_media_policy"), "allow")
 
+    def test_example_config_documents_the_oauth_keys_commented_and_off(self) -> None:
+        # GIVEN the example configs an operator starts from
+        for path in (EXAMPLE_CONFIG, BSD_EXAMPLE_CONFIG):
+            with self.subTest(path=path.name):
+                lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+
+                # WHEN their server.oauth and server.oidc lines are read
+                oauth = {
+                    line.lstrip("#").strip().split("=", 1)[0]: line
+                    for line in lines
+                    if line.lstrip("#").strip().startswith("server.oauth.")
+                }
+                oidc = [line for line in lines if "server.oidc." in line and "=" in line]
+
+                # THEN each server.oauth key is documented, commented out, with its default (off),
+                # and no server.oidc key is left: the server refuses those at start-up (ADR-0764)
+                self.assertEqual(
+                    oauth,
+                    {
+                        "server.oauth.enabled": "# server.oauth.enabled=false",
+                        "server.oauth.legacy_api_enabled": "# server.oauth.legacy_api_enabled=true",
+                        "server.oauth.device_grant_enabled": "# server.oauth.device_grant_enabled=false",
+                        "server.oauth.hand_off_redirect_allowlist": "# server.oauth.hand_off_redirect_allowlist=",
+                    },
+                )
+                self.assertEqual(oidc, [])
+
 
 # The BSD example is the Linux example with a header of its own and the BSD paths
 # (ADR-0738): the configuration directory is a placeholder each package fills in,

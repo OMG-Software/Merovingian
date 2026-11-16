@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/http/RateLimit.hpp"
 #include "merovingian/http/RateLimitConfig.hpp"
 #include "merovingian/http/RateLimitEngine.hpp"
 #include "merovingian/http/RateLimitPolicy.hpp"
 #include "merovingian/http/RateLimitTier.hpp"
-#include "merovingian/http/RateLimit.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -85,6 +85,9 @@ SCENARIO("Rate-limit tiers classify client-server routes explicitly", "[http][ra
                 // generic: everything else.
                 REQUIRE(tier_of("/_matrix/client/v3/account/whoami") == RateLimitTier::generic);
                 REQUIRE(tier_of("/_matrix/client/v3/rooms/!room/send/m.room.message") == RateLimitTier::generic);
+                // OAuth server metadata: the spec marks it not rate-limited, so it is not auth_sensitive (ADR-0775).
+                REQUIRE(tier_of("/_matrix/client/v1/auth_metadata") == RateLimitTier::generic);
+                REQUIRE(tier_of("/_matrix/client/unstable/org.matrix.msc2965/auth_metadata") == RateLimitTier::generic);
             }
         }
     }

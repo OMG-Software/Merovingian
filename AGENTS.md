@@ -191,7 +191,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 ```
 ├── include/merovingian/   # Public headers (same module dirs as src/)
 │   ├── appservice/        #   Application Service registration, namespaces, outbound client
-│   ├── auth/              #   Password hashing, session tokens, identity, key API, OIDC discovery
+│   ├── auth/              #   Password hashing, session tokens, identity, key API
 │   ├── bootstrap/         #   Process exit codes (header-only)
 │   ├── canonicaljson/     #   Canonical JSON (value, parser, serializer, signable)
 │   ├── config/            #   Config model, parser, runtime config, reload plan/policy
@@ -208,7 +208,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 │   ├── ipc/               #   Authenticated, encrypted AF_UNIX channel between main process and federation worker
 │   ├── media/             #   Media repository, MIME/quarantine security, sandboxed thumbnailer
 │   ├── net/               #   Listener, TCP acceptor, thread pool, shutdown signal
-│   ├── oauth/             #   OAuth 2.0 API: PKCE, scope, URI reader, redirect URI and client metadata rules, page renderer
+│   ├── oauth/             #   OAuth 2.0 API: PKCE, scope, URI reader, redirect URI and client metadata rules, page renderer, base URL, server metadata, hand-off allowlist
 │   ├── observability/     #   Logger, observability
 │   ├── platform/          #   Runtime hardening, seccomp, ELF probe, file metadata, self-check
 │   ├── push/              #   Push rules evaluation, push gateway client

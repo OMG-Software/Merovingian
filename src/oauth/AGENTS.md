@@ -19,6 +19,10 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `HtmlText.cpp`, `HtmlLiteral.hpp`, `HtmlName.hpp`, `PagePath.hpp` | Page text: escaped at run time, or fixed and checked at compile time (ADR-0772) |
 | `Page.cpp`, `PageForm.cpp`, `PageDetail.hpp`, `TextInput.hpp`, `SubmitButton.hpp` | The one page renderer and its parts |
 | `PageHeaders.cpp` | `page_style`, `page_headers`: the fixed style block and the headers every page carries, with the `form-action` source of a validated redirect target |
+| `OAuthPaths.hpp` | Every OAuth route path: the `PagePath` constants under `/_merovingian/oauth2/` and `/_merovingian/account`, and the two `auth_metadata` paths (ADR-0773) |
+| `OAuthBaseUrl.cpp` | `OAuthBaseUrl::read`: `server.public_baseurl` as an `https` URL with a host and no query; `issuer()` (one trailing slash) and `url(PagePath)` (ADR-0773) |
+| `ServerMetadata.cpp`, `ServerMetadataOptions.hpp` | `server_metadata`: the `auth_metadata` document, device grant, `prompt=create` and account management fields only when their option is on |
+| `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
 | `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control or bidirectional formatting character) and `ascii_lower` |
 
 ## Rules
@@ -44,12 +48,17 @@ Pure functions and value types for the built-in OAuth 2.0 API
    computed from it, and `test_oauth_page.cpp` proves the policy names it.
 8. **PKCE is `S256` only and compared in constant time** (`crypto::constant_time_equal`). SHA-256 and base64 come from
    `crypto`; this module never calls libsodium.
-9. **Client metadata is validated once, by `ClientMetadata::validate`,** also when a stored registration is read back.
-   The client ID is a keyed hash of `canonical_bytes()` (phase 4); do not hash anything else for it.
+9. **Every absolute OAuth address comes from `OAuthBaseUrl`.** The issuer is `issuer()` and every endpoint is
+   `url(path)` with a constant from `OAuthPaths.hpp`; never join `public_baseurl` and a path by hand (ADR-0773).
+10. **A hand-off allowlist entry is an origin or a bare scheme, never a prefix** (ADR-0774).
+11. **Client metadata is validated once, by `ClientMetadata::validate`,** also when a stored registration is read back.
+    The client ID is a keyed hash of `canonical_bytes()` (phase 4); do not hash anything else for it.
 
 ## Tests
 
 `tests/unit/test_oauth_pkce.cpp` (`[oauth][pkce]`), `test_oauth_scope.cpp` (`[oauth][scope]`),
 `test_oauth_redirect_uri.cpp` (`[oauth][uri]`, `[oauth][redirect]`), `test_oauth_client_metadata.cpp`
-(`[oauth][metadata]`), `test_oauth_page.cpp` (`[oauth][page]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`,
-`fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.
+(`[oauth][metadata]`), `test_oauth_page.cpp` (`[oauth][page]`), `test_oauth_server_metadata.cpp` (`[oauth][urls]`,
+`[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`). The served document:
+`tests/conformance/test_oauth_metadata_conformance.cpp` and `tests/integration/test_oauth_metadata_flow.cpp`
+(`[oauth]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`, `fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.

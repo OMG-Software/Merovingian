@@ -92,6 +92,14 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // The OAuth 2.0 API: turning it on or off changes which login API answers, what auth_metadata advertises and,
+    // from later phases, which in-memory stores (pending authorisations, codes, device codes) exist. Clients cache the
+    // metadata, and a half-switched server would advertise endpoints it does not yet serve, so every key restarts.
+    if (starts_with(key, "server.oauth."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // Outbound email for email pushers: the SMTP relay, credentials file and timeouts are read
     // at startup. SIGHUP does not rebuild them.
     if (starts_with(key, "server.email."))

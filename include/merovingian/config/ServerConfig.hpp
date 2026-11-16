@@ -7,7 +7,7 @@
 #include "merovingian/config/EmailConfig.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
 #include "merovingian/config/IdentityServerConfig.hpp"
-#include "merovingian/config/OidcConfig.hpp"
+#include "merovingian/config/OAuthConfig.hpp"
 #include "merovingian/config/PushConfig.hpp"
 #include "merovingian/config/SsoConfig.hpp"
 #include "merovingian/config/TurnServerConfig.hpp"
@@ -37,9 +37,8 @@ struct ServerConfig final
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};
-    // OIDC discovery metadata. Empty by default; when populated the
-    // auth_metadata endpoint advertises the configured OAuth 2.0 server.
-    OidcConfig oidc{};
+    // The built-in OAuth 2.0 API. Off by default (see OAuthConfig).
+    OAuthConfig oauth{};
     // Identity Service API client config for 3PID invites/bind/unbind/
     // requestToken. Empty by default; with no trusted servers the homeserver
     // refuses 3PID operations that need an IS rather than minting locally.

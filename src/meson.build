@@ -1,7 +1,7 @@
 # core first: it links nothing of the project's, and canonicaljson links it (core::utf8_is_valid).
 subdir('core')
 subdir('crypto')
-# canonicaljson before auth: auth links it (Identity.cpp, OidcDiscovery.cpp).
+# canonicaljson before auth: auth links it (Identity.cpp).
 subdir('canonicaljson')
 subdir('auth')
 # oauth after auth: it links auth (device_id_is_valid), canonicaljson and crypto.
@@ -35,7 +35,7 @@ server_exe = executable(
   sources: files('main.cpp'),
   include_directories: inc,
   dependencies: [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-  link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+  link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, oauth_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   install: true,
 )
 
@@ -44,7 +44,7 @@ executable(
   sources: files('db_migrate.cpp'),
   include_directories: inc,
   dependencies: [thread_dep, libpq_dep, sqlite_dep],
-  link_with: [config_lib, canonicaljson_lib, database_lib, observability_lib, platform_lib],
+  link_with: [config_lib, canonicaljson_lib, database_lib, oauth_lib, observability_lib, platform_lib],
   install: true,
 )
 
