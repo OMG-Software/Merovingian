@@ -34,6 +34,7 @@ homeserver_sources = files(
   'StreamedBody.cpp',
   'MediaUploadNotifier.cpp',
   'AccountPage.cpp',
+  'LegacyAuthPolicy.cpp',
   'OAuthAuthorization.cpp',
   'OAuthClientCredentials.cpp',
   'OAuthClientRegistration.cpp',

@@ -682,3 +682,4 @@
 * [0798 - Account-page actions share the client API's cores, and every password change ends account-page access](0798-account-page-actions-share-the-client-api-cores-and-every-password-change-ends-account-page-access.md)
 * [0799 - The m.oauth stage accepts a polling retry without a session and reuses the user's live session](0799-the-m-oauth-stage-accepts-a-polling-retry-without-a-session-and-reuses-the-user-s-live-session.md)
 * [0800 - No default member initialiser holds OAuth page text, because clang 18 runs it at run time](0800-no-default-member-initialiser-holds-oauth-page-text-because-clang-18-runs-it-at-run-time.md)
+* [0801 - One function decides the legacy API switch, and each refused use answers as the spec says](0801-one-function-decides-the-legacy-api-switch-and-each-refused-use-answers-as-the-spec-says.md)

@@ -267,6 +267,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   `Referrer-Policy: same-origin`, and a form post is accepted only by `form_post_origin_is_accepted` (ADR-0784).
 - Every absolute OAuth address comes from `OAuthBaseUrl` with a path from `OAuthPaths.hpp` (ADR-0773). A hand-off
   allowlist entry is an https origin or a bare private-use scheme, never a prefix (ADR-0774).
+- The legacy API switch is `legacy_auth_refusal` alone; a route that issues a legacy session asks it (ADR-0801).
+  `src/homeserver/AGENTS.md`
 
 ## src/observability
 

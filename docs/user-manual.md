@@ -878,7 +878,7 @@ pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 | Key | Default | When to change |
 |---|---|---|
 | `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
-| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. Checked now, but not yet acted on: the OAuth login pages have landed, and the legacy API still issues sessions whatever this key says. |
+| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
 | `server.oauth.device_grant_enabled` | `false` | Set `true` to offer the device authorization grant (RFC 8628): the metadata then lists the device code grant type and `device_authorization_endpoint`. Refused unless `server.oauth.enabled=true`. |
 | `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Checked now, used once the hand-off lands. |
 
@@ -887,6 +887,29 @@ The metadata offers `prompt=create` (`prompt_values_supported`) only while
 follows the legacy registration settings (ADR-0762).
 
 Every `server.oauth.*` key needs a restart.
+
+##### Turning the legacy API off
+
+With `server.oauth.legacy_api_enabled=false` users sign in and register only
+through the OAuth 2.0 API (ADR-0801):
+
+| Request | Answer |
+|---|---|
+| `GET /_matrix/client/v3/login` | `404 M_UNRECOGNIZED` |
+| `POST /_matrix/client/v3/login`, a user's login of any type | `404 M_UNRECOGNIZED` |
+| `POST /_matrix/client/v3/login`, `m.login.application_service` | `400 M_APPSERVICE_LOGIN_UNSUPPORTED` |
+| `POST /_matrix/client/v3/register`, a user | `403 M_FORBIDDEN` |
+| `POST /_matrix/client/v3/register`, an application service without `"inhibit_login": true` | `400 M_APPSERVICE_LOGIN_UNSUPPORTED`, nothing created |
+| `POST /_matrix/client/v3/register`, an application service with `"inhibit_login": true` | served as before |
+| `GET /_matrix/client/v3/login/sso/redirect` and `/{idpId}` | `404 M_UNRECOGNIZED` |
+| `POST /_matrix/client/v1/login/get_token` | `404 M_UNRECOGNIZED`; `m.get_login_token` reports `enabled: false` |
+
+Unchanged: every session already issued, with `/refresh`, `/logout`,
+`/logout/all`, User-Interactive Authentication and every authenticated
+endpoint; `GET /register/available`; the registration token validity check;
+the email and phone token requests; and password reset by email. An
+application service must send `"inhibit_login": true` when it registers a
+user, and acts as its users with its `as_token`.
 
 **`server.oidc.*` is refused.** Before 1.1.0 these keys made `auth_metadata`
 advertise an external authorisation server that Merovingian could not log

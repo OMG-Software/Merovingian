@@ -1096,6 +1096,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   identity (CWE-306); a session issued per poll fills the user's UIA pool (CWE-770) (ADR-0796 to ADR-0799).
   Source: `src/homeserver/AGENTS.md`.
 
+- **With `server.oauth.legacy_api_enabled=false` no legacy route issues a user a new session or lists the legacy
+  logins, and the decision is `legacy_auth_refusal` alone; an application service registers only with
+  `"inhibit_login": true`, judged before the user is created.**
+  Why: a route that tests the key itself is the one a later change forgets, leaving a password login that bypasses
+  the OAuth consent and device checks the operator chose (CWE-288); a refused registration that still created the
+  user leaves an account behind (ADR-0801).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.

@@ -64,6 +64,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   also offers its pre-standard name `org.matrix.cross_signing_reset` (ADR-0799).
 * A tooling test refuses a default member initialiser holding OAuth page text, which clang 18 checks only at run
   time (ADR-0800).
+* `server.oauth.legacy_api_enabled=false` stops legacy logins and registrations; appservices register with
+  `inhibit_login`, and sessions already issued carry on (ADR-0801).
 
 ## Security Fixes
 

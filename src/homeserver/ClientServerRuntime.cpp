@@ -94,6 +94,7 @@
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/InvitePermission.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
+#include "merovingian/homeserver/LegacyAuthPolicy.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -4486,6 +4487,27 @@ namespace
         return rt.homeserver.config.security().login_token.enabled;
     }
 
+    // Whether POST /login/get_token is served: the operator switch, and the legacy API that redeems what it mints
+    // (`legacy_auth_refusal`, ADR-0801). Also the `m.get_login_token` capability.
+    [[nodiscard]] auto login_token_minting_served(ClientServerRuntime const& rt) -> bool
+    {
+        return login_tokens_enabled(rt) &&
+               !legacy_auth_refusal(rt.homeserver.config.server().oauth, LegacyAuthUse::login_token_mint).has_value();
+    }
+
+    // The answer to `use` of the legacy authentication API when `legacy_auth_refusal` refuses it, or nullopt to serve
+    // it (ADR-0801).
+    [[nodiscard]] auto legacy_auth_refused(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                           LegacyAuthUse use) -> std::optional<DispatchResult>
+    {
+        auto const refusal = legacy_auth_refusal(rt.homeserver.config.server().oauth, use);
+        if (!refusal.has_value())
+        {
+            return std::nullopt;
+        }
+        return dispatch_err(req, rt, refusal->status, refusal->errcode, refusal->reason);
+    }
+
     // Hash of a login token as `LoginTokenStore` keeps it. The token is 256 random bits, so an unkeyed hash suffices.
     [[nodiscard]] auto login_token_hash(std::string_view token) -> std::optional<std::string>
     {
@@ -4556,7 +4578,7 @@ namespace
     [[nodiscard]] auto handle_get_login_token(ClientServerRuntime& rt, LocalHttpRequest const& req,
                                               std::string_view user_id) -> DispatchResult
     {
-        if (!login_tokens_enabled(rt))
+        if (!login_token_minting_served(rt))
         {
             return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
         }
@@ -15832,6 +15854,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 401U, errcode,
                                     "m.login.application_service requires a valid appservice as_token");
             }
+            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
+            auto const inhibit_login = inhibit_login_value != nullptr && *inhibit_login_value;
+            // Spec (POST /register, v1.17): without the legacy API the endpoint still serves application services,
+            // which "MUST set the "inhibit_login": true parameter"; otherwise 400 M_APPSERVICE_LOGIN_UNSUPPORTED.
+            // Judged before the user is created, so a refusal creates nothing.
+            if (!inhibit_login)
+            {
+                if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::appservice_registration_with_login);
+                    refused.has_value())
+                {
+                    return std::move(*refused);
+                }
+            }
             auto const* username = string_member(*registration_object, "username");
             if (username == nullptr)
             {
@@ -15873,8 +15908,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     result.reason, result.retry_after_ms);
             }
             auto const full_user_id = result.value;
-            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
-            if (inhibit_login_value != nullptr && *inhibit_login_value)
+            if (inhibit_login)
             {
                 return dispatch_resp(req, rt, 200U,
                                      json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
@@ -15901,6 +15935,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("user_id", json_str(full_user_id)),
                                      json_member("device_id", json_str(reg_device_id)),
                                  })));
+        }
+        // With the legacy API off (ADR-0801) a user registers through the OAuth 2.0 API: spec (POST /register 403)
+        // "registration is generally not supported by the homeserver". Before UIA, so no session is issued.
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::user_registration); refused.has_value())
+        {
+            return std::move(*refused);
         }
         // Spec (POST /register, 400): "Homeservers MUST perform the relevant checks and return
         // these codes before performing User-Interactive Authentication" -- M_INVALID_USERNAME,
@@ -16050,6 +16090,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && request_path == "/_matrix/client/v3/login")
     {
+        // Spec (GET /login 404): "the homeserver does not support the legacy authentication API" (ADR-0801).
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::login_flows); refused.has_value())
+        {
+            return std::move(*refused);
+        }
         auto flows = canonicaljson::Array{};
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.password"))}));
         // Matrix v1.19 Application Service API §"Server admin style
@@ -16110,6 +16155,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // -- like GET /login above -- because it is itself unauthenticated.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/login/sso/redirect")
     {
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
+        {
+            return std::move(*refused);
+        }
         auto const redirect_url = query_param_value(req.target, "redirectUrl");
         auto const action = query_param_value(req.target, "action");
         auto const result = sso_redirect_target(rt.homeserver, {}, redirect_url.value_or(std::string{}),
@@ -16124,6 +16173,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && starts_with(req.target, "/_matrix/client/v3/login/sso/redirect/"))
     {
+        if (auto refused = legacy_auth_refused(req, rt, LegacyAuthUse::sso_redirect); refused.has_value())
+        {
+            return std::move(*refused);
+        }
         auto path_and_idp = req.target.substr(std::string_view{"/_matrix/client/v3/login/sso/redirect/"}.size());
         if (auto const query = path_and_idp.find('?'); query != std::string_view::npos)
         {
@@ -16144,6 +16197,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/login")
     {
+        // ADR-0801: with the legacy API off no user logs in here. Spec (m.login.application_service, v1.17): "If this
+        // login type is used and the server doesn't support logging in via the Legacy authentication API, it MUST
+        // return a 400 HTTP status code with an M_APPSERVICE_LOGIN_UNSUPPORTED error code." Every other type has no
+        // answer of its own and is answered as an absent endpoint. Judged on the body's `type` alone, before the body
+        // is parsed as a login or any credential is checked; the body is read for it only when a login is refused.
+        if (legacy_auth_refusal(rt.homeserver.config.server().oauth, LegacyAuthUse::user_login).has_value())
+        {
+            auto const login_object = parsed_json_object(req.body);
+            auto const* login_type = login_object.has_value() ? string_member(*login_object, "type") : nullptr;
+            auto const use = login_type != nullptr && *login_type == "m.login.application_service"
+                                 ? LegacyAuthUse::appservice_login
+                                 : LegacyAuthUse::user_login;
+            if (auto refused = legacy_auth_refused(req, rt, use); refused.has_value())
+            {
+                return std::move(*refused);
+            }
+        }
         auto body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
         {
@@ -16839,7 +16909,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // authentication ("implemented, but the incorrect HTTP method is used").
     // CS8 (ADR-0548): with the feature off this endpoint is not served at all, so it is 404 whatever the method or
     // credentials, as before it was implemented.
-    if (request_path == get_login_token_path && !login_tokens_enabled(rt))
+    // With the legacy API off (ADR-0801) likewise.
+    if (request_path == get_login_token_path && !login_token_minting_served(rt))
     {
         return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
@@ -18290,7 +18361,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
             json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
             // Spec (m.get_login_token, v1.7): whether the user may use POST /login/get_token.
-            json_member("m.get_login_token", json_obj({json_member("enabled", json_bool(login_tokens_enabled(rt)))})),
+            json_member("m.get_login_token",
+                        json_obj({json_member("enabled", json_bool(login_token_minting_served(rt)))})),
             // Spec (m.profile_fields, v1.16): every field is the user's to set; this server has
             // no allowed or disallowed list.
             json_member("m.profile_fields", json_obj({json_member("enabled", json_bool(true))})),

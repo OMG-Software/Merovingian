@@ -195,6 +195,12 @@ Rules (ADR-0796 to ADR-0798):
   session per request (ADR-0799); keep both when changing the stage.
 - Log `user_id` only (`account.page.*`); never a password, the cookie, a form token or the query.
 
+The legacy API switch (`server.oauth.legacy_api_enabled`, ADR-0801) is decided by `legacy_auth_refusal`
+(`LegacyAuthPolicy.cpp`) alone. `GET /login`, `POST /login`, `POST /register`, both SSO redirects and
+`POST /login/get_token` (and its capability) ask it, through `legacy_auth_refused`, before they judge credentials or
+create anything. A new route that lists the legacy logins or issues a user a session asks it too; never test the key
+in a route. A session already issued, `/refresh`, `/logout` and UIA are not uses and are never gated.
+
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
 authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
 

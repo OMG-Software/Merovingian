@@ -1255,6 +1255,19 @@ the spec's "Account management" names: `account_management_uri` and all six `org
 - **Logging.** Under `oauth`, `account.page.*` events with `user_id` only. Never a password, a cookie, a form token or
   the query (`sanitized_http_target` drops it, ADR-0786).
 
+## The legacy API beside OAuth 2.0 (phase 9)
+
+- **Switch (ADR-0761, ADR-0801).** `server.oauth.legacy_api_enabled=false` stops the legacy API listing logins and
+  issuing users new sessions. `legacy_auth_refusal` (`LegacyAuthPolicy.cpp`) is the one decision, asked by `GET /login`,
+  `POST /login`, `POST /register`, both SSO redirects and `POST /login/get_token`: `GET /login`, a user's login, the SSO
+  redirects and `get_token` answer `404 M_UNRECOGNIZED`; `m.login.application_service` on `POST /login`, and an
+  application service's registration without `"inhibit_login": true`, answer `400 M_APPSERVICE_LOGIN_UNSUPPORTED`; a
+  user's registration answers `403 M_FORBIDDEN`, before User-Interactive Authentication. `m.get_login_token` reports
+  `enabled: false`. With the key true (the default) no answer changes.
+- **What carries on.** Sessions already issued, `/refresh`, `/logout`, `/logout/all`, User-Interactive Authentication
+  and every authenticated endpoint; the username availability and registration-token validity checks, the email and
+  phone token requests, and password reset by email, none of which issues a session.
+
 ## Next starting points
 
 1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.
