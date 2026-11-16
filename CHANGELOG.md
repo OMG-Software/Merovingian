@@ -119,6 +119,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The OAuth refresh grant lists a device after a restart with its stored display name, not its device ID.
 * `POST /refresh` now does the same, through the function the refresh grant uses: a device it lists again after a
   restart keeps its stored display name.
+* The server builds on FreeBSD again: the exception type name of ADR-0803 now includes `<typeinfo>`, which FreeBSD's
+  `cxxabi.h` does not.
 * A native client on an `http://[::1]` redirect URI completes its sign-in: CSP cannot name an IPv6 host, so
   `form-action` gets `http:` for it (ADR-0811).
 * The hand-off confirmation page shows the destination's port, so two loopback applications are told apart.

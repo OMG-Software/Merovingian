@@ -8,7 +8,8 @@ register, as the update table in `docs/AGENTS.md` requires.
 
 Phases 1 to 10 are implemented, and the findings of the branch review are fixed. Phase 11 is done in part: the
 threat model and the security review checklist cover the API, and the suite passed on the Linux VM at `7e54dc07`
-(88 Ok, 0 Fail). Milestone A has
+(88 Ok, 0 Fail). The branch was first built on the FreeBSD VM on 2026-11-16, which failed until
+`src/core/CurrentException.cpp` included `<typeinfo>` (FreeBSD's `cxxabi.h` only declares `std::type_info`). Milestone A has
 not been reached; see "Still open" below.
 
 | Phase | Commits |

@@ -5,6 +5,9 @@
 
 #if __has_include(<cxxabi.h>) && defined(__GNUC__)
 #include <cxxabi.h>
+
+// cxxabi.h only declares std::type_info; FreeBSD's libc++ does not define it there.
+#include <typeinfo>
 #define MEROVINGIAN_HAS_CXXABI 1
 #else
 #define MEROVINGIAN_HAS_CXXABI 0
