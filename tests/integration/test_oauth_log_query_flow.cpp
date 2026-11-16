@@ -7,7 +7,9 @@
 // level, so the per-request lines (request.received, request.route_not_found, request.rejected) are seen.
 
 #include "../support/ConsoleLogCapture.hpp"
+#include "../support/OAuthAuthorizationSupport.hpp"
 #include "../support/OAuthRegistrationSupport.hpp"
+#include "../support/OAuthTokenSupport.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
@@ -35,12 +37,13 @@ auto send(hs::ClientServerRuntime& runtime, std::string method, std::string targ
     std::ignore = hs::handle_client_server_request(runtime, request, /*can_wait=*/false);
 }
 
-// Lowers the client_server module's log level to debug for the scope, so its per-request lines are written.
+// Lowers a module's log level to debug for the scope (client_server by default), so its per-request lines are written.
 class DebugClientServerLog final
 {
 public:
-    DebugClientServerLog()
-        : previous_{merovingian::observability::SingleLog::instance().exchange_module_log_level(
+    explicit DebugClientServerLog(std::string module_name = "client_server")
+        : module_name_{std::move(module_name)}
+        , previous_{merovingian::observability::SingleLog::instance().exchange_module_log_level(
               module_name_, merovingian::observability::LogLevel::debug)}
     {
     }
@@ -55,7 +58,7 @@ public:
     auto operator=(DebugClientServerLog&&) -> DebugClientServerLog& = delete;
 
 private:
-    std::string module_name_{"client_server"};
+    std::string module_name_;
     std::optional<merovingian::observability::LogLevel> previous_;
 };
 
@@ -93,6 +96,66 @@ SCENARIO("The query of an OAuth 2.0 request is never logged", "[integration][oau
                 {
                     REQUIRE(text.find(secret) == std::string::npos);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("A refused token or device request logs the client ID only when it names a registered client",
+         "[integration][oauth][oauth-log][logging][security]")
+{
+    GIVEN("a homeserver with the device grant on, a client registered for the code grant only, and the oauth log at "
+          "debug level")
+    {
+        auto config = merovingian::tests::oauth_registration_config();
+        config.server().oauth.device_grant_enabled = true;
+        auto started = hs::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const code_only =
+            merovingian::tests::register_oauth_web_client(runtime, R"(,"grant_types":["authorization_code"])");
+        REQUIRE_FALSE(code_only.empty());
+
+        WHEN("an unregistered client ID is sent to every token grant and to the device endpoint, and the registered "
+             "client asks for a grant it does not hold")
+        {
+            auto const debug_module = DebugClientServerLog{"oauth"};
+            auto const capture = merovingian::tests::ConsoleLogCapture{merovingian::observability::LogLevel::debug};
+            constexpr auto probe = std::string_view{"UNREGISTEREDPROBE"};
+            auto const refresh = merovingian::tests::post_oauth_form(
+                runtime, merovingian::tests::oauth_token_path,
+                merovingian::tests::refresh_grant_fields(probe, std::string(64U, 'a')));
+            auto const code = merovingian::tests::post_oauth_form(
+                runtime, merovingian::tests::oauth_token_path,
+                merovingian::tests::code_grant_fields(probe, std::string(64U, 'f')));
+            auto const device_grant =
+                merovingian::tests::post_oauth_form(runtime, merovingian::tests::oauth_token_path,
+                                                    {
+                                                        {"grant_type", "urn:ietf:params:oauth:grant-type:device_code"},
+                                                        {"client_id", std::string{probe}},
+                                                        {"device_code", std::string(64U, 'd')},
+            });
+            auto const device = merovingian::tests::post_oauth_form(runtime, "/_merovingian/oauth2/device",
+                                                                    {
+                                                                        {"client_id", std::string{probe}},
+                                                                        {"scope",     "openid"          },
+            });
+            auto const registered = merovingian::tests::post_oauth_form(
+                runtime, merovingian::tests::oauth_token_path,
+                merovingian::tests::refresh_grant_fields(code_only, std::string(64U, 'a')));
+            auto const text = capture.text();
+
+            THEN("every refusal is logged, the unregistered ID never, and the registered one is")
+            {
+                for (auto const* response : {&refresh, &code, &device_grant, &device})
+                {
+                    CHECK(response->status == 400U);
+                }
+                CHECK(registered.status == 400U);
+                CHECK(text.find("oauth.token.refused") != std::string::npos);
+                CHECK(text.find("oauth.device.refused") != std::string::npos);
+                CHECK(text.find(code_only) != std::string::npos);
+                CHECK(text.find(probe) == std::string::npos);
             }
         }
     }

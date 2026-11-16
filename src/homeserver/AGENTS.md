@@ -178,7 +178,10 @@ gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
   follows), then client, redirect URI byte for byte and PKCE, then `account_sign_in_gate`, the credential stamp and the
   device checks. A
   replayed code ends only the session that code produced (`AuthorizationCodeStore::record_issued_session`, matched on
-  client and `created_at_ms`).
+  client and `created_at_ms`), recorded at the redemption's instant before the grant commits, so nothing that can fail
+  follows the commit.
+- **The refresh grant heals the runtime's device list with the device row's stored display name**, never the device
+  ID.
 - **A session ends through `end_device_session_and_announce`** (`ClientDeviceSessions.hpp`), shared with `POST /logout`:
   revocation, a replayed code, any new path that ends a session.
 - **A UIA endpoint calls `oauth_session_uia_refusal` first** (ADR-0794): `GET`/`POST /login/get_token`,
@@ -186,6 +189,8 @@ gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
   `POST /delete_devices`, and `POST /keys/device_signing/upload` when the upload is not UIA-exempt, which then offers
   the `m.oauth` stage instead of the 403 (ADR-0797). An application service's masquerade token is never refused.
 - Never log a code, a verifier, a token or the body; log `client_id`, `grant_type`, `error`, `user_id`, `device_id`.
+  A refusal logs `client_id` only once `find_registered_oauth_client` found it, in the token and the device
+  authorization endpoints: before then it is text of the caller's choosing.
 
 The account pages are `handle_account_page` (`AccountPage.cpp`); `ClientServerRuntime.cpp` holds only the route match.
 Rules (ADR-0796 to ADR-0798):

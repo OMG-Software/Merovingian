@@ -89,6 +89,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   refresh-token reuse or expiry), so its client can be evicted or aged out (ADR-0808).
 * A cross-signing reset approved on a page that named the asking OAuth device can be used only by that device; the
   `m.oauth` URL now carries `device_id` (ADR-0809).
+* A refused OAuth token or device request logs its `client_id` only when it names a registered client, so a caller
+  cannot write text of its choosing into the log.
 
 ## Bug fixes
 
@@ -100,6 +102,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   every file in the directory.
 * `POST /keys/device_signing/upload` asks for UIA only to change held keys: a first upload or a repeat of the held
   keys succeeds without it, and an application service never needs it, as the spec says (ADR-0794).
+* The code grant names the session a replayed code ends before it commits, so no step that can fail follows the
+  commit (ADR-0792).
+* The OAuth refresh grant lists a device after a restart with its stored display name, not its device ID.
 
 ## Release notes
 

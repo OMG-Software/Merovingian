@@ -47,8 +47,8 @@ namespace
     constexpr auto status_unavailable = std::uint16_t{503U};
     constexpr auto ms_per_second = std::uint64_t{1000U};
 
-    // Logs a refused device authorization request: the wire error and the client ID when one was sent. Never a value
-    // the request carried beyond that.
+    // Logs a refused device authorization request: the wire error and the client ID once it names a registered client.
+    // Never a value the request carried beyond that.
     auto log_refused(std::string_view error_code, std::string_view client_id) -> void
     {
         auto fields = std::vector<observability::StructuredLogField>{
@@ -99,7 +99,8 @@ auto handle_oauth_device_authorization(ClientServerRuntime& rt, LocalHttpRequest
     auto const client = find_registered_oauth_client(runtime, *client_id);
     if (!client.has_value())
     {
-        log_refused(oauth::error_invalid_client, *client_id);
+        // Not the client ID: it names no registered client, so it is text of the caller's choosing.
+        log_refused(oauth::error_invalid_client, {});
         return oauth_error_response(status_bad_request, oauth::error_invalid_client, "The client is not registered.");
     }
     if (!client->has_grant_type(oauth::grant_type_device_code))

@@ -19,11 +19,14 @@
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
+#include "merovingian/homeserver/AuthorizationCodeRedemption.hpp"
+#include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
+#include "merovingian/homeserver/OAuthClock.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -34,6 +37,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -345,6 +349,8 @@ SCENARIO("A grant that cannot be stored leaves nothing, and an account that cann
         {
             db::force_next_persist_failures(rt.homeserver.database.persistent_store, 1U);
             auto const response = post_oauth_form(rt, oauth_token_path, code_grant_fields(fixture.client_id, code));
+            // The session a replay would end was named before the commit, so no bookkeeping follows it.
+            auto const replay = rt.homeserver.oauth_codes.redeem(code, hs::oauth_wall_clock_ms());
             THEN("the answer is server_error and no device, token or session row exists")
             {
                 REQUIRE(response.status == 500U);
@@ -352,6 +358,8 @@ SCENARIO("A grant that cannot be stored leaves nothing, and an account that cann
                 CHECK_FALSE(holds_device(rt, oauth_test_device));
                 CHECK(oauth_row(rt, oauth_test_device) == nullptr);
                 CHECK(audit_count(rt, "oauth.session.granted") == 0U);
+                CHECK(replay.outcome == hs::AuthorizationCodeRedemption::Outcome::replayed);
+                CHECK(replay.session_created_at_ms.has_value());
             }
         }
         WHEN("the account is locked between the consent and the token request")
@@ -437,6 +445,23 @@ SCENARIO("The refresh grant rotates an OAuth session's tokens and only an OAuth 
                 CHECK(rotated.refresh_token != session.refresh_token);
                 CHECK(whoami_status(rt, rotated.access_token) == 200U);
                 CHECK(oauth_row(rt, oauth_test_device) != nullptr);
+            }
+        }
+        WHEN("the runtime's device list lost the device, as after a restart, and the client refreshes")
+        {
+            std::erase_if(rt.devices, [](auto const& device) {
+                return device.user_id == alice_id && device.device_id == oauth_test_device;
+            });
+            auto const rotated = read_token_answer(
+                post_oauth_form(rt, oauth_token_path, refresh_grant_fields(fixture.client_id, session.refresh_token)));
+            auto const healed = std::ranges::find_if(rt.devices, [](auto const& device) {
+                return device.user_id == alice_id && device.device_id == oauth_test_device;
+            });
+            THEN("the device is listed again with its stored display name, not its device ID")
+            {
+                REQUIRE(rotated.ok);
+                REQUIRE(healed != rt.devices.end());
+                CHECK(healed->display_name == "Test App");
             }
         }
         WHEN("another registered client presents the refresh token")

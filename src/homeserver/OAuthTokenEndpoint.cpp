@@ -6,7 +6,9 @@
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/FormFields.hpp"
 #include "merovingian/database/OAuthStore.hpp"
+#include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentOAuthSession.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/AuthorizationCodeRedemption.hpp"
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
@@ -37,7 +39,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -53,8 +54,9 @@ namespace
     constexpr auto status_server_error = std::uint16_t{500U};
     constexpr auto first_server_error_status = std::uint16_t{500U};
 
-    // Logs a refused token request: the grant type, the wire error and the client ID when one was sent. Never the
-    // code, the verifier, a token or any other value the request carried.
+    // Logs a refused token request: the grant type, the wire error and the client ID once it names a registered client
+    // (empty before then, so a caller cannot write text of its choosing into the log). Never the code, the verifier, a
+    // token or any other value the request carried.
     auto log_refused(std::string_view grant_type, std::string_view error_code, std::string_view client_id) -> void
     {
         auto fields = std::vector<observability::StructuredLogField>{
@@ -127,6 +129,23 @@ namespace
         return *name;
     }
 
+    // The display name the device row holds, or empty when there is no row.
+    [[nodiscard]] auto stored_display_name(HomeserverRuntime const& runtime, std::string_view user_id,
+                                           std::string_view device_id) -> std::string
+    {
+        auto name = std::string{};
+        database::for_each_user_device(runtime.database.persistent_store, user_id,
+                                       [&](database::PersistentDevice const& device) {
+                                           if (device.device_id != device_id)
+                                           {
+                                               return true;
+                                           }
+                                           name = device.display_name;
+                                           return false;
+                                       });
+        return name;
+    }
+
     [[nodiscard]] auto authorization_code_grant(ClientServerRuntime& rt, core::FormFields const& fields)
         -> LocalHttpResponse
     {
@@ -136,9 +155,11 @@ namespace
         auto const code = fields.find("code");
         auto const redirect_uri = fields.find("redirect_uri");
         auto const verifier = fields.find("code_verifier");
+        // Set once the client ID names a registered client; a refusal before then logs no client ID.
+        auto registered_client_id = std::string_view{};
         auto const refuse = [&](std::uint16_t status, std::string_view error_code,
                                 std::string_view description) -> LocalHttpResponse {
-            log_refused(grant_type, error_code, client_id.value_or(std::string_view{}));
+            log_refused(grant_type, error_code, registered_client_id);
             return oauth_error_response(status, error_code, description);
         };
         if (!client_id.has_value() || !code.has_value() || !redirect_uri.has_value() || !verifier.has_value())
@@ -151,6 +172,7 @@ namespace
         {
             return refuse(status_bad_request, oauth::error_invalid_client, "The client is not registered.");
         }
+        registered_client_id = *client_id;
         if (!client->has_grant_type(grant_type))
         {
             return refuse(status_bad_request, oauth::error_unauthorized_client,
@@ -199,6 +221,14 @@ namespace
         request.scope = grant.scope;
         request.display_name = device_display_name(rt, *client);
         request.created_at_ms = runtime.oauth_codes.next_session_created_at_ms(now_ms);
+        // Names the row this code is about to produce, so a replay ends it and nothing else (ADR-0792). Recorded
+        // before the grant commits and at the redemption's own instant, at which the code is held, so nothing that
+        // can fail follows the commit. Should the grant then fail, the value names no row: every value is
+        // new, so a replay ends nothing.
+        if (!runtime.oauth_codes.record_issued_session(*code, request.created_at_ms, now_ms))
+        {
+            return refuse(status_server_error, oauth::error_server_error, "The server could not complete the grant.");
+        }
         auto const session = grant_oauth_session(runtime, request);
         if (!session.ok)
         {
@@ -209,9 +239,6 @@ namespace
             }
             return refuse(status_bad_request, oauth::error_invalid_grant, "The session cannot be granted.");
         }
-        // Names the row this code produced, so a replay ends it and nothing else. The code is held: nothing above
-        // released runtime.mutex, so it cannot have expired from under the redemption.
-        std::ignore = runtime.oauth_codes.record_issued_session(*code, request.created_at_ms, oauth_wall_clock_ms());
         remember_signed_in_device(rt, session.user_id, session.device_id, request.display_name,
                                   SignedInDevice::new_session);
         return token_answer(session, oauth_expires_in(runtime), grant.scope);
@@ -225,9 +252,11 @@ namespace
         auto& runtime = rt.homeserver;
         auto const client_id = fields.find("client_id");
         auto const device_code = fields.find("device_code");
+        // Set once the client ID names a registered client; a refusal before then logs no client ID.
+        auto registered_client_id = std::string_view{};
         auto const refuse = [&](std::uint16_t status, std::string_view error_code,
                                 std::string_view description) -> LocalHttpResponse {
-            log_refused(grant_type, error_code, client_id.value_or(std::string_view{}));
+            log_refused(grant_type, error_code, registered_client_id);
             return oauth_error_response(status, error_code, description);
         };
         // RFC 6749 section 3.1: a parameter sent without a value is treated as omitted.
@@ -241,6 +270,7 @@ namespace
         {
             return refuse(status_bad_request, oauth::error_invalid_client, "The client is not registered.");
         }
+        registered_client_id = *client_id;
         if (!client->has_grant_type(grant_type))
         {
             return refuse(status_bad_request, oauth::error_unauthorized_client,
@@ -312,9 +342,11 @@ namespace
         auto& runtime = rt.homeserver;
         auto const client_id = fields.find("client_id");
         auto const refresh_token = fields.find("refresh_token");
+        // Set once the client ID names a registered client; a refusal before then logs no client ID.
+        auto registered_client_id = std::string_view{};
         auto const refuse = [&](std::uint16_t status, std::string_view error_code,
                                 std::string_view description) -> LocalHttpResponse {
-            log_refused(grant_type, error_code, client_id.value_or(std::string_view{}));
+            log_refused(grant_type, error_code, registered_client_id);
             return oauth_error_response(status, error_code, description);
         };
         if (!client_id.has_value() || !refresh_token.has_value())
@@ -327,6 +359,7 @@ namespace
         {
             return refuse(status_bad_request, oauth::error_invalid_client, "The client is not registered.");
         }
+        registered_client_id = *client_id;
         if (!client->has_grant_type(grant_type))
         {
             return refuse(status_bad_request, oauth::error_unauthorized_client,
@@ -342,8 +375,10 @@ namespace
             }
             return refuse(status_bad_request, oauth::error_invalid_grant, "The refresh token is invalid.");
         }
-        // As POST /refresh does: the runtime's device list is healed after a restart, nothing is announced.
-        remember_signed_in_device(rt, session.user_id, session.device_id, session.device_id,
+        // The runtime's device list is healed after a restart, with the device's stored display name; nothing is
+        // announced.
+        remember_signed_in_device(rt, session.user_id, session.device_id,
+                                  stored_display_name(runtime, session.user_id, session.device_id),
                                   SignedInDevice::refreshed_session);
         auto const* const row =
             database::find_oauth_session(runtime.database.persistent_store, session.user_id, session.device_id);
