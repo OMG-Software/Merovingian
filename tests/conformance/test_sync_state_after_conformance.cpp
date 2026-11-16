@@ -496,7 +496,7 @@ SCENARIO("state_after reports a key that state resolution moved back to an older
         say(rt, alice, room, "the event that arrived with the fork");
 
         auto& store = rt.homeserver.database.persistent_store;
-        store.forward_extremities.push_back({room, old_topic});
+        std::ignore = store.forward_extremities.insert({room, old_topic}, user_id("alice"));
         for (auto& row : store.state)
         {
             if (row.room_id == room && row.event_type == "m.room.topic")
