@@ -7,11 +7,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Features
 
-* The plan for a built-in OAuth 2.0 API, which Element X needs to create accounts, is in
-  `docs/todos/oauth-2-0-api.md`. Nothing the server does has changed yet (ADR-0760 to ADR-0764).
-* Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, for the OAuth 2.0
-  pages and endpoints; no route uses them yet (ADR-0765, ADR-0766).
-* A module `oauth` of pure OAuth 2.0 building blocks, not yet served: PKCE `S256` and the scope parser
+* A built-in OAuth 2.0 API, which Element X needs to create accounts, planned in `docs/todos/oauth-2-0-api.md`
+  (ADR-0760 to ADR-0764).
+* Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, which the OAuth 2.0
+  pages and endpoints read and write with (ADR-0765, ADR-0766).
+* A module `oauth` of pure OAuth 2.0 building blocks the endpoints call: PKCE `S256` and the scope parser
   (ADR-0768, ADR-0769).
 * A strict URI reader, redirect URI rules with byte-exact matching, and RFC 7591 client metadata validation with a
   canonical form (ADR-0770, ADR-0771).
@@ -35,7 +35,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * In-memory, hashed, bounded OAuth 2.0 pending authorisations and authorization codes that never evict a live entry;
   the sweep and the client cap keep a client that holds one (ADR-0782).
 * The password check of `POST /login` and the account creation of `POST /register` are each one function, shared
-  with the coming OAuth 2.0 pages; both routes answer as before (ADR-0783).
+  with the OAuth 2.0 pages; both routes answer as before (ADR-0783).
 * OAuth 2.0 pages send `Referrer-Policy: same-origin`, get no CORS headers, and accept a form post only from this
   server's origin (ADR-0784, ADR-0785).
 * `GET` and `POST /_merovingian/oauth2/authorize` serve the sign-in, account creation and consent pages and send the

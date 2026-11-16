@@ -6,6 +6,9 @@
 
 Technical Story: phase 6 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md) (proposal P7)
 
+Amended by [ADR-0797](0797-an-oauth-session-replaces-its-cross-signing-keys-through-the-m-oauth-stage-and-a-one-use-approval.md):
+a replacing `POST /keys/device_signing/upload` from an OAuth session is offered the `m.oauth` stage instead of the 403.
+
 ## Context and Problem Statement
 
 A session from the OAuth 2.0 API has no password the client may be asked for: the user typed it on this server's
