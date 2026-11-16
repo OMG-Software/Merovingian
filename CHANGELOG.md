@@ -48,10 +48,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
-keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token and revocation endpoints,
-which later 1.1.0 changes serve (registration is served now); leave `server.oauth.enabled` off until then. 1.1.0 migrates
-the database: on first start it applies migration 002, which adds two empty tables and changes no existing one. A
-1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go back.
+keys and set `server.oauth.enabled` instead (ADR-0764). The metadata names the authorisation, token and revocation
+endpoints, which later 1.1.0 changes serve (registration is served now); leave `server.oauth.enabled` off until
+then. 1.1.0 migrates the database: on first start it applies migration 002, which adds two empty tables and changes
+no existing one. A 1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go
+back.
 
 # Version 1.0.2
 
