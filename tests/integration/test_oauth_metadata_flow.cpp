@@ -177,10 +177,20 @@ SCENARIO("auth_metadata passes every check Element X makes before an OAuth login
                 CHECK(*registration == "https://matrix.example.org/_merovingian/oauth2/register");
             }
 
-            THEN("the account management fields are not advertised before the account pages exist")
+            THEN("the account pages and their six actions are advertised (ADR-0796)")
             {
-                CHECK(object_member(body, "account_management_uri") == nullptr);
-                CHECK(object_member(body, "account_management_actions_supported") == nullptr);
+                auto const* account = string_member(body, "account_management_uri");
+                REQUIRE(account != nullptr);
+                CHECK(*account == "https://matrix.example.org/_merovingian/account");
+                auto const actions = string_list(body, "account_management_actions_supported");
+                REQUIRE(actions.has_value());
+                CHECK(actions->size() == 6U);
+                for (auto const* action :
+                     {"org.matrix.profile", "org.matrix.devices_list", "org.matrix.device_view",
+                      "org.matrix.device_delete", "org.matrix.account_deactivate", "org.matrix.cross_signing_reset"})
+                {
+                    CHECK(holds(actions, action));
+                }
             }
         }
     }

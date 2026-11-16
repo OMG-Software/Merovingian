@@ -18,8 +18,8 @@ struct ServerMetadataOptions final
     // so a client never offers account creation the registration page would refuse (ADR-0762).
     bool registration_enabled{false};
     // The account management actions the account page implements, in the order to advertise. Empty leaves out both
-    // `account_management_uri` and `account_management_actions_supported`; the account pages arrive in phase 8, and
-    // until then nothing passes an action.
+    // `account_management_uri` and `account_management_actions_supported`. The served document passes all six
+    // (`account_management_actions()`, `AccountPages.hpp`).
     std::vector<std::string> account_management_actions{};
 };
 

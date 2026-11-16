@@ -180,6 +180,13 @@ namespace merovingian::homeserver
 // that is no longer active.
 [[nodiscard]] auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id,
                                              std::string_view new_password, bool logout_devices) -> OperationResult;
+// Sets a new password for `user_id`, signed in to the account page with the current password re-verified (ADR-0798).
+// The same change as `reset_local_user_password` with `logout_devices`, the client API's default: a page holds no
+// device, so every access token, refresh token, OpenID token and pusher of the account goes, and no device is deleted.
+// Audited as `auth.password_changed`. Like every password change, it ends the user's account-page sessions and any
+// cross-signing reset approval.
+[[nodiscard]] auto change_password_on_account_page(HomeserverRuntime& runtime, std::string_view user_id,
+                                                   std::string_view new_password) -> OperationResult;
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> PasswordVerificationResult;
 // Returns true when the presented access token exists in the session store but

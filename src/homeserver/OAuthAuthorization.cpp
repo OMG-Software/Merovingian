@@ -8,7 +8,6 @@
 #include "merovingian/core/Error.hpp"
 #include "merovingian/core/FormFields.hpp"
 #include "merovingian/core/HostCookie.hpp"
-#include "merovingian/core/RequestCookies.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AccountCreationRequest.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -21,13 +20,13 @@
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OAuthClock.hpp"
+#include "merovingian/homeserver/OAuthPageResponse.hpp"
 #include "merovingian/homeserver/OAuthSecret.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/PasswordLoginRequest.hpp"
 #include "merovingian/homeserver/PasswordLoginVerification.hpp"
 #include "merovingian/homeserver/PendingAuthorisation.hpp"
 #include "merovingian/homeserver/PendingAuthorisationStore.hpp"
-#include "merovingian/homeserver/RequestHeaders.hpp"
 #include "merovingian/oauth/AccountFormInput.hpp"
 #include "merovingian/oauth/ApplicationType.hpp"
 #include "merovingian/oauth/AuthorizationPages.hpp"
@@ -84,8 +83,6 @@ namespace
     constexpr auto status_unavailable = std::uint16_t{503U};
     // The longest username read from the login form: a user ID is at most 255 bytes, so no account has a longer one.
     constexpr auto max_login_username_bytes = std::size_t{255U};
-    // A browser cookie value as make_oauth_secret mints it: 64 lower-case hex digits.
-    constexpr auto browser_token_chars = std::size_t{oauth_secret_bytes * 2U};
 
     [[nodiscard]] auto application_type_name(oauth::ApplicationType type) noexcept -> std::string_view
     {
@@ -112,42 +109,21 @@ namespace
         log_oauth("oauth.authorization.refused", std::move(fields), observability::LogEventSeverity::debug);
     }
 
-    // A page answer: the rendered page with the page headers (ADR-0772, ADR-0784) and the page mark (ADR-0785).
-    [[nodiscard]] auto page_response(std::uint16_t status, oauth::Page const& page,
-                                     std::vector<std::pair<std::string, std::string>> headers) -> LocalHttpResponse
-    {
-        auto response = LocalHttpResponse{};
-        response.status = status;
-        response.body = page.render();
-        response.headers = std::move(headers);
-        response.page = true;
-        return response;
-    }
-
-    [[nodiscard]] auto plain_page(std::uint16_t status, oauth::Page const& page) -> LocalHttpResponse
-    {
-        return page_response(status, page, oauth::page_headers());
-    }
-
-    [[nodiscard]] auto error_page_response(std::uint16_t status, oauth::HtmlText title, oauth::HtmlText const& message)
-        -> LocalHttpResponse
-    {
-        return plain_page(status, oauth::error_page(std::move(title), message));
-    }
-
     // Step 1 of the request: nothing is redirected, because no address has been validated.
     [[nodiscard]] auto bad_request_page(oauth::HtmlText const& message) -> LocalHttpResponse
     {
-        return error_page_response(status_bad_request, oauth::HtmlText{"This sign-in request cannot be used"}, message);
+        return oauth_error_page_response(status_bad_request, oauth::HtmlText{"This sign-in request cannot be used"},
+                                         message);
     }
 
     // The answer to a form post whose pending authorisation is gone, never was, or is bound to another browser. The
     // server no longer holds a validated address for it, so the user is sent back to the application by hand.
     [[nodiscard]] auto expired_page() -> LocalHttpResponse
     {
-        return error_page_response(status_bad_request, oauth::HtmlText{"Sign-in expired"},
-                                   oauth::HtmlText{"This sign-in has expired or was already finished. Return to the "
-                                                   "application and start again."});
+        return oauth_error_page_response(
+            status_bad_request, oauth::HtmlText{"Sign-in expired"},
+            oauth::HtmlText{"This sign-in has expired or was already finished. Return to the "
+                            "application and start again."});
     }
 
     // A redirect to the client: the redirect URI the request gave, matched against the registration, with the answer in
@@ -181,64 +157,6 @@ namespace
             parameters.emplace_back("state", state);
         }
         return redirect_response(status, target, mode, parameters);
-    }
-
-    // The query of a request target, without the `?`; empty when there is none.
-    [[nodiscard]] auto target_query(std::string_view target) noexcept -> std::string_view
-    {
-        auto const at = target.find('?');
-        return at == std::string_view::npos ? std::string_view{} : target.substr(at + 1U);
-    }
-
-    // The one value of header `name`, or nullopt when it is absent or sent more than once (a repeated `Origin`,
-    // `Sec-Fetch-Site` or `Cookie` is treated as absent, never resolved).
-    [[nodiscard]] auto single_header(LocalHttpRequest const& request, std::string_view name)
-        -> std::optional<std::string_view>
-    {
-        auto const values = request_header_values(request, name);
-        if (values.size() != 1U)
-        {
-            return std::nullopt;
-        }
-        return values.front();
-    }
-
-    [[nodiscard]] auto is_browser_token(std::string_view value) noexcept -> bool
-    {
-        if (value.size() != browser_token_chars)
-        {
-            return false;
-        }
-        for (auto const character : value)
-        {
-            if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // The browser token the request's cookie carries, when it carries exactly one well-formed value.
-    [[nodiscard]] auto request_browser_token(LocalHttpRequest const& request) -> std::optional<std::string>
-    {
-        auto const header = single_header(request, "Cookie");
-        if (!header.has_value())
-        {
-            return std::nullopt;
-        }
-        auto parsed = core::RequestCookies::parse(*header);
-        auto const* cookies = std::get_if<core::RequestCookies>(&parsed);
-        if (cookies == nullptr)
-        {
-            return std::nullopt;
-        }
-        auto const value = cookies->find(oauth_browser_cookie_name);
-        if (!value.has_value() || !is_browser_token(*value))
-        {
-            return std::nullopt;
-        }
-        return std::string{*value};
     }
 
     // The username a `login_hint` prefills (spec "Login flow" leaves its form to the server): `mxid:` and a valid user
@@ -336,20 +254,13 @@ namespace
     [[nodiscard]] auto login_page_response(std::uint16_t status, oauth::AccountFormInput const& input)
         -> LocalHttpResponse
     {
-        return plain_page(status, oauth::login_page(input));
+        return oauth_plain_page(status, oauth::login_page(input));
     }
 
     [[nodiscard]] auto registration_page_response(std::uint16_t status, oauth::AccountFormInput const& input)
         -> LocalHttpResponse
     {
-        return plain_page(status, oauth::registration_page(input));
-    }
-
-    // `Retry-After` in whole seconds, rounded up, at least one.
-    [[nodiscard]] auto retry_after_seconds(std::uint32_t retry_after_ms) -> std::uint32_t
-    {
-        auto const seconds = (retry_after_ms / 1000U) + (retry_after_ms % 1000U == 0U ? 0U : 1U);
-        return seconds == 0U ? 1U : seconds;
+        return oauth_plain_page(status, oauth::registration_page(input));
     }
 
     // The consent page for the pending authorisation `post` names, now authenticated as `user_id`. Its policy allows
@@ -382,8 +293,8 @@ namespace
         }
         input.replaces_existing_device =
             database::has_user_device(runtime.database.persistent_store, user_id, post.entry.device_id);
-        return page_response(status_ok, oauth::consent_page(input, target->redirect_target),
-                             oauth::page_headers(target->redirect_target));
+        return oauth_page_response(status_ok, oauth::consent_page(input, target->redirect_target),
+                                   oauth::page_headers(target->redirect_target));
     }
 
     // Records `user_id` on the entry and answers the consent page. The store finds the entry again, so a login or a
@@ -641,33 +552,33 @@ namespace
         auto const* base_url = std::get_if<oauth::OAuthBaseUrl>(&base);
         if (base_url == nullptr)
         {
-            return error_page_response(
+            return oauth_error_page_response(
                 status_server_error, oauth::HtmlText{"Sign-in is not available"},
                 oauth::HtmlText{"This server is not configured for sign-in through applications."});
         }
         // Before anything is read: another site's post is refused whatever it carries (ADR-0784, ADR-0788).
-        if (!oauth::form_post_origin_is_accepted(*base_url, single_header(request, "Origin"),
-                                                 single_header(request, "Sec-Fetch-Site")))
+        if (!oauth::form_post_origin_is_accepted(*base_url, single_request_header(request, "Origin"),
+                                                 single_request_header(request, "Sec-Fetch-Site")))
         {
             log_refused({}, "forbidden_origin");
-            return error_page_response(status_forbidden, oauth::HtmlText{"Form refused"},
-                                       oauth::HtmlText{"This form was not sent from a page of this server."});
+            return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form was not sent from a page of this server."});
         }
-        auto const content_type = single_header(request, "Content-Type");
+        auto const content_type = single_request_header(request, "Content-Type");
         if (!content_type.has_value() || !oauth::page_form_content_type_is_accepted(*content_type))
         {
-            return error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
-                                       oauth::HtmlText{"This form could not be read."});
+            return oauth_error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form could not be read."});
         }
         auto parsed = core::FormFields::parse(request.body);
         auto const* fields = std::get_if<core::FormFields>(&parsed);
         if (fields == nullptr)
         {
-            return error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
-                                       oauth::HtmlText{"This form could not be read."});
+            return oauth_error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form could not be read."});
         }
         auto const pending_id = fields->find(oauth::pending_field.view());
-        auto browser_token = request_browser_token(request);
+        auto browser_token = request_secret_cookie(request, oauth_browser_cookie_name);
         if (!pending_id.has_value() || pending_id->empty() || !browser_token.has_value())
         {
             return expired_page();
@@ -709,8 +620,8 @@ namespace
         {
             return handle_deny(post);
         }
-        return error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
-                                   oauth::HtmlText{"This form asked for something this page does not do."});
+        return oauth_error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
+                                         oauth::HtmlText{"This form asked for something this page does not do."});
     }
 
     // What the `prompt` parameter asks the first page to be.
@@ -725,7 +636,7 @@ namespace
     {
         auto& runtime = rt.homeserver;
         // Step 1: the client and its redirect URI. Nothing here is ever sent to an address.
-        auto parsed = core::FormFields::parse(target_query(request.target));
+        auto parsed = core::FormFields::parse(request_target_query(request.target));
         auto const* fields = std::get_if<core::FormFields>(&parsed);
         if (fields == nullptr)
         {
@@ -822,7 +733,7 @@ namespace
         auto const hint = login_hint_username(fields->find("login_hint"), server_name);
 
         // Step 3: bind a pending authorisation to this browser.
-        auto browser_token = request_browser_token(request);
+        auto browser_token = request_secret_cookie(request, oauth_browser_cookie_name);
         if (!browser_token.has_value())
         {
             browser_token = make_oauth_secret();
@@ -834,8 +745,9 @@ namespace
         auto const* set_cookie = std::get_if<std::string>(&cookie);
         if (set_cookie == nullptr)
         {
-            return error_page_response(status_unavailable, oauth::HtmlText{"Sign-in is not available"},
-                                       oauth::HtmlText{"The server cannot start a sign-in now. Try again later."});
+            return oauth_error_page_response(
+                status_unavailable, oauth::HtmlText{"Sign-in is not available"},
+                oauth::HtmlText{"The server cannot start a sign-in now. Try again later."});
         }
         auto authorisation = PendingAuthorisation{};
         authorisation.client_id = std::string{*client_id};
@@ -857,7 +769,7 @@ namespace
         if (pending_id == nullptr)
         {
             log_refused(*client_id, oauth::error_temporarily_unavailable);
-            return error_page_response(
+            return oauth_error_page_response(
                 status_unavailable, oauth::HtmlText{"Sign-in is not available"},
                 oauth::HtmlText{"Too many sign-ins are in progress. Try again in a few minutes."});
         }

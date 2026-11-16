@@ -707,7 +707,7 @@ SCENARIO("Revocation ends the session a token belongs to, as POST /logout does",
     }
 }
 
-SCENARIO("Every User-Interactive Authentication endpoint refuses an OAuth session with the account page",
+SCENARIO("Every User-Interactive Authentication endpoint but the m.oauth upload refuses an OAuth session",
          "[integration][oauth][oauth-uia]")
 {
     GIVEN("alice signed in through OAuth and on another device with a password")
@@ -778,12 +778,13 @@ SCENARIO("Every User-Interactive Authentication endpoint refuses an OAuth sessio
             };
             auto const first = upload(make_cross_signing_set(std::string{alice_id}).selected_members(true, true, true));
             auto const replacement = upload(make_cross_signing_set(std::string{alice_id}).master_member());
-            THEN("the first upload needs no UIA and the replacement is refused with the account page")
+            THEN("the first upload needs no UIA and the replacement is asked for the m.oauth stage (ADR-0797)")
             {
                 CHECK(first.status == 200U);
-                CHECK(replacement.status == 403U);
-                CHECK(member(replacement, "errcode") == "M_FORBIDDEN");
-                CHECK(member(replacement, "error").find(account_url) != std::string::npos);
+                CHECK(replacement.status == 401U);
+                CHECK(replacement.body.find(R"("stages":["m.oauth"])") != std::string::npos);
+                CHECK(replacement.body.find(std::string{account_url} + "?action=org.matrix.cross_signing_reset") !=
+                      std::string::npos);
             }
         }
     }

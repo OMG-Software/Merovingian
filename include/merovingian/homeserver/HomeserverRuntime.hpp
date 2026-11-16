@@ -17,6 +17,7 @@
 #include "merovingian/federation/FederationRuntimeState.hpp"
 #include "merovingian/federation/RemoteDeviceListCache.hpp"
 #include "merovingian/federation/ServerDiscoveryNetwork.hpp"
+#include "merovingian/homeserver/AccountSessionStore.hpp"
 #include "merovingian/homeserver/ActiveServerSigningKeySecret.hpp"
 #include "merovingian/homeserver/AppserviceDeliveryBackoff.hpp"
 #include "merovingian/homeserver/AppserviceEphemeralQueue.hpp"
@@ -24,6 +25,7 @@
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
+#include "merovingian/homeserver/CrossSigningResetApprovals.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
@@ -240,6 +242,11 @@ struct HomeserverRuntime final
     // either names is never deleted (`oauth_client_has_pending_authorisation`).
     PendingAuthorisationStore oauth_pending_authorisations{};
     AuthorizationCodeStore oauth_codes{};
+    // The signed-in sessions of the account pages at `/_merovingian/account` (plan P6, ADR-0796) and the cross-signing
+    // reset approvals they grant (ADR-0797). In memory only, bounded. Here, not on `ClientServerRuntime`, because a
+    // password change, a password reset and a deactivation (`AuthService.cpp`) end them. Guarded by `mutex`.
+    AccountSessionStore account_sessions{};
+    CrossSigningResetApprovals cross_signing_reset_approvals{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,

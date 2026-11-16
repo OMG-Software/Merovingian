@@ -2443,6 +2443,15 @@ namespace
         return all_deleted;
     }
 
+    // Ends what the account pages hold for `user_id`: every signed-in page session and any cross-signing reset
+    // approval (ADR-0796, ADR-0797, ADR-0798). Run by every password change, reset and deactivation, so a browser left
+    // signed in to the pages, or an approval granted before, does not outlive the credential that opened it.
+    auto end_account_page_access(HomeserverRuntime& runtime, std::string_view user_id) -> void
+    {
+        std::ignore = runtime.account_sessions.end_user(user_id);
+        runtime.cross_signing_reset_approvals.withdraw(user_id);
+    }
+
 } // namespace
 
 // Permanently deactivates `user_id`: the one deactivation, run for the account's owner after UIA (spec:
@@ -2482,6 +2491,7 @@ auto deactivate_user_account(HomeserverRuntime& runtime, std::string_view user_i
         remember_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated",
                              audit.actor, audit.target, audit.reason);
     }
+    end_account_page_access(runtime, user_id);
 
     // Every credential dies with the account, including the caller's own -- unlike
     // a password change, there is no session to preserve.
@@ -2739,86 +2749,123 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
             }
         }
     }
+    end_account_page_access(runtime, user_id);
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", user_id,
                        session->device_id, logout_devices ? "changed; revoked other devices" : "changed");
     return make_operation_result(true, std::string{user_id});
 }
 
+namespace
+{
+
+    // What a password change with no calling device audits: the email reset (ADR-0481) and the account page
+    // (ADR-0798) share one core, so the two can never drift apart.
+    struct DevicelessPasswordAudit final
+    {
+        std::string_view event{};
+        std::string_view reason{};
+    };
+
+    // Sets `new_password` for `user_id` with no device to keep: with `logout_devices`, every access, refresh and
+    // OpenID token and every pusher of the account goes. Hashes with runtime.mutex released and the Argon2id budget
+    // held, then writes nothing unless the account is still active and still holds the hash this change set out to
+    // replace. Ends the user's account-page sessions and reset approvals on success.
+    [[nodiscard]] auto replace_password_without_device(HomeserverRuntime& runtime, std::string_view user_id,
+                                                       std::string_view new_password, bool logout_devices,
+                                                       DevicelessPasswordAudit const& audit) -> OperationResult
+    {
+        if (!asserted_user_is_active(runtime, user_id))
+        {
+            return make_operation_result(false, {}, "account is not active", 403U);
+        }
+        if (!auth::password_is_acceptable(new_password, configured_password_policy(runtime)))
+        {
+            return weak_password_refusal();
+        }
+        auto const* const initial_user = find_user(runtime.database, user_id);
+        if (initial_user == nullptr)
+        {
+            return make_operation_result(false, {}, "account is not active", 403U);
+        }
+        auto const hash_replaced = initial_user->password_hash;
+        auto const argon_slot = runtime.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            return argon2id_admission_refusal();
+        }
+        auto const new_hash = std::invoke([&]() {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return auth::hash_password(new_password);
+        });
+        if (!new_hash.has_value())
+        {
+            return make_operation_result(false, {}, "password hashing failed", 500U);
+        }
+        // The lock is held again: write nothing unless the account is still active and still holds the hash this
+        // reset set out to replace (a concurrent change or deactivation altered it).
+        auto const* const user_now = find_user(runtime.database, user_id);
+        if (user_now == nullptr || user_now->password_hash != hash_replaced ||
+            !asserted_user_is_active(runtime, user_id))
+        {
+            return make_operation_result(false, {}, "password changed concurrently", 403U);
+        }
+        // Pushers go first, as in change_local_user_password: a failure then commits no credential change.
+        if (logout_devices && !delete_pushers_of_user(runtime, user_id, std::nullopt))
+        {
+            return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
+        }
+        if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
+        {
+            return make_operation_result(false, {}, "password update failed", 500U);
+        }
+        auto const it = std::ranges::find_if(runtime.database.users, [&](LocalUser const& u) {
+            return u.user_id == user_id;
+        });
+        if (it != runtime.database.users.end())
+        {
+            it->password_hash = *new_hash;
+        }
+        if (logout_devices)
+        {
+            // Spec (POST /account/password): with logout_devices the server revokes the access tokens of all the
+            // user's devices; there is no device to keep, so none is spared.
+            std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
+            std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+            if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id) ||
+                !database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
+            {
+                return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+            }
+            for (auto& candidate : runtime.database.sessions)
+            {
+                if (candidate.user_id == user_id)
+                {
+                    candidate.revoked = true;
+                }
+            }
+        }
+        end_account_page_access(runtime, user_id);
+        append_local_audit(runtime.database, observability::AuditCategory::auth, audit.event, user_id, {},
+                           audit.reason);
+        return make_operation_result(true, std::string{user_id});
+    }
+
+} // namespace
+
 auto reset_local_user_password(HomeserverRuntime& runtime, std::string_view user_id, std::string_view new_password,
                                bool logout_devices) -> OperationResult
 {
-    if (!asserted_user_is_active(runtime, user_id))
-    {
-        return make_operation_result(false, {}, "account is not active", 403U);
-    }
-    if (!auth::password_is_acceptable(new_password, configured_password_policy(runtime)))
-    {
-        return weak_password_refusal();
-    }
-    auto const* const initial_user = find_user(runtime.database, user_id);
-    if (initial_user == nullptr)
-    {
-        return make_operation_result(false, {}, "account is not active", 403U);
-    }
-    auto const hash_replaced = initial_user->password_hash;
-    auto const argon_slot = runtime.argon2id_admission->try_acquire();
-    if (!argon_slot)
-    {
-        return argon2id_admission_refusal();
-    }
-    auto const new_hash = std::invoke([&]() {
-        auto const released = merovingian::homeserver::RuntimeLockRelease{};
-        return auth::hash_password(new_password);
-    });
-    if (!new_hash.has_value())
-    {
-        return make_operation_result(false, {}, "password hashing failed", 500U);
-    }
-    // The lock is held again: write nothing unless the account is still active and still holds the hash this
-    // reset set out to replace (a concurrent change or deactivation altered it).
-    auto const* const user_now = find_user(runtime.database, user_id);
-    if (user_now == nullptr || user_now->password_hash != hash_replaced || !asserted_user_is_active(runtime, user_id))
-    {
-        return make_operation_result(false, {}, "password changed concurrently", 403U);
-    }
-    // Pushers go first, as in change_local_user_password: a failure then commits no credential change.
-    if (logout_devices && !delete_pushers_of_user(runtime, user_id, std::nullopt))
-    {
-        return make_operation_result(false, {}, "pusher removal persistence failed", 500U);
-    }
-    if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
-    {
-        return make_operation_result(false, {}, "password update failed", 500U);
-    }
-    auto const it = std::ranges::find_if(runtime.database.users, [&](LocalUser const& u) {
-        return u.user_id == user_id;
-    });
-    if (it != runtime.database.users.end())
-    {
-        it->password_hash = *new_hash;
-    }
-    if (logout_devices)
-    {
-        // Spec (POST /account/password): with logout_devices the server revokes the access tokens of all the
-        // user's devices; there is no device to keep, so none is spared.
-        std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
-        std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
-        if (!user_tokens_are_revoked(runtime.database.persistent_store, user_id) ||
-            !database::revoke_openid_tokens_for_user(runtime.database.persistent_store, user_id))
-        {
-            return make_operation_result(false, {}, "token revocation persistence failed", 500U);
-        }
-        for (auto& candidate : runtime.database.sessions)
-        {
-            if (candidate.user_id == user_id)
-            {
-                candidate.revoked = true;
-            }
-        }
-    }
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_reset", user_id, {},
-                       logout_devices ? "reset by email; revoked all devices" : "reset by email");
-    return make_operation_result(true, std::string{user_id});
+    return replace_password_without_device(
+        runtime, user_id, new_password, logout_devices,
+        {"auth.password_reset", logout_devices ? "reset by email; revoked all devices" : "reset by email"});
+}
+
+auto change_password_on_account_page(HomeserverRuntime& runtime, std::string_view user_id,
+                                     std::string_view new_password) -> OperationResult
+{
+    return replace_password_without_device(
+        runtime, user_id, new_password, true,
+        {"auth.password_changed", "changed on the account page; revoked all devices"});
 }
 
 auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token, std::string_view password)

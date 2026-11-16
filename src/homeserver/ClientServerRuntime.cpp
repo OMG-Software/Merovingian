@@ -76,6 +76,7 @@
 #include "merovingian/federation/PublicRoomsFilter.hpp"
 #include "merovingian/federation/PublicRoomsRefusal.hpp"
 #include "merovingian/federation/Security.hpp"
+#include "merovingian/homeserver/AccountPage.hpp"
 #include "merovingian/homeserver/AppserviceDelivery.hpp"
 #include "merovingian/homeserver/AppserviceEphemeral.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -102,6 +103,7 @@
 #include "merovingian/homeserver/MutualRoomsToken.hpp"
 #include "merovingian/homeserver/OAuthAuthorization.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
+#include "merovingian/homeserver/OAuthClock.hpp"
 #include "merovingian/homeserver/OAuthRevocation.hpp"
 #include "merovingian/homeserver/OAuthTokenEndpoint.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
@@ -145,6 +147,7 @@
 #include "merovingian/http/RequestErrorCode.hpp"
 #include "merovingian/identity/IdentityServerClient.hpp"
 #include "merovingian/media/Security.hpp"
+#include "merovingian/oauth/AccountPages.hpp"
 #include "merovingian/oauth/OAuthBaseUrl.hpp"
 #include "merovingian/oauth/OAuthPaths.hpp"
 #include "merovingian/oauth/ServerMetadata.hpp"
@@ -4040,6 +4043,7 @@ namespace
             "/_merovingian/oauth2/authorize",
             "/_merovingian/oauth2/token",
             "/_merovingian/oauth2/revoke",
+            "/_merovingian/account",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
             "/_matrix/client/v3/account/password/email/requestToken",
@@ -4140,6 +4144,7 @@ namespace
             {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
             {"/_merovingian/oauth2/token",                                                  "POST"            },
             {"/_merovingian/oauth2/revoke",                                                 "POST"            },
+            {"/_merovingian/account",                                                       "GET, POST"       },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
             {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
@@ -13393,6 +13398,129 @@ namespace
         return true;
     }
 
+    // The UIA session purpose of the `m.oauth` stage of a replacing cross-signing upload (ADR-0797).
+    constexpr auto cross_signing_reset_uia_purpose = std::string_view{"cross_signing_reset"};
+
+    // A cross-signing reset approval an OAuth session's replacing upload has taken (ADR-0797). It goes back to the
+    // store unless `spend` is called once the keys are stored, so a refused or failed upload does not use it up. Lives
+    // within one request, under runtime.mutex.
+    class TakenResetApproval final
+    {
+    public:
+        TakenResetApproval(ClientServerRuntime& rt, std::string_view user_id, std::uint64_t expires_at_ms)
+            : m_rt{&rt}
+            , m_user_id{user_id}
+            , m_expires_at_ms{expires_at_ms}
+        {
+        }
+        TakenResetApproval(TakenResetApproval const&) = delete;
+        auto operator=(TakenResetApproval const&) -> TakenResetApproval& = delete;
+        TakenResetApproval(TakenResetApproval&&) = delete;
+        auto operator=(TakenResetApproval&&) -> TakenResetApproval& = delete;
+        ~TakenResetApproval() noexcept
+        {
+            if (m_spent)
+            {
+                return;
+            }
+            try
+            {
+                m_rt->homeserver.cross_signing_reset_approvals.restore(m_user_id, m_expires_at_ms,
+                                                                       oauth_wall_clock_ms());
+            }
+            catch (...)
+            {
+                // Restoring allocates. If it cannot, the approval is lost and the user approves again: fail closed.
+                m_spent = true;
+            }
+        }
+
+        // The keys are stored: the approval is used up, and the use is audited.
+        auto spend() -> void
+        {
+            m_spent = true;
+            append_local_audit(m_rt->homeserver.database, observability::AuditCategory::auth,
+                               "cross_signing.reset_used", m_user_id, m_user_id, "m.oauth");
+        }
+
+    private:
+        ClientServerRuntime* m_rt;
+        std::string m_user_id;
+        std::uint64_t m_expires_at_ms;
+        bool m_spent{false};
+    };
+
+    // The outcome of the `m.oauth` stage: the answer to send (a 401 challenge, a 429 for a full UIA pool, a 500), or,
+    // with no answer, the expiry of the approval the request has taken.
+    struct OAuthResetStage final
+    {
+        std::optional<LocalHttpResponse> answer{};
+        std::uint64_t approval_expires_at_ms{0U};
+    };
+
+    // The `m.oauth` User-Interactive Authentication stage of a replacing cross-signing upload from an OAuth session
+    // (spec v1.19 "OAuth authentication" and "Account management"; ADR-0797). nullopt when the stage cannot be offered
+    // (OAuth off, or no usable `server.public_baseurl`): the caller keeps the ADR-0794 403.
+    //
+    // The stage is complete only when the `auth` dict carries a session this server issued to this user for this
+    // purpose, its `type` is absent or `m.oauth` (a password stage is answered with the challenge and never checked:
+    // an OAuth session cannot complete the upload with a password), and the user approved the reset on the account page
+    // in the last ten minutes. The approval is taken here and spent only by a stored upload.
+    [[nodiscard]] auto oauth_cross_signing_reset_stage(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                       std::string_view user,
+                                                       std::optional<canonicaljson::Object> const& body)
+        -> std::optional<OAuthResetStage>
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return std::nullopt;
+        }
+        auto const base = oauth::OAuthBaseUrl::read(rt.homeserver.config.server().public_baseurl);
+        auto const* const base_url = std::get_if<oauth::OAuthBaseUrl>(&base);
+        if (base_url == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const challenge = [base_url](std::string_view session) {
+            auto const url = oauth::account_action_address(base_url->url(oauth::account_path),
+                                                           oauth::account_action_cross_signing_reset);
+            auto const body_json = json_obj({
+                json_member("flows", json_arr({json_obj({json_member("stages", json_arr({json_str("m.oauth")}))})})),
+                json_member("params",
+                            json_obj({json_member("m.oauth", json_obj({json_member("url", json_str(url))}))})),
+                json_member("session", json_str(std::string{session})),
+            });
+            return OAuthResetStage{resp(401U, json_serialize(body_json)), 0U};
+        };
+        auto const* const auth = body.has_value() ? object_member_object(*body, "auth") : nullptr;
+        auto const* const type = auth != nullptr ? string_member(*auth, "type") : nullptr;
+        auto const* const session = auth != nullptr ? string_member(*auth, "session") : nullptr;
+        if (session != nullptr && uia_session_is_valid(rt, cross_signing_reset_uia_purpose, *session, user))
+        {
+            if (type == nullptr || *type == "m.oauth")
+            {
+                if (auto const expires_at_ms =
+                        rt.homeserver.cross_signing_reset_approvals.take(user, oauth_wall_clock_ms());
+                    expires_at_ms.has_value())
+                {
+                    return OAuthResetStage{std::nullopt, *expires_at_ms};
+                }
+            }
+            // Not approved yet, or another stage: the same session, so the client keeps waiting on it.
+            return challenge(*session);
+        }
+        auto const issued = issue_uia_session(rt, cross_signing_reset_uia_purpose, user);
+        if (!issued.has_value())
+        {
+            return OAuthResetStage{uia_pool_full_response(rt, req).response, 0U};
+        }
+        if (issued->empty())
+        {
+            return OAuthResetStage{err(500U, "M_UNKNOWN", "no authentication session could be issued"), 0U};
+        }
+        return challenge(*issued);
+    }
+
     // POST /_matrix/client/v3/keys/device_signing/upload: upload of the cross-signing keys, password-authenticated
     // unless cross_signing_upload_is_uia_exempt.
     [[nodiscard]] auto handle_upload_cross_signing_keys(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
@@ -13404,50 +13532,66 @@ namespace
         // service (ADR-0794).
         auto const cs_body = parsed_json_object(req.body);
         auto const uia_exempt = cs_body.has_value() && cross_signing_upload_is_uia_exempt(rt, user, *cs_body, req);
+        // An OAuth session's replacing upload completes the `m.oauth` stage with an approval from the account page,
+        // which is taken here and put back on every way out except a stored upload (ADR-0797).
+        auto taken_approval = std::optional<TakenResetApproval>{};
         if (!uia_exempt)
         {
             if (auto const refusal = oauth_session_uia_refusal(rt, req.access_token); refusal.has_value())
             {
-                return err(403U, "M_FORBIDDEN", *refusal);
-            }
-            // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
-            auto const cs_uia = json_obj({
-                json_member("flows",
-                            json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
-                json_member("params", json_obj({})),
-                json_member("session", json_str("cross_signing_upload")),
-            });
-            auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
-            if (cs_auth == nullptr)
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_auth_type = string_member(*cs_auth, "type");
-            if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const* cs_password = string_member(*cs_auth, "password");
-            if (cs_password == nullptr || cs_password->empty())
-            {
-                return resp(401U, json_serialize(cs_uia));
-            }
-            auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
-            if (!password_verified.ok)
-            {
-                if (password_verified.retry_after_ms > 0U)
+                auto const stage = oauth_cross_signing_reset_stage(rt, req, user, cs_body);
+                if (!stage.has_value())
                 {
-                    auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                        password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
-                    auto response = LocalHttpResponse{
-                        429U,
-                        matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
-                                     retry_after),
-                        {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
-                    apply_cors_headers(req, response, rt.cors);
-                    return response;
+                    return err(403U, "M_FORBIDDEN", *refusal);
                 }
-                return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+                if (stage->answer.has_value())
+                {
+                    return *stage->answer;
+                }
+                taken_approval.emplace(rt, user, stage->approval_expires_at_ms);
+            }
+            else
+            {
+                // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+                auto const cs_uia = json_obj({
+                    json_member("flows", json_arr({json_obj(
+                                             {json_member("stages", json_arr({json_str("m.login.password")}))})})),
+                    json_member("params", json_obj({})),
+                    json_member("session", json_str("cross_signing_upload")),
+                });
+                auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+                if (cs_auth == nullptr)
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const* cs_auth_type = string_member(*cs_auth, "type");
+                if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const* cs_password = string_member(*cs_auth, "password");
+                if (cs_password == nullptr || cs_password->empty())
+                {
+                    return resp(401U, json_serialize(cs_uia));
+                }
+                auto const password_verified =
+                    verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+                if (!password_verified.ok)
+                {
+                    if (password_verified.retry_after_ms > 0U)
+                    {
+                        auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                        auto response = LocalHttpResponse{
+                            429U,
+                            matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
+                                         retry_after),
+                            {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                        apply_cors_headers(req, response, rt.cors);
+                        return response;
+                    }
+                    return resp(401U, uia_password_failure_body(json_serialize(cs_uia)));
+                }
             }
         }
         for (auto const* key_type : {"master_key", "self_signing_key", "user_signing_key"})
@@ -13471,6 +13615,10 @@ namespace
             !store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
         {
             return err(500U, "M_UNKNOWN", "key API persistence failed");
+        }
+        if (taken_approval.has_value())
+        {
+            taken_approval->spend();
         }
         // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
         // Self-notify so the user's own other devices re-query the new keys (required
@@ -14221,6 +14369,62 @@ auto end_device_session_and_announce(ClientServerRuntime& runtime, std::string_v
         announce_ended_device_session(runtime, user_id, device_id, destinations);
     }
     return result;
+}
+
+auto delete_device_and_announce(ClientServerRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    // The servers to tell, read before the device is removed.
+    auto const destinations = remote_servers_for_user(runtime.homeserver, user_id);
+    auto result = delete_local_device(runtime.homeserver, user_id, device_id);
+    if (!result.ok)
+    {
+        return result;
+    }
+    erase_runtime_device(runtime, user_id, device_id);
+    std::ignore = record_shared_room_device_changes(runtime, user_id, NotifyOwnDevices::no);
+    announce_deleted_devices(runtime, user_id, {std::string{device_id}}, destinations);
+    return result;
+}
+
+auto finish_account_deactivation(ClientServerRuntime& runtime, RuntimeLock& guard, std::string_view user_id,
+                                 std::optional<std::string> const& requested_id_server) -> std::string_view
+{
+    // F-07: a deactivated account holds no login token.
+    runtime.login_tokens.erase_user(user_id);
+    // Unbind every identity-server-bound 3PID the account holds. Spec: the
+    // 200 response's id_server_unbind_result is "success" only when *all*
+    // identifiers were unbound -- and when there were none to unbind --
+    // and "no-support" when one or more could not be, whether because the
+    // identity server refused or because none could be determined.
+    //
+    // Deactivation itself has already happened and is not undone by an
+    // unbind failure: the spec models a partial unbind as a 200 carrying
+    // "no-support", not as a failed deactivation. This is the opposite
+    // disposition to POST /account/3pid/unbind, which fails closed so the
+    // user can retry -- there is no retry after deactivation.
+    //
+    // Addresses are copied out before the loop: the outbound call drops the
+    // runtime lock, so the store vector can move and any iterator, pointer
+    // or index taken across it would dangle.
+    auto const user = std::string{user_id};
+    auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
+    for (auto const& record : runtime.homeserver.database.persistent_store.account_threepids)
+    {
+        if (record.user_id == user && record.bound)
+        {
+            pending_unbinds.emplace_back(record.medium, record.address);
+        }
+    }
+    auto unbind_result = std::string_view{"success"};
+    for (auto const& [medium, address] : pending_unbinds)
+    {
+        if (!unbind_threepid_for_deactivation(runtime, guard, user, medium, address, requested_id_server))
+        {
+            unbind_result = "no-support";
+        }
+    }
+    return unbind_result;
 }
 
 // Translate the operator-facing `config::ClientRateLimitsConfig` into the
@@ -16123,6 +16327,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto options = oauth::ServerMetadataOptions{};
         options.device_grant_enabled = server_config.oauth.device_grant_enabled;
         options.registration_enabled = rt.homeserver.config.security().registration.enabled;
+        // Spec "Account management": the account pages implement every action, so all six are listed.
+        for (auto const action : oauth::account_management_actions())
+        {
+            options.account_management_actions.emplace_back(action);
+        }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(oauth::server_metadata(std::get<oauth::OAuthBaseUrl>(base), options)));
     }
@@ -16181,6 +16390,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (req.method == "POST")
         {
             return DispatchResult{DispatchResult::Status::complete, handle_oauth_revoke(rt, req), {}};
+        }
+    }
+    // GET and POST /_merovingian/account (spec "Account management"): the account pages, signed in with the account's
+    // password and their own short session (ADR-0796), so they are answered before the access-token gate, 404 with the
+    // OAuth 2.0 API off. Another method falls through to the 405 gate. The handler is AccountPage.cpp.
+    if (request_path == oauth::account_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "GET" || req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_account_page(rt, guard, req), {}};
         }
     }
     // The rest of the MSC2965 namespace (`auth_issuer`, from an earlier draft of the MSC) is not served. It is
@@ -17372,45 +17595,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
-        // F-07: a deactivated account holds no login token.
-        rt.login_tokens.erase_user(*user);
-        // Unbind every identity-server-bound 3PID the account holds. Spec: the
-        // 200 response's id_server_unbind_result is "success" only when *all*
-        // identifiers were unbound -- and when there were none to unbind --
-        // and "no-support" when one or more could not be, whether because the
-        // identity server refused or because none could be determined.
-        //
-        // Deactivation itself has already happened and is not undone by an
-        // unbind failure: the spec models a partial unbind as a 200 carrying
-        // "no-support", not as a failed deactivation. This is the opposite
-        // disposition to POST /account/3pid/unbind, which fails closed so the
-        // user can retry -- there is no retry after deactivation.
-        //
-        // Addresses are copied out before the loop: the outbound call drops the
-        // runtime lock, so the store vector can move and any iterator, pointer
-        // or index taken across it would dangle.
         // Optional per spec; when absent each binding's own recorded id_server is
         // used instead.
         auto const requested_id_server = [&object]() -> std::optional<std::string> {
             auto const* value = string_member(*object, "id_server");
             return value == nullptr || value->empty() ? std::nullopt : std::optional<std::string>{*value};
         }();
-        auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
-        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
-        {
-            if (record.user_id == result.value && record.bound)
-            {
-                pending_unbinds.emplace_back(record.medium, record.address);
-            }
-        }
-        auto unbind_result = std::string_view{"success"};
-        for (auto const& [medium, address] : pending_unbinds)
-        {
-            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address, requested_id_server))
-            {
-                unbind_result = "no-support";
-            }
-        }
+        auto const unbind_result = finish_account_deactivation(rt, guard, result.value, requested_id_server);
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(unbind_result))})));
     }
@@ -18990,17 +19181,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return challenge(true);
         }
         auto const device_id = device_id_from_device_path(request_path);
-        // The servers to tell, read before the device is removed.
-        auto const destinations = remote_servers_for_user(rt.homeserver, *user);
-        auto const result = delete_local_device(rt.homeserver, *user, device_id);
+        auto const result = delete_device_and_announce(rt, *user, device_id);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, result.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN",
                                 result.reason);
         }
-        erase_runtime_device(rt, *user, device_id);
-        std::ignore = record_shared_room_device_changes(rt, *user, NotifyOwnDevices::no);
-        announce_deleted_devices(rt, *user, {std::string{device_id}}, destinations);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && request_path == "/_matrix/client/v3/delete_devices")
