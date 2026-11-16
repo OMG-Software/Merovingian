@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/core/SyncRequest.hpp"
 #include "merovingian/core/QueryParams.hpp"
+#include "merovingian/core/SyncRequest.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -285,7 +285,8 @@ SCENARIO("The sync use_state_after parameter is read as sent and absent when not
         WHEN("the query parameters are parsed")
         {
             auto const enabled = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=true");
-            auto const disabled = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=false");
+            auto const disabled =
+                merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=false");
             auto const other = merovingian::core::parse_query_params("/_matrix/client/v3/sync?use_state_after=1");
             auto const absent = merovingian::core::parse_query_params("/_matrix/client/v3/sync");
 
