@@ -121,7 +121,8 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
 
         WHEN("a wrong browser token tries to record a user and to consume it")
         {
-            auto const recorded = store.record_user(identifier, "another-browser", "@mallory:example.org", start_ms);
+            auto const recorded =
+                store.record_user(identifier, "another-browser", "@mallory:example.org", "stamp", start_ms);
             auto const consumed = store.consume(identifier, "another-browser", start_ms);
 
             THEN("both are refused and the entry is untouched")
@@ -136,7 +137,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
 
         WHEN("the authenticated user is recorded and the entry is consumed")
         {
-            REQUIRE(store.record_user(identifier, browser, "@alice:example.org", start_ms + 10U));
+            REQUIRE(store.record_user(identifier, browser, "@alice:example.org", "stamp", start_ms + 10U));
             auto const consumed = store.consume(identifier, browser, start_ms + 20U);
             auto const again = store.consume(identifier, browser, start_ms + 30U);
 
@@ -144,6 +145,7 @@ SCENARIO("A pending authorisation is stored under a fresh identifier and read ba
             {
                 REQUIRE(consumed.has_value());
                 CHECK(consumed->user_id == "@alice:example.org");
+                CHECK(consumed->credential_stamp == "stamp");
                 CHECK_FALSE(again.has_value());
                 CHECK(store.size() == 0U);
                 CHECK(store.live_count_for_client("client-a", start_ms + 30U) == 0U);
@@ -193,7 +195,7 @@ SCENARIO("A pending authorisation lives ten minutes from its creation, to the mi
 
         WHEN("it is read one millisecond before its end")
         {
-            REQUIRE(store.record_user(identifier, browser, "@alice:example.org", end_ms - 2U));
+            REQUIRE(store.record_user(identifier, browser, "@alice:example.org", "stamp", end_ms - 2U));
             auto const found = store.find(identifier, browser, end_ms - 1U);
 
             THEN("it is live, and recording the user did not extend it")

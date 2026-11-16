@@ -1164,6 +1164,12 @@ characters.
 - **What it leaves.** An approval leaves one authorization code (60 s) and nothing else: no device, token or
   `oauth_sessions` row; the token endpoint creates those. No browser session is kept: every authorisation asks for
   the password (ADR-0787).
+- **A password change ends a sign-in in progress (ADR-0807).** Signing in records the user's credential stamp
+  (`user_credential_stamp`: `oauth_secret_hash` of the stored password hash) on the entry; it travels with the code
+  and the device authorisation's approval. `approve` (every kind: the code, the device sign-in, the hand-off) and the
+  token endpoint's code and device-code grants compare it in constant time after `account_sign_in_gate`. Any password
+  change, reset or deactivation since makes it differ: the expired page on a page, `invalid_grant` at the token
+  endpoint, and the entry or code is spent. Logged `oauth.authorization.credentials_changed` (client and user only).
 
 ## OAuth 2.0 token and revocation endpoints (phases 6 and 7)
 
@@ -1179,7 +1185,8 @@ read with `core::FormFields`; anything else is 400 `invalid_request`. Every answ
   registered (`invalid_client`) for `authorization_code` (`unauthorized_client`); the verifier well formed
   (`invalid_request`, the code is not spent); the code redeemed (unknown: `invalid_grant`); the client ID, the redirect
   URI byte for byte and the PKCE `S256` verifier matched (`invalid_grant`, the code is spent); then
-  `account_sign_in_gate` and the login's device checks (`invalid_grant`). `grant_oauth_session` (`AuthService.cpp`)
+  `account_sign_in_gate`, the credential stamp of the sign-in (ADR-0807) and the login's device checks
+  (`invalid_grant`). `grant_oauth_session` (`AuthService.cpp`)
   shares `admit_device_login` and `mint_login_token` with `login_local_user_by_id`, and `database::store_oauth_grant`
   writes the device (named after the client's `client_name` when it is new and fits the 256-byte cap), the deletion of
   the device's earlier tokens and OAuth row, both new tokens, the `oauth_sessions` row and the `oauth.session.granted`
@@ -1274,7 +1281,7 @@ the spec's "Account management" names: `account_management_uri` and all six `org
   `PendingAuthorisation` of kind `login_token_hand_off` is started by the same `start_sign_in` as `/authorize`, and its
   forms post there: the shared cookie, Origin check, pending cap, login throttle and account creation. After the
   password a confirmation page (`page_headers(target)`) names the account and the destination. `approve` re-reads the
-  address, runs `account_sign_in_gate`, mints 32 random bytes into `LoginTokenStore` for
+  address, runs `account_sign_in_gate` and the credential stamp check (ADR-0807), mints 32 random bytes into `LoginTokenStore` for
   `hand_off_login_token_lifetime_ms` (30 s, under the get_token caps), audits `auth.login_token.issued` with reason
   `hand_off`, and answers 303 to `oauth::hand_off_return_address` (old `loginToken` parameters removed). `deny` answers
   a page. `POST /login` `m.login.token` redeems from that store when get_token or the hand-off is on.
@@ -1317,7 +1324,8 @@ Served only while `server.oauth.enabled` and `server.oauth.device_grant_enabled`
   client checks of the device endpoint, then the store: `expired_token` (unknown, expired or already redeemed),
   `invalid_grant` (another client's code), `access_denied`, `slow_down` (sooner than the interval since the last poll;
   the interval grows by five seconds for good), `authorization_pending`. An approved code is redeemed once:
-  `account_sign_in_gate` again, then `grant_oauth_session` and the same answer as the code grant.
+  `account_sign_in_gate` again, the credential stamp of the approval (`invalid_grant` after a password change,
+  ADR-0807), then `grant_oauth_session` and the same answer as the code grant.
 
 ## Next starting points
 

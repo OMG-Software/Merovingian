@@ -13,6 +13,7 @@
 #include "../support/OAuthTokenSupport.hpp"
 #include "../support/RegistrationToken.hpp"
 #include "merovingian/config/Config.hpp"
+#include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
@@ -700,6 +701,69 @@ SCENARIO("With the device grant off, its routes do not exist and the token endpo
                     metadata.body,
                     R"("device_authorization_endpoint":"https://matrix.example.org/_merovingian/oauth2/device")"));
                 CHECK(contains(metadata.body, device_grant));
+            }
+        }
+    }
+}
+
+SCENARIO("A password change ends a device sign-in that is not yet approved or not yet polled",
+         "[integration][oauth][oauth-device][credential-stamp][security]")
+{
+    GIVEN("a device waiting for alice, who signed in on the link page with her password")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        auto const device = start_device(rt, fixture.client_id);
+        auto step = reach_consent(rt, device.user_code);
+        REQUIRE(step.consent.status == 200U);
+
+        WHEN("her password is reset by email before she allows the device")
+        {
+            REQUIRE(hs::reset_local_user_password(rt.homeserver, alice_id, "NewAlicePass42!y", true).ok);
+            auto const approved = answer(rt, step.browser, step.pending, "approve");
+            advance(rt, 5'000U);
+            auto const polled = poll(rt, fixture.client_id, device.device_code);
+
+            THEN("the approval is refused as expired and the device is still waiting, with no device created")
+            {
+                CHECK(approved.status == 400U);
+                CHECK(contains(approved.body, "Sign-in expired"));
+                CHECK(oauth_error(polled) == "authorization_pending");
+                CHECK(audit_count(rt.homeserver, "oauth.device.approved") == 0U);
+                CHECK_FALSE(merovingian::database::has_user_device(rt.homeserver.database.persistent_store, alice_id,
+                                                                   tv_device));
+            }
+        }
+
+        WHEN("she allows the device and her password is changed on the account page before it polls")
+        {
+            REQUIRE(answer(rt, step.browser, step.pending, "approve").status == 200U);
+            REQUIRE(hs::change_password_on_account_page(rt.homeserver, alice_id, "NewAlicePass42!y").ok);
+            advance(rt, 5'000U);
+            auto const polled = poll(rt, fixture.client_id, device.device_code);
+            advance(rt, 5'000U);
+            auto const again = poll(rt, fixture.client_id, device.device_code);
+
+            THEN("the poll is invalid_grant, the device code is spent, and no session was granted")
+            {
+                CHECK(polled.status == 400U);
+                CHECK(oauth_error(polled) == "invalid_grant");
+                CHECK(oauth_error(again) == "expired_token");
+                CHECK(audit_count(rt.homeserver, "oauth.session.granted") == 0U);
+                CHECK_FALSE(merovingian::database::has_user_device(rt.homeserver.database.persistent_store, alice_id,
+                                                                   tv_device));
+            }
+        }
+
+        WHEN("she allows the device and nothing changes before it polls")
+        {
+            REQUIRE(answer(rt, step.browser, step.pending, "approve").status == 200U);
+            advance(rt, 5'000U);
+            auto const tokens = read_token_answer(poll(rt, fixture.client_id, device.device_code));
+
+            THEN("the device gets its tokens")
+            {
+                CHECK(tokens.ok);
             }
         }
     }

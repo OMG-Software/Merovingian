@@ -413,7 +413,11 @@ namespace
     [[nodiscard]] auto authenticated(FormPost const& post, std::string_view user_id) -> LocalHttpResponse
     {
         auto& store = post.runtime.homeserver.oauth_pending_authorisations;
-        if (!store.record_user(post.pending_id, post.browser_token, user_id, oauth_wall_clock_ms()))
+        // Taken under the same hold of runtime.mutex that verified the password (or created the account), so it is the
+        // stamp of the credential just checked (ADR-0807).
+        auto const stamp = user_credential_stamp(post.runtime.homeserver, user_id);
+        if (!stamp.has_value() ||
+            !store.record_user(post.pending_id, post.browser_token, user_id, *stamp, oauth_wall_clock_ms()))
         {
             return expired_page();
         }
@@ -648,8 +652,8 @@ namespace
             return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Sign-in refused"},
                                              oauth::HtmlText{"This account cannot sign in."});
         }
-        if (!devices.decide(consumed.device_authorisation_key, consumed.device_attachment, consumed.user_id, approve,
-                            oauth_device_clock_ms(runtime)))
+        if (!devices.decide(consumed.device_authorisation_key, consumed.device_attachment, consumed.user_id,
+                            consumed.credential_stamp, approve, oauth_device_clock_ms(runtime)))
         {
             return device_sign_in_ended_page();
         }
@@ -674,6 +678,23 @@ namespace
         auto const consumed = runtime.oauth_pending_authorisations.consume(post.pending_id, post.browser_token, now_ms);
         if (!consumed.has_value() || consumed->user_id.empty())
         {
+            return expired_page();
+        }
+        // The password that signed in must still be the account's (ADR-0807): a change, reset or deactivation since
+        // ends this sign-in of every kind, and the entry is already spent.
+        if (!user_credential_stamp_matches(runtime, consumed->user_id, consumed->credential_stamp))
+        {
+            if (is_device_sign_in(*consumed))
+            {
+                runtime.oauth_device_authorisations.release(consumed->device_authorisation_key,
+                                                            consumed->device_attachment);
+            }
+            log_oauth("oauth.authorization.credentials_changed",
+                      {
+                          {"client_id", consumed->client_id, false},
+                          {"user_id",   consumed->user_id,   false}
+            },
+                      observability::LogEventSeverity::info);
             return expired_page();
         }
         if (is_hand_off(*consumed))
@@ -703,6 +724,7 @@ namespace
         grant.user_id = consumed->user_id;
         grant.device_id = consumed->device_id;
         grant.scope = consumed->scope;
+        grant.credential_stamp = consumed->credential_stamp;
         auto issued = runtime.oauth_codes.issue(std::move(grant), now_ms);
         auto const* code = std::get_if<std::string>(&issued);
         if (code == nullptr)

@@ -688,3 +688,4 @@
 * [0804 - The device authorization grant answers RFC 8628, and a redeemed device code is expired](0804-the-device-authorization-grant-answers-rfc-8628-and-a-redeemed-device-code-is-expired.md)
 * [0805 - Device authorisations and user codes are held in memory, capped, and guessing is throttled per address](0805-device-authorisations-and-user-codes-are-held-in-memory-capped-and-guessing-is-throttled-per-address.md)
 * [0806 - A device sign-in warns first, creates no account, and runs in one browser at a time](0806-a-device-sign-in-warns-first-creates-no-account-and-runs-in-one-browser-at-a-time.md)
+* [0807 - An OAuth sign-in carries the credential stamp of its password check and ends when it changes](0807-an-oauth-sign-in-carries-the-credential-stamp-of-its-password-check-and-ends-when-it-changes.md)

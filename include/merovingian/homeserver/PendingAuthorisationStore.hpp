@@ -60,7 +60,8 @@ public:
     };
 
     // Takes `authorisation`, bound to `browser_token`, for the browser at `client_address_key`, valid for
-    // `lifetime_ms` from `now_ms`. Sets its `created_at_ms` and `client_address_key` and empties its `user_id`.
+    // `lifetime_ms` from `now_ms`. Sets its `created_at_ms` and `client_address_key` and empties its `user_id` and
+    // `credential_stamp`.
     // Returns the fresh identifier (`make_oauth_secret`, 64 hex digits), once, or why nothing was stored.
     [[nodiscard]] auto create(PendingAuthorisation authorisation, std::string_view browser_token,
                               std::string_view client_address_key, std::uint64_t now_ms)
@@ -71,10 +72,12 @@ public:
     [[nodiscard]] auto find(std::string_view identifier, std::string_view browser_token, std::uint64_t now_ms)
         -> std::optional<PendingAuthorisation>;
 
-    // Records `user_id` as the user whose password was verified for the entry. False, changing nothing, when `find`
-    // would answer nullopt. Does not extend the entry's lifetime.
+    // Records `user_id` as the user whose password was verified for the entry, with that user's credential stamp at
+    // the moment of the check (`user_credential_stamp`, ADR-0807). False, changing nothing, when `find` would answer
+    // nullopt. Does not extend the entry's lifetime.
     [[nodiscard]] auto record_user(std::string_view identifier, std::string_view browser_token,
-                                   std::string_view user_id, std::uint64_t now_ms) -> bool;
+                                   std::string_view user_id, std::string_view credential_stamp, std::uint64_t now_ms)
+        -> bool;
 
     // Removes the entry and returns it, for an approval or a denial; nullopt, removing nothing, when `find` would
     // answer nullopt (a wrong token does not spend the entry).

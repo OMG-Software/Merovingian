@@ -820,3 +820,123 @@ SCENARIO("An application service replaces cross-signing keys without User-Intera
         }
     }
 }
+
+namespace
+{
+
+// Signs alice in on the authorisation page and stops at the consent page: the browser and the pending identifier the
+// approval needs.
+struct SignedInOnPage final
+{
+    BrowserContext browser;
+    std::string pending;
+};
+
+[[nodiscard]] auto sign_in_on_page(hs::ClientServerRuntime& rt, std::string_view client_id) -> SignedInOnPage
+{
+    auto signed_in = SignedInOnPage{};
+    auto const page = get_authorize(rt, oauth_authorize_parameters(client_id), signed_in.browser);
+    signed_in.pending = pending_of(page);
+    signed_in.browser.cookie = cookie_of(page);
+    REQUIRE(page.status == 200U);
+    auto const consent = post_authorize(rt,
+                                        {
+                                            {"pending",  signed_in.pending          },
+                                            {"action",   "login"                    },
+                                            {"username", "alice"                    },
+                                            {"password", std::string{alice_password}},
+    },
+                                        signed_in.browser);
+    REQUIRE(consent.status == 200U);
+    return signed_in;
+}
+
+// POST /account/password from a legacy session of alice, keeping her other devices.
+[[nodiscard]] auto change_password_through_client_api(hs::ClientServerRuntime& rt) -> std::uint16_t
+{
+    auto const login = legacy_login(rt, "PWDEVICE");
+    REQUIRE(login.status == 200U);
+    return static_cast<std::uint16_t>(
+        send(rt, "POST", "/_matrix/client/v3/account/password", member(login, "access_token"),
+             R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},)"
+             R"("password":")" +
+                 std::string{alice_password} + R"("},"new_password":"NewAlicePass42!y","logout_devices":false})")
+            .status);
+}
+
+} // namespace
+
+SCENARIO("A password change ends a sign-in waiting for approval and a code not yet redeemed",
+         "[integration][oauth][oauth-token][credential-stamp][security]")
+{
+    GIVEN("alice and a registered web client")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+
+        WHEN("alice signs in on the page, then changes her password through POST /account/password, then approves")
+        {
+            auto const signed_in = sign_in_on_page(rt, fixture.client_id);
+            REQUIRE(change_password_through_client_api(rt) == 200U);
+            auto const approved = post_authorize(rt,
+                                                 {
+                                                     {"pending", signed_in.pending},
+                                                     {"action",  "approve"        },
+            },
+                                                 signed_in.browser);
+
+            THEN("the approval is the expired page, no code is sent and the entry is spent")
+            {
+                CHECK(approved.status == 400U);
+                CHECK(approved.body.find("Sign-in expired") != std::string::npos);
+                CHECK(response_header(approved, "Location").empty());
+                CHECK(rt.homeserver.oauth_pending_authorisations.size() == 0U);
+                CHECK(audit_count(rt, "oauth.authorization.granted") == 0U);
+            }
+        }
+
+        WHEN("a code is issued, then alice's password is changed on the account page, then the code is redeemed")
+        {
+            auto const code = obtain_oauth_code(rt, fixture.client_id, "alice", alice_password);
+            REQUIRE_FALSE(code.empty());
+            REQUIRE(hs::change_password_on_account_page(rt.homeserver, alice_id, "NewAlicePass42!y").ok);
+            auto const redeemed = post_oauth_form(rt, oauth_token_path, code_grant_fields(fixture.client_id, code));
+            auto const again = post_oauth_form(rt, oauth_token_path, code_grant_fields(fixture.client_id, code));
+
+            THEN("the redemption is invalid_grant, writes no session, and the code is spent")
+            {
+                CHECK(redeemed.status == 400U);
+                CHECK(oauth_error(redeemed) == "invalid_grant");
+                CHECK(oauth_error(again) == "invalid_grant");
+                CHECK_FALSE(holds_device(rt, oauth_test_device));
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+                CHECK(audit_count(rt, "oauth.session.granted") == 0U);
+            }
+        }
+
+        WHEN("a code is issued, then alice's password is reset by email, then the code is redeemed")
+        {
+            auto const code = obtain_oauth_code(rt, fixture.client_id, "alice", alice_password);
+            REQUIRE_FALSE(code.empty());
+            REQUIRE(hs::reset_local_user_password(rt.homeserver, alice_id, "NewAlicePass42!y", false).ok);
+            auto const redeemed = post_oauth_form(rt, oauth_token_path, code_grant_fields(fixture.client_id, code));
+
+            THEN("the redemption is invalid_grant and writes no session")
+            {
+                CHECK(oauth_error(redeemed) == "invalid_grant");
+                CHECK(oauth_row(rt, oauth_test_device) == nullptr);
+            }
+        }
+
+        WHEN("alice signs in, approves and the code is redeemed with no change in between")
+        {
+            auto const answer = oauth_sign_in(rt, fixture.client_id, "alice", alice_password);
+
+            THEN("the session is granted")
+            {
+                CHECK(answer.ok);
+                CHECK(oauth_row(rt, oauth_test_device) != nullptr);
+            }
+        }
+    }
+}

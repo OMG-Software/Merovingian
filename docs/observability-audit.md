@@ -566,7 +566,9 @@ limit, whose 429s are audited as `rate_limit.exceeded`.
 challenge, the code, the cookie, the pending identifier or a password. `oauth.authorization.granted` is also a durable
 audit row (category `auth`, actor the user, target the client ID, reason the device ID), as a successful `auth.login`
 is; `oauth.authorization.denied` is audited the same way only when a user had signed in, since a denial before the
-password is anyone's to send.
+password is anyone's to send. `oauth.authorization.credentials_changed` (info, `client_id` and `user_id`) records an
+`approve` refused because the account's password changed since the sign-in (ADR-0807); the stamp itself is never
+logged.
 
 The legacy login hand-off (ADR-0802) logs under the same module: `oauth.hand_off.started` (debug, no field),
 `oauth.hand_off.refused` (debug for a refused `redirectUrl` or a store refusal, no field; info with `user_id` when the

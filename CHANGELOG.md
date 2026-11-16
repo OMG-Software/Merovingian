@@ -81,9 +81,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   login hint cannot reach the log (ADR-0786).
 * Every password change, reset and deactivation now ends the user's account-page sessions and withdraws a
   cross-signing reset approval (ADR-0798).
-
 * A response header that would frame the message (`Content-Length`, `Connection`, ...) or holds CR or LF now turns
   the response into a 500 instead of being written or silently dropped (ADR-0767).
+* A password change, reset or deactivation now ends an OAuth sign-in already past the password, an unredeemed code
+  and an unpolled device approval: they are refused, not granted (ADR-0807).
 
 ## Bug fixes
 

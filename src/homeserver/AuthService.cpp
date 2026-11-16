@@ -33,6 +33,7 @@
 #include "merovingian/homeserver/DeactivationAudit.hpp"
 #include "merovingian/homeserver/DeviceLimits.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
+#include "merovingian/homeserver/OAuthSecret.hpp"
 #include "merovingian/homeserver/OpenidTokenIssueResult.hpp"
 #include "merovingian/homeserver/PasswordVerificationResult.hpp"
 #include "merovingian/homeserver/RuntimeLockRelease.hpp"
@@ -1533,6 +1534,28 @@ auto account_sign_in_gate(HomeserverRuntime& runtime, std::string_view user_id, 
                                     : PasswordLoginVerification::Outcome::invalid_login;
     }
     return PasswordLoginVerification::Outcome::verified;
+}
+
+auto user_credential_stamp(HomeserverRuntime const& runtime, std::string_view user_id) -> std::optional<std::string>
+{
+    auto const* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return std::nullopt;
+    }
+    // The stored hash carries its own random salt, so an unkeyed hash of it is as unguessable as an OAuth secret.
+    return oauth_secret_hash(user->password_hash);
+}
+
+auto user_credential_stamp_matches(HomeserverRuntime const& runtime, std::string_view user_id, std::string_view stamp)
+    -> bool
+{
+    if (stamp.empty())
+    {
+        return false;
+    }
+    auto const current = user_credential_stamp(runtime, user_id);
+    return current.has_value() && crypto::constant_time_equal(*current, stamp);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)

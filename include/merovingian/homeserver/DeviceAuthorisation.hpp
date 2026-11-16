@@ -33,6 +33,9 @@ struct DeviceAuthorisation final
     DeviceAuthorisationState state{DeviceAuthorisationState::pending};
     // The user who approved or denied; empty while pending.
     std::string user_id{};
+    // An approval only: the user's credential stamp when the password was verified (ADR-0807). The poll that takes the
+    // approval is refused with `invalid_grant` once it no longer matches.
+    std::string credential_stamp{};
 };
 
 } // namespace merovingian::homeserver

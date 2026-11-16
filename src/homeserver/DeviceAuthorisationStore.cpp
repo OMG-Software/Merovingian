@@ -196,7 +196,7 @@ auto DeviceAuthorisationStore::release(std::string_view key, std::uint64_t attac
 }
 
 auto DeviceAuthorisationStore::decide(std::string_view key, std::uint64_t attachment, std::string_view user_id,
-                                      bool approve, std::uint64_t now_ms) -> bool
+                                      std::string_view credential_stamp, bool approve, std::uint64_t now_ms) -> bool
 {
     auto* entry = attached_entry(key, attachment, now_ms);
     if (entry == nullptr)
@@ -205,6 +205,7 @@ auto DeviceAuthorisationStore::decide(std::string_view key, std::uint64_t attach
     }
     entry->authorisation.state = approve ? DeviceAuthorisationState::approved : DeviceAuthorisationState::denied;
     entry->authorisation.user_id = std::string{user_id};
+    entry->authorisation.credential_stamp = approve ? std::string{credential_stamp} : std::string{};
     entry->attachment.reset();
     return true;
 }

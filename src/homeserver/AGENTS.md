@@ -156,6 +156,11 @@ Rules for the authorisation pages:
 - **`verify_password_login` and `create_local_account` release `runtime.mutex`.** Nothing read before them is trusted
   after: `record_user` finds the entry again, and `approve` consumes it and judges the account again with
   `account_sign_in_gate`.
+- **A sign-in carries the credential stamp of its password check** (ADR-0807). `record_user` stores
+  `user_credential_stamp` (`AuthService.cpp`, the only place it is computed); it travels in `AuthorizationGrant` and the
+  device authorisation's approval, and `approve` and the token endpoint's code and device-code grants call
+  `user_credential_stamp_matches` after `account_sign_in_gate`. A new step that acts on an earlier password check
+  compares it too. Never log it, and never put the password hash itself in a store.
 - **No browser session is kept** (ADR-0787): every authorisation asks for the password, and `prompt=none` is
   `login_required`.
 - **An approval leaves one authorization code and nothing else**: no device, token or `oauth_sessions` row; the token
@@ -170,7 +175,8 @@ gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
   Then `remember_signed_in_device` adds the device to the runtime's list as `POST /login` does; never add a write after
   the commit that a failure could leave behind.
 - **The code grant's checks are in order**: client and grant type, verifier shape, redeem (a spent code whatever
-  follows), then client, redirect URI byte for byte and PKCE, then `account_sign_in_gate` and the device checks. A
+  follows), then client, redirect URI byte for byte and PKCE, then `account_sign_in_gate`, the credential stamp and the
+  device checks. A
   replayed code ends only the session that code produced (`AuthorizationCodeStore::record_issued_session`, matched on
   client and `created_at_ms`).
 - **A session ends through `end_device_session_and_announce`** (`ClientDeviceSessions.hpp`), shared with `POST /logout`:
@@ -236,7 +242,8 @@ unless `server.oauth.enabled` and `server.oauth.device_grant_enabled` are both t
   registration.
 - **The consent page's warning is the first thing on it**, before the code and the client. Do not move it below them.
 - **A redeemed device code is `expired_token`**: the store removes an approved entry when the poll takes it. The
-  approval is judged again with `account_sign_in_gate` and written with `grant_oauth_session`, never another path.
+  approval is judged again with `account_sign_in_gate` and its credential stamp, and written with
+  `grant_oauth_session`, never another path.
 - `authorization_pending` is never logged (a device polls every five seconds). Log `client_id`, `user_id`, `device_id`
   and, for the throttle, `client_key`; never a device code, a user code, the cookie or the query.
 

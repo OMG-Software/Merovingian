@@ -1078,6 +1078,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the wrong endpoint escapes its client binding (ADR-0792, ADR-0793).
   Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`, `src/database/AGENTS.md`.
 
+- **An OAuth sign-in carries the credential stamp of its password check, and every later step (`approve`, the code and
+  device-code grants) refuses it once the stamp no longer matches.**
+  Why: a sign-in in progress outlives the password check by up to ten minutes; without the stamp, someone who knew
+  the old password signs in, waits for the user's change or reset, and still gets tokens (CWE-613). The stamp is a
+  hash of the salted stored hash, never the hash itself, and is never logged (ADR-0807).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Every endpoint that asks for User-Interactive Authentication refuses an OAuth session with 403 before checking a
   password, except a replacing cross-signing upload, which offers only the `m.oauth` stage; revocation or a replay
   ends a session only through the path `POST /logout` uses.**

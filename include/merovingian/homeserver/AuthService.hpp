@@ -82,6 +82,17 @@ namespace merovingian::homeserver
 // the login does. The caller holds runtime.mutex; makes no call that releases it.
 [[nodiscard]] auto account_sign_in_gate(HomeserverRuntime& runtime, std::string_view user_id,
                                         std::string_view device_id) -> PasswordLoginVerification::Outcome;
+// The credential stamp of `user_id` (ADR-0807): `oauth_secret_hash` of the stored password hash, 64 hex digits. Every
+// password change, reset or deactivation writes a new stored hash with a fresh salt, so the stamp changes with it;
+// the stamp names no password and cannot test a guess. An OAuth 2.0 sign-in records it when the password is verified
+// or the account created, and every later step compares it (`user_credential_stamp_matches`). nullopt for an unknown
+// user or a failed hash. The caller holds runtime.mutex; never logged, never sent.
+[[nodiscard]] auto user_credential_stamp(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<std::string>;
+// Whether `stamp` is still `user_id`'s credential stamp, compared in constant time. False for an empty stamp, an
+// unknown user or a failed hash, so a sign-in that recorded none never passes.
+[[nodiscard]] auto user_credential_stamp_matches(HomeserverRuntime const& runtime, std::string_view user_id,
+                                                 std::string_view stamp) -> bool;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's

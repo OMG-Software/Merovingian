@@ -403,3 +403,48 @@ SCENARIO("The SSO redirect honours action, the identity provider form and the al
         }
     }
 }
+
+SCENARIO("A password change ends a hand-off that alice signed in to but did not yet continue",
+         "[integration][oauth][hand-off][credential-stamp][security]")
+{
+    GIVEN("a hand-off alice signed in to with her password")
+    {
+        auto started = start(hand_off_config());
+        auto& rt = started.runtime;
+        auto const hand_off = open_hand_off(rt, {
+                                                    {"redirectUrl", std::string{app_return}}
+        });
+        REQUIRE(sign_in(rt, hand_off).status == 200U);
+
+        WHEN("her password is changed on the account page and the hand-off is then continued")
+        {
+            REQUIRE(hs::change_password_on_account_page(rt.homeserver, "@alice:example.org", "NewAlicePass42!y").ok);
+            auto const approved = post(rt, hand_off,
+                                       {
+                                           {"action", "approve"}
+            });
+
+            THEN("it is the expired page: no redirect and no login token")
+            {
+                CHECK(approved.status == 400U);
+                CHECK(contains(approved.body, "Sign-in expired"));
+                CHECK(response_header(approved, "Location").empty());
+                CHECK(audit_count(rt.homeserver, "auth.login_token.issued") == 0U);
+            }
+        }
+
+        WHEN("nothing changes before the hand-off is continued")
+        {
+            auto const approved = post(rt, hand_off,
+                                       {
+                                           {"action", "approve"}
+            });
+
+            THEN("the browser is sent back with a login token")
+            {
+                CHECK(approved.status == 303U);
+                CHECK(audit_count(rt.homeserver, "auth.login_token.issued") == 1U);
+            }
+        }
+    }
+}

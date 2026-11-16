@@ -186,6 +186,11 @@ namespace
         {
             return refuse(status_bad_request, oauth::error_invalid_grant, "The account cannot sign in.");
         }
+        // The password that signed in must still be the account's (ADR-0807); the code is spent either way.
+        if (!user_credential_stamp_matches(runtime, grant.user_id, grant.credential_stamp))
+        {
+            return refuse(status_bad_request, oauth::error_invalid_grant, "The authorization is no longer valid.");
+        }
 
         auto request = OAuthGrantRequest{};
         request.user_id = grant.user_id;
@@ -273,6 +278,11 @@ namespace
             PasswordLoginVerification::Outcome::verified)
         {
             return refuse(status_bad_request, oauth::error_invalid_grant, "The account cannot sign in.");
+        }
+        // The password that approved must still be the account's (ADR-0807); the device code is spent either way.
+        if (!user_credential_stamp_matches(runtime, approved.user_id, approved.credential_stamp))
+        {
+            return refuse(status_bad_request, oauth::error_invalid_grant, "The authorization is no longer valid.");
         }
         auto request = OAuthGrantRequest{};
         request.user_id = approved.user_id;

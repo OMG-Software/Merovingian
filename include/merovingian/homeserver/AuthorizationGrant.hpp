@@ -21,6 +21,9 @@ struct AuthorizationGrant final
     std::string device_id{};
     // The granted scope in canonical order.
     std::string scope{};
+    // The user's credential stamp when the password was verified (ADR-0807): the token endpoint refuses the code with
+    // `invalid_grant` once it no longer matches.
+    std::string credential_stamp{};
 };
 
 } // namespace merovingian::homeserver

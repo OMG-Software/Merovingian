@@ -78,6 +78,7 @@ auto PendingAuthorisationStore::create(PendingAuthorisation authorisation, std::
     authorisation.client_address_key = std::string{client_address_key};
     authorisation.created_at_ms = now_ms;
     authorisation.user_id.clear();
+    authorisation.credential_stamp.clear();
     auto const expires_at_ms = now_ms + lifetime_ms;
     ++m_count_by_address[authorisation.client_address_key];
     m_expiries_by_client[authorisation.client_id].insert(expires_at_ms);
@@ -119,7 +120,8 @@ auto PendingAuthorisationStore::find(std::string_view identifier, std::string_vi
 }
 
 auto PendingAuthorisationStore::record_user(std::string_view identifier, std::string_view browser_token,
-                                            std::string_view user_id, std::uint64_t now_ms) -> bool
+                                            std::string_view user_id, std::string_view credential_stamp,
+                                            std::uint64_t now_ms) -> bool
 {
     auto const [entry, identifier_hash] = bound_entry(identifier, browser_token, now_ms);
     if (entry == nullptr)
@@ -127,6 +129,7 @@ auto PendingAuthorisationStore::record_user(std::string_view identifier, std::st
         return false;
     }
     entry->authorisation.user_id = std::string{user_id};
+    entry->authorisation.credential_stamp = std::string{credential_stamp};
     return true;
 }
 

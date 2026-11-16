@@ -351,7 +351,7 @@ SCENARIO("A device code polled by another client, or never issued, gives the dev
         auto store = DeviceAuthorisationStore{};
         auto const created = started(store.create(client, scope, device, address, start_ms));
         auto const hold = attached(store.attach(created.user_code, browser, start_ms));
-        REQUIRE(store.decide(hold.key, hold.attachment, "@alice:example.org", true, start_ms));
+        REQUIRE(store.decide(hold.key, hold.attachment, "@alice:example.org", "stamp", true, start_ms));
 
         WHEN("another client polls with its device code, and a made-up code is polled")
         {
@@ -378,6 +378,7 @@ SCENARIO("A device code polled by another client, or never issued, gives the dev
                 REQUIRE(first.authorisation.has_value());
                 REQUIRE(first.authorisation->user_id == "@alice:example.org");
                 REQUIRE(first.authorisation->device_id == device);
+                REQUIRE(first.authorisation->credential_stamp == "stamp");
                 REQUIRE(second.outcome == PollOutcome::expired_token);
                 REQUIRE(store.size() == 0U);
                 REQUIRE_FALSE(store.holds_live_entry_for_client(client, start_ms + 10'000U));
@@ -390,7 +391,7 @@ SCENARIO("A device code polled by another client, or never issued, gives the dev
         auto store = DeviceAuthorisationStore{};
         auto const created = started(store.create(client, scope, device, address, start_ms));
         auto const hold = attached(store.attach(created.user_code, browser, start_ms));
-        REQUIRE(store.decide(hold.key, hold.attachment, "@alice:example.org", false, start_ms));
+        REQUIRE(store.decide(hold.key, hold.attachment, "@alice:example.org", "stamp", false, start_ms));
 
         WHEN("its client polls twice, and the code is typed again")
         {
@@ -448,9 +449,9 @@ SCENARIO("One browser at a time holds a device authorisation", "[oauth][oauth-de
             THEN("the first browser can neither renew nor decide, and the second decides")
             {
                 REQUIRE_FALSE(store.renew(first.key, first.attachment, lapse));
-                REQUIRE_FALSE(store.decide(first.key, first.attachment, "@mallory:example.org", true, lapse));
+                REQUIRE_FALSE(store.decide(first.key, first.attachment, "@mallory:example.org", "stamp", true, lapse));
                 REQUIRE_FALSE(store.find_attached(first.key, first.attachment, lapse).has_value());
-                REQUIRE(store.decide(second.key, second.attachment, "@alice:example.org", true, lapse));
+                REQUIRE(store.decide(second.key, second.attachment, "@alice:example.org", "stamp", true, lapse));
                 auto const poll = store.poll(created.device_code, client, lapse);
                 REQUIRE(poll.outcome == PollOutcome::approved);
                 REQUIRE(poll.authorisation->user_id == "@alice:example.org");
@@ -475,8 +476,10 @@ SCENARIO("One browser at a time holds a device authorisation", "[oauth][oauth-de
             THEN("it holds a fresh attachment and the earlier one no longer decides")
             {
                 REQUIRE(again.attachment != first.attachment);
-                REQUIRE_FALSE(store.decide(first.key, first.attachment, "@alice:example.org", true, start_ms + 1'000U));
-                REQUIRE(store.decide(again.key, again.attachment, "@alice:example.org", true, start_ms + 1'000U));
+                REQUIRE_FALSE(
+                    store.decide(first.key, first.attachment, "@alice:example.org", "stamp", true, start_ms + 1'000U));
+                REQUIRE(
+                    store.decide(again.key, again.attachment, "@alice:example.org", "stamp", true, start_ms + 1'000U));
             }
         }
 

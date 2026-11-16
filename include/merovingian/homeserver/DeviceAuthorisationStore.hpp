@@ -129,10 +129,11 @@ public:
     // Ends `attachment` when it is the entry's latest, so another browser need not wait for the lease.
     auto release(std::string_view key, std::uint64_t attachment) -> void;
 
-    // Records `user_id`'s answer and ends the attachment. False, changing nothing, when `find_attached` would answer
-    // nullopt: the entry ended, was answered, or another browser took it over.
-    [[nodiscard]] auto decide(std::string_view key, std::uint64_t attachment, std::string_view user_id, bool approve,
-                              std::uint64_t now_ms) -> bool;
+    // Records `user_id`'s answer and ends the attachment; an approval keeps `credential_stamp` (ADR-0807) for the poll
+    // to check. False, changing nothing, when `find_attached` would answer nullopt: the entry ended, was answered, or
+    // another browser took it over.
+    [[nodiscard]] auto decide(std::string_view key, std::uint64_t attachment, std::string_view user_id,
+                              std::string_view credential_stamp, bool approve, std::uint64_t now_ms) -> bool;
 
     // RFC 8628 section 3.5, in the order the store judges a poll.
     enum class PollOutcome : std::uint8_t
