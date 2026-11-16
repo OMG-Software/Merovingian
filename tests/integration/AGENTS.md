@@ -30,6 +30,14 @@ Same SCENARIO/GIVEN/WHEN/THEN structure as unit tests. Set up the full server st
 database fixture in `GIVEN`; trigger the user-visible action in `WHEN`; assert the observable
 outcome in `THEN`.
 
+## Upgrade fixture scenarios
+
+`test_database_upgrade_flow.cpp` also opens the previous series' last release's own database
+(`tests/fixtures/upgrade/1.0.3/`, ADR-0216) on SQLite and PostgreSQL and serves it. Read every
+ID, token and key from `manifest.json`; never hard-code one, and never regenerate the fixture with
+current code. Run them with the `[fixture]` tag. The PostgreSQL one needs `MEROVINGIAN_TEST_POSTGRESQL_URI`
+and skips without it, so check that it ran.
+
 ## Live federation tests
 
 `test_live_synapse_federation.cpp` is guarded by the `build_live_tests` Meson option.

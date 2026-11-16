@@ -908,10 +908,15 @@ value. Test fixtures that do not exercise persistence select it through
   being refused (SQLite), a fresh database having every table's final columns and
   all six indexes, and a pre-1.0 ledger (rows 2 to 26) being refused on both
   backends. The "any older version opens at current" scenario is vacuous until a
-  v2 exists. There is no previous-release fixture: the 0.11.13 fixture was
-  removed when the migrations collapsed (0.12.47, ADR-0224). When the 1.1 series
-  starts, the last 1.0.x release writes the next fixture with
-  `scripts/generate_upgrade_fixture.py` (see `docs/release-process.md`).
+  v2 exists. The 1.1 series starts with a previous-release fixture,
+  `tests/fixtures/upgrade/1.0.3/`: the SQLite database, PostgreSQL dump and manifest the
+  1.0.3 release wrote through its own HTTP API (`scripts/generate_upgrade_fixture.py`, ADR-0216; the 0.11.13
+  fixture was removed when the migrations collapsed, 0.12.47, ADR-0224). Two scenarios
+  (`[fixture]`, one per backend) open it, run `migrate_*_schema_to`, start the runtime on it and read back the users,
+  access tokens, rooms, events, media, account data, pusher and device keys the manifest lists, then send a new
+  event signed with the old release's key. 1.1.0 changes no schema, so that migration is a no-op at v1: the
+  scenarios prove the open-and-migrate path serves a 1.0.3 database, not a v1 to v2 step.
+  The PostgreSQL scenario needs `MEROVINGIAN_TEST_POSTGRESQL_URI` and reports itself skipped without it.
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
   ordering by it alone put `'10'` before `'9'`.

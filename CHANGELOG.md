@@ -9,6 +9,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 * `GET /_matrix/client/v3/sync` honours `use_state_after` (Matrix v1.16): with it true each joined and left room
   carries `state_after` and no `state` (ADR-0763, ADR-0764, ADR-0765).
+* The 1.1 series has its cross-release upgrade fixture: `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3
+  release, opened, migrated and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
 
 ## Security Fixes
 
