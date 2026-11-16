@@ -82,7 +82,7 @@ fuzz_targets = [
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
     dependencies: [libsodium_dep, openssl_dep],
-    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
   ),
   executable(
     'fuzz-oauth-scope',
@@ -91,7 +91,7 @@ fuzz_targets = [
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
     dependencies: [libsodium_dep, openssl_dep],
-    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
   ),
   executable(
     'fuzz-oauth-client-metadata',
@@ -100,7 +100,7 @@ fuzz_targets = [
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
     dependencies: [libsodium_dep, openssl_dep],
-    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib],
+    link_with: [oauth_lib, auth_lib, canonicaljson_lib, core_lib, crypto_lib, observability_lib, platform_lib],
   ),
   executable(
     'fuzz-srv-record',
