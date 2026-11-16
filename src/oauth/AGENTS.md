@@ -1,0 +1,55 @@
+# src/oauth/ — OAuth 2.0 API building blocks
+
+Pure functions and value types for the built-in OAuth 2.0 API
+([ADR-0760](../../docs/adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md),
+[spec](../../docs/matrix-v1.19-spec/client-server-api.md#oauth-20-api)). The handlers, stores and routes live in
+`src/homeserver/`; they call what is here. The plan is `docs/todos/oauth-2-0-api.md`.
+
+## Key files
+
+| File | Responsibility |
+|---|---|
+| `OAuthRefusal.hpp`, `OAuthErrorCodes.hpp` | `OAuthRefusal`: the wire `error` code beside a `core::Error` whose message is fixed text, safe as `error_description` (ADR-0768) |
+| `Pkce.cpp` | `pkce_challenge_is_valid`, `pkce_verifier_is_valid`, `pkce_s256_matches`: RFC 7636 with `S256` only, compared in constant time |
+| `ScopeParser.cpp` | `parse_scope` and `oauth_device_id_is_valid`: the API token and exactly one device token, unknown tokens dropped (ADR-0769) |
+| `ParsedUri.cpp` | `ParsedUri::read`: the strict URI reader for every address a client supplies and every page link (ADR-0770) |
+| `ClientUri.cpp` | `ClientUri::read`: `https` on a DNS name of two or more labels (ADR-0771) |
+| `RedirectUriRules.cpp` | `validate_redirect_uri` (registration), `match_redirect_uri` (authorisation and token requests), `https_uri_is_on_client_host` |
+| `ClientMetadata.cpp` | `ClientMetadata::validate`, `to_json`, `canonical_bytes`: RFC 7591 registration rules (ADR-0771) |
+| `HtmlText.cpp`, `HtmlLiteral.hpp`, `HtmlName.hpp`, `PagePath.hpp` | Page text: escaped at run time, or fixed and checked at compile time (ADR-0772) |
+| `Page.cpp`, `PageForm.cpp`, `PageDetail.hpp`, `TextInput.hpp`, `SubmitButton.hpp` | The one page renderer and its parts |
+| `PageHeaders.cpp` | `page_style`, `page_headers`: the fixed style block and the headers every page carries, with the `form-action` source of a validated redirect target |
+| `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control or bidirectional formatting character) and `ascii_lower` |
+
+## Rules
+
+1. **Nothing here holds state, does I/O or logs.** Every input is attacker-chosen and may be a secret (a verifier,
+   a password typed into a page). A function that needs the runtime, the database or the clock belongs in
+   `src/homeserver/`.
+2. **Refuse, never repair.** Every reader has a hard cap with its reason beside it, refuses instead of truncating,
+   stripping or normalising, and its error text is fixed: it never quotes the input.
+3. **Every address a client supplies is read with `ParsedUri::read`.** Never `http::parse_outbound_url`, which
+   canonicalises through libcurl and knows no private-use scheme, and never a private parser. A redirect URI is
+   checked with `validate_redirect_uri` at registration and found with `match_redirect_uri` on every request; the
+   match is byte for byte, except a native loopback URI's port.
+4. **A redirect happens only after the client and its redirect URI are validated.** A failure of either is shown as
+   a page, never sent to the URI.
+5. **HTML is built only by `Page`.** Text reaches a page only as `HtmlText` (`HtmlText::escape`) or a compile-time
+   `HtmlLiteral`, `HtmlName` or `PagePath`. Never concatenate a value into markup, add a `<script>`, an event-handler
+   attribute, a `style=` attribute or a resource from another origin, or link to a scheme other than `https`
+   (ADR-0763, ADR-0772).
+6. **Every page response carries `page_headers()`.** A page whose form post is answered with a redirect to the client
+   passes the matched `ParsedUri` to `page_headers(target)`; nothing else adds a policy source.
+7. **The style block and its hash are one text.** Change `page_style()` only in `PageHeaders.cpp`; the hash is
+   computed from it, and `test_oauth_page.cpp` proves the policy names it.
+8. **PKCE is `S256` only and compared in constant time** (`crypto::constant_time_equal`). SHA-256 and base64 come from
+   `crypto`; this module never calls libsodium.
+9. **Client metadata is validated once, by `ClientMetadata::validate`,** also when a stored registration is read back.
+   The client ID is a keyed hash of `canonical_bytes()` (phase 4); do not hash anything else for it.
+
+## Tests
+
+`tests/unit/test_oauth_pkce.cpp` (`[oauth][pkce]`), `test_oauth_scope.cpp` (`[oauth][scope]`),
+`test_oauth_redirect_uri.cpp` (`[oauth][uri]`, `[oauth][redirect]`), `test_oauth_client_metadata.cpp`
+(`[oauth][metadata]`), `test_oauth_page.cpp` (`[oauth][page]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`,
+`fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.

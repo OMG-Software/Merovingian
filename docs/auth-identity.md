@@ -1039,6 +1039,29 @@ template supplies the membership, but any `displayname` or `avatar_url` it
 contains is dropped before the local profile is added, so an unset local field
 is left out rather than taking the resident server's value.
 
+## OAuth 2.0 building blocks (`oauth`)
+
+The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md), plan in
+`todos/oauth-2-0-api.md`) is not served yet. The `oauth` module holds its pure parts, with no state, I/O or logging
+([ADR-0768](adr/0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)); a refusal is an
+`OAuthRefusal`, the wire `error` code beside a `core::Error` with fixed text. Rules: `src/oauth/AGENTS.md`.
+
+- **PKCE** (`Pkce.hpp`): `S256` only; a canonical 43-character challenge, a verifier of 43 to 128 unreserved
+  characters, compared in constant time.
+- **Scope** (`ScopeParser.hpp`): `urn:matrix:client:api:*` and exactly one `urn:matrix:client:device:<id>` with an
+  ID of 10 to 255 unreserved characters; unknown tokens dropped; 2048 bytes and 32 tokens at most
+  ([ADR-0769](adr/0769-an-oauth-scope-needs-the-api-token-and-exactly-one-device-token-of-ten-or-more-unreserved-characters.md)).
+- **Addresses** (`ParsedUri.hpp`, `ClientUri.hpp`, `RedirectUriRules.hpp`): a strict reader of our own, 2048 bytes,
+  no fragment, userinfo or `%` in a host; redirect URIs validated per `application_type` at registration and matched
+  byte for byte, a native loopback URI with any port
+  ([ADR-0770](adr/0770-oauth-addresses-are-read-by-a-strict-reader-of-our-own-and-matched-byte-for-byte.md)).
+- **Client metadata** (`ClientMetadata.hpp`): the RFC 7591 registration rules, public clients only, a canonical
+  JSON form for the client ID of phase 4
+  ([ADR-0771](adr/0771-oauth-client-metadata-rules-and-its-canonical-form.md)).
+- **Pages** (`Page.hpp`, `PageHeaders.hpp`): one renderer whose parts take only escaped or compile-time text, and the
+  headers every page carries
+  ([ADR-0772](adr/0772-page-text-is-escaped-by-type-and-the-page-policy-names-only-a-validated-redirect-origin.md)).
+
 ## Next starting points
 
 1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.

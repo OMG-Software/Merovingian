@@ -208,6 +208,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 │   ├── ipc/               #   Authenticated, encrypted AF_UNIX channel between main process and federation worker
 │   ├── media/             #   Media repository, MIME/quarantine security, sandboxed thumbnailer
 │   ├── net/               #   Listener, TCP acceptor, thread pool, shutdown signal
+│   ├── oauth/             #   OAuth 2.0 API: PKCE, scope, URI reader, redirect URI and client metadata rules, page renderer
 │   ├── observability/     #   Logger, observability
 │   ├── platform/          #   Runtime hardening, seccomp, ELF probe, file metadata, self-check
 │   ├── push/              #   Push rules evaluation, push gateway client
@@ -276,6 +277,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/ipc/AGENTS.md` | Worker IPC: authenticated handshake, AEAD framing, reader/dispatch thread split |
 | `src/media/AGENTS.md` | Media: internal pipe format, MIME policy, quarantine, thumbnail worker |
 | `src/net/AGENTS.md` | Network: TCP acceptor, thread pool, graceful shutdown, CLOEXEC |
+| `src/oauth/AGENTS.md` | OAuth 2.0: pure validators, strict URI reader, byte-exact redirect matching, escaped-by-type page renderer |
 | `src/observability/AGENTS.md` | Logging: level policy, audit events, secret redaction |
 | `src/platform/AGENTS.md` | Platform hardening: seccomp, pledge/Capsicum, ELF probe, self-check, file metadata safety |
 | `src/push/AGENTS.md` | Push: pure rule evaluation, gateway SSRF and URL rules, delivery caps |

@@ -985,6 +985,38 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `sp02.is-token-crlf-header-injection`).
   Source: `src/identity/AGENTS.md`.
 
+## OAuth 2.0 API
+
+- **The `oauth` module holds no state, does no I/O and logs nothing; every reader has a stated cap, refuses rather
+  than truncates or repairs, and never quotes its input in an error.**
+  Why: its inputs are attacker-chosen and some are secrets (PKCE verifiers, page passwords); a validator that repairs
+  input checks one value and lets another through (CWE-20), and an error that echoes input leaks it into logs and
+  pages (CWE-532).
+  Source: `src/oauth/AGENTS.md`.
+
+- **Every address a client supplies is read with `oauth::ParsedUri::read`, and a redirect URI is matched byte for
+  byte (`match_redirect_uri`), except a native loopback URI's port.** Never `http::parse_outbound_url` or a private
+  parser.
+  Why: the redirect URI decides who receives the authorisation code. Two parsers, or a normalising one, can disagree
+  with the browser about where a URI points, which is an open redirect and code theft (CWE-601).
+  Source: `src/oauth/AGENTS.md`.
+
+- **No redirect before the client and its redirect URI are validated.**
+  Why: redirecting with an error to an unvalidated URI turns the authorisation endpoint into an open redirector
+  (CWE-601).
+  Source: `src/oauth/AGENTS.md`.
+
+- **HTML is built only by `oauth::Page`, whose parts accept only `HtmlText` (escaped) or compile-time values; every
+  page carries `page_headers()`, and only a matched redirect URI's origin is added to `form-action`.**
+  Why: the pages take passwords and show text an unauthenticated client chose; one unescaped value is script
+  injection on the login page (CWE-79), and a policy source built from raw input can add directives (CWE-116).
+  Source: `src/oauth/AGENTS.md`.
+
+- **PKCE is `S256` only, compared in constant time.**
+  Why: `plain` sends the verifier through the browser, which defeats PKCE, and a variable-time comparison leaks how
+  much of a guess matched (CWE-208).
+  Source: `src/oauth/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
@@ -1854,6 +1886,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
+| `src/oauth/AGENTS.md` | OAuth 2.0 API |
 | `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Media; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |

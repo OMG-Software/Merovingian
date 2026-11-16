@@ -435,6 +435,7 @@ shell = find_program('sh')
       'unit/test_core_host_cookie.cpp',
       'unit/test_core_request_cookies.cpp',
       'unit/test_oauth_client_metadata.cpp',
+      'unit/test_oauth_page.cpp',
       'unit/test_oauth_pkce.cpp',
       'unit/test_oauth_redirect_uri.cpp',
       'unit/test_oauth_scope.cpp',

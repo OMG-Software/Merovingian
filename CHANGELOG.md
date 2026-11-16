@@ -15,6 +15,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   (ADR-0768, ADR-0769).
 * A strict URI reader, redirect URI rules with byte-exact matching, and RFC 7591 client metadata validation with a
   canonical form (ADR-0770, ADR-0771).
+* The one HTML page renderer, which accepts only escaped text, and the headers every page carries (ADR-0772).
 * `crypto::sha256` for protocols that name SHA-256.
 
 ## Security Fixes

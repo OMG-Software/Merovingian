@@ -239,6 +239,14 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   most 1/16 of the parked budget (ADR-0719).
 - Shutdown order: stop accepting, stop the parker, drain the pools.
 
+## src/oauth
+
+- No state, I/O or logging; caps stated and refused at, never truncated; errors quote no input. `src/oauth/AGENTS.md#Rules`
+- Client addresses only through `ParsedUri::read`; redirect URIs matched byte for byte by `match_redirect_uri`
+  (ADR-0770). No redirect before the client and its redirect URI are validated.
+- HTML only through `Page` with `HtmlText` or compile-time parts; every page sends `page_headers()`; only a matched
+  redirect URI adds a `form-action` source (ADR-0772). PKCE `S256` only, constant-time.
+
 ## src/observability
 
 - Never log secrets. One record is one physical line. Field values are capped. URLs are logged without the query.

@@ -82,6 +82,7 @@ touched ([ADR-0466](adr/0466-define-one-class-or-struct-per-file.md),
 | `ipc` | Encrypted AF_UNIX IPC channel (ephemeral key exchange, AEAD framing) |
 | `media` | Media repository: upload, download, quarantine |
 | `net` | TCP listener, thread pool, shutdown signal |
+| `oauth` | OAuth 2.0 API building blocks, pure functions only: PKCE, scope parser, strict URI reader, redirect URI and client metadata validation, the page renderer and page headers (`src/oauth/AGENTS.md`, ADR-0768) |
 | `observability` | Logging, health checks, structured diagnostics |
 | `platform` | POSIX file metadata, hardening self-checks |
 | `push` | Push rule evaluation (default and per-user rules), push gateway client with retry queue, circuit breaker and in-flight limiter, and the email digest queue |
@@ -118,6 +119,7 @@ flowchart TB
     subgraph services["Protocol & domain services"]
         appservice["appservice<br/>registration, namespaces"]
         auth["auth"]
+        oauth["oauth<br/>PKCE, scope, redirect URIs, pages"]
         rooms["rooms"]
         events["events"]
         federation["federation"]
@@ -151,6 +153,7 @@ flowchart TB
     events --> crypto & canonicaljson & rooms & auth
     federation --> crypto & canonicaljson & events & rooms & config
     auth --> crypto & canonicaljson
+    oauth --> auth & crypto & canonicaljson & core
     database --> canonicaljson
     sync --> canonicaljson
     services --> observability
