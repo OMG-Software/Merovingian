@@ -40,7 +40,7 @@ The owner decided these rules on 2026-11-15; `ClientMetadata::validate` applies 
   stripped.
 * `policy_uri` and `tos_uri` are `https` on the client URI's host or a subdomain, with no userinfo or fragment.
 * `logo_uri`, localised keys (`name#lang`) and unknown keys are ignored and never registered: logos are never
-  fetched ([ADR-0763](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md)), and one
+  fetched ([ADR-0815](0815-the-authentication-pages-are-built-into-the-binary-without-javascript.md)), and one
   language is shown.
 * A known key of the wrong JSON type, a repeated key, or more than 128 members is `invalid_client_metadata`.
 

@@ -60,11 +60,11 @@ it a client never registers or logs a user in itself: it sends the browser to pa
 
 | Decision | Record |
 |---|---|
-| The OAuth 2.0 API is built into the homeserver. Nothing is delegated to an external authorisation server. | [ADR-0760](../adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md) |
-| The legacy login and registration API stays on by default. A config key turns it off. | [ADR-0761](../adr/0761-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md) |
-| The registration page applies the legacy registration settings: the enabled flag and the registration token. | [ADR-0762](../adr/0762-the-registration-page-applies-the-legacy-registration-settings.md) |
-| The pages are built into the binary: fixed HTML, no JavaScript, no template files. | [ADR-0763](../adr/0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md) |
-| `server.oauth.*` replaces `server.oidc.*`. A config that sets `server.oidc.*` is refused at start-up. | [ADR-0764](../adr/0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md) |
+| The OAuth 2.0 API is built into the homeserver. Nothing is delegated to an external authorisation server. | [ADR-0812](../adr/0812-the-oauth-2-0-api-is-built-into-the-homeserver.md) |
+| The legacy login and registration API stays on by default. A config key turns it off. | [ADR-0813](../adr/0813-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md) |
+| The registration page applies the legacy registration settings: the enabled flag and the registration token. | [ADR-0814](../adr/0814-the-registration-page-applies-the-legacy-registration-settings.md) |
+| The pages are built into the binary: fixed HTML, no JavaScript, no template files. | [ADR-0815](../adr/0815-the-authentication-pages-are-built-into-the-binary-without-javascript.md) |
+| `server.oauth.*` replaces `server.oidc.*`. A config that sets `server.oidc.*` is refused at start-up. | [ADR-0816](../adr/0816-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md) |
 | 1.1.0 holds the core flow, the account pages, the hand-off for legacy clients and the device authorization grant. | This plan |
 
 ### Proposed here, to be confirmed in review
@@ -157,16 +157,16 @@ lifetime of a code, rate limits, and what a revocation does to the device.
 | Key | Default | Meaning |
 |---|---|---|
 | `server.oauth.enabled` | `false` | Serves the OAuth 2.0 API and its pages. |
-| `server.oauth.legacy_api_enabled` | `true` | With `false`, the legacy login and registration endpoints refuse new logins (ADR-0761). Refused unless `server.oauth.enabled` is `true`. |
+| `server.oauth.legacy_api_enabled` | `true` | With `false`, the legacy login and registration endpoints refuse new logins (ADR-0813). Refused unless `server.oauth.enabled` is `true`. |
 | `server.oauth.device_grant_enabled` | `false` | Serves the device authorization grant (P11). |
 | `server.oauth.hand_off_redirect_allowlist` | empty | Restricts where the legacy hand-off may send the browser (P10). |
 
-- `server.oidc.*` is refused at start-up with a message naming `server.oauth.enabled` (ADR-0764).
+- `server.oidc.*` is refused at start-up with a message naming `server.oauth.enabled` (ADR-0816).
 - With `server.oauth.enabled`, `server.public_baseurl` must be an `https` URL with no userinfo, query or fragment.
   The metadata is generated from it; no endpoint URL is configured. One function builds every absolute URL.
 - `server.sso.authorization_url` and `server.oauth.enabled` together are refused: the built-in pages answer the SSO
   redirect in phase 9.
-- Registration through the page is governed by `security.registration.*` and nothing else (ADR-0762).
+- Registration through the page is governed by `security.registration.*` and nothing else (ADR-0814).
   `prompt_values_supported` holds `create` only while `security.registration.enabled` is `true`.
 - Token lifetimes are `security.access_token_lifetime_ms` and `security.refresh_token_lifetime_ms` (P4).
 
@@ -257,7 +257,7 @@ which the build VM lacks (see "Still open").
 
 ### Pages
 
-Every page is fixed HTML rendered by one function that accepts only escaped fragments (ADR-0763). Every page sends
+Every page is fixed HTML rendered by one function that accepts only escaped fragments (ADR-0815). Every page sends
 `Content-Security-Policy` (`default-src 'none'`, a hashed inline style, `frame-ancestors 'none'`),
 `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and `Cache-Control: no-store`. A page that posts a form
 checks `Origin` and `Sec-Fetch-Site` with `oauth::form_post_origin_is_accepted` (ADR-0784).
@@ -305,7 +305,7 @@ each other; within phase 1 the pieces are independent. Everything else is in ord
 
 | # | Phase | Delivers | Done when |
 |---|---|---|---|
-| 0 | Branch and plan | Version 1.1.0, this plan, ADR-0760 to ADR-0764. | The tooling tests for the version, the changelog and the docs site pass. |
+| 0 | Branch and plan | Version 1.1.0, this plan, ADR-0812 to ADR-0816. | The tooling tests for the version, the changelog and the docs site pass. |
 | 1 | Foundations | `oauth` module skeleton; form and cookie parsers; page renderer and escaping; PKCE; scope parser; redirect URI and client metadata validation; `302` and `303` reason phrases. | Unit tests for each, with the spec's valid and invalid redirect URI examples as cases. Fuzz targets for the parsers and validators. |
 | 2 | Configuration and metadata | `server.oauth.*`; refusal of `server.oidc.*`; the stricter `public_baseurl`; generated metadata on both paths. | `auth_metadata` passes the checks under "What Element X needs". Example configs and `test_example_config.py` updated. |
 | 3 | Storage | Migration 002, the schema split, both tables, hydration on both backends, worker classification, the retention pass, the 1.0.x upgrade fixture. | The upgrade scenarios pass on SQLite and PostgreSQL. |

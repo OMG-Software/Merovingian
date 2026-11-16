@@ -11,7 +11,7 @@ Low-level utilities used across all other modules. No module-specific logic live
 | `QueryParams.cpp` | Percent-decode and parse `?key=value&...` query strings from request URIs |
 | `PortableSemaphore.cpp` | `PortableSemaphore` (counting semaphore; NetBSD's libc++ has no `std::counting_semaphore`) and `SemaphorePermit`, the RAII owner of one acquired slot |
 | `FoldedSubstringMatcher.cpp` | `FoldedSubstringMatcher`: ASCII-case-insensitive substring search in time linear in the text (KMP over folded bytes) with a `steps()` count, and `max_search_term_bytes`, the one cap on a client search term (ADR-0330). Use it for any search of a client's term in text a client chose; never `std::search` or `find` there |
-| `FormFields.cpp` | `FormFields::parse`: the strict `application/x-www-form-urlencoded` reader for OAuth bodies and page forms. Any malformed escape, empty or `=`-less field, raw non-printable byte, NUL, invalid UTF-8 or repeated name refuses the whole body; caps 64 KiB, 64 fields, 64-byte names, 8 KiB values (ADR-0765). `FormFields::parse_query`, for the browser pages' query strings only, counts a bare name or an empty field as not sent (RFC 6749 section 3.1) and keeps every other refusal |
+| `FormFields.cpp` | `FormFields::parse`: the strict `application/x-www-form-urlencoded` reader for OAuth bodies and page forms. Any malformed escape, empty or `=`-less field, raw non-printable byte, NUL, invalid UTF-8 or repeated name refuses the whole body; caps 64 KiB, 64 fields, 64-byte names, 8 KiB values (ADR-0817). `FormFields::parse_query`, for the browser pages' query strings only, counts a bare name or an empty field as not sent (RFC 6749 section 3.1) and keeps every other refusal |
 | `RequestCookies.cpp` | `RequestCookies::parse`: the `Cookie` header reader. A malformed or repeated cookie makes its own name unusable (`find` answers nothing), never the others (ADR-0766) |
 | `HostCookie.cpp` | `host_cookie` / `host_cookie_deletion`: the only `Set-Cookie` writers, `__Host-` names with `Secure`, `HttpOnly`, `Path=/`, `SameSite` from `CookieSameSite`, `Max-Age` |
 | `CookieOctets.cpp`, `HttpToken.cpp`, `Utf8.cpp` | `cookie_octets_are_valid`, `http_token_is_valid` (also behind `http::header_name_is_valid`) and `utf8_is_valid` (also behind `canonicaljson::utf8_is_valid`) |
@@ -38,7 +38,7 @@ Low-level utilities used across all other modules. No module-specific logic live
   with `query_parameter` (first match, decoded), never a private loop over the query string.
 - `Error` is the only error type for `std::expected` returns — no custom error enums in other modules.
 - An OAuth or page form body is read with `FormFields::parse`, never `parse_query_params` or `query_parameter`, which
-  accept a malformed escape and a repeated name (ADR-0765). A cookie is read with `RequestCookies::find` and written with
+  accept a malformed escape and a repeated name (ADR-0817). A cookie is read with `RequestCookies::find` and written with
   `host_cookie`: never pick one of two cookies of the same name, and never set a cookie without the `__Host-` prefix
   (ADR-0766). Both readers hold secrets: do not log their values, and do not copy them out further than needed.
 - A semaphore slot is only ever returned by a `SemaphorePermit` destructor, never by a hand-written

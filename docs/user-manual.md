@@ -879,13 +879,13 @@ pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 | Key | Default | When to change |
 |---|---|---|
 | `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
-| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
+| `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0813, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
 | `server.oauth.device_grant_enabled` | `false` | Set `true` to serve the device authorization grant (RFC 8628): `POST /_merovingian/oauth2/device`, the code page `/_merovingian/oauth2/link` and the device code grant at the token endpoint, and the metadata lists the grant type and `device_authorization_endpoint`. Off, those routes are `404 M_UNRECOGNIZED` and the grant `unsupported_grant_type`. Refused unless `server.oauth.enabled=true`. See [The device authorization grant](#the-device-authorization-grant). |
 | `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Empty, any `https` address, a loopback `http` address or a private-use scheme is accepted. See [The hand-off for legacy clients](#the-hand-off-for-legacy-clients). |
 
 The metadata offers `prompt=create` (`prompt_values_supported`) only while
 `security.registration.enabled=true`: account creation through the pages
-follows the legacy registration settings (ADR-0762).
+follows the legacy registration settings (ADR-0814).
 
 Every `server.oauth.*` key needs a restart.
 
@@ -966,7 +966,7 @@ user, and acts as its users with its `as_token`.
 advertise an external authorisation server that Merovingian could not log
 anyone in through. A configuration that still sets any `server.oidc.*` key does
 not start; the message names `server.oauth.enabled`. Delete those lines, and set
-`server.oauth.enabled=true` if you want the built-in API (ADR-0764).
+`server.oauth.enabled=true` if you want the built-in API (ADR-0816).
 
 #### Identity Service API — `server.identity_server.*`
 

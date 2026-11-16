@@ -1,7 +1,7 @@
 # src/oauth/ — OAuth 2.0 API building blocks
 
 Pure functions and value types for the built-in OAuth 2.0 API
-([ADR-0760](../../docs/adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md),
+([ADR-0812](../../docs/adr/0812-the-oauth-2-0-api-is-built-into-the-homeserver.md),
 [spec](../../docs/matrix-v1.19-spec/client-server-api.md#oauth-20-api)). The handlers, stores and routes live in
 `src/homeserver/`; they call what is here. The plan is `docs/todos/oauth-2-0-api.md`.
 
@@ -52,7 +52,7 @@ Pure functions and value types for the built-in OAuth 2.0 API
 5. **HTML is built only by `Page`.** Text reaches a page only as `HtmlText` (`HtmlText::escape`) or a compile-time
    `HtmlLiteral`, `HtmlName` or `PagePath`. Never concatenate a value into markup, add a `<script>`, an event-handler
    attribute, a `style=` attribute or a resource from another origin, or link to a scheme other than `https`
-   (ADR-0763, ADR-0772).
+   (ADR-0815, ADR-0772).
 6. **Every page response carries `page_headers()`** (`Referrer-Policy: same-origin`, as the page's own meta element
    says; ADR-0784), **and the handler marks it `LocalHttpResponse::page`** (ADR-0785). A form post is accepted only
    when `form_post_origin_is_accepted` says so. A page whose form post is answered with a redirect to the client

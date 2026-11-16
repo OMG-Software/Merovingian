@@ -33,7 +33,7 @@ account creation, and the metadata lists `create` in `prompt_values_supported`, 
 ### Negative Consequences
 
 * An operator cannot open registration for Element X while keeping it closed for legacy clients, or the reverse.
-  [ADR-0761](0761-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md) gives the
+  [ADR-0813](0813-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md) gives the
   nearest equivalent: turn the legacy API off.
 
 ## Pros and Cons of the Options

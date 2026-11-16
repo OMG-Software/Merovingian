@@ -19,7 +19,7 @@ namespace merovingian::oauth
 {
 
 // The account pages at `/_merovingian/account` (spec "Account management", plan phase 8): pure functions of their
-// inputs, built only with the Page renderer, English and fixed text (ADR-0763). The handler sends each with
+// inputs, built only with the Page renderer, English and fixed text (ADR-0815). The handler sends each with
 // `page_headers()`.
 //
 // Every form posts to `account_path` with a submit button named `action`; every form of a signed-in page also carries

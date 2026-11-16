@@ -66,4 +66,4 @@ and the parsed fields are wiped when destroyed.
 
 ## Links
 
-* Refines [ADR-0760](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)
+* Refines [ADR-0812](0812-the-oauth-2-0-api-is-built-into-the-homeserver.md)

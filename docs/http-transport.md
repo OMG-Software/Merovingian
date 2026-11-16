@@ -282,7 +282,7 @@ redirect or a JSON document travels the same way.
 
 ## Form bodies and cookies
 
-`core::FormFields::parse` reads an `application/x-www-form-urlencoded` body strictly (ADR-0765): a malformed `%`
+`core::FormFields::parse` reads an `application/x-www-form-urlencoded` body strictly (ADR-0817): a malformed `%`
 escape, a field with no `=` or an empty name, an empty field (`&&`), a raw byte outside printable ASCII, a decoded
 NUL or invalid UTF-8, and a repeated name each refuse the whole body. `+` is a space; an empty body is an empty set.
 Caps, each refused rather than cut: 64 KiB of body, 64 fields, 64 bytes of decoded name, 8 KiB of decoded value.

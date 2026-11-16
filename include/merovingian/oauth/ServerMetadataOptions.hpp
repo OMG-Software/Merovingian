@@ -15,7 +15,7 @@ struct ServerMetadataOptions final
     // `server.oauth.device_grant_enabled`: adds the device code grant type and `device_authorization_endpoint`.
     bool device_grant_enabled{false};
     // `security.registration.enabled`: adds `prompt_values_supported: ["create"]`. The field is left out otherwise,
-    // so a client never offers account creation the registration page would refuse (ADR-0762).
+    // so a client never offers account creation the registration page would refuse (ADR-0814).
     bool registration_enabled{false};
     // The account management actions the account page implements, in the order to advertise. Empty leaves out both
     // `account_management_uri` and `account_management_actions_supported`. The served document passes all six

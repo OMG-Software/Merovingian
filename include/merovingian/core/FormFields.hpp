@@ -17,7 +17,7 @@ namespace merovingian::core
 
 // The fields of an `application/x-www-form-urlencoded` request body (an OAuth 2.0 token, revocation or page form
 // post), read strictly. Unlike parse_query_params, which keeps going on anything, every departure from the grammar
-// refuses the whole body (ADR-0765):
+// refuses the whole body (ADR-0817):
 //
 //  - a field is `name=value`; a field with no `=`, an empty name, or an empty field (`&&`, a leading or trailing
 //    `&`) is refused. A value may be empty, and may hold a literal `=` after the first;
@@ -63,7 +63,7 @@ public:
     // 3.1, "Parameters sent without a value MUST be treated as if they were omitted from the request". A bare name is
     // still decoded and checked, so a malformed escape, NUL or invalid UTF-8 in it refuses the query, and every other
     // refusal and cap of `parse` holds; a bare name repeated, or beside a sent field of that name, is not a repeat.
-    // Only for the queries of the browser pages (ADR-0765): a body is read with `parse`.
+    // Only for the queries of the browser pages (ADR-0817): a body is read with `parse`.
     [[nodiscard]] static auto parse_query(std::string_view query) -> std::variant<FormFields, Error>;
 
     // The decoded value of field `name`, or nullopt when it was not sent. The view lives as long as this object.

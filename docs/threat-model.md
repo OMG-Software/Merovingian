@@ -3149,9 +3149,9 @@ rows and the roster with them. Nothing is removed when the room has no tips or i
 - **A resident chose how much a knock stored and how many signatures it cost.** **Mitigation:** the answer is bounded in
   bytes and the list in count and entry size before any signature check.
 
-## OAuth 2.0 API (1.1.0, ADR-0760 to ADR-0811)
+## OAuth 2.0 API (1.1.0, ADR-0766 to ADR-0817)
 
-With `server.oauth.enabled` the server is its own OAuth 2.0 authorisation server (ADR-0760): it serves HTML pages a
+With `server.oauth.enabled` the server is its own OAuth 2.0 authorisation server (ADR-0812): it serves HTML pages a
 browser renders, registers clients without authentication, and issues sessions from them. Each entry gives the threat,
 the mitigation as built, and the risk the ADRs accept. The rules that keep these mitigations in place are in
 `src/homeserver/AGENTS.md` ("OAuth 2.0 API") and `src/oauth/AGENTS.md`; the reviewer's checks are in
@@ -3161,13 +3161,13 @@ the mitigation as built, and the risk the ADRs accept. The rules that keep these
 
 - **Script injection through client metadata or a query parameter.** Every page (authorisation, registration,
   consent, device link, account pages, error pages) is fixed HTML built by one renderer, `oauth::Page`, with no
-  JavaScript (ADR-0763). Text reaches it only as `HtmlText`, escaped at run time, or as a compile-time literal, so
+  JavaScript (ADR-0815). Text reaches it only as `HtmlText`, escaped at run time, or as a compile-time literal, so
   unescaped text does not compile; escaping refuses empty text, invalid UTF-8, text over 4096 bytes and control and
   bidirectional formatting characters, and a detail value is wrapped in `<bdi>` (ADR-0772). A link is written only for
   an `https` URL `ParsedUri::read` accepts. No member initialiser holds page text, because clang 18 would check it only
   at run time (ADR-0800). Every page carries `Content-Security-Policy: default-src 'none'; style-src 'sha256-…';
   base-uri 'none'; frame-ancestors 'none'; form-action 'self'`, the hash computed from the one style block (ADR-0772).
-  A client's logo is never fetched or shown (ADR-0763, ADR-0771). **Residual risk:** a client name in a script that
+  A client's logo is never fetched or shown (ADR-0815, ADR-0771). **Residual risk:** a client name in a script that
   needs a bidirectional mark is refused at registration (ADR-0771).
 - **Clickjacking.** `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every page (ADR-0772).
 - **Content sniffing and caching.** The boundary adds `X-Content-Type-Options: nosniff` to every answer, a page

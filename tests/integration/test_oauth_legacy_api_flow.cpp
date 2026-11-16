@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// `server.oauth.legacy_api_enabled=false` through the client-server dispatcher (plan P9, ADR-0761, ADR-0801): no legacy
+// `server.oauth.legacy_api_enabled=false` through the client-server dispatcher (plan P9, ADR-0813, ADR-0801): no legacy
 // endpoint lists the logins or issues a user a new session, application services still register with
 // `inhibit_login`, and a session issued before carries on. With the key true nothing changes; every other test in the
 // suite runs with it true.

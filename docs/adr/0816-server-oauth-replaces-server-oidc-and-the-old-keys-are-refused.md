@@ -9,7 +9,7 @@
 `server.oidc.*` made `GET /_matrix/client/v1/auth_metadata` publish the endpoints of an authorisation server the
 operator named. Merovingian implemented none of the flow and accepted no token from that server, so a client that
 followed the metadata could not log in. With the OAuth 2.0 API built in
-([ADR-0760](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)) the metadata describes this server and is
+([ADR-0812](0812-the-oauth-2-0-api-is-built-into-the-homeserver.md)) the metadata describes this server and is
 generated. What becomes of the old keys?
 
 ## Considered Options

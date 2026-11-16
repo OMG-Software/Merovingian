@@ -27,10 +27,10 @@ Use this checklist for every release candidate.
 ## OAuth 2.0 API
 
 The rules are in `src/homeserver/AGENTS.md` ("OAuth 2.0 API") and `src/oauth/AGENTS.md` ("Rules"); the threats they
-answer are in [the threat model](threat-model.md#oauth-20-api-110-adr-0760-to-adr-0811). On a change to this surface:
+answer are in [the threat model](threat-model.md#oauth-20-api-110-adr-0766-to-adr-0817). On a change to this surface:
 
 - **A new page.** It is built only by `oauth::Page` from `HtmlText` or compile-time text (no concatenated markup, no
-  `<script>`, event handler, `style=` attribute or remote resource; `src/oauth/AGENTS.md` rule 5, ADR-0763, ADR-0772);
+  `<script>`, event handler, `style=` attribute or remote resource; `src/oauth/AGENTS.md` rule 5, ADR-0815, ADR-0772);
   no member of a page-text type has a default initialiser other than `{}` (rule 12, ADR-0800). The response carries
   `oauth::page_headers()` and sets `LocalHttpResponse::page` (rule 6, ADR-0785), and its route is in
   `request_serves_page` so an escaped exception gets the error page (ADR-0810).

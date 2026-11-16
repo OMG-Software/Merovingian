@@ -11,7 +11,7 @@
 namespace merovingian::homeserver
 {
 
-// The one decision on whether the legacy authentication API serves `use` (plan P9, ADR-0761, ADR-0801). Every route
+// The one decision on whether the legacy authentication API serves `use` (plan P9, ADR-0813, ADR-0801). Every route
 // that lists the legacy logins or issues a user a new session asks it, before it reads anything else from the request;
 // never test `legacy_api_enabled` in a route.
 //

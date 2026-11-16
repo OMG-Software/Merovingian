@@ -1163,7 +1163,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/http/AGENTS.md`.
 
 - **Form bodies and cookies are read by the strict readers in `core`** (`FormFields`,
-  `RequestCookies`, ADR-0765, ADR-0766), and cookies are written only by `host_cookie`.
+  `RequestCookies`, ADR-0817, ADR-0766), and cookies are written only by `host_cookie`.
   Why: a lenient reader that resolves a repeated parameter or cookie silently lets one value
   be checked and another used; a cookie without the `__Host-` prefix can be overwritten by a
   sibling host.

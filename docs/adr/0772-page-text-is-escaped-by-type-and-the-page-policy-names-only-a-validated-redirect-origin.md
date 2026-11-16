@@ -9,7 +9,7 @@ redirect target on a bracketed IPv6 host adds only its scheme, `http:`, which CS
 
 ## Context and Problem Statement
 
-[ADR-0763](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md) requires that text reaches a
+[ADR-0815](0815-the-authentication-pages-are-built-into-the-binary-without-javascript.md) requires that text reaches a
 page only through the renderer's escaping. A rule that relies on every caller remembering to escape fails once.
 Chromium also applies the `form-action` directive to the redirect that follows a form post, so the consent page's
 policy must allow the client's redirect target, which comes from the request.

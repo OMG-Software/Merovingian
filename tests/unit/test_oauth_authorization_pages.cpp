@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The pages of the authorisation endpoint (oauth/AuthorizationPages.hpp, ADR-0763, ADR-0772): login, registration,
+// The pages of the authorisation endpoint (oauth/AuthorizationPages.hpp, ADR-0815, ADR-0772): login, registration,
 // consent, error and device (P11) pages, each a pure function of its inputs. Every slot is fed hostile text: markup,
 // quotes, `&`, bidirectional override characters and a 10 KiB value. None may inject markup, and a value that cannot be
 // shown is replaced by fixed text.

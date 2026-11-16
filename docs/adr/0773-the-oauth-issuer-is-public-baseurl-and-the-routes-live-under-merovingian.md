@@ -41,4 +41,4 @@ validation at start-up, naming both keys.
 
 ## Links
 
-* Refines [ADR-0764](0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)
+* Refines [ADR-0816](0816-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)

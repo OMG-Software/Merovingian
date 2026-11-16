@@ -16,7 +16,7 @@
 namespace merovingian::oauth
 {
 
-// The pages of the authorisation endpoint (`GET` and `POST /_merovingian/oauth2/authorize`, ADR-0763): pure functions
+// The pages of the authorisation endpoint (`GET` and `POST /_merovingian/oauth2/authorize`, ADR-0815): pure functions
 // of their inputs, built only with the Page renderer, English and fixed text. The handler sends each with
 // `page_headers()`, the consent page with `page_headers(redirect_target)`.
 //

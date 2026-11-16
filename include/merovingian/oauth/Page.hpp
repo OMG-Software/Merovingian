@@ -13,7 +13,7 @@
 namespace merovingian::oauth
 {
 
-// The one renderer of every HTML page the server serves (ADR-0763, ADR-0772). A page is a title, used as the
+// The one renderer of every HTML page the server serves (ADR-0815, ADR-0772). A page is a title, used as the
 // document title and the heading, and parts in the order they are added. Every part takes HtmlText or a
 // compile-time value, so unescaped text cannot reach the output. The page holds no `<script>`, no event-handler
 // attribute, no `style=` attribute, no `javascript:` or `data:` address and nothing from another origin; its only

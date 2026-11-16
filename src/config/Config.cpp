@@ -1174,7 +1174,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
     }
 
-    // The built-in OAuth 2.0 API (ADR-0760, ADR-0764). Every OAuth address is derived from public_baseurl, so with the
+    // The built-in OAuth 2.0 API (ADR-0812, ADR-0816). Every OAuth address is derived from public_baseurl, so with the
     // API on it must be a base URL the OAuth reader accepts (ADR-0773). The other server.oauth.* keys mean nothing
     // with the API off, and are refused rather than silently ignored.
     auto const& oauth_config = config.server().oauth;
@@ -1196,7 +1196,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     }
     else
     {
-        // ADR-0761: with neither API on no user could log in.
+        // ADR-0813: with neither API on no user could log in.
         if (!oauth_config.legacy_api_enabled)
         {
             findings.push_back({"server.oauth.legacy_api_enabled",

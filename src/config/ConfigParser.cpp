@@ -1015,7 +1015,7 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
-        // The built-in OAuth 2.0 API (ADR-0760). validate() judges how the keys combine.
+        // The built-in OAuth 2.0 API (ADR-0812). validate() judges how the keys combine.
         else if (key == "server.oauth.enabled")
         {
             if (!parse_bool_value(value, server.oauth.enabled))
@@ -1041,13 +1041,13 @@ namespace
         {
             server.oauth.hand_off_redirect_allowlist = parse_string_list(value);
         }
-        // ADR-0764: server.oidc.* only advertised an external server that could not log anyone in. It is refused, not
+        // ADR-0816: server.oidc.* only advertised an external server that could not log anyone in. It is refused, not
         // ignored, so an operator who set it learns that the server now answers auth_metadata itself.
         else if (starts_with(key, "server.oidc."))
         {
             add_parse_finding(findings, std::string{key},
                               "removed in 1.1.0: delete every server.oidc.* line; the OAuth 2.0 API is built in and "
-                              "is turned on with server.oauth.enabled=true (ADR-0764)");
+                              "is turned on with server.oauth.enabled=true (ADR-0816)");
         }
         // Identity server client: allowlists and timeouts for outbound 3PID calls.
         else if (key == "server.identity_server.trusted_servers")

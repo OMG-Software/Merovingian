@@ -1044,7 +1044,7 @@ is left out rather than taking the resident server's value.
 
 ## OAuth 2.0 building blocks (`oauth`)
 
-The built-in OAuth 2.0 API ([ADR-0760](adr/0760-the-oauth-2-0-api-is-built-into-the-homeserver.md), plan in
+The built-in OAuth 2.0 API ([ADR-0812](adr/0812-the-oauth-2-0-api-is-built-into-the-homeserver.md), plan in
 `todos/oauth-2-0-api.md`) is served in part (the sections below). The `oauth` module holds its pure parts, with no state, I/O or logging
 ([ADR-0768](adr/0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)); a refusal is an
 `OAuthRefusal`, the wire `error` code beside a `core::Error` with fixed text. Rules: `src/oauth/AGENTS.md`.
@@ -1278,7 +1278,7 @@ the spec's "Account management" names: `account_management_uri` and all six `org
 
 ## The legacy API beside OAuth 2.0 (phase 9)
 
-- **Switch (ADR-0761, ADR-0801).** `server.oauth.legacy_api_enabled=false` stops the legacy API listing logins and
+- **Switch (ADR-0813, ADR-0801).** `server.oauth.legacy_api_enabled=false` stops the legacy API listing logins and
   issuing users new sessions. `legacy_auth_refusal` (`LegacyAuthPolicy.cpp`) is the one decision, asked by `GET /login`,
   `POST /login`, `POST /register`, both SSO redirects and `POST /login/get_token`: `GET /login`, a user's login, the SSO
   redirects and `get_token` answer `404 M_UNRECOGNIZED`; `m.login.application_service` on `POST /login`, and an

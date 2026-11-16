@@ -6,7 +6,7 @@
 
 ## Context and Problem Statement
 
-The OAuth 2.0 API ([ADR-0760](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)) needs PKCE, a scope parser,
+The OAuth 2.0 API ([ADR-0812](0812-the-oauth-2-0-api-is-built-into-the-homeserver.md)) needs PKCE, a scope parser,
 redirect URI and client metadata validation and a page renderer. Every input is attacker-chosen, some are secrets,
 and every refusal must name an OAuth `error` code (`invalid_scope`, `invalid_redirect_uri`, ...) as well as a
 description. The coding rules return `std::expected<T, core::Error>` (spelt `std::variant` while the toolchain cannot

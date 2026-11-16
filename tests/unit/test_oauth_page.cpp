@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// oauth::Page, the one renderer of the server's HTML pages, and page_headers (ADR-0763, ADR-0772).
+// oauth::Page, the one renderer of the server's HTML pages, and page_headers (ADR-0815, ADR-0772).
 
 #include "merovingian/crypto/Encoding.hpp"
 #include "merovingian/crypto/Sha256.hpp"

@@ -6,7 +6,7 @@
 
 ## Context and Problem Statement
 
-The OAuth 2.0 API ([ADR-0760](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)) makes the homeserver serve
+The OAuth 2.0 API ([ADR-0812](0812-the-oauth-2-0-api-is-built-into-the-homeserver.md)) makes the homeserver serve
 pages to a browser: login, registration, consent and account management. The user types the account password into
 them. Until now the server returned no HTML at all. Where do the pages come from?
 

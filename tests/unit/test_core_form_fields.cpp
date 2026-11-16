@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // core::FormFields: the strict application/x-www-form-urlencoded reader the OAuth 2.0 token, revocation and page
-// endpoints read their bodies with (ADR-0765). Every departure from the grammar refuses the whole body.
+// endpoints read their bodies with (ADR-0817). Every departure from the grammar refuses the whole body.
 
 #include "merovingian/core/ErrorCode.hpp"
 #include "merovingian/core/FormFields.hpp"

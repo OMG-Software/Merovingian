@@ -7,7 +7,7 @@
 ## Context and Problem Statement
 
 The spec lets a homeserver offer the legacy authentication API, the OAuth 2.0 API, or both. Once Merovingian offers
-the OAuth 2.0 API ([ADR-0760](0760-the-oauth-2-0-api-is-built-into-the-homeserver.md)), what happens to
+the OAuth 2.0 API ([ADR-0812](0812-the-oauth-2-0-api-is-built-into-the-homeserver.md)), what happens to
 `POST /login` and `POST /register`?
 
 ## Decision Drivers

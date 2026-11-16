@@ -5,7 +5,7 @@
 * Date: 2026-11-16
 
 Technical Story: plan P9, `server.oauth.legacy_api_enabled=false`, [OAuth 2.0 API plan](../todos/oauth-2-0-api.md),
-[ADR-0761](0761-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md)
+[ADR-0813](0813-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md)
 
 ## Context and Problem Statement
 

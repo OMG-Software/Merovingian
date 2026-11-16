@@ -8,14 +8,14 @@
 namespace merovingian::config
 {
 
-// `server.oauth.*`: the built-in OAuth 2.0 API (ADR-0760, ADR-0764). Off by default. Its addresses are not configured:
+// `server.oauth.*`: the built-in OAuth 2.0 API (ADR-0812, ADR-0816). Off by default. Its addresses are not configured:
 // every one is derived from `server.public_baseurl` (ADR-0773). validate() refuses each non-default value of the last
 // three fields unless `enabled` is true, so a configuration cannot half-enable the API.
 struct OAuthConfig final
 {
     // Serves the OAuth 2.0 API: the metadata at `auth_metadata` and, in later phases, its endpoints and pages.
     bool enabled{false};
-    // With false the legacy login and registration API refuses new user sessions (ADR-0761).
+    // With false the legacy login and registration API refuses new user sessions (ADR-0813).
     bool legacy_api_enabled{true};
     // Serves the device authorization grant (RFC 8628), off by default because it lets an attacker start a login
     // and send the victim the link.

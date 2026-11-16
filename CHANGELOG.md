@@ -8,9 +8,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Features
 
 * A built-in OAuth 2.0 API, which Element X needs to create accounts, planned in `docs/todos/oauth-2-0-api.md`
-  (ADR-0760 to ADR-0764).
+  (ADR-0812 to ADR-0816).
 * Strict form-body and `Cookie` header readers and a `__Host-` `Set-Cookie` builder in `core`, which the OAuth 2.0
-  pages and endpoints read and write with (ADR-0765, ADR-0766).
+  pages and endpoints read and write with (ADR-0817, ADR-0766).
 * A module `oauth` of pure OAuth 2.0 building blocks the endpoints call: PKCE `S256` and the scope parser
   (ADR-0768, ADR-0769).
 * A strict URI reader, redirect URI rules with byte-exact matching, and RFC 7591 client metadata validation with a
@@ -125,7 +125,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   `form-action` gets `http:` for it (ADR-0811).
 * The hand-off confirmation page shows the destination's port, so two loopback applications are told apart.
 * The page queries of `/authorize`, `/link`, `/account` and the SSO redirect read a bare name or an empty field as
-  not sent, as RFC 6749 section 3.1 asks, instead of refusing the request (ADR-0765).
+  not sent, as RFC 6749 section 3.1 asks, instead of refusing the request (ADR-0817).
 * The device and token inserts of a login, a grant and a refresh share one statement each; the SQL is unchanged.
 * `POST /register` works again on FreeBSD's 64 KiB locked-memory limit: the OAuth client ID key is derived per
   registration, not locked for life, and an unreadable token file logs `registration.token_file_unusable` (ADR-0779).
@@ -135,7 +135,7 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
-keys and set `server.oauth.enabled` instead (ADR-0764). The authorisation, token and revocation endpoints and the
+keys and set `server.oauth.enabled` instead (ADR-0816). The authorisation, token and revocation endpoints and the
 account pages at `/_merovingian/account` are served; a user signed in through OAuth changes a password, signs out a
 device, deactivates the account or approves a cross-signing reset there. The device authorization grant is off by
 default; turn on `server.oauth.device_grant_enabled` only if your users sign in devices without a browser. 1.1.0

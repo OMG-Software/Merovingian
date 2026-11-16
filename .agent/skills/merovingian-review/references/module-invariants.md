@@ -196,7 +196,7 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   reset approvals live only in `AccountSessionStore` and `CrossSigningResetApprovals`; a page action calls the client
   API's own function; a password change, reset or deactivation calls `end_account_page_access`; a taken approval is
   spent only after the keys are stored (ADR-0796 to ADR-0798).
-  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
+  `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0812, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).
   `#Federation worker relays are untrusted input`

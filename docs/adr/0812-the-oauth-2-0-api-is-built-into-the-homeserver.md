@@ -45,7 +45,7 @@ an ordinary session in the existing session and token tables.
 ### Negative Consequences
 
 * The homeserver now serves HTML pages to a browser. That is new attack surface, which
-  [ADR-0763](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md) bounds.
+  [ADR-0815](0815-the-authentication-pages-are-built-into-the-binary-without-javascript.md) bounds.
 * Upstream identity providers (signing in with an account held elsewhere) are not part of this decision and are not
   provided.
 
@@ -64,7 +64,7 @@ an ordinary session in the existing session and token tables.
 
 ## Links
 
-* Refined by [ADR-0761](0761-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md),
-  [ADR-0762](0762-the-registration-page-applies-the-legacy-registration-settings.md),
-  [ADR-0763](0763-the-authentication-pages-are-built-into-the-binary-without-javascript.md) and
-  [ADR-0764](0764-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)
+* Refined by [ADR-0813](0813-the-legacy-authentication-api-stays-on-by-default-and-a-config-key-turns-it-off.md),
+  [ADR-0814](0814-the-registration-page-applies-the-legacy-registration-settings.md),
+  [ADR-0815](0815-the-authentication-pages-are-built-into-the-binary-without-javascript.md) and
+  [ADR-0816](0816-server-oauth-replaces-server-oidc-and-the-old-keys-are-refused.md)

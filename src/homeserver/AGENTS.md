@@ -129,7 +129,7 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
    `404 M_UNRECOGNIZED` before authentication (`client_route_is_known`, ADR-0230), so
    a route missing there is unreachable for every caller
 
-## OAuth 2.0 API (ADR-0760, ADR-0773)
+## OAuth 2.0 API (ADR-0812, ADR-0773)
 
 `GET /_matrix/client/v1/auth_metadata` and its MSC2965 unstable path are answered in `ClientServerRuntime.cpp` before
 authentication: `404 M_UNRECOGNIZED` while `server.oauth.enabled` is false, otherwise `oauth::server_metadata`. Every

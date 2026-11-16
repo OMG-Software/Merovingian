@@ -5,7 +5,7 @@
 // |              server.oauth.* PARSING, VALIDATION AND RELOAD TESTS        |
 // |                                                                         |
 // |  Plan: docs/todos/oauth-2-0-api.md, "Configuration"                     |
-// |  ADR-0761 (legacy API switch), ADR-0764 (server.oidc.* refused),        |
+// |  ADR-0813 (legacy API switch), ADR-0816 (server.oidc.* refused),        |
 // |  ADR-0773 (issuer from public_baseurl), ADR-0774 (hand-off allowlist)   |
 // +-------------------------------------------------------------------------+
 

@@ -63,7 +63,7 @@ class ExampleConfigTests(unittest.TestCase):
                 oidc = [line for line in lines if "server.oidc." in line and "=" in line]
 
                 # THEN each server.oauth key is documented, commented out, with its default (off),
-                # and no server.oidc key is left: the server refuses those at start-up (ADR-0764)
+                # and no server.oidc key is left: the server refuses those at start-up (ADR-0816)
                 self.assertEqual(
                     oauth,
                     {
