@@ -6,7 +6,6 @@
 #include "merovingian/canonicaljson/Value.hpp"
 #include "merovingian/core/FormFields.hpp"
 #include "merovingian/database/OAuthStore.hpp"
-#include "merovingian/database/PersistentDevice.hpp"
 #include "merovingian/database/PersistentOAuthSession.hpp"
 #include "merovingian/database/PersistentStore.hpp"
 #include "merovingian/homeserver/AuthService.hpp"
@@ -26,6 +25,7 @@
 #include "merovingian/homeserver/RequestHeaders.hpp"
 #include "merovingian/homeserver/SessionRefreshResult.hpp"
 #include "merovingian/homeserver/SignedInDevice.hpp"
+#include "merovingian/homeserver/StoredDeviceDisplayName.hpp"
 #include "merovingian/oauth/AccessTokenLifetime.hpp"
 #include "merovingian/oauth/ClientMetadata.hpp"
 #include "merovingian/oauth/FormContentType.hpp"
@@ -127,23 +127,6 @@ namespace
             return {};
         }
         return *name;
-    }
-
-    // The display name the device row holds, or empty when there is no row.
-    [[nodiscard]] auto stored_display_name(HomeserverRuntime const& runtime, std::string_view user_id,
-                                           std::string_view device_id) -> std::string
-    {
-        auto name = std::string{};
-        database::for_each_user_device(runtime.database.persistent_store, user_id,
-                                       [&](database::PersistentDevice const& device) {
-                                           if (device.device_id != device_id)
-                                           {
-                                               return true;
-                                           }
-                                           name = device.display_name;
-                                           return false;
-                                       });
-        return name;
     }
 
     [[nodiscard]] auto authorization_code_grant(ClientServerRuntime& rt, core::FormFields const& fields)
@@ -378,7 +361,7 @@ namespace
         // The runtime's device list is healed after a restart, with the device's stored display name; nothing is
         // announced.
         remember_signed_in_device(rt, session.user_id, session.device_id,
-                                  stored_display_name(runtime, session.user_id, session.device_id),
+                                  stored_device_display_name(runtime, session.user_id, session.device_id),
                                   SignedInDevice::refreshed_session);
         auto const* const row =
             database::find_oauth_session(runtime.database.persistent_store, session.user_id, session.device_id);

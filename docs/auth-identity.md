@@ -84,6 +84,9 @@ production-gated.
   an unrevoked row); a retired token older than that is a plain 401, the session survives and no
   `auth.refresh.reuse_detected` row is written. A user's credential rows are bounded by `device_count_limit` times these
   per-device bounds.
+- A refresh whose device is missing from the runtime's in-memory device list (after a restart) lists it again under the
+  display name its device row holds, never its device ID; `POST /refresh` and the OAuth 2.0 refresh grant share
+  `stored_device_display_name` for it (1.1.0).
 - Refresh-token hashes are persisted, rotated, and revoked on single-device
   logout, global logout, device deletion, or password change with
   `logout_devices: true` (spec default) without storing plaintext token

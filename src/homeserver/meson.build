@@ -67,6 +67,7 @@ homeserver_sources = files(
   'SearchRoomIndex.cpp',
   'UserDirectorySearch.cpp',
   'StoredRoomVersion.cpp',
+  'StoredDeviceDisplayName.cpp',
   'StreamTokenEpoch.cpp',
   'RemoteMediaFetchScope.cpp',
   'RequestLockScope.cpp',

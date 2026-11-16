@@ -184,7 +184,7 @@ gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
   client and `created_at_ms`), recorded at the redemption's instant before the grant commits, so nothing that can fail
   follows the commit.
 - **The refresh grant heals the runtime's device list with the device row's stored display name**, never the device
-  ID.
+  ID: `stored_device_display_name` (`StoredDeviceDisplayName.cpp`), which `POST /refresh` calls too.
 - **A session ends through `end_device_session_and_announce`** (`ClientDeviceSessions.hpp`), shared with `POST /logout`:
   revocation, a replayed code, any new path that ends a session.
 - **A UIA endpoint calls `oauth_session_uia_refusal` first** (ADR-0794): `GET`/`POST /login/get_token`,

@@ -335,6 +335,44 @@ SCENARIO("A code presented with the wrong redirect URI, verifier or client is sp
     }
 }
 
+SCENARIO("POST /refresh lists a device the runtime lost under the display name its row holds",
+         "[integration][oauth][legacy-refresh][legacy-refresh-device-name]")
+{
+    GIVEN("alice logged in with POST /login, naming her device and asking for a refresh token")
+    {
+        auto fixture = make_fixture();
+        auto& rt = fixture.started.runtime;
+        auto const login =
+            send(rt, "POST", "/_matrix/client/v3/login", {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},)"
+                 R"("password":")" +
+                     std::string{alice_password} +
+                     R"(","device_id":"NAMEDDEV","initial_device_display_name":"Alice's laptop",)"
+                     R"("refresh_token":true})");
+        REQUIRE(login.status == 200U);
+        auto const refresh_token = member(login, "refresh_token");
+        REQUIRE_FALSE(refresh_token.empty());
+
+        WHEN("the runtime's device list lost the device, as after a restart, and the client refreshes")
+        {
+            std::erase_if(rt.devices, [](auto const& device) {
+                return device.user_id == alice_id && device.device_id == "NAMEDDEV";
+            });
+            auto const refreshed =
+                send(rt, "POST", "/_matrix/client/v3/refresh", {}, R"({"refresh_token":")" + refresh_token + R"("})");
+            auto const healed = std::ranges::find_if(rt.devices, [](auto const& device) {
+                return device.user_id == alice_id && device.device_id == "NAMEDDEV";
+            });
+            THEN("the device is listed again with its stored display name, not its device ID")
+            {
+                REQUIRE(refreshed.status == 200U);
+                REQUIRE(healed != rt.devices.end());
+                CHECK(healed->display_name == "Alice's laptop");
+            }
+        }
+    }
+}
+
 SCENARIO("A grant that cannot be stored leaves nothing, and an account that cannot sign in gets no session",
          "[integration][oauth][oauth-token]")
 {

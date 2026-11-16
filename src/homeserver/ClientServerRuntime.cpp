@@ -135,6 +135,7 @@
 #include "merovingian/homeserver/SpaceHierarchy.hpp"
 #include "merovingian/homeserver/SpaceHierarchyRequest.hpp"
 #include "merovingian/homeserver/StateBookkeeping.hpp"
+#include "merovingian/homeserver/StoredDeviceDisplayName.hpp"
 #include "merovingian/homeserver/StoredPushRules.hpp"
 #include "merovingian/homeserver/StoredRoomVersion.hpp"
 #include "merovingian/homeserver/TurnCredentials.hpp"
@@ -16426,11 +16427,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Repopulates the in-memory device cache only. refresh_local_session has
         // already established that the device row exists in the persistent
         // store, so this can no longer resurrect a deleted device — it only
-        // heals a cache that a restart or a worker split left incomplete.
-        if (find_device(rt, refreshed.user_id, refreshed.device_id) == nullptr)
-        {
-            rt.devices.push_back({refreshed.user_id, refreshed.device_id, refreshed.device_id});
-        }
+        // heals a cache that a restart or a worker split left incomplete, under
+        // the display name the device row holds (as the OAuth refresh grant does).
+        remember_signed_in_device(rt, refreshed.user_id, refreshed.device_id,
+                                  stored_device_display_name(rt.homeserver, refreshed.user_id, refreshed.device_id),
+                                  SignedInDevice::refreshed_session);
         auto response_body = canonicaljson::Object{
             json_member("access_token", json_str(refreshed.access_token)),
             json_member("refresh_token", json_str(refreshed.refresh_token)),
