@@ -6,6 +6,15 @@
 
 Technical Story: phase 4 of the [OAuth 2.0 API plan](../todos/oauth-2-0-api.md), proposal P2
 
+Amended 2026-11-16: the client ID key is no longer cached in `TokenHmacKeys`. Each client registration derives it from
+the master key file (`crypto::derive_oauth_client_id_key_from_file`: one open, then the bytes from that open) and drops
+it when the ID is made. Every cached key is a locked page held for the life of the process, and locked memory is a
+per-process budget (`RLIMIT_MEMLOCK`, 64 KiB by default on FreeBSD, 16 pages). A standing page for a feature that may be
+off pushed the server over that budget on FreeBSD, so the registration token file could no longer be read into locked
+memory and every `POST /register` was refused. Registration is rare and in the `auth_sensitive` rate tier, so a file
+read per registration costs little; do not cache the key again, and do not add a key to `TokenHmacKeys` for any purpose
+but hashing access tokens.
+
 ## Context and Problem Statement
 
 `POST /_merovingian/oauth2/register` is unauthenticated (the spec: "Client registration"), and a client may register
@@ -31,7 +40,7 @@ again on every start. Each registration that makes a row costs storage and count
 Chosen option: a keyed hash. The ID is the unpadded URL-safe base64 of the 32-byte keyed BLAKE2b digest of the
 canonical metadata (`crypto::oauth_client_id`, 43 characters of `A-Z a-z 0-9 - _`). The key is derived from the master
 key with its own label, `merovingian:oauth-client-id:1` (`crypto::derive_oauth_client_id_key`), the way the access-token
-keys are, and is cached with them in `TokenHmacKeys` from one read of the master key file. Canonical bytes make the
+keys are, and is derived from one read of the master key file for each registration (amended above). Canonical bytes make the
 ID independent of key order, repeated list entries and ignored members, so a repeat registration finds its row and only
 touches its last use (at most one write a day, ADR-0777).
 

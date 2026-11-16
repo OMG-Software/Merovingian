@@ -119,8 +119,13 @@ implementing custom cryptographic primitives.
   removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
   under load.
 - **The OAuth 2.0 client ID key** (`derive_oauth_client_id_key`, label `merovingian:oauth-client-id:1`) is derived
-  from the master key like the access-token keys and cached beside them in `TokenHmacKeys` from the same read; the
-  cache fails closed if any of the three cannot be derived. `oauth_client_id` (`OAuthClientId.cpp`) is the keyed
+  from the master key like the access-token keys, but never cached: each client registration derives it with
+  `derive_oauth_client_id_key_from_file` (one open of the master key file, the bytes from that open) and drops it once
+  the ID is made, so it holds locked memory only while a registration runs. Locked memory is a per-process budget
+  (`RLIMIT_MEMLOCK`, 64 KiB by default on FreeBSD); a standing page for this key, held even with the OAuth 2.0 API off,
+  left the registration token file unreadable into locked memory there (ADR-0779, amended). `TokenHmacKeys` holds the
+  two access-token keys only. A key that cannot be derived fails the registration closed (500 `server_error`, logged as
+  `oauth.client.id_key_unavailable`). `oauth_client_id` (`OAuthClientId.cpp`) is the keyed
   BLAKE2b-256 of the canonical client metadata, as unpadded URL-safe base64 (ADR-0779). The key is used for nothing
   else.
 - **Master-key lock failure is fatal.** The secure-file reader rejects an

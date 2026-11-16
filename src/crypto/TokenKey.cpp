@@ -3,9 +3,9 @@
 
 #include "merovingian/crypto/TokenKey.hpp"
 
+#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/crypto/TokenHmacKey.hpp"
 #include "merovingian/crypto/TokenHmacKeys.hpp"
-#include "merovingian/crypto/MasterKey.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 
@@ -85,6 +85,31 @@ auto derive_oauth_client_id_key(std::span<std::uint8_t const> master_key_materia
     return derive_with_label(master_key_material, k_context_oauth_client_id);
 }
 
+auto derive_oauth_client_id_key_from_file(std::string_view path) -> std::optional<TokenHmacKey>
+try
+{
+    if (path.empty())
+    {
+        return std::nullopt;
+    }
+    // ISO-7: the bytes come from this one open, never from a second open by path.
+    auto const opened = open_master_key_file(path);
+    if (!opened.has_value())
+    {
+        return std::nullopt;
+    }
+    auto const material = load_master_key_material(*opened);
+    if (!material.has_value())
+    {
+        return std::nullopt;
+    }
+    return derive_oauth_client_id_key(material->bytes());
+}
+catch (std::bad_alloc const&)
+{
+    return std::nullopt;
+}
+
 auto cached_token_hmac_keys(std::string_view path)
     -> std::shared_ptr<TokenHmacKeys const> // SHARED_PTR: reviewed — locked keys shared by readers
 try
@@ -132,15 +157,13 @@ try
     auto const material = load_master_key_material(*opened);
     auto v3 = material.has_value() ? derive_token_hmac_key_v3(material->bytes()) : std::nullopt;
     auto v4 = material.has_value() ? derive_token_hmac_key(material->bytes()) : std::nullopt;
-    auto client_id = material.has_value() ? derive_oauth_client_id_key(material->bytes()) : std::nullopt;
-    if (!v3.has_value() || !v4.has_value() || !client_id.has_value())
+    if (!v3.has_value() || !v4.has_value())
     {
         cached_identity.clear();
         cached_keys.reset();
         return nullptr;
     }
-    cached_keys = std::make_shared<TokenHmacKeys const>( // SHARED_PTR: reviewed — locked keys shared by readers
-        TokenHmacKeys{std::move(v3), std::move(v4), std::move(client_id)});
+    cached_keys = std::make_shared<TokenHmacKeys const>(TokenHmacKeys{std::move(v3), std::move(v4)});
     cached_identity = opened->identity;
     return cached_keys;
 }

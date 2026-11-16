@@ -22,7 +22,7 @@ or `src/core/SecretBuffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for b
 | `Encoding.cpp` | Hex and base64 (URL-safe and original) encoding wrappers |
 | `MasterKey.cpp` | Loads and validates the operator master key into locked memory; fails closed if it cannot be locked |
 | `SecretBox.cpp` | `SecretBoxKey` — encrypts server signing secrets at rest (`secretbox:v1:` format) |
-| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived keys for `v3`/`v4` access-token hashing and the OAuth client ID (own label, ADR-0779), cached together |
+| `TokenKey.cpp` | `TokenHmacKey` — master-key-derived keys for `v3`/`v4` access-token hashing, cached together (`cached_token_hmac_keys`), and the OAuth client ID key (own label, ADR-0779), derived per registration by `derive_oauth_client_id_key_from_file` and never cached: every cached key is a locked page held for the life of the process, from a per-process budget (`RLIMIT_MEMLOCK`, 64 KiB by default on FreeBSD) the other secrets need too, so `TokenHmacKeys` holds the two access-token keys only (ADR-0779, amended) |
 | `OAuthClientId.cpp` | `oauth_client_id`: keyed BLAKE2b of canonical OAuth client metadata, 43 URL-safe base64 characters (ADR-0779) |
 | `IpcAuthKey.cpp` | `IpcAuthKey` — master-key-derived key that authenticates the federation-worker IPC handshake |
 | `IpcStreamCipher.cpp` | `crypto_kx` session keys and `secretstream` AEAD framing for the IPC channel |

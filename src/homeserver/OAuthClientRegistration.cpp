@@ -203,12 +203,17 @@ auto oauth_client_id_of(HomeserverRuntime const& runtime, oauth::ClientMetadata 
     {
         return std::nullopt;
     }
-    auto const keys = crypto::cached_token_hmac_keys(runtime.config.security().secrets.master_key_file);
-    if (keys == nullptr || !keys->oauth_client_id.has_value())
+    // Derived per call and dropped on return, never held for the life of the process (ADR-0779, amendment of
+    // 2026-11-16): a standing locked page for a feature that may be off cost the server a secret it needed.
+    auto const key = crypto::derive_oauth_client_id_key_from_file(runtime.config.security().secrets.master_key_file);
+    if (!key.has_value())
     {
+        // The master key file is unreadable, insecure or invalid, or no locked memory is left. Nothing about the
+        // request is logged: it has no client ID yet, and its metadata is text of the caller's choosing.
+        log_oauth("oauth.client.id_key_unavailable", {}, observability::LogEventSeverity::error);
         return std::nullopt;
     }
-    return crypto::oauth_client_id(std::get<std::string>(canonical), *keys->oauth_client_id);
+    return crypto::oauth_client_id(std::get<std::string>(canonical), *key);
 }
 
 auto find_registered_oauth_client(HomeserverRuntime const& runtime, std::string_view client_id)

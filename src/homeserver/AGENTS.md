@@ -264,6 +264,10 @@ authentication gate, and also from the general body cap so an oversized body is 
 - Every OAuth answer is built by `oauth_json_response` or `oauth_error_response` (`OAuthJsonResponse.cpp`):
   `application/json`, `Cache-Control: no-store`, `{"error", "error_description"}`. Never build OAuth JSON by hand.
 - The client ID is `oauth_client_id_of` (keyed hash of `canonical_bytes()`, ADR-0779); never mint one another way.
+  Its key is derived per registration (`crypto::derive_oauth_client_id_key_from_file`) and dropped on return; never
+  cache it or add it to `TokenHmacKeys`: a locked page held for the life of the process, even with OAuth off, spent the
+  FreeBSD `RLIMIT_MEMLOCK` budget and cost the server its registration token (ADR-0779, amended 2026-11-16). A key
+  that cannot be derived is the 500 `server_error` "cannot issue client IDs", logged as `oauth.client.id_key_unavailable`.
 - At `ClientApiLimits::max_oauth_clients` a new client evicts at most `max_oauth_client_evictions_per_registration`
   idle clients, never one with a session or one `oauth_client_has_pending_authorisation` names, else 503 with nothing
   stored (ADR-0780). A repeat registration is never refused by the cap.

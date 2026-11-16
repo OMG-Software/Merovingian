@@ -1190,8 +1190,14 @@ namespace
         return std::nullopt;
     }
 
+    // The cache and the report flag below are function-local statics read by every registration thread: every read
+    // and write of either holds `mutex`.
     static auto mutex = std::mutex{};
     static auto cache = std::unordered_map<std::string, CachedRegistrationToken>{};
+    // A configured token file that yields no hash refuses every registration with "registration token rejected",
+    // which a client cannot tell from a wrong token. Say so once per outage, not once per request (the pattern of
+    // crypto::cached_token_hmac_keys); a hash produced again re-arms it.
+    static auto unusable_reported = false;
 
     auto const identity_before = registration_token_file_identity(registration.token_file);
 
@@ -1202,9 +1208,24 @@ namespace
         return it->second.hash;
     }
 
+    // Never the token, the path's contents or the hash: the event and the class of failure only.
+    auto const report_unusable = [](std::string_view reason) {
+        if (unusable_reported)
+        {
+            return;
+        }
+        unusable_reported = true;
+        log_diagnostic("registration.token_file_unusable",
+                       {
+                           {"reason", std::string{reason}, false}
+        },
+                       observability::LogEventSeverity::warning);
+    };
+
     auto secret = read_registration_token_file(registration.token_file);
     if (!secret.has_value())
     {
+        report_unusable("token file unreadable, insecure, over 4096 bytes, or not lockable into memory");
         return std::nullopt;
     }
 
@@ -1218,8 +1239,10 @@ namespace
 
     if (!hash.has_value())
     {
+        report_unusable("token empty or could not be hashed");
         return std::nullopt;
     }
+    unusable_reported = false;
 
     // Only cache when the file did not change under us between the two stats.
     // Caching a hash against an identity it was not derived from would pin a

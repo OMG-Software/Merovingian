@@ -554,6 +554,9 @@ and `client_host` (the host of `client_uri`) only, never the request body or any
 `oauth.client.evicted` (info, idle clients removed at the cap, with `clients` and `limit` in place of the client fields), `oauth.client.cap_reached` (warning, a
 503), and `oauth.client.store_failed` and `oauth.client.touch_failed` (warning). A stored row that no longer
 validates is logged as `oauth.client.stored_metadata_refused` (warning, `client_id` only) each time it is read.
+A registration whose client ID key cannot be derived from the master key file (unreadable, insecure or invalid, or no
+locked memory left) is logged as `oauth.client.id_key_unavailable` (error, no fields) and answered 500 `server_error`;
+the key is derived per registration and never cached (ADR-0779, amended).
 Registration writes no audit row: it is unauthenticated, grants nothing, and is bounded by the `auth_sensitive` rate
 limit, whose 429s are audited as `rate_limit.exceeded`.
 
@@ -623,6 +626,15 @@ logged once under `client_server` at error level as `request.exception`, with `m
 template, no ID and no query) and `type` (the exception's mangled type name, `unknown` where the ABI cannot name it).
 The exception's message is never logged: it can quote request data. A `std::overflow_error` from the sync stream
 counter keeps its own answer and is not logged this way.
+
+## Registration token file diagnostics
+
+When `security.registration.token_file` is set but yields no token hash, every `POST /register` that needs the token
+is refused `403 M_FORBIDDEN` ("registration token rejected"), which a client cannot tell from a wrong token. The `auth`
+module logs `registration.token_file_unusable` (warning) once per outage, not once per request, with one field,
+`reason`: the file could not be read into locked memory (unreadable, insecure, over 4096 bytes, or no locked memory
+left under `RLIMIT_MEMLOCK`), or the token was empty or could not be hashed. The next hash produced re-arms it. The
+token, the file's contents and the hash are never logged.
 
 ## Outbound client request diagnostics (F-76, ADR-0418)
 

@@ -42,9 +42,19 @@ namespace merovingian::crypto
 [[nodiscard]] auto derive_oauth_client_id_key(std::span<std::uint8_t const> master_key_material) noexcept
     -> std::optional<TokenHmacKey>;
 
+// The OAuth 2.0 client ID key derived from the master key file at `path`, on demand: one open, the bytes read from
+// that open (ISO-7), derive, return. Never cached (ADR-0779, amendment of 2026-11-16): locked memory is a per-process
+// budget (64 KiB by default on FreeBSD), and a key held for the life of the process, whether or not the OAuth 2.0 API
+// is on, cost the server a secret it needed. The key and the material it comes from are locked only for the call and
+// the caller's use of the key. Client registration is rare and rate-limited, so the file read per call is acceptable.
+//
+// nullopt when `path` is empty, or the file is unreadable, insecure or invalid, or the key or its material cannot be
+// locked into memory. Logs nothing: the caller knows what the key was for. Thread-safe (no shared state).
+[[nodiscard]] auto derive_oauth_client_id_key_from_file(std::string_view path) -> std::optional<TokenHmacKey>;
+
 static_assert(SecureKeyBytes::key_bytes == crypto_generichash_KEYBYTES);
 
-// The token HMAC keys (and the OAuth 2.0 client ID key) derived from the master key file at `path`, cached
+// The token HMAC keys derived from the master key file at `path`, cached
 // against that file's identity (ISO-7: identity and bytes from one open).
 //
 // CRY-4, PR #509 review: these keys are on every authenticated request's path.

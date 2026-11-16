@@ -127,6 +127,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The page queries of `/authorize`, `/link`, `/account` and the SSO redirect read a bare name or an empty field as
   not sent, as RFC 6749 section 3.1 asks, instead of refusing the request (ADR-0765).
 * The device and token inserts of a login, a grant and a refresh share one statement each; the SQL is unchanged.
+* `POST /register` works again on FreeBSD's 64 KiB locked-memory limit: the OAuth client ID key is derived per
+  registration, not locked for life, and an unreadable token file logs `registration.token_file_unusable` (ADR-0779).
 
 ## Release notes
 
