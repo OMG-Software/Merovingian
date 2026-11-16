@@ -96,8 +96,9 @@ checks for it, but it reads the scenario's own text, so it cannot see a helper t
 `tests/fixtures/upgrade/<release>/` is a database the previous series' last release wrote through its own
 HTTP API (ADR-0216), and `test_database_upgrade_flow.cpp` opens, migrates and serves it on SQLite and on
 PostgreSQL (the `[fixture]` scenarios). Those scenarios read every ID, token and key from `manifest.json`, never
-name one, and never regenerate the fixture with current code. While the schema has not changed since that
-release, the migration is a no-op, and the scenarios must not claim to prove a step that does not exist. The PostgreSQL
+name one, and never regenerate the fixture with current code. The scenarios assert what opening the database does:
+when the schema has changed since that release (1.1.0 adds migration 002), they assert the step was applied, and while it has
+not, the migration is a no-op and they must not claim to prove a step that does not exist. The PostgreSQL
 scenario carries `[postgresql]` and skips without `MEROVINGIAN_TEST_POSTGRESQL_URI`.
 
 ### Scenarios that need a quiet store

@@ -914,8 +914,9 @@ value. Test fixtures that do not exercise persistence select it through
   fixture was removed when the migrations collapsed, 0.12.47, ADR-0224). Two scenarios
   (`[fixture]`, one per backend) open it, run `migrate_*_schema_to`, start the runtime on it and read back the users,
   access tokens, rooms, events, media, account data, pusher and device keys the manifest lists, then send a new
-  event signed with the old release's key. 1.1.0 changes no schema, so that migration is a no-op at v1: the
-  scenarios prove the open-and-migrate path serves a 1.0.3 database, not a v1 to v2 step.
+  event signed with the old release's key. Opening the 1.0.3 database applies migration 002 (the OAuth 2.0 tables), so
+  the scenarios first assert the v1 to v2 step ran: the schema version is `current_schema_version()`, the ledger gained the
+  `oauth_tables` row, and `oauth_clients` and `oauth_sessions` exist and take a row. They then assert everything the manifest lists is still served.
   The PostgreSQL scenario needs `MEROVINGIAN_TEST_POSTGRESQL_URI` and reports itself skipped without it.
 - Both stores read the migration ledger in numeric order
   (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and

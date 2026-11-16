@@ -1325,22 +1325,41 @@ SCENARIO("The 1.0.3 release's own SQLite database is migrated and served by this
         std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
         auto const master_key = write_fixture_master_key(expected.master_key_hex);
         auto const signing_key = sqlite_fixture_signing_key(path, expected.server_name);
+        // The release wrote schema v1: one ledger row, and none of version 2's tables.
+        auto const ledger_rows_before = sqlite_count(path, "SELECT count(*) FROM schema_migrations");
+        auto const oauth_objects_before = sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'oauth%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
             auto const migrated = merovingian::database::migrate_sqlite_schema_to(
                 path.string(), merovingian::database::current_schema_version());
+            // Version 2's tables take a row and give it back; the runtime is not started yet, so nothing else holds the file.
+            auto const oauth_tables_usable =
+                sqlite_execute(path, "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
+                sqlite_count(path, "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
+                sqlite_execute(path, "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 sqlite_fixture_config(path, master_key, expected.server_name));
             REQUIRE(started.started);
             auto const view = view_fixture(started.runtime, expected);
 
-            THEN("the schema is current and everything the old release stored is served")
+            THEN("the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
             {
                 REQUIRE(migrated.ok);
-                // Today the current version is the one the old release wrote: a no-op, not a v1 to v2 step.
+                REQUIRE(expected.schema_version == 1);
+                REQUIRE(ledger_rows_before == 1);
+                REQUIRE(oauth_objects_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
-                REQUIRE(static_cast<std::int64_t>(migrated.state.version) >= expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
+                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM schema_migrations") ==
+                        static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_clients") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM oauth_sessions") == 0);
+                REQUIRE(sqlite_count(path, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND "
+                                           "name = 'idx_oauth_sessions_client_id'") == 1);
+                REQUIRE(oauth_tables_usable);
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);
@@ -1370,21 +1389,39 @@ SCENARIO("The 1.0.3 release's own PostgreSQL database is migrated and served by 
         auto const uri_file = write_uri_file(scratch.conninfo());
         auto const master_key = write_fixture_master_key(expected.master_key_hex);
         auto const signing_key = postgresql_fixture_signing_key(scratch.conninfo(), expected.server_name);
+        // The release wrote schema v1: one ledger row, and none of version 2's tables.
+        auto const ledger_rows_before = pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations");
+        auto const oauth_tables_before =
+            pg_count(scratch.conninfo(), "SELECT count(*) FROM information_schema.tables WHERE "
+                                         "table_schema = 'public' AND table_name LIKE 'oauth%'");
 
         WHEN("the migration path runs on it and the current runtime starts on the result")
         {
             auto const migrated = merovingian::database::migrate_postgresql_schema_to(
                 scratch.conninfo(), merovingian::database::current_schema_version());
+            // Version 2's tables take a row and give it back; the runtime is not started yet.
+            auto const oauth_tables_usable =
+                pg_execute(scratch.conninfo(), "INSERT INTO oauth_clients VALUES ('upgrade-probe', '{}', '0', '0')") &&
+                pg_count(scratch.conninfo(), "SELECT count(*) FROM oauth_clients WHERE client_id = 'upgrade-probe'") == 1 &&
+                pg_execute(scratch.conninfo(), "DELETE FROM oauth_clients WHERE client_id = 'upgrade-probe'");
             auto started = merovingian::homeserver::start_client_server(
                 postgresql_fixture_config(uri_file, master_key, expected.server_name));
             REQUIRE(started.started);
             auto const view = view_fixture(started.runtime, expected);
 
-            THEN("the schema is current and everything the old release stored is served")
+            THEN("the v1 to v2 step ran, version 2's tables are usable, and everything the old release stored is served")
             {
                 REQUIRE(migrated.ok);
+                REQUIRE(expected.schema_version == 1);
+                REQUIRE(ledger_rows_before == 1);
+                REQUIRE(oauth_tables_before == 0);
                 REQUIRE(migrated.state.version == merovingian::database::current_schema_version());
-                REQUIRE(static_cast<std::int64_t>(migrated.state.version) >= expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.version) > expected.schema_version);
+                REQUIRE(static_cast<std::int64_t>(migrated.state.applied_migrations.size()) > ledger_rows_before);
+                REQUIRE(migrated.state.applied_migrations.back().name == "oauth_tables");
+                REQUIRE(pg_count(scratch.conninfo(), "SELECT count(*) FROM schema_migrations") ==
+                        static_cast<std::int64_t>(migrated.state.applied_migrations.size()));
+                REQUIRE(oauth_tables_usable);
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);
