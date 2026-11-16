@@ -350,9 +350,9 @@ namespace
     constexpr auto max_turn_uris = std::size_t{16U};
 
     // Whether `uri` is a TURN URI of RFC 7065, strictly: `turn:` or `turns:`, a host (a name or IPv4 address of ASCII
-    // letters, digits, `.` and `-`, not starting or ending with `.` or `-`, or a bracketed IPv6 literal of hex digits,
-    // `:` and `.`), an optional `:port` of 1 to 65535, and an optional `?transport=udp` or `?transport=tcp`. No
-    // userinfo, path, fragment or other query.
+    // letters, digits, `.` and `-`, not starting or ending with `.` or `-`, or a valid IPv6 address (checked with
+    // inet_pton) in square brackets, of hex digits, `:` and `.`, so no zone identifier), an optional `:port` of 1 to
+    // 65535, and an optional `?transport=udp` or `?transport=tcp`. No userinfo, path, fragment or other query.
     auto is_turn_uri(std::string_view uri) -> bool
     {
         auto const rest = starts_with(uri, "turn:")    ? uri.substr(5U)
@@ -387,9 +387,19 @@ namespace
                 }
                 port = after.substr(1U);
             }
-            if (host.empty() || host.find(':') == std::string_view::npos || !std::ranges::all_of(host, [](char c) {
+            if (host.empty() || host.size() >= INET6_ADDRSTRLEN || host.find(':') == std::string_view::npos ||
+                !std::ranges::all_of(host, [](char c) {
                     return std::isxdigit(static_cast<unsigned char>(c)) != 0 || c == ':' || c == '.';
                 }))
+            {
+                return false;
+            }
+            // Only hex digits, `:` and `.` get here (so no zone identifier); the system parser then says whether they
+            // spell an IPv6 address. The copy is NUL-terminated because the view is not.
+            auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+            std::ranges::copy(host, literal.begin());
+            auto v6 = in6_addr{};
+            if (::inet_pton(AF_INET6, literal.data(), &v6) != 1)
             {
                 return false;
             }

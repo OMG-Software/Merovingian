@@ -106,7 +106,8 @@ SCENARIO("server.turn.uris accepts the RFC 7065 forms and refuses everything els
             for (auto const* good :
                  {"turn:turn.example.org", "turn:turn.example.org:3478", "turn:turn.example.org:3478?transport=udp",
                   "turns:turn.example.org:5349?transport=tcp", "turn:192.0.2.1:3478", "turn:[2001:db8::1]:3478",
-                  "turn:[2001:db8::1]", "turn:a-b.example.org:65535", "turn:turn.example.org:1?transport=tcp"})
+                  "turn:[::1]", "turn:[::ffff:192.0.2.1]:3478?transport=tcp", "turn:[2001:db8::1]",
+                  "turn:a-b.example.org:65535", "turn:turn.example.org:1?transport=tcp"})
             {
                 INFO(good);
                 auto const parsed = parse_uris(good);
@@ -149,7 +150,13 @@ SCENARIO("server.turn.uris accepts the RFC 7065 forms and refuses everything els
                                     "turn:[2001:db8::g]:3478",
                                     "turn:[2001:db8::1]x",
                                     "turn:[2001:db8::1]:",
-                                    "turn:[example.org]"})
+                                    "turn:[example.org]",
+                                    "turn:[:]",
+                                    "turn:[::::]",
+                                    "turn:[12345::1]",
+                                    "turn:[]",
+                                    "turn:[::1",
+                                    "turn:[fe80::1%eth0]"})
             {
                 INFO(bad);
                 auto const parsed = parse_uris(std::string{"turn:ok.example.org,"} + bad);

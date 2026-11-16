@@ -22,8 +22,8 @@ value keeps its meaning.
   `username` and `password`, so it is never unclear which one clients get.
 * "Refused, never repaired" applies to the content of each entry. An entry is refused unless it follows the TURN URI
   grammar of RFC 7065, strictly: `turn:` or `turns:` in lower case; a host, being a name or IPv4 address of ASCII
-  letters, digits, `.` and `-` that does not start or end with `.` or `-`, or an IPv6 literal in square brackets of hex
-  digits, `:` and `.`; an optional `:port`, decimal, 1 to 65535, no sign, not empty; an optional `?transport=udp` or
+  letters, digits, `.` and `-` that does not start or end with `.` or `-`, or a valid IPv6 address in square brackets (hex
+  digits, `:` and `.` only, so no zone identifier, and `inet_pton` must accept it); an optional `:port`, decimal, 1 to 65535, no sign, not empty; an optional `?transport=udp` or
   `?transport=tcp`, exactly. No userinfo, path, fragment or other query. An entry with no host (`turn:?transport=udp`,
   `turn::3478`) would be sent to every client, so it is refused. An entry is also at most 512 bytes of printable ASCII,
   is not a repeat of an earlier entry, and the list holds at most 16 entries. `server.turn.server` has never been validated, and is not
