@@ -70,6 +70,7 @@ homeserver_sources = files(
   'StoredDeviceDisplayName.cpp',
   'StreamTokenEpoch.cpp',
   'RemoteMediaFetchScope.cpp',
+  'RecentlyUnreachableServers.cpp',
   'RequestLockScope.cpp',
   'RuntimeLockRelease.cpp',
   'RestrictedJoin.cpp',

@@ -577,6 +577,7 @@ shell = find_program('sh')
       'unit/test_database_schema.cpp',
       'unit/test_homeserver_auth_service.cpp',
       'unit/test_homeserver_media_service.cpp',
+      'unit/test_homeserver_recently_unreachable_servers.cpp',
       'unit/test_streamed_body.cpp',
       'unit/test_client_outbound_proxy.cpp',
       'unit/test_federation_server_name.cpp',

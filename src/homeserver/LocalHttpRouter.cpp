@@ -3651,6 +3651,17 @@ namespace
         std::size_t max_calls{};
         std::chrono::steady_clock::time_point deadline{};
         bool key_resolution_locally_denied{};
+        // ADR-0760: state events a /state_ids snapshot listed that the origin, asked with GET /event during this
+        // recovery, did not supply (refused, missing, unusable or no answer). A later snapshot in the same recovery
+        // that lists one of them cannot be completed, so it ends without asking again. Only listed state events are
+        // recorded: the per-reference fetch and a snapshot's own target are asked for separately, as before. Never
+        // outlives the recovery; the next deferred retry asks again.
+        std::unordered_set<std::string> unsupplied_events{};
+
+        [[nodiscard]] auto origin_did_not_supply(std::string_view event_id) const -> bool
+        {
+            return unsupplied_events.contains(std::string{event_id});
+        }
 
         [[nodiscard]] auto within_deadline() const noexcept -> bool
         {
@@ -4753,6 +4764,34 @@ namespace
         // event the origin cannot supply (a gap in the auth chain, a state event
         // it will not serve) ends the attempt with nothing stored. The fetches
         // are bounded by max_snapshot_outbound_calls and the shared budget.
+        // ADR-0760: a listed state event the origin already failed to supply in this recovery, and that is neither
+        // held nor stored since, means this snapshot cannot be completed. End it before fetching any of the others,
+        // which phase 1 would fetch only to discard. The failure itself was logged when it happened.
+        if (!budget.unsupplied_events.empty())
+        {
+            auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+            for (auto const& id : needed_ids)
+            {
+                if (!budget.origin_did_not_supply(id) || held.find(id) != held.end())
+                {
+                    continue;
+                }
+                {
+                    auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+                    auto global_guard = RuntimeLock{runtime.mutex};
+                    if (runtime.database.persistent_store.events.contains(id))
+                    {
+                        continue;
+                    }
+                }
+                LOG_DEBUG("backfill_state_ids_snapshot: a listed event was already not supplied in this recovery; "
+                          "room_id=" +
+                          std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
+                          " event_id=" + id);
+                return false;
+            }
+        }
+
         struct SnapshotFetch final
         {
             std::string id{};
@@ -4796,6 +4835,7 @@ namespace
                     fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls, budget);
                 if (!supplied.has_value())
                 {
+                    budget.unsupplied_events.emplace(id);
                     LOG_WARNING("backfill_state_ids_snapshot: a listed event could not be fetched with /event; "
                                 "room_id=" +
                                 std::string{room_id} + " target_event_id=" + std::string{target_event_id} +

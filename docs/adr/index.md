@@ -560,7 +560,7 @@
 * [0635 - An inbound federation origin is asked about once at a time, and its decision is kept for a short time](0635-an-inbound-federation-origin-is-asked-about-once-at-a-time-and-its-decision-is-kept-for-a-short-time.md)
 * [0636 - A blob row is deleted with its last reference, and a removed record holds no reference](0636-a-blob-row-is-deleted-with-its-last-reference-and-a-removed-record-holds-none.md)
 * [0647 - Versions from 1.0.0 are MAJOR.MINOR.BUILD](0647-versions-from-1-0-0-are-major-minor-build.md)
-* [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md)
+* [0648 - The Complement blocker is waived for 1.0.0 only](0648-the-complement-blocker-is-waived-for-1-0-0-only.md) — Extended by ADR-0744: 1.0.1 is waived too
 * [0731 - A spawned worker gets no terminal, and no sandbox profile allows TIOCSTI or TIOCLINUX](0731-a-spawned-worker-gets-no-terminal-and-no-sandbox-profile-allows-tiocsti.md)
 * [0732 - Every published attestation check pins the signing workflow and the ref](0732-every-published-attestation-check-pins-the-signing-workflow-and-the-ref.md) — Partly superseded by ADR-0742: every published file is attested by packages.yml
 * [0719 - One client key holds a sixteenth of the parked-connection budgets, and a readable connection waits a bounded time](0719-one-client-key-holds-a-sixteenth-of-the-parked-connection-budgets-and-a-readable-connection-waits-a-bounded-time.md)
@@ -626,6 +626,7 @@
 * [0741 - Each changelog version has Features, Security Fixes, Bug fixes and Release notes](0741-each-changelog-version-has-features-security-fixes-bug-fixes-and-release-notes.md)
 * [0742 - Fixed build-and-test and package platform lists, and a tag ships what latest ships](0742-build-test-and-package-platform-lists-and-a-tag-ships-what-latest-ships.md)
 * [0743 - Analyses, then build and test jobs, then packages take runners](0743-analyses-then-build-and-test-then-packages-take-runners.md)
+* [0744 - The Complement blocker is also waived for 1.0.1](0744-the-complement-blocker-is-also-waived-for-1-0-1.md)
 * [0745 - A first join into a restricted room stores the resident's verified co-signature](0745-a-first-restricted-join-stores-the-residents-verified-co-signature.md)
 * [0746 - A threaded receipt may name any event whose relation chain reaches the thread root](0746-a-threaded-receipt-may-name-any-event-whose-relation-chain-reaches-the-root.md)
 * [0747 - A remote member may leave through a server whose local members have all left](0747-a-remote-member-may-leave-through-a-server-whose-local-members-have-left.md)
@@ -641,6 +642,8 @@
 * [0757 - Hardened BSD builds link -pie, and the ELF gate reads elftoolchain readelf](0757-hardened-bsd-builds-link-pie-and-the-elf-gate-reads-elftoolchain-readelf.md)
 * [0758 - Every worker shard reloads every changed room, and main tracks each shard's copy](0758-every-worker-shard-reloads-every-changed-room-and-main-tracks-each-shards-copy.md)
 * [0759 - Main builds make_leave and make_knock templates while the worker's reload of the room is pending](0759-main-builds-make-leave-and-make-knock-templates-while-the-workers-reload-is-pending.md)
+* [0760 - A recovery asks the origin for a listed state event at most once](0760-a-recovery-asks-the-origin-for-a-listed-state-event-at-most-once.md)
+* [0761 - A server that gave no answer to a profile lookup is not asked again for a minute](0761-a-server-that-gave-no-answer-to-a-profile-lookup-is-not-asked-again-for-a-minute.md)
 * [0766 - A malformed or repeated cookie makes only its own name unusable](0766-a-malformed-or-repeated-cookie-makes-only-its-own-name-unusable.md)
 * [0767 - A response head the formatter cannot write safely is refused with a 500](0767-a-response-head-the-formatter-cannot-write-safely-is-refused-with-a-500.md)
 * [0768 - The `oauth` module is pure, and carries the wire error beside `core::Error`](0768-the-oauth-module-is-pure-and-carries-the-wire-error-beside-core-error.md)

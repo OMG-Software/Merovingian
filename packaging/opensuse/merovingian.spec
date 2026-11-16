@@ -118,6 +118,9 @@ fi
 * Sun Nov 15 2026 James Chapman <claude@ping.me.uk> - 1.1.0-1
 - Merovingian 1.1.0
 
+* Sun Nov 15 2026 James Chapman <claude@ping.me.uk> - 1.0.3-1
+- Merovingian 1.0.3
+
 * Sat Nov 14 2026 James Chapman <claude@ping.me.uk> - 1.0.2-1
 - Merovingian 1.0.2
 

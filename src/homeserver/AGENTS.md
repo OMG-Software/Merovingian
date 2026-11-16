@@ -792,6 +792,11 @@ only endpoints the spec requires and the origin may be asked for:
   supply, never at a prev_event that was already fetched; held PDUs are placed oldest first afterwards.
 - A snapshot fetches every missing named event before it stores any, so an auth chain the origin cannot supply leaves
   nothing stored.
+- A recovery asks the origin for a listed state event at most once (ADR-0760). A state event a `/state_ids` snapshot
+  listed and the origin did not supply is kept in `BackfillBudget::unsupplied_events`, and a later snapshot that lists
+  it (neither held nor stored since) ends before it fetches any of its events. Only `backfill_state_ids_snapshot`'s listed-event fetch records or consults the set: the
+  per-reference fetch and a snapshot's target fetch ask as before, since the target is fetched again once its state is
+  known (ADR-0069). The set lives only as long as the recovery's `BackfillBudget`; the deferred retry asks again.
 - `verify_and_store_backfilled_event` is called with `runtime.mutex` released. It takes the room stripe and then
   `runtime.mutex` itself once its last signature check (which may fetch a key) is done, and holds them through the
   authorization reads and the write. Never read the store in it before that point.

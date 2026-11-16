@@ -16,7 +16,8 @@ and what has been deliberately dropped.
 ## What blocks 1.0.0
 
 **1.0.0 is released with the Complement blocker waived, not closed.**
-The owner waived it for 1.0.0 only ([ADR-0648](../adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md)).
+The owner waived it for 1.0.0 ([ADR-0648](../adr/0648-the-complement-blocker-is-waived-for-1-0-0-only.md))
+and again for 1.0.1 ([ADR-0744](../adr/0744-the-complement-blocker-is-also-waived-for-1-0-1.md)), but for no later release.
 No green Complement run was ever recorded: the last, run 18 at 0.12.64, had one
 unexpected failure, a restricted-join power-level latency race. The gate for
 1.0.0 was a security audit instead: release-gate audit run 2 at commit 279d4a0b,
@@ -43,7 +44,7 @@ pinned commit against a package whose digest is in the maintainer-signed `SHA256
 green run into a maintainer-signed record, tied to the shipped server binary's SHA-256 and
 attached to the release (ADR-0235, `docs/release-process.md`, "Complement"). Still open: the
 first green full run against a candidate, and the skip list it produces. The blocker
-is waived for 1.0.0 only (see above); it still applies to later releases. Not yet verified: whether
+is waived for 1.0.0 and 1.0.1 only (see above); it applies from 1.0.2 onward. Not yet verified: whether
 Docker's default seccomp profile admits Landlock, and whether the container's memory-lock limit
 fits the master key.
 
