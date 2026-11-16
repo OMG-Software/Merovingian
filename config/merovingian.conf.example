@@ -610,7 +610,8 @@ security.media.decode_in_sandbox=true
 # server.sso.authorization_url. Every key here needs a restart.
 # legacy_api_enabled=false (only with enabled=true) turns off the legacy
 # /login and /register API. device_grant_enabled=true (only with enabled=true)
-# advertises the device authorization grant.
+# serves the device authorization grant: POST /_merovingian/oauth2/device and
+# the code page /_merovingian/oauth2/link, which a reverse proxy must pass.
 # hand_off_redirect_allowlist (only with enabled=true, at most 32 entries) lists
 # https origins (https://app.example.org) and bare private-use schemes
 # (io.element.app:) the legacy SSO redirect's hand-off may return a login

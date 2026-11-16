@@ -12,6 +12,7 @@
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientDeviceSessions.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/OAuthClientCredentials.hpp"
@@ -211,6 +212,90 @@ namespace
         return token_answer(session, oauth_expires_in(runtime), grant.scope);
     }
 
+    // RFC 8628 section 3.4 and 3.5 (ADR-0804): every refusal is 400 with the section's code, except a failed
+    // storage write (500). The device code is spent once the store hands back an approval, whatever follows.
+    [[nodiscard]] auto device_code_grant(ClientServerRuntime& rt, core::FormFields const& fields) -> LocalHttpResponse
+    {
+        constexpr auto grant_type = oauth::grant_type_device_code;
+        auto& runtime = rt.homeserver;
+        auto const client_id = fields.find("client_id");
+        auto const device_code = fields.find("device_code");
+        auto const refuse = [&](std::uint16_t status, std::string_view error_code,
+                                std::string_view description) -> LocalHttpResponse {
+            log_refused(grant_type, error_code, client_id.value_or(std::string_view{}));
+            return oauth_error_response(status, error_code, description);
+        };
+        // RFC 6749 section 3.1: a parameter sent without a value is treated as omitted.
+        if (!client_id.has_value() || client_id->empty() || !device_code.has_value() || device_code->empty())
+        {
+            return refuse(status_bad_request, oauth::error_invalid_request,
+                          "The request lacks client_id or device_code.");
+        }
+        auto const client = find_registered_oauth_client(runtime, *client_id);
+        if (!client.has_value())
+        {
+            return refuse(status_bad_request, oauth::error_invalid_client, "The client is not registered.");
+        }
+        if (!client->has_grant_type(grant_type))
+        {
+            return refuse(status_bad_request, oauth::error_unauthorized_client,
+                          "The client is not registered for the device code grant.");
+        }
+        auto const polled =
+            runtime.oauth_device_authorisations.poll(*device_code, *client_id, oauth_device_clock_ms(runtime));
+        using PollOutcome = DeviceAuthorisationStore::PollOutcome;
+        switch (polled.outcome)
+        {
+        case PollOutcome::expired_token:
+            return refuse(status_bad_request, oauth::error_expired_token,
+                          "The device code is unknown, expired or already used.");
+        case PollOutcome::wrong_client:
+            return refuse(status_bad_request, oauth::error_invalid_grant,
+                          "The device code was not issued to this client.");
+        case PollOutcome::access_denied:
+            return refuse(status_bad_request, oauth::error_access_denied, "The user denied the request.");
+        case PollOutcome::slow_down:
+            return refuse(status_bad_request, oauth::error_slow_down, "Polling too often; wait longer between polls.");
+        case PollOutcome::authorization_pending:
+            // Not logged: a device polls every few seconds until the user answers.
+            return oauth_error_response(status_bad_request, oauth::error_authorization_pending,
+                                        "The user has not answered yet.");
+        case PollOutcome::approved:
+            break;
+        }
+        if (!polled.authorisation.has_value())
+        {
+            return refuse(status_bad_request, oauth::error_expired_token,
+                          "The device code is unknown, expired or already used.");
+        }
+        auto const& approved = *polled.authorisation;
+        if (account_sign_in_gate(runtime, approved.user_id, approved.device_id) !=
+            PasswordLoginVerification::Outcome::verified)
+        {
+            return refuse(status_bad_request, oauth::error_invalid_grant, "The account cannot sign in.");
+        }
+        auto request = OAuthGrantRequest{};
+        request.user_id = approved.user_id;
+        request.device_id = approved.device_id;
+        request.client_id = approved.client_id;
+        request.scope = approved.scope;
+        request.display_name = device_display_name(rt, *client);
+        request.created_at_ms = runtime.oauth_codes.next_session_created_at_ms(oauth_wall_clock_ms());
+        auto const session = grant_oauth_session(runtime, request);
+        if (!session.ok)
+        {
+            if (session.status >= first_server_error_status)
+            {
+                return refuse(status_server_error, oauth::error_server_error,
+                              "The server could not complete the grant.");
+            }
+            return refuse(status_bad_request, oauth::error_invalid_grant, "The session cannot be granted.");
+        }
+        remember_signed_in_device(rt, session.user_id, session.device_id, request.display_name,
+                                  SignedInDevice::new_session);
+        return token_answer(session, oauth_expires_in(runtime), approved.scope);
+    }
+
     [[nodiscard]] auto refresh_token_grant(ClientServerRuntime& rt, core::FormFields const& fields) -> LocalHttpResponse
     {
         constexpr auto grant_type = oauth::grant_type_refresh_token;
@@ -292,6 +377,11 @@ auto handle_oauth_token(ClientServerRuntime& runtime, LocalHttpRequest const& re
     if (*grant_type == oauth::grant_type_refresh_token)
     {
         return refresh_token_grant(runtime, *fields);
+    }
+    // Served only with the device grant on (ADR-0804); off, the grant type is as unknown as any other.
+    if (*grant_type == oauth::grant_type_device_code && runtime.homeserver.config.server().oauth.device_grant_enabled)
+    {
+        return device_code_grant(runtime, *fields);
     }
     log_refused({}, oauth::error_unsupported_grant_type, {});
     return oauth_error_response(status_bad_request, oauth::error_unsupported_grant_type,

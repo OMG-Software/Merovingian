@@ -16,6 +16,7 @@
 #include "merovingian/database/PersistentOAuthClient.hpp"
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/OAuthClock.hpp"
 #include "merovingian/homeserver/OAuthJsonResponse.hpp"
@@ -42,9 +43,9 @@ namespace merovingian::homeserver
 {
 
 // The evictions one registration may make must fit in the idle-client walk after it skipped every client a pending
-// authorisation or an unredeemed code can name (ADR-0782).
+// authorisation, an unredeemed code or a device authorisation can name (ADR-0782, ADR-0805).
 static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes +
-                  max_oauth_client_evictions_per_registration <=
+                  DeviceAuthorisationStore::max_entries + max_oauth_client_evictions_per_registration <=
               database::max_idle_client_rows_examined);
 namespace
 {

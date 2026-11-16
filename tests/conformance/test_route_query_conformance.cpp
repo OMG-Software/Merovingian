@@ -41,10 +41,12 @@ using merovingian::homeserver::ClientServerRuntime;
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
-    // The OAuth 2.0 API is on so that its fixed routes are served and can be checked like the others.
+    // The OAuth 2.0 API and its device grant are on so that their fixed routes are served and can be checked like the
+    // others.
     auto server = merovingian::config::ServerConfig{};
     server.public_baseurl = "https://matrix.example.org";
     server.oauth.enabled = true;
+    server.oauth.device_grant_enabled = true;
     return {
         std::move(server),
         merovingian::config::ListenersConfig{},
@@ -109,7 +111,7 @@ SCENARIO("every client route that matched its whole target answers a request wit
         // Every route that was compared with `req.target == "..."`. A handler may answer anything
         // (a UIA challenge, a 400 for the empty body); what it may not do is answer as though the
         // route does not exist. /logout is last: it ends the session.
-        constexpr auto routes = std::array<Route, 39>{
+        constexpr auto routes = std::array<Route, 42>{
             {
              {"GET", "/.well-known/matrix/client", ""},
              {"GET", "/_matrix/client/versions", ""},
@@ -120,6 +122,9 @@ SCENARIO("every client route that matched its whole target answers a request wit
              {"POST", "/_merovingian/oauth2/authorize", ""},
              {"POST", "/_merovingian/oauth2/token", ""},
              {"POST", "/_merovingian/oauth2/revoke", ""},
+             {"POST", "/_merovingian/oauth2/device", ""},
+             {"GET", "/_merovingian/oauth2/link", ""},
+             {"POST", "/_merovingian/oauth2/link", ""},
              {"GET", "/_merovingian/account", ""},
              {"POST", "/_merovingian/account", ""},
              {"POST", "/_matrix/client/v3/register/email/requestToken", "{}"},

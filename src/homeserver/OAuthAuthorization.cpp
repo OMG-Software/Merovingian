@@ -15,6 +15,7 @@
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/AuthorizationGrant.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/LocalHttpRequest.hpp"
 #include "merovingian/homeserver/LocalHttpRouter.hpp"
@@ -36,6 +37,7 @@
 #include "merovingian/oauth/AuthorizationRedirect.hpp"
 #include "merovingian/oauth/ClientMetadata.hpp"
 #include "merovingian/oauth/ConsentPageInput.hpp"
+#include "merovingian/oauth/DeviceConsentPageInput.hpp"
 #include "merovingian/oauth/FormContentType.hpp"
 #include "merovingian/oauth/FormPostOrigin.hpp"
 #include "merovingian/oauth/GrantedScope.hpp"
@@ -51,15 +53,18 @@
 #include "merovingian/oauth/RedirectUriRules.hpp"
 #include "merovingian/oauth/ResponseMode.hpp"
 #include "merovingian/oauth/ScopeParser.hpp"
+#include "merovingian/oauth/UserCode.hpp"
 #include "merovingian/observability/AuditCategory.hpp"
 #include "merovingian/observability/LogEventSeverity.hpp"
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -82,6 +87,7 @@ namespace
     constexpr auto status_bad_request = std::uint16_t{400U};
     constexpr auto status_unauthorized = std::uint16_t{401U};
     constexpr auto status_forbidden = std::uint16_t{403U};
+    constexpr auto status_conflict = std::uint16_t{409U};
     constexpr auto status_too_many_requests = std::uint16_t{429U};
     constexpr auto status_server_error = std::uint16_t{500U};
     constexpr auto status_unavailable = std::uint16_t{503U};
@@ -256,13 +262,21 @@ namespace
         return runtime.config.security().registration.enabled;
     }
 
-    [[nodiscard]] auto login_form_input(HomeserverRuntime const& runtime, std::string_view pending_id)
-        -> oauth::AccountFormInput
+    [[nodiscard]] auto is_device_sign_in(PendingAuthorisation const& entry) noexcept -> bool
+    {
+        return entry.kind == PendingAuthorisationKind::device_authorization;
+    }
+
+    // The login page offers registration only when it is enabled, and never for a device sign-in, which signs a
+    // device in to an account that exists (ADR-0806).
+    [[nodiscard]] auto login_form_input(HomeserverRuntime const& runtime, std::string_view pending_id,
+                                        PendingAuthorisationKind kind) -> oauth::AccountFormInput
     {
         auto input = oauth::AccountFormInput{};
         input.server_name = runtime.config.server().server_name;
         input.pending_id = pending_id;
-        input.offer_other_form = registration_enabled(runtime);
+        input.offer_other_form =
+            registration_enabled(runtime) && kind != PendingAuthorisationKind::device_authorization;
         return input;
     }
 
@@ -294,10 +308,64 @@ namespace
         return oauth_plain_page(status, oauth::registration_page(input));
     }
 
+    // The answer when a device sign-in's entry ended, was answered, or was taken over by another browser (ADR-0806).
+    [[nodiscard]] auto device_sign_in_ended_page() -> LocalHttpResponse
+    {
+        return oauth_error_page_response(
+            status_bad_request, oauth::HtmlText{"Device sign-in ended"},
+            oauth::HtmlText{"This device sign-in has expired, was already answered, or was continued in another "
+                            "browser. Enter the code your device shows again."});
+    }
+
+    // Logs a device sign-in's answer: the client, the user and the device. Never the user code, the device code or
+    // the cookie.
+    auto log_device_answer(std::string_view event, PendingAuthorisation const& entry) -> void
+    {
+        log_oauth(event,
+                  {
+                      {"client_id", entry.client_id, false},
+                      {"user_id",   entry.user_id,   false},
+                      {"device_id", entry.device_id, false}
+        },
+                  observability::LogEventSeverity::info);
+    }
+
+    // The consent page of a device sign-in (ADR-0806): the code, read again from the device authorisation this browser
+    // still holds, and the client, read again from its registration. No redirect follows, so the page carries the
+    // plain headers.
+    [[nodiscard]] auto device_consent_response(FormPost const& post, std::string_view user_id) -> LocalHttpResponse
+    {
+        auto& runtime = post.runtime.homeserver;
+        auto const device = runtime.oauth_device_authorisations.find_attached(
+            post.entry.device_authorisation_key, post.entry.device_attachment, oauth_device_clock_ms(runtime));
+        auto const metadata = find_registered_oauth_client(runtime, post.entry.client_id);
+        if (!device.has_value() || !metadata.has_value())
+        {
+            return device_sign_in_ended_page();
+        }
+        auto input = oauth::DeviceConsentPageInput{};
+        input.pending_id = post.pending_id;
+        input.user_code = device->user_code;
+        if (metadata->client_name().has_value())
+        {
+            input.client_name = *metadata->client_name();
+        }
+        input.client_host = metadata->client_uri().host_lower();
+        input.user_id = user_id;
+        input.device_id = post.entry.device_id;
+        input.replaces_existing_device =
+            database::has_user_device(runtime.database.persistent_store, user_id, post.entry.device_id);
+        return oauth_plain_page(status_ok, oauth::device_consent_page(input));
+    }
+
     // The consent page for the pending authorisation `post` names, now authenticated as `user_id`. Its policy allows
     // the form post to be answered by a redirect to the matched redirect URI, and to nothing else (ADR-0772).
     [[nodiscard]] auto consent_response(FormPost const& post, std::string_view user_id) -> LocalHttpResponse
     {
+        if (is_device_sign_in(post.entry))
+        {
+            return device_consent_response(post, user_id);
+        }
         auto const& runtime = post.runtime.homeserver;
         if (is_hand_off(post.entry))
         {
@@ -349,13 +417,22 @@ namespace
         {
             return expired_page();
         }
+        // A device sign-in keeps its hold on the device authorisation while its user is active (ADR-0806); one taken
+        // over meanwhile by another browser ends here.
+        auto& devices = post.runtime.homeserver.oauth_device_authorisations;
+        if (is_device_sign_in(post.entry) &&
+            !devices.renew(post.entry.device_authorisation_key, post.entry.device_attachment,
+                           oauth_device_clock_ms(post.runtime.homeserver)))
+        {
+            return device_sign_in_ended_page();
+        }
         return consent_response(post, user_id);
     }
 
     [[nodiscard]] auto handle_login(FormPost const& post, core::FormFields const& fields) -> LocalHttpResponse
     {
         auto& runtime = post.runtime.homeserver;
-        auto input = login_form_input(runtime, post.pending_id);
+        auto input = login_form_input(runtime, post.pending_id, post.entry.kind);
         auto const username = fields.find(oauth::username_field.view());
         auto const password = fields.find(oauth::password_field.view());
         if (!username.has_value() || username->empty() || !password.has_value() || password->empty())
@@ -450,7 +527,7 @@ namespace
         auto& runtime = post.runtime.homeserver;
         if (!registration_enabled(runtime))
         {
-            auto input = login_form_input(runtime, post.pending_id);
+            auto input = login_form_input(runtime, post.pending_id, post.entry.kind);
             input.notice = registration_closed_notice();
             return login_page_response(status_forbidden, input);
         }
@@ -551,6 +628,39 @@ namespace
         return response;
     }
 
+    // `approve` or `deny` of a device sign-in, its pending entry already spent (ADR-0806): the device authorisation is
+    // answered if this browser still holds it, and the browser stays here either way. An approval first judges the
+    // account again; a refused account leaves the device authorisation pending and lets another browser take it.
+    [[nodiscard]] auto finish_device_sign_in(ClientServerRuntime& rt, PendingAuthorisation const& consumed,
+                                             bool approve) -> LocalHttpResponse
+    {
+        auto& runtime = rt.homeserver;
+        auto& devices = runtime.oauth_device_authorisations;
+        if (consumed.user_id.empty())
+        {
+            devices.release(consumed.device_authorisation_key, consumed.device_attachment);
+            return device_sign_in_ended_page();
+        }
+        if (approve && account_sign_in_gate(runtime, consumed.user_id, consumed.device_id) != Outcome::verified)
+        {
+            devices.release(consumed.device_authorisation_key, consumed.device_attachment);
+            log_refused(consumed.client_id, oauth::error_access_denied);
+            return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Sign-in refused"},
+                                             oauth::HtmlText{"This account cannot sign in."});
+        }
+        if (!devices.decide(consumed.device_authorisation_key, consumed.device_attachment, consumed.user_id, approve,
+                            oauth_device_clock_ms(runtime)))
+        {
+            return device_sign_in_ended_page();
+        }
+        auto const event =
+            approve ? std::string_view{"oauth.device.approved"} : std::string_view{"oauth.device.denied"};
+        log_device_answer(event, consumed);
+        append_local_audit(runtime.database, observability::AuditCategory::auth, event, consumed.user_id,
+                           consumed.client_id, consumed.device_id);
+        return oauth_plain_page(status_ok, approve ? oauth::device_approved_page() : oauth::device_denied_page());
+    }
+
     // `approve`: the entry must hold a verified user. It is spent, the account is judged again, and a code bound to the
     // whole request and the user is sent to the client.
     [[nodiscard]] auto handle_approve(FormPost const& post) -> LocalHttpResponse
@@ -569,6 +679,10 @@ namespace
         if (is_hand_off(*consumed))
         {
             return finish_hand_off(post.runtime, *consumed);
+        }
+        if (is_device_sign_in(*consumed))
+        {
+            return finish_device_sign_in(post.runtime, *consumed, true);
         }
         auto const target = client_target(runtime, *consumed);
         if (!target.has_value())
@@ -631,6 +745,10 @@ namespace
             // Nothing is sent to the application: the browser stays on this server (ADR-0802).
             log_hand_off("oauth.hand_off.cancelled", consumed->user_id, observability::LogEventSeverity::info);
             return oauth_plain_page(status_ok, oauth::hand_off_cancelled_page());
+        }
+        if (is_device_sign_in(*consumed))
+        {
+            return finish_device_sign_in(post.runtime, *consumed, false);
         }
         auto const target = client_target(runtime, *consumed);
         if (!target.has_value())
@@ -699,6 +817,13 @@ namespace
         }
         auto const post = FormPost{rt, request, std::string{*pending_id}, std::move(*browser_token), std::move(*entry)};
         auto const action = fields->find(oauth::action_field.view()).value_or(std::string_view{});
+        // A device sign-in signs a device in to an account that exists; it never creates one (ADR-0806).
+        if (is_device_sign_in(post.entry) &&
+            (action == oauth::action_register.view() || action == oauth::action_show_register.view()))
+        {
+            return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"A device can only be signed in to an existing account."});
+        }
         if (action == oauth::action_login.view())
         {
             return handle_login(post, *fields);
@@ -711,7 +836,7 @@ namespace
         {
             if (!registration_enabled(runtime))
             {
-                auto input = login_form_input(runtime, post.pending_id);
+                auto input = login_form_input(runtime, post.pending_id, post.entry.kind);
                 input.notice = registration_closed_notice();
                 return login_page_response(status_ok, input);
             }
@@ -719,7 +844,7 @@ namespace
         }
         if (action == oauth::action_show_login.view())
         {
-            return login_page_response(status_ok, login_form_input(runtime, post.pending_id));
+            return login_page_response(status_ok, login_form_input(runtime, post.pending_id, post.entry.kind));
         }
         if (action == oauth::action_approve.view())
         {
@@ -773,6 +898,7 @@ namespace
                 false};
         }
         auto const hint = authorisation.login_hint;
+        auto const kind = authorisation.kind;
         auto created = runtime.oauth_pending_authorisations.create(
             std::move(authorisation), *browser_token, rate_limit_client_key(request, runtime.config.server()),
             oauth_wall_clock_ms());
@@ -789,7 +915,7 @@ namespace
             {
                 return registration_page_response(status_ok, registration_form_input(runtime, *pending_id));
             }
-            auto input = login_form_input(runtime, *pending_id);
+            auto input = login_form_input(runtime, *pending_id, kind);
             if (hint.has_value())
             {
                 input.username = *hint;
@@ -933,7 +1059,203 @@ namespace
         return std::move(start.response);
     }
 
+    // The link page with `status`, a fixed `error` when there is one, and the code to prefill.
+    [[nodiscard]] auto link_page_response(std::uint16_t status, std::optional<std::string_view> user_code,
+                                          std::optional<oauth::HtmlText> const& error) -> LocalHttpResponse
+    {
+        return oauth_plain_page(status, oauth::device_link_page(user_code, error));
+    }
+
+    // This browser's cookie value, reused when the request carries a well-formed one, else fresh, and the
+    // `Set-Cookie` header that (re)sets it; nullopt when neither a value nor the header could be made.
+    struct BrowserCookie final
+    {
+        std::string token;
+        std::string set_cookie;
+    };
+
+    [[nodiscard]] auto browser_cookie(LocalHttpRequest const& request) -> std::optional<BrowserCookie>
+    {
+        auto token = request_secret_cookie(request, oauth_browser_cookie_name);
+        if (!token.has_value())
+        {
+            token = make_oauth_secret();
+        }
+        if (!token.has_value())
+        {
+            return std::nullopt;
+        }
+        auto cookie = core::host_cookie(oauth_browser_cookie_name, *token, core::CookieSameSite::lax,
+                                        oauth_browser_cookie_max_age_seconds);
+        auto* const header = std::get_if<std::string>(&cookie);
+        if (header == nullptr)
+        {
+            return std::nullopt;
+        }
+        return BrowserCookie{std::move(*token), std::move(*header)};
+    }
+
+    [[nodiscard]] auto link_unavailable_page() -> LocalHttpResponse
+    {
+        return oauth_error_page_response(status_unavailable, oauth::HtmlText{"Sign-in is not available"},
+                                         oauth::HtmlText{"The server cannot start a sign-in now. Try again later."});
+    }
+
+    // `GET /_merovingian/oauth2/link`: the form, prefilled from `user_code` only when it reads as a code, with the
+    // browser cookie the form post needs. Nothing is looked up: the user confirms the code by sending the form.
+    [[nodiscard]] auto handle_link_get(LocalHttpRequest const& request) -> LocalHttpResponse
+    {
+        auto parsed = core::FormFields::parse(request_target_query(request.target));
+        auto const* fields = std::get_if<core::FormFields>(&parsed);
+        auto prefill = std::optional<std::string>{};
+        if (fields != nullptr)
+        {
+            if (auto const typed = fields->find("user_code"); typed.has_value())
+            {
+                prefill = oauth::normalise_user_code(*typed);
+            }
+        }
+        auto const cookie = browser_cookie(request);
+        if (!cookie.has_value())
+        {
+            return link_unavailable_page();
+        }
+        auto response = link_page_response(status_ok, prefill, std::nullopt);
+        response.headers.emplace_back("Set-Cookie", cookie->set_cookie);
+        return response;
+    }
+
+    // A wrong or expired code, counted against the address. The block is logged once, when it is reached.
+    [[nodiscard]] auto wrong_code(ClientServerRuntime& rt, std::string_view client_key, std::uint64_t now_ms)
+        -> LocalHttpResponse
+    {
+        if (rt.homeserver.oauth_user_code_attempts.record_wrong(client_key, now_ms))
+        {
+            log_oauth("oauth.device.throttled",
+                      {
+                          {"client_key", std::string{client_key}, false}
+            },
+                      observability::LogEventSeverity::warning);
+        }
+        return link_page_response(status_bad_request, std::nullopt,
+                                  oauth::HtmlText{"That code is not right, or it has expired. Check the code your "
+                                                  "device shows and try again."});
+    }
+
+    // A wait in milliseconds as retry_after_seconds takes it; the device grant's waits are at most ten minutes.
+    [[nodiscard]] auto clamped_retry_ms(std::uint64_t retry_after_ms) noexcept -> std::uint32_t
+    {
+        return static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+    }
+
+    // `POST /_merovingian/oauth2/link`: the code the user typed (ADR-0805, ADR-0806).
+    [[nodiscard]] auto handle_link_post(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
+    {
+        auto& runtime = rt.homeserver;
+        auto base = oauth::OAuthBaseUrl::read(runtime.config.server().public_baseurl);
+        auto const* base_url = std::get_if<oauth::OAuthBaseUrl>(&base);
+        if (base_url == nullptr)
+        {
+            return link_unavailable_page();
+        }
+        // Before anything is read: another site's post is refused whatever it carries (ADR-0784).
+        if (!oauth::form_post_origin_is_accepted(*base_url, single_request_header(request, "Origin"),
+                                                 single_request_header(request, "Sec-Fetch-Site")))
+        {
+            return oauth_error_page_response(status_forbidden, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form was not sent from a page of this server."});
+        }
+        auto const content_type = single_request_header(request, "Content-Type");
+        if (!content_type.has_value() || !oauth::page_form_content_type_is_accepted(*content_type))
+        {
+            return oauth_error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form could not be read."});
+        }
+        auto parsed = core::FormFields::parse(request.body);
+        auto const* fields = std::get_if<core::FormFields>(&parsed);
+        if (fields == nullptr)
+        {
+            return oauth_error_page_response(status_bad_request, oauth::HtmlText{"Form refused"},
+                                             oauth::HtmlText{"This form could not be read."});
+        }
+        // A post without the page's cookie is not a guess: it is not counted, and the page is sent again with one.
+        auto browser_token = request_secret_cookie(request, oauth_browser_cookie_name);
+        if (!browser_token.has_value())
+        {
+            auto const cookie = browser_cookie(request);
+            if (!cookie.has_value())
+            {
+                return link_unavailable_page();
+            }
+            auto response =
+                link_page_response(status_bad_request, std::nullopt,
+                                   oauth::HtmlText{"Your browser did not send the cookie this page sets. Enter the "
+                                                   "code again; if this repeats, allow cookies for this server."});
+            response.headers.emplace_back("Set-Cookie", cookie->set_cookie);
+            return response;
+        }
+        auto const client_key = rate_limit_client_key(request, runtime.config.server());
+        auto const now_ms = oauth_device_clock_ms(runtime);
+        // The throttle comes before the lookup: a blocked address is not told whether its code is right.
+        if (auto const blocked = runtime.oauth_user_code_attempts.blocked_for_ms(client_key, now_ms);
+            blocked.has_value())
+        {
+            auto const seconds = retry_after_seconds(clamped_retry_ms(*blocked));
+            auto response = link_page_response(
+                status_too_many_requests, std::nullopt,
+                oauth::HtmlText{"Too many wrong codes were entered from your network. Wait a few minutes and try "
+                                "again."});
+            response.headers.emplace_back("Retry-After", std::to_string(seconds));
+            return response;
+        }
+        auto const typed = fields->find(oauth::user_code_field.view());
+        auto const user_code = typed.has_value() ? oauth::normalise_user_code(*typed) : std::nullopt;
+        if (!user_code.has_value())
+        {
+            return wrong_code(rt, client_key, now_ms);
+        }
+        auto attached = runtime.oauth_device_authorisations.attach(*user_code, *browser_token, now_ms);
+        if (std::holds_alternative<DeviceAuthorisationStore::NotFound>(attached))
+        {
+            return wrong_code(rt, client_key, now_ms);
+        }
+        if (auto const* busy = std::get_if<DeviceAuthorisationStore::Busy>(&attached); busy != nullptr)
+        {
+            auto const seconds = retry_after_seconds(clamped_retry_ms(busy->retry_after_ms));
+            auto response = link_page_response(
+                status_conflict, std::nullopt,
+                oauth::HtmlText{"This code is being used to sign in from another browser right now. Try again in two "
+                                "minutes."});
+            response.headers.emplace_back("Retry-After", std::to_string(seconds));
+            return response;
+        }
+        auto& hold = std::get<DeviceAuthorisationStore::Attached>(attached);
+        auto authorisation = PendingAuthorisation{};
+        authorisation.kind = PendingAuthorisationKind::device_authorization;
+        authorisation.client_id = hold.authorisation.client_id;
+        authorisation.device_id = hold.authorisation.device_id;
+        authorisation.scope = hold.authorisation.scope;
+        authorisation.device_authorisation_key = hold.key;
+        authorisation.device_attachment = hold.attachment;
+        auto start = start_sign_in(rt, request, std::move(authorisation), FirstPage::login);
+        if (!start.started)
+        {
+            runtime.oauth_device_authorisations.release(hold.key, hold.attachment);
+        }
+        return std::move(start.response);
+    }
+
 } // namespace
+
+auto handle_oauth_link(ClientServerRuntime& runtime, LocalHttpRequest const& request) -> LocalHttpResponse
+{
+    if (request.method == "POST")
+    {
+        return handle_link_post(runtime, request);
+    }
+    return handle_link_get(request);
+}
 
 auto handle_login_hand_off(ClientServerRuntime& rt, LocalHttpRequest const& request) -> LocalHttpResponse
 {

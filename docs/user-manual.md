@@ -835,8 +835,9 @@ registration (`POST /_merovingian/oauth2/register`), the sign-in pages
 (`/_merovingian/oauth2/authorize`, where a user signs in or creates an account
 and allows the application), the token endpoint
 (`POST /_merovingian/oauth2/token`, the authorization code and refresh grants)
-revocation (`POST /_merovingian/oauth2/revoke`) and the account pages
-(`/_merovingian/account`); the device grant follows. Every authorisation asks
+revocation (`POST /_merovingian/oauth2/revoke`), the account pages
+(`/_merovingian/account`) and, when turned on, the device authorization grant
+(see [The device authorization grant](#the-device-authorization-grant)). Every authorisation asks
 for the password; the server keeps no browser session for it. At most 10000
 client registrations are held; once every held one is in use, a new client is
 answered `503 temporarily_unavailable` until one is freed.
@@ -870,8 +871,8 @@ and the client renews it with its refresh token.
 No address is configured. The issuer is `server.public_baseurl` with one
 trailing slash, and every endpoint is under it: `/_merovingian/oauth2/register`,
 `/_merovingian/oauth2/authorize`, `/_merovingian/oauth2/token`,
-`/_merovingian/oauth2/revoke`, `/_merovingian/oauth2/device` and
-`/_merovingian/account` (ADR-0773). A reverse proxy in front of the server must
+`/_merovingian/oauth2/revoke`, `/_merovingian/oauth2/device`,
+`/_merovingian/oauth2/link` and `/_merovingian/account` (ADR-0773). A reverse proxy in front of the server must
 pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 `/_matrix/`.
 
@@ -879,7 +880,7 @@ pass `/_merovingian/oauth2/` and `/_merovingian/account` through, as it does
 |---|---|---|
 | `server.oauth.enabled` | `false` | Set `true` to serve the OAuth 2.0 API. `server.public_baseurl` must then be an `https` URL with a host and no query, fragment or userinfo (a path is allowed), and `server.sso.authorization_url` must be empty. |
 | `server.oauth.legacy_api_enabled` | `true` | Set `false` to stop the legacy login and registration API issuing new sessions to users (ADR-0761, ADR-0801). Refused unless `server.oauth.enabled=true`, so users always have a way to log in. See [Turning the legacy API off](#turning-the-legacy-api-off). |
-| `server.oauth.device_grant_enabled` | `false` | Set `true` to offer the device authorization grant (RFC 8628): the metadata then lists the device code grant type and `device_authorization_endpoint`. Refused unless `server.oauth.enabled=true`. |
+| `server.oauth.device_grant_enabled` | `false` | Set `true` to serve the device authorization grant (RFC 8628): `POST /_merovingian/oauth2/device`, the code page `/_merovingian/oauth2/link` and the device code grant at the token endpoint, and the metadata lists the grant type and `device_authorization_endpoint`. Off, those routes are `404 M_UNRECOGNIZED` and the grant `unsupported_grant_type`. Refused unless `server.oauth.enabled=true`. See [The device authorization grant](#the-device-authorization-grant). |
 | `server.oauth.hand_off_redirect_allowlist` | (empty) | Comma-separated places the hand-off from the legacy SSO redirect may send the browser: `https` origins (`https://app.example.com`, `https://app.example.com:8443`, nothing after the host or port) and bare private-use schemes (`io.element.app:`), in lower case. Never a URL prefix (ADR-0774). At most 32 entries, none twice. Refused unless `server.oauth.enabled=true`. Empty, any `https` address, a loopback `http` address or a private-use scheme is accepted. See [The hand-off for legacy clients](#the-hand-off-for-legacy-clients). |
 
 The metadata offers `prompt=create` (`prompt_values_supported`) only while
@@ -887,6 +888,36 @@ The metadata offers `prompt=create` (`prompt_values_supported`) only while
 follows the legacy registration settings (ADR-0762).
 
 Every `server.oauth.*` key needs a restart.
+
+##### The device authorization grant
+
+With `server.oauth.device_grant_enabled=true`, a device without a usable browser
+(a television, a command-line client) can be signed in from another device
+(RFC 8628; ADR-0804 to ADR-0806). The device asks
+`POST /_merovingian/oauth2/device` for a code and shows the user a code such as
+`BCDF-GHJK` and the address `/_merovingian/oauth2/link` (or a QR code of the
+address with the code in it). The user opens it in any browser, enters the
+code, signs in with the password, and allows or denies; the device polls the
+token endpoint every 5 seconds and is signed in once the user allows. The page
+never creates an account, and warns first that a different device is being
+signed in: someone who sends a user a code is asking to be let into that
+account, so turn the grant on only if your users need it.
+
+- A code lives 10 minutes and works once.
+- At most 4096 device sign-ins are in progress at once, and 8 from one client
+  address; past either the device is answered `503 temporarily_unavailable`.
+- Five wrong codes entered from one client address in 10 minutes block that
+  address until the 10 minutes end (`429` with `Retry-After`, the right code
+  included). Behind a shared address (a carrier NAT, an office) this blocks
+  everyone there; the log line is `oauth.device.throttled`.
+- One browser at a time signs in with a code. Another browser entering it is
+  answered `409` until the first has been idle for two minutes, after which the
+  second takes over and the first can no longer answer.
+- A restart ends every device sign-in in progress.
+
+The pages and the token endpoint share the `auth_sensitive` rate limit of their
+address (20 a minute), so a device polling from the same network as the
+browser leaves about 8 requests a minute for the pages.
 
 ##### The hand-off for legacy clients
 

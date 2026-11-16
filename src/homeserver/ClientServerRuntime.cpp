@@ -106,6 +106,7 @@
 #include "merovingian/homeserver/OAuthAuthorization.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OAuthClock.hpp"
+#include "merovingian/homeserver/OAuthDeviceAuthorization.hpp"
 #include "merovingian/homeserver/OAuthRevocation.hpp"
 #include "merovingian/homeserver/OAuthTokenEndpoint.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
@@ -4063,6 +4064,8 @@ namespace
             "/_merovingian/oauth2/authorize",
             "/_merovingian/oauth2/token",
             "/_merovingian/oauth2/revoke",
+            "/_merovingian/oauth2/device",
+            "/_merovingian/oauth2/link",
             "/_merovingian/account",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
@@ -4164,6 +4167,8 @@ namespace
             {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
             {"/_merovingian/oauth2/token",                                                  "POST"            },
             {"/_merovingian/oauth2/revoke",                                                 "POST"            },
+            {"/_merovingian/oauth2/device",                                                 "POST"            },
+            {"/_merovingian/oauth2/link",                                                   "GET, POST"       },
             {"/_merovingian/account",                                                       "GET, POST"       },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
@@ -16541,6 +16546,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (req.method == "POST")
         {
             return DispatchResult{DispatchResult::Status::complete, handle_oauth_revoke(rt, req), {}};
+        }
+    }
+    // POST /_merovingian/oauth2/device (spec "Device authorization grant", RFC 8628 section 3.1) and GET and POST
+    // /_merovingian/oauth2/link (its verification page): answered before the access-token gate, and 404 unless both
+    // the OAuth 2.0 API and the device grant are on (ADR-0804). Another method falls through to the 405 gate. The
+    // handlers are OAuthDeviceAuthorization.cpp and OAuthAuthorization.cpp.
+    if (request_path == oauth::device_path.view() || request_path == oauth::link_path.view())
+    {
+        auto const& oauth_config = rt.homeserver.config.server().oauth;
+        if (!oauth_config.enabled || !oauth_config.device_grant_enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (request_path == oauth::device_path.view() && req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_device_authorization(rt, req), {}};
+        }
+        if (request_path == oauth::link_path.view() && (req.method == "GET" || req.method == "POST"))
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_link(rt, req), {}};
         }
     }
     // GET and POST /_merovingian/account (spec "Account management"): the account pages, signed in with the account's

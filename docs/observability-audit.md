@@ -589,6 +589,18 @@ ID), written in the grant's own transaction; `oauth.session.revoked` and `oauth.
 reason `revoked`), written when the session ends, as `auth.logout` is. A refresh grant writes the `auth.refresh` rows of the legacy
 refresh.
 
+## OAuth 2.0 device authorization grant diagnostics and audit (ADR-0804 to ADR-0806)
+
+`POST /_merovingian/oauth2/device` logs under the `oauth` module: `oauth.device.started` (info, `client_id`) and
+`oauth.device.refused` (debug, `error` and, once read, `client_id`). The link page logs `oauth.device.throttled`
+(warning, `client_key`: the client address key the rate limiter uses) once, when an address reaches five wrong codes;
+the wrong codes themselves are not logged. A user's answer is `oauth.device.approved` or `oauth.device.denied` (info,
+`client_id`, `user_id`, `device_id`), and each is also a durable audit row (category `auth`, actor the user, target the
+client ID, reason the device ID). The device code grant logs as the other grants: `oauth.token.refused` (debug,
+`grant_type` `urn:ietf:params:oauth:grant-type:device_code`, `error`, `client_id`), except `authorization_pending`,
+which a polling device answers every few seconds and is not logged, then `oauth.session.granted` with its audit row.
+Never the device code, the user code, the cookie, the pending identifier or the query.
+
 ## OAuth 2.0 account page diagnostics and audit (ADR-0796 to ADR-0798)
 
 `/_merovingian/account` logs under the `oauth` module, with `user_id` only: `account.page.signed_in`,

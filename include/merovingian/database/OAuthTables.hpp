@@ -22,12 +22,13 @@ namespace merovingian::database
 
 // The most idle clients one `OAuthTables::idle_clients` call examines (ADR-0782). The walk runs under `runtime.mutex`
 // and skips every client a pending authorisation or an unredeemed code names, so without a bound its cost was bounded
-// only by the client cap. 16 896 is the 8192 pending authorisations plus the 8192 codes the homeserver can hold (each
-// names one client, so at most 16 384 clients are skipped) plus 512, more than any caller asks for
+// only by the client cap. 20 992 is the 8192 pending authorisations, the 8192 codes and the 4096 device authorisations
+// the homeserver can hold (each names one client, so at most 20 480 clients are skipped, ADR-0805) plus 512, more than
+// any caller asks for
 // (`retention_batch_rows` 500; `RetentionSweep.cpp` and `OAuthClientRegistration.cpp` assert it): a walk that stops
 // here has therefore already found `max` clients or every idle one. A walk that finds nothing within it answers
 // "nothing can go".
-inline constexpr auto max_idle_client_rows_examined = std::size_t{16'896U};
+inline constexpr auto max_idle_client_rows_examined = std::size_t{20'992U};
 
 // The in-memory copy of `oauth_clients` and `oauth_sessions` (migration 002, ADR-0776, ADR-0777). The class owns the
 // rows and shows them read-only, so a writer that bypasses it does not compile and its indexes cannot drift from the

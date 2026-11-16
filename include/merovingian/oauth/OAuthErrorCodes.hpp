@@ -24,11 +24,16 @@ inline constexpr std::string_view error_unsupported_grant_type = "unsupported_gr
 // in a way the client cannot fix.
 inline constexpr std::string_view error_temporarily_unavailable = "temporarily_unavailable";
 inline constexpr std::string_view error_server_error = "server_error";
-// RFC 6749 section 4.1.2.1, sent only in a redirect from the authorisation endpoint: a `response_type` other than
-// `code`, a client not registered for the authorization code grant, and a user who denied the request.
+// RFC 6749 section 4.1.2.1: a `response_type` other than `code`, a client not registered for the grant it uses, and a
+// user who denied the request. The device code grant also answers the last two in JSON (RFC 8628 section 3.5).
 inline constexpr std::string_view error_unsupported_response_type = "unsupported_response_type";
 inline constexpr std::string_view error_unauthorized_client = "unauthorized_client";
 inline constexpr std::string_view error_access_denied = "access_denied";
+// RFC 8628 section 3.5, from the token endpoint's device code grant (ADR-0804): the user has not answered yet; the
+// device polled sooner than its interval (which grows by five seconds); the device code is unknown, expired or spent.
+inline constexpr std::string_view error_authorization_pending = "authorization_pending";
+inline constexpr std::string_view error_slow_down = "slow_down";
+inline constexpr std::string_view error_expired_token = "expired_token";
 // OpenID Connect Core 1.0 section 3.1.2.6: `prompt=none`, which this server cannot honour because every authorisation
 // asks for the password (ADR-0787).
 inline constexpr std::string_view error_login_required = "login_required";

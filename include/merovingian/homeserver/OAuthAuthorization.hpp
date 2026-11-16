@@ -56,6 +56,24 @@ inline constexpr auto max_oauth_login_hint_bytes = std::size_t{255U};
 [[nodiscard]] auto handle_oauth_authorize(ClientServerRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
 
+// `GET` and `POST /_merovingian/oauth2/link`, the device authorization grant's verification page (RFC 8628 section
+// 3.3; plan P11; ADR-0804 to ADR-0806). The dispatcher has matched the path and the method and checked that
+// `server.oauth.enabled` and `server.oauth.device_grant_enabled` are both true. Every answer is a page marked
+// `LocalHttpResponse::page`.
+//
+// `GET` answers the code form with the browser cookie, prefilled from the query's `user_code` only when
+// oauth::normalise_user_code reads it; it looks nothing up. `POST` is refused with a 403 page unless
+// oauth::form_post_origin_is_accepted accepts it, and with a 400 page unless FormFields reads it. Without the cookie
+// it is the form again (400, a fresh cookie, not counted). Then, in order: an address `UserCodeAttemptThrottle` blocks
+// gets 429 with `Retry-After` and no lookup; a code that does not read, or names no live pending device authorisation,
+// is the same 400 page and counts against the address; a device authorisation another browser holds is 409 with
+// `Retry-After`; otherwise this browser holds it and a pending authorisation of kind `device_authorization` starts on
+// the login page (no registration), whose forms post to `/_merovingian/oauth2/authorize` and end on the device consent
+// page. Same lock rules as handle_oauth_authorize. Never logs the code, the query or the cookie; logs
+// `oauth.device.throttled` with the client key when an address reaches the limit.
+[[nodiscard]] auto handle_oauth_link(ClientServerRuntime& runtime, LocalHttpRequest const& request)
+    -> LocalHttpResponse;
+
 // How long a login token minted by the hand-off can be redeemed. The spec recommends around five seconds for an SSO
 // login token ("Client login via SSO"); 30 seconds leaves room for a mobile operating system to switch to the
 // application, and the token is still single use (ADR-0802).

@@ -23,8 +23,9 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `OAuthBaseUrl.cpp` | `OAuthBaseUrl::read`: `server.public_baseurl` as an `https` URL with a host and no query; `issuer()` (one trailing slash) and `url(PagePath)` (ADR-0773) |
 | `ServerMetadata.cpp`, `ServerMetadataOptions.hpp` | `server_metadata`: the `auth_metadata` document, device grant, `prompt=create` and account management fields only when their option is on |
 | `AuthorizationRedirect.cpp` | `percent_encode_redirect_value`, `authorization_redirect_address`: the answer's parameters percent-encoded (everything but the unreserved characters) into the query or the fragment of a matched redirect URI |
-| `AuthorizationPages.cpp`, `AccountFormInput.hpp`, `ConsentPageInput.hpp` | The login, registration, consent and error pages of `/_merovingian/oauth2/authorize`, and the form field and action names they post. A value `HtmlText::escape` refuses is replaced by fixed text |
+| `AuthorizationPages.cpp`, `AccountFormInput.hpp`, `ConsentPageInput.hpp`, `DeviceConsentPageInput.hpp` | The login, registration, consent and error pages of `/_merovingian/oauth2/authorize`, the device grant's link, consent and answer pages (ADR-0806: the consent page's warning comes first), and the form field and action names they post. A value `HtmlText::escape` refuses is replaced by fixed text |
 | `AccountPages.cpp`, `AccountPageFrame.hpp`, `AccountDeviceRow.hpp`, `AccountSignInInput.hpp` | The account pages of `/_merovingian/account` (ADR-0796): sign-in, overview, devices, one device, device sign-out, password, deactivation, cross-signing reset and result pages; the six spec actions (`account_management_actions`, `account_management_action`, `account_action_takes_device`), `account_action_address` (every link, the post-sign-in redirect and the `m.oauth` URL), and the form field and action names. Every signed-in form carries `form_token`; a page whose token cannot be shown holds no form |
+| `UserCode.cpp` | The device authorization grant's user code (ADR-0805): `user_code_from_bytes` (rejection sampling over `BCDFGHJKLMNPQRSTVWXZ`), `normalise_user_code` (the rule 2 exception below) and `display_user_code` (`XXXX-XXXX`) |
 | `FormPostOrigin.cpp` | `form_post_origin`, `form_post_origin_is_accepted`: a page's form post must name this server's origin exactly, and `Sec-Fetch-Site`, when sent, `same-origin` (ADR-0784) |
 | `HandOffRedirect.cpp` | `hand_off_redirect_target` (`https`, loopback `http` or a private-use scheme, then the allowlist) and `hand_off_return_address` (every `loginToken` removed, the new one added) for the legacy SSO redirect's hand-off (ADR-0802) |
 | `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
@@ -38,7 +39,10 @@ Pure functions and value types for the built-in OAuth 2.0 API
    a password typed into a page). A function that needs the runtime, the database or the clock belongs in
    `src/homeserver/`.
 2. **Refuse, never repair.** Every reader has a hard cap with its reason beside it, refuses instead of truncating,
-   stripping or normalising, and its error text is fixed: it never quotes the input.
+   stripping or normalising, and its error text is fixed: it never quotes the input. The one exception is
+   `normalise_user_code`, because RFC 8628 section 6.1 asks the server to accept a user code however it is typed: it
+   reads lower case as upper and skips `-`, space, `.` and `_`, and still refuses every other byte and anything over
+   its cap (ADR-0805). Do not add another.
 3. **Every address a client supplies is read with `ParsedUri::read`.** Never `http::parse_outbound_url`, which
    canonicalises through libcurl and knows no private-use scheme, and never a private parser. A redirect URI is
    checked with `validate_redirect_uri` at registration and found with `match_redirect_uri` on every request; the
@@ -77,13 +81,16 @@ Pure functions and value types for the built-in OAuth 2.0 API
 `[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`),
 `test_oauth_form_post_origin.cpp` (`[oauth][form-origin]`), `test_oauth_page_response.cpp`
 (`[oauth][page-response]`), `test_oauth_authorization_redirect.cpp` (`[oauth][redirect-address]`),
-`test_oauth_authorization_pages.cpp` (`[oauth][authorize-page]`), `test_oauth_hand_off_redirect.cpp`
+`test_oauth_authorization_pages.cpp` (`[oauth][authorize-page]`, the device pages `[device]`),
+`test_oauth_user_code.cpp` (`[oauth][user-code]`), `test_oauth_hand_off_redirect.cpp`
 (`[oauth][hand-off-redirect]`), `test_oauth_account_pages.cpp` (`[oauth][account-page]`). The account pages:
 `tests/conformance/test_oauth_account_management_conformance.cpp` and
 `tests/integration/test_oauth_account_pages_flow.cpp` (`[oauth-account]`, `[oauth-uia]`). The hand-off:
 `tests/conformance/test_oauth_aware_clients_conformance.cpp` and `tests/integration/test_oauth_login_hand_off_flow.cpp`
 (`[hand-off]`). The authorisation endpoint:
 `tests/conformance/test_oauth_authorization_conformance.cpp` and `tests/integration/test_oauth_authorization_flow.cpp`
-(`[oauth-authorize]`). The served document:
+(`[oauth-authorize]`). The device grant: `tests/unit/test_oauth_device_authorisation_store.cpp`,
+`tests/conformance/test_oauth_device_grant_conformance.cpp` and `tests/integration/test_oauth_device_grant_flow.cpp`
+(`[oauth-device]`). The served document:
 `tests/conformance/test_oauth_metadata_conformance.cpp` and `tests/integration/test_oauth_metadata_flow.cpp`
 (`[oauth]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`, `fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.

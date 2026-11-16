@@ -10,6 +10,7 @@
 #include "merovingian/oauth/PageForm.hpp"
 #include "merovingian/oauth/SubmitButton.hpp"
 #include "merovingian/oauth/TextInput.hpp"
+#include "merovingian/oauth/UserCode.hpp"
 
 #include <array>
 #include <optional>
@@ -243,6 +244,81 @@ auto hand_off_cancelled_page() -> Page
 {
     auto page = Page{HtmlText{"Sign-in cancelled"}};
     page.paragraph(HtmlText{"The application was not signed in. You can close this page."});
+    return page;
+}
+
+auto device_link_page(std::optional<std::string_view> user_code, std::optional<HtmlText> const& error) -> Page
+{
+    auto page = Page{HtmlText{"Sign in a device"}};
+    page.paragraph(HtmlText{"Enter the code your other device shows, such as a TV or a computer without a browser. "
+                            "You then sign in here and choose whether to let that device into your account."});
+    if (error.has_value())
+    {
+        page.error(*error);
+    }
+    auto input = TextInput{user_code_field, HtmlText{"Code"}, HtmlName{"off"}};
+    if (user_code.has_value())
+    {
+        input.value = HtmlText::escape(display_user_code(*user_code));
+    }
+    auto form = PageForm{link_path};
+    std::ignore = form.input(input);
+    std::ignore = form.button(SubmitButton{HtmlName{"continue"}, HtmlName{"continue"}, HtmlText{"Continue"}});
+    std::ignore = page.form(form);
+    return page;
+}
+
+auto device_consent_page(DeviceConsentPageInput const& input) -> Page
+{
+    auto page = Page{HtmlText{"Sign in a different device"}};
+    // The warning comes first (ADR-0806): the code may have been sent by someone else to get into this account.
+    page.error(HtmlText{"You are about to sign in a different device, not this browser. Continue only if you started "
+                        "this sign-in yourself on that device and the code below is the one it shows. If someone "
+                        "sent you this code or link, deny."});
+    auto const client_name = input.client_name.has_value() ? shown(*input.client_name, "An application with no name")
+                                                           : HtmlText{"An application with no name"};
+    auto const details = std::array{
+        PageDetail{HtmlText{"Code on the device"},
+                   shown(display_user_code(input.user_code), "a code that cannot be shown")},
+        PageDetail{HtmlText{"Application"}, client_name},
+        PageDetail{HtmlText{"Application website"}, shown(input.client_host, "an address that cannot be shown")},
+        PageDetail{HtmlText{"Account"}, shown(input.user_id, "an account that cannot be shown")},
+        PageDetail{HtmlText{"Device ID"}, shown(input.device_id, "a device that cannot be shown")},
+    };
+    page.details(details);
+    page.paragraph(HtmlText{"If you allow it, that device gets full access to your account: it can read and send your "
+                            "messages, join and leave rooms and change your settings, as you can."});
+    if (input.replaces_existing_device)
+    {
+        page.notice(HtmlText{"Your account already has a session with this device ID. Allowing access signs that "
+                             "session out and replaces it."});
+    }
+    auto const pending = pending_value(input.pending_id);
+    if (!pending.has_value())
+    {
+        add_cannot_continue(page);
+        return page;
+    }
+    auto form = PageForm{authorize_path};
+    form.hidden(pending_field, *pending);
+    std::ignore = form.button(SubmitButton{action_field, action_approve, HtmlText{"Allow"}});
+    std::ignore = form.button(SubmitButton{action_field, action_deny, HtmlText{"Deny"}});
+    std::ignore = page.form(form);
+    return page;
+}
+
+auto device_approved_page() -> Page
+{
+    auto page = Page{HtmlText{"Device signed in"}};
+    page.paragraph(
+        HtmlText{"Return to your other device: it finishes signing in on its own. You can close this page."});
+    return page;
+}
+
+auto device_denied_page() -> Page
+{
+    auto page = Page{HtmlText{"Device not signed in"}};
+    page.paragraph(HtmlText{"The other device was not let into your account. You can close this page."});
     return page;
 }
 

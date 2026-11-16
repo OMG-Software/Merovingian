@@ -259,7 +259,8 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
 
 ## src/oauth
 
-- No state, I/O or logging; caps stated and refused at, never truncated; errors quote no input. `src/oauth/AGENTS.md#Rules`
+- No state, I/O or logging; caps stated and refused at, never truncated; errors quote no input; `normalise_user_code`
+  is the only reader that normalises (ADR-0805). `src/oauth/AGENTS.md#Rules`
 - Client addresses only through `ParsedUri::read`; redirect URIs matched byte for byte by `match_redirect_uri`
   (ADR-0770). No redirect before the client and its redirect URI are validated.
 - HTML only through `Page` with `HtmlText` or compile-time parts; every page sends `page_headers()`; only a matched
@@ -271,6 +272,10 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   `src/homeserver/AGENTS.md`
 - The legacy login hand-off confirms before every redirect, re-reads `redirectUrl` with `hand_off_redirect_target`,
   and is a kind of `PendingAuthorisation`, not a copied handler (ADR-0802). `src/homeserver/AGENTS.md`
+- The device grant keeps its entries only in `DeviceAuthorisationStore` and its wrong codes only in
+  `UserCodeAttemptThrottle`, both on `oauth_device_clock_ms`; the link page checks origin, cookie and throttle before
+  any lookup; one browser answers a code; a device sign-in creates no account and its consent page warns first; a
+  redeemed device code is `expired_token` (ADR-0804 to ADR-0806). `src/homeserver/AGENTS.md`
 
 ## src/observability
 

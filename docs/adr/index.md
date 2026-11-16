@@ -685,3 +685,6 @@
 * [0801 - One function decides the legacy API switch, and each refused use answers as the spec says](0801-one-function-decides-the-legacy-api-switch-and-each-refused-use-answers-as-the-spec-says.md)
 * [0802 - The legacy SSO redirect hands off to the built-in pages, always confirms, and mints a 30-second login token](0802-the-legacy-sso-redirect-hands-off-to-the-built-in-pages-confirms-and-mints-a-30-second-login-token.md)
 * [0803 - The client-server dispatch boundary answers an escaped exception with a 500 and logs only its type](0803-the-client-server-dispatch-boundary-answers-an-escaped-exception-with-a-500-and-logs-only-its-type.md)
+* [0804 - The device authorization grant answers RFC 8628, and a redeemed device code is expired](0804-the-device-authorization-grant-answers-rfc-8628-and-a-redeemed-device-code-is-expired.md)
+* [0805 - Device authorisations and user codes are held in memory, capped, and guessing is throttled per address](0805-device-authorisations-and-user-codes-are-held-in-memory-capped-and-guessing-is-throttled-per-address.md)
+* [0806 - A device sign-in warns first, creates no account, and runs in one browser at a time](0806-a-device-sign-in-warns-first-creates-no-account-and-runs-in-one-browser-at-a-time.md)

@@ -996,7 +996,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
 ## OAuth 2.0 API
 
 - **The `oauth` module holds no state, does no I/O and logs nothing; every reader has a stated cap, refuses rather
-  than truncates or repairs, and never quotes its input in an error.**
+  than truncates or repairs, and never quotes its input in an error.** The one reader that normalises is
+  `normalise_user_code`, which RFC 8628 section 6.1 requires; it skips only four separators and folds only case.
   Why: its inputs are attacker-chosen and some are secrets (PKCE verifiers, page passwords); a validator that repairs
   input checks one value and lets another through (CWE-20), and an error that echoes input leaks it into logs and
   pages (CWE-532).
@@ -1108,6 +1109,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   accepts, read again at every step, and only after the signed-in user confirmed on a page naming it.**
   Why: the spec's own example is a link that sends a victim's login token to `evil.com` (CWE-601, CWE-352); an
   allowlist alone does not stop a link spending the victim's session on a listed application (ADR-0802).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A device authorization grant's user code is looked up only for an address the wrong-code throttle lets through,
+  a wrong, expired and answered code are one answer, one browser at a time answers a code, and the consent page warns
+  first and never creates an account.**
+  Why: a user code has about 34.5 bits, so its strength is the throttle (CWE-307); a different answer for an expired
+  code tells a guesser it was once right (CWE-204); and the grant lets an attacker send a victim a code for the
+  attacker's device, which only the victim's informed refusal stops (CWE-451, ADR-0804 to ADR-0806).
   Source: `src/homeserver/AGENTS.md`.
 
 ## HTTP and network boundary

@@ -16,7 +16,8 @@ namespace merovingian::homeserver
 // and then approve or deny it (plan P5, ADR-0782). `PendingAuthorisationStore` holds it in memory under the hash of a
 // random identifier, bound to the browser by the hash of a cookie value.
 //
-// Every field but the last three is the request as the handler validated it, never repaired. The store sets
+// Every field but `user_id`, `client_address_key` and `created_at_ms` is the request as the handler validated it, never
+// repaired. The store sets
 // `created_at_ms` and `client_address_key` from its own arguments and starts `user_id` empty.
 struct PendingAuthorisation final
 {
@@ -47,6 +48,9 @@ struct PendingAuthorisation final
     std::string client_address_key{};
     // When the store took the entry, in milliseconds since the epoch.
     std::uint64_t created_at_ms{0U};
+    // A device sign-in only (ADR-0806): the `DeviceAuthorisationStore` entry's key and this browser's attachment to it.
+    std::string device_authorisation_key{};
+    std::uint64_t device_attachment{0U};
 };
 
 } // namespace merovingian::homeserver

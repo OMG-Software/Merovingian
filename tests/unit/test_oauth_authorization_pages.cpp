@@ -2,19 +2,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The pages of the authorisation endpoint (oauth/AuthorizationPages.hpp, ADR-0763, ADR-0772): login, registration,
-// consent and error, each a pure function of its inputs. Every slot is fed hostile text: markup, quotes, `&`,
-// bidirectional override characters and a 10 KiB value. None may inject markup, and a value that cannot be shown is
-// replaced by fixed text.
+// consent, error and device (P11) pages, each a pure function of its inputs. Every slot is fed hostile text: markup,
+// quotes, `&`, bidirectional override characters and a 10 KiB value. None may inject markup, and a value that cannot be
+// shown is replaced by fixed text.
 
 #include "merovingian/oauth/AccountFormInput.hpp"
 #include "merovingian/oauth/AuthorizationPages.hpp"
 #include "merovingian/oauth/ConsentPageInput.hpp"
+#include "merovingian/oauth/DeviceConsentPageInput.hpp"
 #include "merovingian/oauth/HtmlText.hpp"
 #include "merovingian/oauth/ParsedUri.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -336,6 +338,128 @@ SCENARIO("The error page shows its title and message and no form", "[oauth][auth
                 REQUIRE(contains(html, "<h1>Sign-in expired</h1>"));
                 REQUIRE(contains(html, "Return to the application and start again."));
                 REQUIRE_FALSE(contains(html, "<form"));
+            }
+        }
+    }
+}
+
+SCENARIO("The device link page offers the code form and prefills only a code", "[oauth][authorize-page][device]")
+{
+    GIVEN("a stored user code and no code")
+    {
+        WHEN("the link page is rendered with each, and with an error")
+        {
+            auto const prefilled = merovingian::oauth::device_link_page("BCDFGHJK", std::nullopt).render();
+            auto const empty = merovingian::oauth::device_link_page(std::nullopt, std::nullopt).render();
+            auto const refused =
+                merovingian::oauth::device_link_page(std::nullopt, HtmlText{"That code is not right."}).render();
+
+            THEN("the form posts to the link page with the code field, shown as two groups of four when prefilled")
+            {
+                for (auto const* html : {&prefilled, &empty, &refused})
+                {
+                    REQUIRE(contains(*html, R"(action="/_merovingian/oauth2/link")"));
+                    REQUIRE(contains(*html, R"(name="user_code")"));
+                    REQUIRE(contains(*html, R"(autocomplete="off")"));
+                    REQUIRE(count(*html, "<form ") == 1U);
+                }
+                REQUIRE(contains(prefilled, R"(value="BCDF-GHJK")"));
+                REQUIRE_FALSE(contains(empty, "BCDF"));
+                REQUIRE(contains(refused, "That code is not right."));
+                REQUIRE_FALSE(contains(prefilled, "That code is not right."));
+            }
+        }
+    }
+}
+
+SCENARIO("The device consent page warns first, escapes every value and posts allow or deny",
+         "[oauth][authorize-page][device][security]")
+{
+    GIVEN("a client whose name, user ID and device ID hold markup")
+    {
+        auto input = merovingian::oauth::DeviceConsentPageInput{};
+        input.pending_id = pending;
+        input.user_code = "BCDFGHJK";
+        input.client_name = markup;
+        input.client_host = "tv.example.com";
+        input.user_id = markup;
+        input.device_id = markup;
+
+        WHEN("the consent page is rendered")
+        {
+            auto const html = merovingian::oauth::device_consent_page(input).render();
+
+            THEN("the warning comes before the code, and every value is escaped")
+            {
+                require_no_injection(html);
+                REQUIRE(count(html, markup_escaped) == 3U);
+                auto const warning = html.find("not this browser");
+                auto const code = html.find("BCDF-GHJK");
+                REQUIRE(warning != std::string::npos);
+                REQUIRE(code != std::string::npos);
+                REQUIRE(warning < code);
+                REQUIRE(contains(html, "If someone sent you this code or link, deny."));
+                REQUIRE(contains(html, "<bdi>tv.example.com</bdi>"));
+                REQUIRE(contains(html, "full access to your account"));
+                REQUIRE_FALSE(contains(html, "signs that session out"));
+            }
+
+            THEN("one form posts the pending identifier to the authorisation endpoint with allow and deny")
+            {
+                REQUIRE(count(html, "<form ") == 1U);
+                REQUIRE(contains(html, R"(action="/_merovingian/oauth2/authorize")"));
+                REQUIRE(contains(html, std::string{R"(name="pending" value=")"} + std::string{pending} + "\""));
+                REQUIRE(contains(html, R"(name="action" value="approve")"));
+                REQUIRE(contains(html, R"(name="action" value="deny")"));
+            }
+        }
+    }
+
+    GIVEN("a client with a bidirectional override in its name, a device the user holds, and a bad pending identifier")
+    {
+        auto const bidi_name = with_bidi("Television");
+        auto const hostile_pending = with_bidi("abc");
+        auto input = merovingian::oauth::DeviceConsentPageInput{};
+        input.pending_id = hostile_pending;
+        input.user_code = "BCDFGHJK";
+        input.client_name = bidi_name;
+        input.client_host = "tv.example.com";
+        input.user_id = "@alice:example.org";
+        input.device_id = "TVDEVICE";
+        input.replaces_existing_device = true;
+
+        WHEN("the consent page is rendered")
+        {
+            auto const html = merovingian::oauth::device_consent_page(input).render();
+
+            THEN("the name is the fixed phrase, the replacement is noticed, and no form is offered")
+            {
+                require_no_injection(html);
+                REQUIRE(contains(html, "<bdi>An application with no name</bdi>"));
+                REQUIRE_FALSE(contains(html, "Television"));
+                REQUIRE(contains(html, "signs that session out and replaces it"));
+                REQUIRE_FALSE(contains(html, "<form"));
+                REQUIRE(contains(html, "This sign-in cannot continue."));
+            }
+        }
+    }
+}
+
+SCENARIO("The device answer pages send the user back to the device and hold no form", "[oauth][authorize-page][device]")
+{
+    GIVEN("an approval and a denial")
+    {
+        WHEN("both pages are rendered")
+        {
+            auto const approved = merovingian::oauth::device_approved_page().render();
+            auto const denied = merovingian::oauth::device_denied_page().render();
+
+            THEN("the approval says to return to the other device, and neither has a form")
+            {
+                REQUIRE(contains(approved, "Return to your other device"));
+                REQUIRE(contains(denied, "was not let into your account"));
+                REQUIRE_FALSE(contains(approved, "<form"));
+                REQUIRE_FALSE(contains(denied, "<form"));
             }
         }
     }

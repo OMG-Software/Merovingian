@@ -30,10 +30,11 @@ inline constexpr auto expired_access_token_grace = std::chrono::hours{24 * 7};
 // with a session is never deleted: "The server MUST NOT delete client registrations that have an active session."
 inline constexpr auto oauth_client_retention = std::chrono::hours{24 * 30};
 
-// Whether, at `now_ms` (milliseconds since the epoch), a live pending authorisation or a live unredeemed
-// authorisation code names `client_id`, so its client must not be deleted under it (ADR-0780, ADR-0782). O(1): it asks
-// `HomeserverRuntime::oauth_pending_authorisations` and `oauth_codes`, never scans them. The retention sweep and the
-// registration cap (`register_oauth_client`) both ask it before deleting a client. Called with
+// Whether, at `now_ms` (milliseconds since the epoch), a live pending authorisation, a live unredeemed authorisation
+// code or a live device authorisation names `client_id`, so its client must not be deleted under it (ADR-0780,
+// ADR-0782, ADR-0805). O(1): it asks `HomeserverRuntime::oauth_pending_authorisations`, `oauth_codes` and
+// `oauth_device_authorisations` (at `now_ms` plus `test_device_grant_clock_advance_ms`), never scans them. The
+// retention sweep and the registration cap (`register_oauth_client`) both ask it before deleting a client. Called with
 // HomeserverRuntime::mutex held.
 [[nodiscard]] auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, std::string_view client_id,
                                                           std::uint64_t now_ms) -> bool;

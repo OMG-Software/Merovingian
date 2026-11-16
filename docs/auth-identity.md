@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration, authorization, token and revocation endpoints are served (see "OAuth 2.0 client registration", "OAuth 2.0 authorisation pages" and "OAuth 2.0 token and revocation endpoints" below); the account pages are served (see "OAuth 2.0 account pages" below); the device authorisation endpoint is not served yet; it lands in a later phase of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration, authorization, token and revocation endpoints are served (see "OAuth 2.0 client registration", "OAuth 2.0 authorisation pages" and "OAuth 2.0 token and revocation endpoints" below); the account pages are served (see "OAuth 2.0 account pages" below); the device authorization grant is served when `server.oauth.device_grant_enabled` is also true (see "OAuth 2.0 device authorization grant" below). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker
@@ -1279,6 +1279,45 @@ the spec's "Account management" names: `account_management_uri` and all six `org
   `hand_off`, and answers 303 to `oauth::hand_off_return_address` (old `loginToken` parameters removed). `deny` answers
   a page. `POST /login` `m.login.token` redeems from that store when get_token or the hand-off is on.
   `complete_sso_login` is not used: it needs `server.sso.*`, which cannot be set with OAuth on.
+
+## OAuth 2.0 device authorization grant (phase 10)
+
+Served only while `server.oauth.enabled` and `server.oauth.device_grant_enabled` are both true; otherwise the routes are
+`404 M_UNRECOGNIZED` and the token endpoint answers the grant `unsupported_grant_type` (P11, ADR-0804 to ADR-0806).
+
+- **Device endpoint.** `POST /_merovingian/oauth2/device` (`handle_oauth_device_authorization`,
+  `OAuthDeviceAuthorization.cpp`) takes the form body the token endpoint takes: a registered client (`invalid_client`)
+  listing `urn:ietf:params:oauth:grant-type:device_code` (`unauthorized_client`) and the spec scope (`parse_scope`).
+  It answers `device_code` (32 random bytes), `user_code` shown as `XXXX-XXXX`, `verification_uri`
+  (`/_merovingian/oauth2/link`), `verification_uri_complete` (the same with `?user_code=`), `expires_in` 600 and
+  `interval` 5. A full store is `503 temporarily_unavailable`.
+- **Store (ADR-0805).** `DeviceAuthorisationStore` (`HomeserverRuntime::oauth_device_authorisations`), in memory, under
+  the hash of the device code, with an index by the hash of the user code; 4096 entries, 8 per client address key,
+  never evicting a live one. A live entry keeps its client from the retention sweep and the registration cap
+  (`oauth_client_has_pending_authorisation`). User codes are eight of `BCDFGHJKLMNPQRSTVWXZ`, drawn by rejection
+  sampling and unique among live entries; `oauth::normalise_user_code` reads them in any case with `-`, space, `.` and
+  `_` skipped, and refuses anything else.
+- **Link page.** `GET /_merovingian/oauth2/link` sets the `__Host-mv-oauth` cookie and prefills a `user_code` that reads
+  as one; it looks nothing up. The form post is checked for its origin, then the cookie (without one: the form again
+  with a cookie, not counted), then `UserCodeAttemptThrottle`: five wrong codes from an address in ten minutes block it
+  until the ten minutes end (429, no lookup). A wrong, expired or answered code is one 400 page. A right one starts a
+  `PendingAuthorisation` of kind `device_authorization` on the login page through the same `start_sign_in` as
+  `/authorize`; its forms post there, with the same Origin check, cookie, pending cap and login throttle.
+- **One browser (ADR-0806).** Typing the right code attaches the browser to the entry for two minutes, renewed when its
+  user signs in. Another browser is answered 409 with `Retry-After` until the lease lapses, and then takes over: the
+  earlier browser's sign-in ends with the "Device sign-in ended" page. Only the browser holding the latest attachment
+  can answer.
+- **Consent.** A device sign-in never offers or accepts registration (403). After the password the consent page warns
+  first that a different device is being signed in and to deny a code someone else sent, then shows the code, the
+  client's name and `client_uri` host, the account and the device ID, the full-access statement and the replacement
+  notice. `approve` spends the pending entry, judges the account again (`account_sign_in_gate`; a refused account
+  releases the device entry), records the answer and shows "return to your other device"; `deny` records a denial.
+  Nothing is redirected; the device learns the answer by polling.
+- **Token grant.** `grant_type=urn:ietf:params:oauth:grant-type:device_code` with `device_code` and `client_id`: the
+  client checks of the device endpoint, then the store: `expired_token` (unknown, expired or already redeemed),
+  `invalid_grant` (another client's code), `access_denied`, `slow_down` (sooner than the interval since the last poll;
+  the interval grows by five seconds for good), `authorization_pending`. An approved code is redeemed once:
+  `account_sign_in_gate` again, then `grant_oauth_session` and the same answer as the code grant.
 
 ## Next starting points
 

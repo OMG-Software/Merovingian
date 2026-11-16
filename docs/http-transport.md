@@ -997,6 +997,18 @@ else is `400 invalid_request`. Every answer is built by `oauth_json_response`, `
 clients exist: a `client_secret` field is `400 invalid_client`, and an `Authorization: Basic` header `401
 invalid_client` with `WWW-Authenticate: Basic`. A body over `max_body_bytes` gets the general `413 M_TOO_LARGE`.
 
+`POST /_merovingian/oauth2/device` and `GET` and `POST /_merovingian/oauth2/link` (ADR-0804 to ADR-0806) are routed
+the same way (`static_routes`, `auth_sensitive`, `client_static_route_allow` rows of `POST` and of `GET, POST`), before
+the authentication gate, and are `404 M_UNRECOGNIZED` unless `server.oauth.enabled` and
+`server.oauth.device_grant_enabled` are both true. The device endpoint is an API endpoint: a form body as the token
+endpoint takes it, JSON answers from `oauth_json_response` with `Cache-Control: no-store` and the CORS headers, and
+`503 temporarily_unavailable` when the store is full. The link page is a page (`LocalHttpResponse::page`, no CORS
+header): its `GET` sets the `__Host-mv-oauth` cookie and prefills a `user_code` from the query, and its form post is
+checked with `form_post_origin_is_accepted` before the body is read. A wrong or expired code is `400`, an address
+that reached five wrong codes in ten minutes is `429` with `Retry-After` (before the code is looked up), and a code
+another browser holds is `409` with `Retry-After`. The device polls the token endpoint every 5 seconds, 12 requests
+a minute in the 20 of `auth_sensitive`; the pages from the same address share that bucket.
+
 `GET` and `POST /_merovingian/account` (ADR-0796) are routed the same way (`static_routes`, `auth_sensitive`, a
 `client_static_route_allow` row of `GET, POST`, so another method is `405`), before the authentication gate, and are
 `404 M_UNRECOGNIZED` with the API off. Every answer is a page or a 303 marked `LocalHttpResponse::page`, so none carries

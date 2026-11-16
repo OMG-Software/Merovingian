@@ -26,6 +26,7 @@
 #include "merovingian/homeserver/ClientOutboundProxy.hpp"
 #include "merovingian/homeserver/ClientOutboundProxyPolicy.hpp"
 #include "merovingian/homeserver/CrossSigningResetApprovals.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/InboundTypingUser.hpp"
 #include "merovingian/homeserver/LocalDatabase.hpp"
 #include "merovingian/homeserver/LocalRoom.hpp"
@@ -40,6 +41,7 @@
 #include "merovingian/homeserver/SessionTable.hpp"
 #include "merovingian/homeserver/TestOnlyForcedOutboundResolution.hpp"
 #include "merovingian/homeserver/TypingExpiry.hpp"
+#include "merovingian/homeserver/UserCodeAttemptThrottle.hpp"
 #include "merovingian/http/InFlightBudget.hpp"
 #include "merovingian/http/OutboundClient.hpp"
 #include "merovingian/http/OutboundRequest.hpp"
@@ -246,6 +248,14 @@ struct HomeserverRuntime final
     // either names is never deleted (`oauth_client_has_pending_authorisation`).
     PendingAuthorisationStore oauth_pending_authorisations{};
     AuthorizationCodeStore oauth_codes{};
+    // The device authorization grant's authorisations and the wrong user codes typed on its link page, counted per
+    // address (plan P11, ADR-0804, ADR-0805). In memory only, bounded. Guarded by `mutex`. Both take their time from
+    // `oauth_device_clock_ms`; a client a live device authorisation names is never deleted either.
+    DeviceAuthorisationStore oauth_device_authorisations{};
+    UserCodeAttemptThrottle oauth_user_code_attempts{};
+    // Test-only: added to the wall clock by `oauth_device_clock_ms`, so a test moves the device grant's time (expiry,
+    // polling interval, the wrong-code window) without sleeping. Always 0 in production.
+    std::uint64_t test_device_grant_clock_advance_ms{0U};
     // The signed-in sessions of the account pages at `/_merovingian/account` (plan P6, ADR-0796) and the cross-signing
     // reset approvals they grant (ADR-0797). In memory only, bounded. Here, not on `ClientServerRuntime`, because a
     // password change, a password reset and a deactivation (`AuthService.cpp`) end them. Guarded by `mutex`.

@@ -4,11 +4,13 @@
 
 #include "merovingian/oauth/AccountFormInput.hpp"
 #include "merovingian/oauth/ConsentPageInput.hpp"
+#include "merovingian/oauth/DeviceConsentPageInput.hpp"
 #include "merovingian/oauth/HtmlName.hpp"
 #include "merovingian/oauth/HtmlText.hpp"
 #include "merovingian/oauth/Page.hpp"
 #include "merovingian/oauth/ParsedUri.hpp"
 
+#include <optional>
 #include <string_view>
 
 namespace merovingian::oauth
@@ -57,6 +59,25 @@ inline constexpr auto action_deny = HtmlName{"deny"};
     -> Page;
 // The page a cancelled hand-off ends on: nothing is sent to the application.
 [[nodiscard]] auto hand_off_cancelled_page() -> Page;
+// The pages of the device authorization grant (plan P11; ADR-0804, ADR-0806). None redirects anywhere: each is sent
+// with `page_headers()`.
+//
+// The field the link page's form posts the typed code in.
+inline constexpr auto user_code_field = HtmlName{"user_code"};
+// The link page (`GET` and `POST /_merovingian/oauth2/link`): one input for the code the other device shows, posting
+// to `link_path`. `user_code`, a stored-form code, is prefilled as `XXXX-XXXX` (from `verification_uri_complete`);
+// `error` is a fixed message about the last attempt.
+[[nodiscard]] auto device_link_page(std::optional<std::string_view> user_code, std::optional<HtmlText> const& error)
+    -> Page;
+// The consent page of a device sign-in. It opens with the warning that a different device is being signed in and that
+// the user should continue only if they started this themselves and the code matches; then the code, the application,
+// its website, the account and the device ID; the statement of full access; the notice when the device's session is
+// replaced; and Allow and Deny posting to `authorize_path`.
+[[nodiscard]] auto device_consent_page(DeviceConsentPageInput const& input) -> Page;
+// The pages a device sign-in ends on: approved (return to the other device, which finishes on its own) and denied.
+[[nodiscard]] auto device_approved_page() -> Page;
+[[nodiscard]] auto device_denied_page() -> Page;
+
 // A page that only says what went wrong: `title` and one paragraph, no form.
 [[nodiscard]] auto error_page(HtmlText title, HtmlText const& message) -> Page;
 

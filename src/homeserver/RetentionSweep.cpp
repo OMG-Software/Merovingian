@@ -9,6 +9,7 @@
 #include "merovingian/database/PersistentStoreBackend.hpp"
 #include "merovingian/database/UnusableCredentials.hpp"
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
+#include "merovingian/homeserver/DeviceAuthorisationStore.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
 #include "merovingian/homeserver/KeyServerCache.hpp"
 #include "merovingian/homeserver/LocalServices.hpp"
@@ -32,9 +33,11 @@
 namespace merovingian::homeserver
 {
 
-// A batch of the client sweep must fit in the idle-client walk after it skipped every client a pending authorisation
-// or an unredeemed code can name, or a walk that stopped at its bound could hide a client that may go (ADR-0782).
-static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes + retention_batch_rows <=
+// A batch of the client sweep must fit in the idle-client walk after it skipped every client a pending authorisation,
+// an unredeemed code or a device authorisation can name, or a walk that stopped at its bound could hide a client that
+// may go (ADR-0782, ADR-0805).
+static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::max_codes +
+                  DeviceAuthorisationStore::max_entries + retention_batch_rows <=
               database::max_idle_client_rows_examined);
 
 namespace
@@ -229,7 +232,9 @@ auto oauth_client_has_pending_authorisation(HomeserverRuntime const& runtime, st
                                             std::uint64_t now_ms) -> bool
 {
     return runtime.oauth_pending_authorisations.holds_live_entry_for_client(client_id, now_ms) ||
-           runtime.oauth_codes.holds_unredeemed_code_for_client(client_id, now_ms);
+           runtime.oauth_codes.holds_unredeemed_code_for_client(client_id, now_ms) ||
+           runtime.oauth_device_authorisations.holds_live_entry_for_client(
+               client_id, now_ms + runtime.test_device_grant_clock_advance_ms);
 }
 
 auto run_retention_sweep(HomeserverRuntime& runtime, std::chrono::system_clock::time_point now, StopFlag const& stop)

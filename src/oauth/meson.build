@@ -20,6 +20,7 @@ oauth_sources = files(
   'RedirectUriRules.cpp',
   'ScopeParser.cpp',
   'ServerMetadata.cpp',
+  'UserCode.cpp',
 )
 
 # Pure functions only: no runtime state, no I/O, no logging (src/oauth/AGENTS.md).

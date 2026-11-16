@@ -68,6 +68,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   `inhibit_login`, and sessions already issued carry on (ADR-0801).
 * With OAuth on, `GET /login` prefers `m.login.sso`, whose redirect signs in on the built-in pages, confirms, and
   returns a single-use 30-second `loginToken` to `redirectUrl` (ADR-0802).
+* `server.oauth.device_grant_enabled` serves the device authorization grant: `POST /_merovingian/oauth2/device`, the
+  code page `/_merovingian/oauth2/link` and the device code grant, as RFC 8628 answers it (ADR-0804).
+* Device sign-ins are held in memory, 4096 at most and 8 per address; five wrong codes block an address for the rest
+  of ten minutes (ADR-0805).
+* A device sign-in's consent page warns first that another device is being signed in, never creates an account, and
+  one browser at a time answers a code (ADR-0806).
 
 ## Security Fixes
 
@@ -95,9 +101,10 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
 keys and set `server.oauth.enabled` instead (ADR-0764). The authorisation, token and revocation endpoints and the
 account pages at `/_merovingian/account` are served; a user signed in through OAuth changes a password, signs out a
-device, deactivates the account or approves a cross-signing reset there. 1.1.0 migrates the database: on first
-start it applies migration 002, which adds two empty tables and changes no existing one. A 1.0.x server refuses the
-migrated database, so back it up before upgrading if you may need to go back.
+device, deactivates the account or approves a cross-signing reset there. The device authorization grant is off by
+default; turn on `server.oauth.device_grant_enabled` only if your users sign in devices without a browser. 1.1.0
+migrates the database: on first start it applies migration 002, which adds two empty tables and changes no existing
+one. A 1.0.x server refuses the migrated database, so back it up before upgrading if you may need to go back.
 
 # Version 1.0.2
 

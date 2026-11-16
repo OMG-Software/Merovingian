@@ -16,6 +16,10 @@ enum class PendingAuthorisationKind : std::uint8_t
     // The legacy SSO redirect's hand-off: the confirmation page, then a login token added to the `redirectUrl` the
     // hand-off accepted (`oauth::hand_off_redirect_target`). No client is registered for it.
     login_token_hand_off,
+    // A device authorisation reached from the link page (plan P11, ADR-0806): the device consent page, then the
+    // `DeviceAuthorisationStore` entry is approved or denied. No redirect: `redirect_uri`, `state`, `code_challenge`
+    // and `login_hint` stay empty, and the page offers no registration.
+    device_authorization,
 };
 
 } // namespace merovingian::homeserver
