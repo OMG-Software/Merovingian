@@ -16,6 +16,7 @@
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
+#include "merovingian/homeserver/AuthService.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/ClientServerStartResult.hpp"
 #include "merovingian/homeserver/LocalHttpResponse.hpp"
@@ -380,6 +381,143 @@ SCENARIO("/.well-known/matrix/client carries rtc_foci only when a service is con
             {
                 REQUIRE(response.status == 200U);
                 CHECK(response.body == R"({"m.homeserver":{"base_url":"https://matrix.example.org"}})");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto send(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& method,
+                        std::string const& target, std::string const& token = {})
+    -> merovingian::homeserver::LocalHttpResponse
+{
+    return merovingian::homeserver::handle_client_server_request(runtime, {method, target, token, {}}).response;
+}
+
+[[nodiscard]] auto header_of(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
+    -> std::string
+{
+    for (auto const& [header_name, value] : response.headers)
+    {
+        if (header_name == name)
+        {
+            return value;
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] auto errcode_of(merovingian::homeserver::LocalHttpResponse const& response) -> std::string
+{
+    auto const body = parse_object(response.body);
+    auto const* errcode = string_member(body, "errcode");
+    return errcode == nullptr ? std::string{} : *errcode;
+}
+
+constexpr auto turn_path = "/_matrix/client/v3/voip/turnServer";
+constexpr auto rtc_stable_path = "/_matrix/client/v1/rtc/transports";
+constexpr auto rtc_unstable_path = "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports";
+
+} // namespace
+
+SCENARIO("The MatrixRTC routes refuse other methods as voip/turnServer does", "[homeserver][rtc][client-server]")
+{
+    GIVEN("a server with a LiveKit service URL and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(voip_config(rtc_server(livekit_url)));
+        REQUIRE(started.started);
+        auto const token = login(started.runtime);
+
+        WHEN("POST and PUT are sent to each route and to voip/turnServer")
+        {
+            THEN("each route answers the same status, errcode and Allow header as voip/turnServer")
+            {
+                for (auto const* method : {"POST", "PUT"})
+                {
+                    auto const reference = send(started.runtime, method, turn_path, token);
+                    REQUIRE(reference.status == 405U);
+                    for (auto const* path : {rtc_stable_path, rtc_unstable_path})
+                    {
+                        INFO(method << ' ' << path);
+                        auto const response = send(started.runtime, method, path, token);
+                        CHECK(response.status == reference.status);
+                        CHECK(errcode_of(response) == errcode_of(reference));
+                        CHECK(header_of(response, "Allow") == header_of(reference, "Allow"));
+                        CHECK(header_of(response, "Allow") == "GET");
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("The MatrixRTC routes treat a locked or suspended account as voip/turnServer does",
+         "[homeserver][rtc][client-server]")
+{
+    GIVEN("a logged-in user whose account is then locked or suspended")
+    {
+        auto server = rtc_server(livekit_url);
+        server.turn.server = "turn:turn.example.org:3478";
+        server.turn.username = "turnuser";
+        server.turn.password = "turnpass";
+        auto started = merovingian::homeserver::start_client_server(voip_config(std::move(server)));
+        REQUIRE(started.started);
+        auto const token = login(started.runtime);
+        auto const suspended = GENERATE(false, true);
+        REQUIRE(
+            merovingian::homeserver::bootstrap_admin_user(started.runtime.homeserver, "admin", "CorrectHorse7!").ok);
+        REQUIRE(merovingian::homeserver::set_local_user_moderation(started.runtime.homeserver, "@admin:example.org",
+                                                                   "@alice:example.org", suspended, !suspended,
+                                                                   "account.locked", "locked")
+                    .ok);
+
+        WHEN("the user asks for TURN credentials and for each transports route")
+        {
+            auto const reference = send(started.runtime, "GET", turn_path, token);
+
+            THEN("each route answers the same status and errcode, and a refusal names no service URL")
+            {
+                for (auto const* path : {rtc_stable_path, rtc_unstable_path})
+                {
+                    INFO((suspended ? "suspended " : "locked ") << path);
+                    auto const response = send(started.runtime, "GET", path, token);
+                    CHECK(response.status == reference.status);
+                    CHECK(errcode_of(response) == errcode_of(reference));
+                    if (reference.status != 200U)
+                    {
+                        CHECK(response.body.find("livekit") == std::string::npos);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("With only server.turn.server and static credentials voip/turnServer answers as in 1.0.x",
+         "[homeserver][turn][client-server]")
+{
+    GIVEN("a server configured the 1.0.x way")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        server.turn.server = "turn:turn.example.org:3478?transport=udp";
+        server.turn.username = "turnuser";
+        server.turn.password = "turnpass";
+        auto started = merovingian::homeserver::start_client_server(voip_config(std::move(server)));
+        REQUIRE(started.started);
+        auto const token = login(started.runtime);
+
+        WHEN("a client asks for TURN credentials")
+        {
+            auto const response = get(started.runtime, turn_path, token);
+
+            THEN("the whole body is the one the 1.0 series sent")
+            {
+                REQUIRE(response.status == 200U);
+                CHECK(
+                    response.body ==
+                    R"({"password":"turnpass","ttl":86400,"uris":["turn:turn.example.org:3478?transport=udp"],"username":"turnuser"})");
             }
         }
     }
