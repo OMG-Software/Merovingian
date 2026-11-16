@@ -237,6 +237,10 @@ struct HomeserverRuntime final
     // tombstone is sent, with runtime.mutex released, so a test can change the old room as a concurrent
     // request would (C21). Always empty in production.
     std::function<void()> test_after_upgrade_room_created{};
+    // Test-only: called by handle_client_server_request for every request, with the request's path, after the rate
+    // limit and with runtime.mutex held, so a test can make one request throw and see what the dispatch boundary
+    // answers (ADR-0803). Always empty in production.
+    std::function<void(std::string_view)> test_client_request_hook{};
     // The OAuth 2.0 authorisation requests waiting for their user, and the authorisation codes minted by approvals
     // (plan P5, ADR-0782). In memory only, hashed, bounded, never evicting a live entry. Guarded by `mutex`. A client
     // either names is never deleted (`oauth_client_has_pending_authorisation`).

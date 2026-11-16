@@ -684,3 +684,4 @@
 * [0800 - No default member initialiser holds OAuth page text, because clang 18 runs it at run time](0800-no-default-member-initialiser-holds-oauth-page-text-because-clang-18-runs-it-at-run-time.md)
 * [0801 - One function decides the legacy API switch, and each refused use answers as the spec says](0801-one-function-decides-the-legacy-api-switch-and-each-refused-use-answers-as-the-spec-says.md)
 * [0802 - The legacy SSO redirect hands off to the built-in pages, always confirms, and mints a 30-second login token](0802-the-legacy-sso-redirect-hands-off-to-the-built-in-pages-confirms-and-mints-a-30-second-login-token.md)
+* [0803 - The client-server dispatch boundary answers an escaped exception with a 500 and logs only its type](0803-the-client-server-dispatch-boundary-answers-an-escaped-exception-with-a-500-and-logs-only-its-type.md)

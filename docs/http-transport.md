@@ -582,6 +582,12 @@ redacted from logged targets (`sanitized_http_target`).
 
 Request parser failures use stable error names and HTTP statuses. Oversized start lines, headers, header counts, and bodies map to `413`. Malformed request lines, invalid methods, invalid targets, and invalid content lengths map to `400`. Unsupported transfer encoding maps to `501` until streaming support exists.
 
+An exception a client-server handler lets escape is answered at the dispatch boundary, `handle_client_server_request`,
+with `500 M_UNKNOWN` and the fixed text `internal server error`, the request's CORS headers, and a kept connection,
+whichever pool ran the request (ADR-0803). The runtime lock is released by the unwinding and taken afresh only to
+build the answer. A `std::overflow_error` from the sync stream counter keeps its answer, `sync stream counter
+exhausted` (ADR-0315). See `observability-audit.md` for the log line, which never carries the exception's message.
+
 The public client-server and internal local-router entry points also
 preflight the **path portion**, before the first `?`, for literal NUL and
 `%00` (DB-6). They return `400 M_INVALID_PARAM` before a path-component

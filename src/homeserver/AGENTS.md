@@ -80,6 +80,14 @@ This is the largest and most complex module — read this file carefully before 
 | `Tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
 | `LocalSmokeFlow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
 
+## An escaped exception is answered at the dispatch boundary (ADR-0803)
+
+`handle_client_server_request` catches `std::overflow_error` (the sync stream counter) and then anything else, which it
+answers `500 M_UNKNOWN` (`internal server error`) and logs as `request.exception` with the method, `normalized_target`
+and `core::current_exception_type_name()`. Never log `what()` of a request's exception, and never add a catch-all in a
+handler or a transport call site in its place: handlers still return errors as values, and this is the backstop.
+`HomeserverRuntime::test_client_request_hook` is the test seam that makes a request throw.
+
 ## Architecture boundaries
 
 ```

@@ -5,6 +5,7 @@
 
 #include "merovingian/config/Config.hpp"
 #include "merovingian/config/HttpTransportConfig.hpp"
+#include "merovingian/core/CurrentException.hpp"
 #include "merovingian/core/Error.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SocketHandle.hpp"
@@ -51,6 +52,13 @@
 #include "merovingian/sync/ParkedPollLimits.hpp"
 #include "merovingian/sync/WakeReason.hpp"
 
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -71,17 +79,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#if __has_include(<cxxabi.h>) && defined(__GNUC__)
-#include <cxxabi.h>
-#endif
-
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 namespace merovingian::homeserver
 {
@@ -137,19 +134,10 @@ namespace
 
     // C2: the three swallowed-exception sites in this file (sync wait, sync
     // pool dispatch, dispatch_local_http_request) previously logged only
-    // {"reason":"exception"}. Capture the mangled type and the std::exception
-    // message so a postmortem can identify the throwing site. The mangled
-    // name is intentionally not demangled here so the helper stays portable
-    // across libstdc++ / libc++ / MSVC.
-    [[nodiscard]] auto current_exception_type_name() noexcept -> char const*
-    {
-#if __has_include(<cxxabi.h>) && defined(__GNUC__)
-        auto const* type = abi::__cxa_current_exception_type();
-        return type == nullptr ? "unknown" : type->name();
-#else
-        return "unknown";
-#endif
-    }
+    // {"reason":"exception"}. Capture the mangled type
+    // (core::current_exception_type_name) and the std::exception message so a
+    // postmortem can identify the throwing site.
+    using core::current_exception_type_name;
 
     [[nodiscard]] auto current_exception_message() noexcept -> std::string
     {

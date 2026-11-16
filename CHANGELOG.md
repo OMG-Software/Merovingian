@@ -81,6 +81,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Bug fixes
 
+* An exception a client-server handler lets escape is answered `500 M_UNKNOWN` instead of closing the connection,
+  and its log line names the route and type but never the message (ADR-0803).
 * A handler's `Content-Type` spelled in another letter case no longer adds a second `Content-Type` to the response,
   and 302, 303, 409, 504 and other statuses now carry their reason phrase instead of `OK`.
 * `merovingian-db-migrate --plan 1 2 --migrations` now plans only the files between the two versions, instead of

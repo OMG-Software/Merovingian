@@ -15,6 +15,7 @@ Low-level utilities used across all other modules. No module-specific logic live
 | `RequestCookies.cpp` | `RequestCookies::parse`: the `Cookie` header reader. A malformed or repeated cookie makes its own name unusable (`find` answers nothing), never the others (ADR-0766) |
 | `HostCookie.cpp` | `host_cookie` / `host_cookie_deletion`: the only `Set-Cookie` writers, `__Host-` names with `Secure`, `HttpOnly`, `Path=/`, `SameSite` from `CookieSameSite`, `Max-Age` |
 | `CookieOctets.cpp`, `HttpToken.cpp`, `Utf8.cpp` | `cookie_octets_are_valid`, `http_token_is_valid` (also behind `http::header_name_is_valid`) and `utf8_is_valid` (also behind `canonicaljson::utf8_is_valid`) |
+| `CurrentException.cpp` | `current_exception_type_name`: the mangled type name of the exception being handled, `unknown` without the C++ ABI. The one copy for every catch-all that logs a type (ADR-0803); never log the message of a request's exception |
 | `LibraryVersion.cpp` | `LibraryVersion`, `describe_library` (static or dynamic, from `dladdr(3)` on an address inside the library, ADR-0222) and the startup log line. Each module reports its own library; core never calls a third-party library's version function |
 
 ## Headers-only (no .cpp)

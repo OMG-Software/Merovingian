@@ -602,6 +602,14 @@ page`) when the user approves a cross-signing reset, and `cross_signing.reset_us
 API functions they call: `device.deleted` for a device sign-out, `auth.password_changed` (reason `changed on the account
 page; revoked all devices`) and `auth.account_deactivated` (reason `deactivated on the account page`).
 
+## Exceptions at the client-server dispatch boundary (ADR-0803)
+
+An exception a client-server handler lets escape is answered `500 M_UNKNOWN` by `handle_client_server_request` and
+logged once under `client_server` at error level as `request.exception`, with `method`, `route` (the normalised route
+template, no ID and no query) and `type` (the exception's mangled type name, `unknown` where the ABI cannot name it).
+The exception's message is never logged: it can quote request data. A `std::overflow_error` from the sync stream
+counter keeps its own answer and is not logged this way.
+
 ## Outbound client request diagnostics (F-76, ADR-0418)
 
 `http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:

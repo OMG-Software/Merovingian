@@ -31,6 +31,7 @@
 #include "merovingian/canonicaljson/Serializer.hpp"
 #include "merovingian/canonicaljson/Signable.hpp"
 #include "merovingian/canonicaljson/Value.hpp"
+#include "merovingian/core/CurrentException.hpp"
 #include "merovingian/core/FoldedSubstringMatcher.hpp"
 #include "merovingian/core/QueryParams.hpp"
 #include "merovingian/core/SecretBuffer.hpp"
@@ -14942,6 +14943,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
                             rate_limit_decision.retry_after_ms);
     }
+    if (rt.homeserver.test_client_request_hook)
+    {
+        std::invoke(rt.homeserver.test_client_request_hook, request_path);
+    }
     // Spec M_NOT_JSON: "Request did not contain valid JSON." A body that is not JSON (including
     // invalid UTF-8 in a string) is refused here, for every endpoint at once, so no handler
     // answers it with the M_BAD_JSON that is for JSON malformed in some other way. Only the
@@ -22751,6 +22756,25 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         // client's connection is dropped rather than answered.
         auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
         result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "sync stream counter exhausted");
+        apply_cors_headers(req, result.response, rt.cors);
+        return result;
+    }
+    catch (...)
+    {
+        // ADR-0803: any other exception a handler lets escape is answered here, so the client gets a 500 instead of
+        // a closed connection. The handler's RuntimeLock and RequestLockScope were unwound before this block runs
+        // (a RuntimeLockRelease scope re-acquires on unwind, and the guard then releases), so the lock is taken
+        // afresh, as the overflow_error answer does. The log names the route's template and the exception's type,
+        // never its message: what() can carry request data (a parser quoting its input, a path, a value).
+        auto const guard = std::lock_guard<RuntimeMutex const>{rt.homeserver.mutex};
+        log_diagnostic("request.exception",
+                       {
+                           {"method", req.method,                          false},
+                           {"route",  normalized_target(req.target),       false},
+                           {"type",   core::current_exception_type_name(), false}
+        },
+                       observability::LogEventSeverity::error);
+        result = dispatch_err(req, rt, 500U, "M_UNKNOWN", "internal server error");
         apply_cors_headers(req, result.response, rt.cors);
         return result;
     }
