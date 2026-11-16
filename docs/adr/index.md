@@ -700,3 +700,4 @@
 * [0819 - A state_after delta compares the two states, and every change it finds is sent under lazy-loading](0819-a-state-after-delta-compares-the-two-states.md)
 * [0820 - A left room's state_after stops at what the user may read, and always holds their own membership](0820-a-left-rooms-state-after-stops-at-what-the-user-may-read.md)
 * [0821 - server.turn.uris is added beside server.turn.server, which is kept](0821-server-turn-uris-is-added-beside-server-turn-server-which-is-kept.md)
+* [0822 - The RTC transport is advertised as type livekit with livekit_service_url](0822-the-rtc-transport-is-advertised-as-type-livekit-with-livekit-service-url.md)

@@ -336,6 +336,7 @@ shell = find_program('sh')
       'unit/test_config_sso.cpp',
       'unit/test_config_identity_server.cpp',
       'unit/test_config_turn_uris.cpp',
+      'unit/test_config_rtc.cpp',
       'unit/test_identity_bind_domains.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',

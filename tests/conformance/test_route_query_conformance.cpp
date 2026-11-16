@@ -111,7 +111,7 @@ SCENARIO("every client route that matched its whole target answers a request wit
         // Every route that was compared with `req.target == "..."`. A handler may answer anything
         // (a UIA challenge, a 400 for the empty body); what it may not do is answer as though the
         // route does not exist. /logout is last: it ends the session.
-        constexpr auto routes = std::array<Route, 42>{
+        constexpr auto routes = std::array<Route, 44>{
             {
              {"GET", "/.well-known/matrix/client", ""},
              {"GET", "/_matrix/client/versions", ""},
@@ -150,6 +150,8 @@ SCENARIO("every client route that matched its whole target answers a request wit
              {"GET", "/_matrix/media/v3/config", ""},
              {"GET", "/_matrix/client/v1/media/config", ""},
              {"GET", "/_matrix/client/v3/voip/turnServer", ""},
+             {"GET", "/_matrix/client/v1/rtc/transports", ""},
+             {"GET", "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports", ""},
              {"GET", "/_matrix/client/v3/devices", ""},
              {"POST", "/_matrix/client/v3/delete_devices", "{}"},
              {"GET", "/_matrix/client/v3/joined_rooms", ""},

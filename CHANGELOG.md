@@ -11,6 +11,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   carries `state_after` and no `state` (ADR-0818, ADR-0819, ADR-0820).
 * The cross-release upgrade fixture `tests/fixtures/upgrade/1.0.3/`, written by the 1.0.3 release, is opened, taken
   through migration 002 and served on SQLite and PostgreSQL by the `[fixture]` scenarios (ADR-0216).
+* MatrixRTC transport discovery (MSC4143): `server.rtc.livekit.service_url` is advertised as a `livekit` transport
+  on `/rtc/transports`, `/versions` and the well-known document (ADR-0822).
 * `server.turn.uris` lists several TURN URIs for `GET /voip/turnServer`, in order; `server.turn.server` still works and
   both together are refused (ADR-0821).
 * The `use_state_after` scenarios asserting project choices, not spec rows, moved from the conformance suite to
@@ -31,7 +33,9 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 
 ## Release notes
 
-1.1.1 adds `use_state_after` to `/sync`. No configuration change is needed.
+1.1.1 adds `use_state_after` to `/sync`, `server.turn.uris` and MatrixRTC transport discovery. The new keys
+(`server.turn.uris`, `server.rtc.livekit.service_url`) are optional; no configuration change is needed. Group calls
+still need your own LiveKit SFU and `lk-jwt-service`, and delayed events (MSC4140) are not implemented.
 
 # Version 1.1.0
 

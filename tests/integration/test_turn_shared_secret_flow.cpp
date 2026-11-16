@@ -11,12 +11,12 @@
 #include "../support/TempDirectory.hpp"
 #include "merovingian/config/ClientRateLimitsConfig.hpp"
 #include "merovingian/config/Config.hpp"
+#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/config/ListenersConfig.hpp"
 #include "merovingian/config/LogModulesConfig.hpp"
 #include "merovingian/config/ReloadPlan.hpp"
 #include "merovingian/config/SecurityConfig.hpp"
 #include "merovingian/config/ServerConfig.hpp"
-#include "merovingian/config/ConfigParser.hpp"
 #include "merovingian/crypto/HmacSha1.hpp"
 #include "merovingian/homeserver/ClientServerClock.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
@@ -225,7 +225,8 @@ SCENARIO("GET /voip/turnServer lists every server.turn.uris entry in order with 
                 auto const* uris = object_member_as_array(body, "uris");
                 REQUIRE(uris != nullptr);
                 REQUIRE(uris->size() == 2U);
-                REQUIRE(*std::get_if<std::string>(&(*uris)[0U].storage()) == "turn:turn.example.org:3478?transport=udp");
+                REQUIRE(*std::get_if<std::string>(&(*uris)[0U].storage()) ==
+                        "turn:turn.example.org:3478?transport=udp");
                 REQUIRE(*std::get_if<std::string>(&(*uris)[1U].storage()) == "turns:turn.example.org:5349");
             }
         }

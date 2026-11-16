@@ -118,6 +118,12 @@ server.http.ipv6_client_prefix_length=64
 # server.turn.shared_secret_file=/etc/merovingian/turn-secret
 # server.turn.ttl_seconds=86400
 
+# MatrixRTC group calls (optional)
+# The HTTPS URL of an lk-jwt-service (Element's LiveKit authorisation service) that you run beside a LiveKit SFU.
+# This server never contacts it: it only tells authenticated clients, and the /.well-known/matrix/client
+# document, where it is. Empty means no group-call transport is advertised. Reloadable.
+# server.rtc.livekit.service_url=https://livekit-jwt.example.org/lk-jwt-service
+
 # Listener exposure
 # Keep TLS disabled only on loopback binds behind a declared reverse proxy.
 # If binding to a public interface, set tls=true, reverse_proxy=false, and

@@ -823,6 +823,34 @@ support.
 > Set the same value as coturn's `static-auth-secret`, and keep
 > `server.turn.ttl_seconds` at or below coturn's own limits.
 
+#### Voice and video calls — `server.rtc.*` and `server.turn.*`
+
+Merovingian does not carry call media. A call needs a service you run beside it:
+
+- **1:1 calls** need a TURN server such as coturn. Configure it with `server.turn.*` (above).
+- **Group calls (MatrixRTC)** need a LiveKit SFU plus Element's `lk-jwt-service`, the authorisation service that
+  hands a caller a LiveKit token. `lk-jwt-service` checks who is calling through this server's existing OpenID
+  endpoints (`/_matrix/client/v3/user/{userId}/openid/request_token` and the federation `openid/userinfo`), so it must
+  be able to reach this server over HTTPS. Merovingian only tells clients where it is.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.rtc.livekit.service_url` | (empty) | The HTTPS URL of your `lk-jwt-service`, for example `https://livekit-jwt.example.org/lk-jwt-service`. Empty means no group-call transport is advertised. Must be an absolute `https` URL with a host, no user name or password, no `#fragment`, no whitespace and at most 2048 bytes; anything else refuses the configuration. The server never contacts this URL. |
+
+With the key set, an authenticated client reading `GET /_matrix/client/v1/rtc/transports` (or the older
+`GET /_matrix/client/unstable/org.matrix.msc4143/rtc/transports`) learns a transport of type `livekit` with that
+`livekit_service_url`, and `GET /.well-known/matrix/client` gains an `org.matrix.msc4143.rtc_foci` member with the same
+entry, which clients built on the Rust SDK fall back to. `/_matrix/client/versions` always lists `org.matrix.msc4143`
+and `org.matrix.msc4143.stable` (ADR-0822). The URL is shown to anyone who can read the well-known document, so give
+it only an address you are happy to publish.
+
+Not implemented yet:
+
+- **Delayed events (MSC4140).** A participant whose client vanishes (a crash or lost network) is not removed from the
+  call's membership state automatically and can stay listed until they rejoin or someone removes them.
+- **A built-in token service.** There is no `/_matrix/client/v1/rtc/livekit/*` endpoint and the transport type
+  `m.livekit` is not advertised; you must run `lk-jwt-service` yourself.
+
 #### OAuth 2.0 API — `server.oauth.*`
 
 Merovingian has a built-in OAuth 2.0 API (Matrix v1.19 "OAuth 2.0 API"), which
@@ -1944,6 +1972,7 @@ take effect.
 | `presence.*` | Restart required |
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
+| `server.rtc.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` / `security.audit_log_retention_days` | Reloadable |
 | `security.login_throttle.*` | Reloadable |
@@ -2255,6 +2284,9 @@ server {
         default_type application/json;
         add_header Access-Control-Allow-Origin "*" always;
         return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
+        # With server.rtc.livekit.service_url set, a document served here instead of by Merovingian must carry the
+        # "org.matrix.msc4143.rtc_foci" member itself:
+        # {"m.homeserver":{...},"org.matrix.msc4143.rtc_foci":[{"type":"livekit","livekit_service_url":"https://..."}]}
     }
 
     location = /.well-known/matrix/server {
@@ -2344,6 +2376,10 @@ printf '{"m.homeserver":{"base_url":"https://matrix.example.org"}}' \
 printf '{"m.server":"matrix.example.org:443"}' \
     > /var/www/merovingian/.well-known/matrix/server
 ```
+
+A static `client` file is not produced by Merovingian: with `server.rtc.livekit.service_url` set, add the
+`org.matrix.msc4143.rtc_foci` member to it yourself (see Voice and video calls above), or let Merovingian answer
+`/.well-known/matrix/client`.
 
 ### Apache httpd example
 

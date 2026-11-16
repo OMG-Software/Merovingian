@@ -29,6 +29,7 @@
 #include "merovingian/http/RateLimit.hpp"
 #include "merovingian/oauth/HandOffAllowlist.hpp"
 #include "merovingian/oauth/OAuthBaseUrl.hpp"
+#include "merovingian/oauth/ParsedUri.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -343,45 +344,45 @@ auto is_valid_https_url(std::string_view url) noexcept -> bool
 namespace
 {
 
-// The longest server.turn.uris entry and the most entries one list holds.
-constexpr auto max_turn_uri_bytes = std::size_t{512U};
-constexpr auto max_turn_uris = std::size_t{16U};
+    // The longest server.turn.uris entry and the most entries one list holds.
+    constexpr auto max_turn_uri_bytes = std::size_t{512U};
+    constexpr auto max_turn_uris = std::size_t{16U};
 
-// Why `uris` is not an acceptable server.turn.uris list, or nullopt. Fixed text, never the input.
-auto turn_uris_error(std::vector<std::string> const& uris) -> std::optional<std::string_view>
-{
-    if (uris.size() > max_turn_uris)
+    // Why `uris` is not an acceptable server.turn.uris list, or nullopt. Fixed text, never the input.
+    auto turn_uris_error(std::vector<std::string> const& uris) -> std::optional<std::string_view>
     {
-        return "at most 16 TURN URIs may be listed";
+        if (uris.size() > max_turn_uris)
+        {
+            return "at most 16 TURN URIs may be listed";
+        }
+        for (auto index = std::size_t{0U}; index < uris.size(); ++index)
+        {
+            auto const& uri = uris[index];
+            auto const rest = starts_with(uri, "turn:")    ? std::string_view{uri}.substr(5U)
+                              : starts_with(uri, "turns:") ? std::string_view{uri}.substr(6U)
+                                                           : std::string_view{};
+            if (rest.empty())
+            {
+                return "each TURN URI must start with turn: or turns: and name a host";
+            }
+            if (uri.size() > max_turn_uri_bytes)
+            {
+                return "a TURN URI may be at most 512 bytes";
+            }
+            if (!std::ranges::all_of(uri, [](char c) {
+                    return static_cast<unsigned char>(c) >= 0x21U && static_cast<unsigned char>(c) <= 0x7EU;
+                }))
+            {
+                return "a TURN URI must be printable ASCII without whitespace";
+            }
+            auto const earlier = uris.begin() + static_cast<std::ptrdiff_t>(index);
+            if (std::ranges::find(uris.begin(), earlier, uri) != earlier)
+            {
+                return "a TURN URI may be listed only once";
+            }
+        }
+        return std::nullopt;
     }
-    for (auto index = std::size_t{0U}; index < uris.size(); ++index)
-    {
-        auto const& uri = uris[index];
-        auto const rest = starts_with(uri, "turn:")    ? std::string_view{uri}.substr(5U)
-                          : starts_with(uri, "turns:") ? std::string_view{uri}.substr(6U)
-                                                       : std::string_view{};
-        if (rest.empty())
-        {
-            return "each TURN URI must start with turn: or turns: and name a host";
-        }
-        if (uri.size() > max_turn_uri_bytes)
-        {
-            return "a TURN URI may be at most 512 bytes";
-        }
-        if (!std::ranges::all_of(uri, [](char c) {
-                return static_cast<unsigned char>(c) >= 0x21U && static_cast<unsigned char>(c) <= 0x7EU;
-            }))
-        {
-            return "a TURN URI must be printable ASCII without whitespace";
-        }
-        auto const earlier = uris.begin() + static_cast<std::ptrdiff_t>(index);
-        if (std::ranges::find(uris.begin(), earlier, uri) != earlier)
-        {
-            return "a TURN URI may be listed only once";
-        }
-    }
-    return std::nullopt;
-}
 
 } // namespace
 
@@ -1226,10 +1227,25 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
         }
     }
-    else if (!turn_configured &&
-             (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
+    else if (!turn_configured && (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
+    }
+
+    // MatrixRTC transport discovery (ADR-0822): the service URL is sent to every authenticated client and, in the
+    // well-known document, to anyone, so it is refused unless it is an absolute https URL with a host. oauth::ParsedUri
+    // is the project's strict reader: printable ASCII only, no userinfo, no fragment, at most 2048 bytes. Nothing is
+    // repaired, and this server never fetches the URL.
+    if (auto const& service_url = config.server().rtc.livekit_service_url; !service_url.empty())
+    {
+        auto const uri = oauth::ParsedUri::read(service_url);
+        auto const* parsed = std::get_if<oauth::ParsedUri>(&uri);
+        if (parsed == nullptr || parsed->scheme() != "https" || !parsed->has_authority() || parsed->host().empty())
+        {
+            findings.push_back({"server.rtc.livekit.service_url",
+                                "must be an https URL with a host, no userinfo, no fragment, no whitespace and at most "
+                                "2048 bytes"});
+        }
     }
 
     // The built-in OAuth 2.0 API (ADR-0812, ADR-0816). Every OAuth address is derived from public_baseurl, so with the

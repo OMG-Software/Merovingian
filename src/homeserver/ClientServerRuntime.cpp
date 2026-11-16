@@ -856,6 +856,18 @@ namespace
         return canonicaljson::make_member(std::move(key), std::move(value));
     }
 
+    // The MatrixRTC transport entry for the LiveKit authorisation service at `service_url` (MSC4143, MSC4195;
+    // ADR-0822). The type is `livekit`, never `m.livekit`, and there is no `url` member.
+    [[nodiscard]] auto livekit_transport_json(std::string const& service_url) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{
+            canonicaljson::Object{
+                                  canonicaljson::make_member("type", canonicaljson::Value{std::string{"livekit"}}),
+                                  canonicaljson::make_member("livekit_service_url", canonicaljson::Value{service_url}),
+                                  }
+        };
+    }
+
     [[nodiscard]] auto json_serialize(canonicaljson::Value const& value) -> std::string
     {
         auto const result = canonicaljson::serialize_canonical(value);
@@ -4104,6 +4116,8 @@ namespace
             "/_matrix/client/v1/media/upload",
             "/_matrix/client/v1/media/preview_url",
             "/_matrix/client/v3/voip/turnServer",
+            "/_matrix/client/v1/rtc/transports",
+            "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
             "/_matrix/client/v3/devices",
@@ -4207,6 +4221,8 @@ namespace
             {"/_matrix/client/v1/media/upload",                                             "POST"            },
             {"/_matrix/client/v1/media/preview_url",                                        "GET"             },
             {"/_matrix/client/v3/voip/turnServer",                                          "GET"             },
+            {"/_matrix/client/v1/rtc/transports",                                           "GET"             },
+            {"/_matrix/client/unstable/org.matrix.msc4143/rtc/transports",                  "GET"             },
             {"/_matrix/client/v3/room_keys/version",                                        "GET, POST"       },
             {"/_matrix/client/v3/room_keys/keys",                                           "DELETE, GET, PUT"},
             {"/_matrix/client/v3/devices",                                                  "GET"             },
@@ -15318,10 +15334,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && request_path == "/.well-known/matrix/client")
     {
         auto const& base_url = rt.homeserver.config.server().public_baseurl;
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(json_obj({
-                                 json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
-                             })));
+        auto document = canonicaljson::Object{
+            json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
+        };
+        // MSC4143: the Rust SDK falls back to this member when it cannot read the transports route (ADR-0822). Only
+        // with a service configured; without one the body is what it always was.
+        if (auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url; !service_url.empty())
+        {
+            auto foci = canonicaljson::Array{};
+            foci.push_back(livekit_transport_json(service_url));
+            document.push_back(json_member("org.matrix.msc4143.rtc_foci", json_arr(std::move(foci))));
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(document))));
     }
 
     // GET /_matrix/client/versions is the unauthenticated discovery endpoint
@@ -15341,6 +15365,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 json_member("versions", json_arr(std::move(versions))),
                 json_member("unstable_features", json_obj({
                                                      json_member("org.matrix.msc4186", json_bool(true)),
+                                                     json_member("org.matrix.msc4143", json_bool(true)),
+                                                     json_member("org.matrix.msc4143.stable", json_bool(true)),
                                                      json_member("org.matrix.simplified_msc3575", json_bool(true)),
                                                  })),
             })));
@@ -19621,6 +19647,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("uris", json_arr(std::move(uris))),
         }));
         return dispatch_resp(req, rt, 200U, body);
+    }
+
+    // GET /_matrix/client/v1/rtc/transports and its unstable MSC4143 path: where the operator's MatrixRTC
+    // authorisation service is (ADR-0822). The two differ in the property name and in what they answer when no
+    // service is configured, as the reference server's do.
+    if (req.method == "GET" && (request_path == "/_matrix/client/v1/rtc/transports" ||
+                                request_path == "/_matrix/client/unstable/org.matrix.msc4143/rtc/transports"))
+    {
+        auto const& service_url = rt.homeserver.config.server().rtc.livekit_service_url;
+        auto const stable = request_path == "/_matrix/client/v1/rtc/transports";
+        auto transports = canonicaljson::Array{};
+        if (!service_url.empty())
+        {
+            transports.push_back(livekit_transport_json(service_url));
+        }
+        if (!stable && transports.empty())
+        {
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member(stable ? "transports" : "rtc_transports", json_arr(std::move(transports))),
+                             })));
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);

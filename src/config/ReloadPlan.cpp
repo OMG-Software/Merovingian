@@ -581,6 +581,12 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.turn.ttl_seconds");
     }
 
+    // MatrixRTC transport discovery.
+    if (current.server().rtc.livekit_service_url != next.server().rtc.livekit_service_url)
+    {
+        add_change(plan, "server.rtc.livekit.service_url");
+    }
+
     // The OAuth 2.0 API: every field is diffed, and every change is restart_required (see ReloadPolicy.cpp).
     if (current.server().oauth.enabled != next.server().oauth.enabled)
     {
