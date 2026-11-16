@@ -131,6 +131,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   registration, not locked for life, and an unreadable token file logs `registration.token_file_unusable` (ADR-0779).
 * The FreeBSD rc.d script sets the service's locked-memory limit itself (`merovingian_limits`, default `-l 128m`),
   so the room for secrets no longer depends on the login class; `rc.conf` can override it.
+* The PostgreSQL role tests remove the whole schema, not only the v1 tables, before they bootstrap it again: the
+  tables of migration 002 were left behind and the next open failed creating them.
 
 ## Release notes
 
