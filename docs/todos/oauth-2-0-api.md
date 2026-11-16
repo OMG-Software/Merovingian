@@ -4,6 +4,43 @@ This is the working plan for branch `feature/oauth-20-v110`. It is removed when 
 outlives the work goes to `auth-identity.md`, `http-transport.md`, `threat-model.md`, `user-manual.md` and the ADR
 register, as the update table in `docs/AGENTS.md` requires.
 
+## Status (2026-11-16)
+
+Phases 1 to 10 are implemented, and the findings of the branch review are fixed. Phase 11 is done in part: the
+threat model and the security review checklist cover the API, and the suite passed on the Linux VM at `7e54dc07`
+(88 Ok, 0 Fail). Milestone A has
+not been reached; see "Still open" below.
+
+| Phase | Commits |
+|---|---|
+| 0 Branch and plan | `dd2e6baa` |
+| 1 Foundations | `dee45a94`, `61d2744b`, `d7ea4e9e`, `47a377a1`, `55aa2454`, `84038b9f` |
+| 2 Configuration and metadata | `2e1d6e9e`, `a8d55c59` |
+| 3 Storage | `d27963fb` (no upgrade fixture: see "Still open") |
+| 4 Client registration | `6059cd26`, `e383c4c5` |
+| 5 Authorisation | `96d0343e`, `8667d822` |
+| 6 and 7 Token endpoint and revocation | `017692c8` |
+| 8 Account pages | `bc55dd7a`, `10afc041`, `31617f9a` |
+| 9 Legacy API | `cd52c380`, `09dcc3c3`, `e05e8cd9` |
+| 10 Device grant | `20bcdca3` |
+| Review findings | `96ca4e23` to `7e54dc07` (ADR-0807 to ADR-0811) |
+
+### Still open
+
+1. **Milestone A.** Nobody has yet registered and signed in with Element X on iOS or Android against a server built
+   from this branch (https, `server.oauth.enabled: true`). With it, every check that needs a real browser is open: the
+   `__Host-` cookies and their `SameSite` values, Chromium's `form-action` on the 303 after a form post, IPv6 loopback
+   redirects and a client's deep links to the account pages. The suite drives the handlers directly. The Element X
+   rows under "What Element X needs" that were not verified stay open with it.
+2. **PostgreSQL.** The build VM has no PostgreSQL server binaries, so the 1.0.x cross-release upgrade fixture was not
+   generated (`scripts/generate_upgrade_fixture.py` needs `initdb` and `pg_ctl`; see
+   `tests/fixtures/upgrade/README.md`), and no PostgreSQL scenario, migration 002 included, has run on this branch.
+3. **QR-code login.** The MSC4108 rendezvous is not part of 1.1.0 (owner decision), so Element X's QR-code login stays
+   unavailable although the device authorization grant exists.
+4. **Documentation site.** `mkdocs build --strict` has not been run for this branch.
+5. **`response_mode`.** Which `response_mode` Element X sends is unknown; ADR-0789 accepts `query` with an https
+   redirect URI.
+
 ## Why
 
 Element X creates accounts only through the Matrix OAuth 2.0 API. It asks `GET /_matrix/client/v1/auth_metadata`,
@@ -180,7 +217,8 @@ Both tables are classified as never read by the federation worker
 
 1.1 is also where the cross-release upgrade fixture returns (`tests/fixtures/upgrade/README.md`): the last 1.0.x
 release writes a database, and `tests/integration/test_database_upgrade_flow.cpp` proves that this branch opens,
-migrates and serves it on SQLite and on PostgreSQL.
+migrates and serves it on SQLite and on PostgreSQL. Not done yet: the fixture needs the PostgreSQL server binaries,
+which the build VM lacks (see "Still open").
 
 ### The authorisation flow
 

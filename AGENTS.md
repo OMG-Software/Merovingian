@@ -224,7 +224,7 @@ the same name in `include/`: `src/appservice/RegistrationYaml.cpp`, `src/databas
 │   ├── smoke/             #   Smoke tests
 │   ├── password_cost/     #   Proves the production Argon2id cost, in a binary without the tests' cheap hash
 │   ├── complement/        #   Docker image that runs the release package under Complement
-│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; no cross-release database fixture until 1.1)
+│   ├── fixtures/          #   Test fixtures: complement/ (JSON flow fixtures) and upgrade/ (README only; the 1.0.x cross-release database fixture is not generated yet, the build VM has no PostgreSQL server)
 │   ├── support/           #   Test helpers (JsonTestSupport, MasterKey, RegistrationToken, TempDirectory, TlsMockServer)
 │   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
 │   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter
