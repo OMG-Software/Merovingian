@@ -984,6 +984,10 @@ namespace
         {
             server.turn.server = std::string{value};
         }
+        else if (key == "server.turn.uris")
+        {
+            server.turn.uris = parse_string_list(value);
+        }
         else if (key == "server.turn.username")
         {
             server.turn.username = std::string{value};

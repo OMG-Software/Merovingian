@@ -699,3 +699,4 @@
 * [0818 - state_after is the change since since, as of the response's position](0818-state-after-is-the-change-since-since-as-of-the-responses-position.md)
 * [0819 - A state_after delta compares the two states, and every change it finds is sent under lazy-loading](0819-a-state-after-delta-compares-the-two-states.md)
 * [0820 - A left room's state_after stops at what the user may read, and always holds their own membership](0820-a-left-rooms-state-after-stops-at-what-the-user-may-read.md)
+* [0821 - server.turn.uris is added beside server.turn.server, which is kept](0821-server-turn-uris-is-added-beside-server-turn-server-which-is-kept.md)

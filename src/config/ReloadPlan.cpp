@@ -560,6 +560,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.turn.server");
     }
+    if (current.server().turn.uris != next.server().turn.uris)
+    {
+        add_change(plan, "server.turn.uris");
+    }
     if (current.server().turn.username != next.server().turn.username)
     {
         add_change(plan, "server.turn.username");

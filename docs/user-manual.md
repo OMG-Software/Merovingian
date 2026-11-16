@@ -807,8 +807,9 @@ support.
 | Key | Default | When to change |
 |---|---|---|
 | `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
-| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
-| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
+| `server.turn.uris` | (empty) | Several TURN URIs, comma-separated, advertised in this order, e.g. `turn:turn.example.org:3478?transport=udp,turns:turn.example.org:5349?transport=tcp`. An alternative to `server.turn.server`, which stays for existing files; setting both is refused. Each entry must start with `turn:` or `turns:`, be at most 512 bytes of printable ASCII with no whitespace, and appear once; at most 16 entries; a bad entry refuses the configuration. TURN is on when either key is set (ADR-0821). |
+| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` or `server.turn.uris` is set (unless `shared_secret_file` is used). |
+| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` or `server.turn.uris` is set (unless `shared_secret_file` is used). |
 | `server.turn.shared_secret_file` | (empty) | Path to an owner-read-only file (mode `0400`, as every secret file) holding the TURN server's `static-auth-secret`, for coturn run with `use-auth-secret`. Each client then gets its own credentials: username `<expiry>:<user_id>`, password the base64 HMAC-SHA1 of that username under the secret (the coturn REST API), valid for `ttl_seconds`. Cannot be combined with `username` and `password`: the configuration is refused if both are set. |
 | `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response, and with `shared_secret_file` the time until the username's expiry. |
 

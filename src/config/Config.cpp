@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -338,6 +339,51 @@ auto is_valid_https_url(std::string_view url) noexcept -> bool
     auto const remainder = url.substr(https_scheme.size());
     return !remainder.empty() && remainder.find(' ') == std::string_view::npos;
 }
+
+namespace
+{
+
+// The longest server.turn.uris entry and the most entries one list holds.
+constexpr auto max_turn_uri_bytes = std::size_t{512U};
+constexpr auto max_turn_uris = std::size_t{16U};
+
+// Why `uris` is not an acceptable server.turn.uris list, or nullopt. Fixed text, never the input.
+auto turn_uris_error(std::vector<std::string> const& uris) -> std::optional<std::string_view>
+{
+    if (uris.size() > max_turn_uris)
+    {
+        return "at most 16 TURN URIs may be listed";
+    }
+    for (auto index = std::size_t{0U}; index < uris.size(); ++index)
+    {
+        auto const& uri = uris[index];
+        auto const rest = starts_with(uri, "turn:")    ? std::string_view{uri}.substr(5U)
+                          : starts_with(uri, "turns:") ? std::string_view{uri}.substr(6U)
+                                                       : std::string_view{};
+        if (rest.empty())
+        {
+            return "each TURN URI must start with turn: or turns: and name a host";
+        }
+        if (uri.size() > max_turn_uri_bytes)
+        {
+            return "a TURN URI may be at most 512 bytes";
+        }
+        if (!std::ranges::all_of(uri, [](char c) {
+                return static_cast<unsigned char>(c) >= 0x21U && static_cast<unsigned char>(c) <= 0x7EU;
+            }))
+        {
+            return "a TURN URI must be printable ASCII without whitespace";
+        }
+        auto const earlier = uris.begin() + static_cast<std::ptrdiff_t>(index);
+        if (std::ranges::find(uris.begin(), earlier, uri) != earlier)
+        {
+            return "a TURN URI may be listed only once";
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
 
 auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
 {
@@ -1151,13 +1197,25 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // A partially populated turn block (e.g. only a username) is rejected
     // because it would advertise a broken relay to clients.
     auto const& turn = config.server().turn;
+    // server.turn.uris is the list form of server.turn.server (ADR-0821). Two ways to name the relays would leave it
+    // unclear which one clients get, so both together is refused; each entry is refused, never repaired, when it is
+    // not a plain turn: or turns: URI.
+    if (!turn.server.empty() && !turn.uris.empty())
+    {
+        findings.push_back({"server.turn.uris", "set either server.turn.server or server.turn.uris, not both"});
+    }
+    if (auto const uris_error = turn_uris_error(turn.uris); uris_error.has_value())
+    {
+        findings.push_back({"server.turn.uris", std::string{*uris_error}});
+    }
+    auto const turn_configured = !turn.server.empty() || !turn.uris.empty();
     if (!turn.shared_secret_file.empty() && (!turn.username.empty() || !turn.password.empty()))
     {
         // Two ways to issue credentials would leave it unclear which one clients get (ADR-0480).
         findings.push_back(
             {"server.turn.shared_secret_file", "set either shared_secret_file or username and password, not both"});
     }
-    else if (!turn.server.empty() && turn.shared_secret_file.empty())
+    else if (turn_configured && turn.shared_secret_file.empty())
     {
         if (turn.username.empty())
         {
@@ -1168,7 +1226,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
         }
     }
-    else if (turn.server.empty() &&
+    else if (!turn_configured &&
              (!turn.username.empty() || !turn.password.empty() || !turn.shared_secret_file.empty()))
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});

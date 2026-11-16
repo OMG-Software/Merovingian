@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 namespace
@@ -190,6 +191,42 @@ SCENARIO("GET /voip/turnServer issues per-user time-limited credentials from a s
             {
                 REQUIRE(result.response.status == 500U);
                 REQUIRE(result.response.body.find("password") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /voip/turnServer lists every server.turn.uris entry in order with shared-secret credentials",
+         "[homeserver][turn][turn-uris][client-server]")
+{
+    GIVEN("a server with two TURN URIs in server.turn.uris and a shared secret file")
+    {
+        auto const secret = SecretFile{"north\n"};
+        auto config = secret_turn_config(secret.path(), 3600U);
+        config.server().turn.server.clear();
+        config.server().turn.uris = {"turn:turn.example.org:3478?transport=udp", "turns:turn.example.org:5349"};
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = login(runtime, "alice");
+
+        WHEN("a client asks for credentials")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/voip/turnServer", alice, {}});
+
+            THEN("the credentials are per-user and uris holds both entries in the configured order")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* username = string_member(body, "username");
+                REQUIRE(username != nullptr);
+                REQUIRE(username->ends_with(":@alice:example.org"));
+                auto const* uris = object_member_as_array(body, "uris");
+                REQUIRE(uris != nullptr);
+                REQUIRE(uris->size() == 2U);
+                REQUIRE(*std::get_if<std::string>(&(*uris)[0U].storage()) == "turn:turn.example.org:3478?transport=udp");
+                REQUIRE(*std::get_if<std::string>(&(*uris)[1U].storage()) == "turns:turn.example.org:5349");
             }
         }
     }

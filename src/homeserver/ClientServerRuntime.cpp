@@ -19569,7 +19569,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && request_path == "/_matrix/client/v3/voip/turnServer")
     {
         auto const& turn = rt.homeserver.config.server().turn;
-        if (turn.server.empty())
+        if (turn.server.empty() && turn.uris.empty())
         {
             return dispatch_resp(req, rt, 200U, "{}");
         }
@@ -19600,8 +19600,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             username = std::move(credentials->username);
             password = std::move(credentials->password);
         }
+        // server.turn.server (one URI, kept for 1.0.x configs) or server.turn.uris (ADR-0821), in configured order.
+        // The two are never both set: validate() refuses it.
         auto uris = canonicaljson::Array{};
-        uris.push_back(json_str(turn.server));
+        if (!turn.server.empty())
+        {
+            uris.push_back(json_str(turn.server));
+        }
+        else
+        {
+            for (auto const& uri : turn.uris)
+            {
+                uris.push_back(json_str(uri));
+            }
+        }
         auto const body = json_serialize(json_obj({
             json_member("username", json_str(username)),
             json_member("password", json_str(password)),
