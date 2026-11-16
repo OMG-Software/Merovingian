@@ -211,6 +211,7 @@ Runtime hardening is platform-specific and reported by the startup self-check
 | Capsicum | n/a | enabled (wired in 0.10.7) | n/a | n/a |
 | Core-dump policy (`RLIMIT_CORE`) | probed, plus `PR_GET_DUMPABLE` | probed | probed | probed |
 | `no_new_privs`, capability bounding set | probed | n/a | n/a | n/a |
+| Locked-memory limit for secrets | system default (usually 8 MiB) | 128 MiB, set by the rc.d script | system default (not measured) | system default (not measured) |
 
 Landlock applies only to the federation worker (`merovingian-fed-worker`), not
 the main `merovingian-server` process — see [hardening.md](hardening.md),

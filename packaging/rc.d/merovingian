@@ -24,4 +24,8 @@ merovingian_precmd() {
 
 load_rc_config "$name"
 : "${merovingian_enable:=NO}"
+# Every secret the server holds sits in a locked page, and a secret file is not read without one (docs/hardening.md,
+# "Locked memory"). rc.subr passes this to limits(1), so the budget does not depend on the login class: FreeBSD's
+# default class allows 64 KiB, which is 16 secrets. Set merovingian_limits in rc.conf to change it.
+: "${merovingian_limits:=-l 128m}"
 run_rc_command "$1"

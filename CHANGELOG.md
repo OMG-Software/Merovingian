@@ -129,6 +129,8 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 * The device and token inserts of a login, a grant and a refresh share one statement each; the SQL is unchanged.
 * `POST /register` works again on FreeBSD's 64 KiB locked-memory limit: the OAuth client ID key is derived per
   registration, not locked for life, and an unreadable token file logs `registration.token_file_unusable` (ADR-0779).
+* The FreeBSD rc.d script sets the service's locked-memory limit itself (`merovingian_limits`, default `-l 128m`),
+  so the room for secrets no longer depends on the login class; `rc.conf` can override it.
 
 ## Release notes
 

@@ -83,6 +83,18 @@ own primitives.
   general `SecretBuffer` allocations record failure without rejecting it.
   Not every signing-secret copy checks that result. See
   [crypto-boundary.md](crypto-boundary.md) for the precise guarantees.
+* **Locked memory is a per-process budget the operating system sets.** Each
+  secret locks at least one 4 KiB page, and a secret file (the registration
+  token, an appservice token) is not read at all when its buffer cannot be
+  locked. FreeBSD's `default` login class allows 64 KiB (`memorylocked`), which
+  is 16 secrets; a server over it refuses registration tokens and logs
+  `registration.token_file_unusable`. The FreeBSD rc.d script therefore sets
+  `merovingian_limits` to `-l 128m` itself (override it in `rc.conf`). A
+  server started any other way on FreeBSD (a login shell, another supervisor)
+  needs the limit raised by whoever starts it, for example
+  `limits -l 128m merovingian-server --config ...` run as root before the
+  privilege drop, or a login class with a larger `memorylocked`. Linux's usual
+  8 MiB default is enough for about two thousand secrets.
 * The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
 * Main alone admits `fchmod(fd, 0600)` for descriptor-bound SQLite permission
