@@ -1925,86 +1925,11 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
-{
-    if (device_exists(store, device))
-    {
-        return false;
-    }
-    if (!record_and_persist(
-            store,
-            record_statement("insert_device", "INSERT INTO devices VALUES ($1, $2, $3)",
-                             {
-                                 {device.user_id,      false},
-                                 {device.device_id,    false},
-                                 {device.display_name, false}
-    })))
-    {
-        return false;
-    }
-    sync_device_index(store);
-    store.devices.push_back(std::move(device));
-    store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
-    return true;
-}
-
-[[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool
-{
-    if (!token_is_hash(token.token_hash))
-    {
-        return false;
-    }
-    if (access_token_exists(store, token.token_hash))
-    {
-        return false;
-    }
-    if (!record_and_persist(store, record_statement("insert_access_token",
-                                                    "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
-                                                    {
-                                                        {token.user_id,                     false},
-                                                        {token.device_id,                   false},
-                                                        {token.token_hash,                  true },
-                                                        {token.revoked ? "true" : "false",  false},
-                                                        {expires_at_text(token.expires_at), false},
-                                                        {token.predecessor_refresh_hash,    true }
-    })))
-    {
-        return false;
-    }
-    std::ignore = store.access_tokens.insert(std::move(token));
-    return true;
-}
-
-[[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool
-{
-    if (!token_is_hash(token.token_hash) || refresh_token_exists(store, token.token_hash))
-    {
-        return false;
-    }
-    if (!record_and_persist(
-            store,
-            record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                             {
-                                 {token.token_hash, true},
-                                 {token.user_id, false},
-                                 {token.device_id, false},
-                                 {token.revoked ? "true" : "false", false},
-                                 {expires_at_text(token.expires_at), false},
-                                 {token.predecessor_hash, true},
-                                 {std::to_string(std::max<std::int64_t>(token.issued_at_ms, 0)), false}
-    })))
-    {
-        return false;
-    }
-    std::ignore = store.refresh_tokens.insert(std::move(token));
-    return true;
-}
-
 namespace
 {
 
-    // The writes a login and an OAuth 2.0 grant share (ADR-0590, ADR-0792), as statements for the caller's one
-    // transaction, and their memory half after it committed.
+    // The row inserts every device and token writer shares (ADR-0590, ADR-0792): one text for each statement, whether
+    // it is committed alone or in the caller's one transaction.
 
     [[nodiscard]] auto insert_device_statement(PersistentDevice const& device) -> PreparedStatement
     {
@@ -2043,6 +1968,62 @@ namespace
                                     {std::to_string(std::max<std::int64_t>(token.issued_at_ms, 0)), false}
         });
     }
+
+} // namespace
+
+[[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
+{
+    if (device_exists(store, device))
+    {
+        return false;
+    }
+    if (!record_and_persist(store, insert_device_statement(device)))
+    {
+        return false;
+    }
+    sync_device_index(store);
+    store.devices.push_back(std::move(device));
+    store.device_user_index.note_appended(store.devices.size(), store.devices.back().user_id);
+    return true;
+}
+
+[[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool
+{
+    if (!token_is_hash(token.token_hash))
+    {
+        return false;
+    }
+    if (access_token_exists(store, token.token_hash))
+    {
+        return false;
+    }
+    if (!record_and_persist(store, insert_access_token_statement(token)))
+    {
+        return false;
+    }
+    std::ignore = store.access_tokens.insert(std::move(token));
+    return true;
+}
+
+[[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool
+{
+    if (!token_is_hash(token.token_hash) || refresh_token_exists(store, token.token_hash))
+    {
+        return false;
+    }
+    if (!record_and_persist(store, insert_refresh_token_statement(token)))
+    {
+        return false;
+    }
+    std::ignore = store.refresh_tokens.insert(std::move(token));
+    return true;
+}
+
+namespace
+{
+
+    // The deletes a login and an OAuth 2.0 grant share (ADR-0590, ADR-0792), as statements for the caller's one
+    // transaction, and their memory half after it committed.
 
     // DELETE, not revoke (ADR-0590): a revoked refresh row that is presented counts as reuse and ends the device's
     // session, so a stale client holding the old refresh token would end the login that replaced it. The device's
@@ -2197,27 +2178,8 @@ namespace
                                               {access.user_id,   false},
                                               {access.device_id, false}
     }));
-    statements.push_back(record_statement("insert_access_token",
-                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
-                                          {
-                                              {access.user_id,                     false},
-                                              {access.device_id,                   false},
-                                              {access.token_hash,                  true },
-                                              {access.revoked ? "true" : "false",  false},
-                                              {expires_at_text(access.expires_at), false},
-                                              {access.predecessor_refresh_hash,    true }
-    }));
-    statements.push_back(
-        record_statement("insert_refresh_token", "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                         {
-                             {refresh.token_hash, true},
-                             {refresh.user_id, false},
-                             {refresh.device_id, false},
-                             {refresh.revoked ? "true" : "false", false},
-                             {expires_at_text(refresh.expires_at), false},
-                             {refresh.predecessor_hash, true},
-                             {std::to_string(std::max<std::int64_t>(refresh.issued_at_ms, 0)), false}
-    }));
+    statements.push_back(insert_access_token_statement(access));
+    statements.push_back(insert_refresh_token_statement(refresh));
     for (auto const& hash : evicted_refresh_hashes)
     {
         // The `revoked` condition is a second guard: the statement can never delete a live row.
