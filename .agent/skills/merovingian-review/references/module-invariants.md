@@ -192,7 +192,10 @@ look at every time. Read the `AGENTS.md` itself before judging a change to that 
   `verify_login_credentials` and a session-less account made only by `create_local_account` (ADR-0783); a page is
   marked `LocalHttpResponse::page` and gets no CORS header (ADR-0785); an OAuth target's query is never logged
   (ADR-0786). A grant is one transaction, a session ends only through `end_device_session_and_announce`, and every
-  UIA endpoint calls `oauth_session_uia_refusal` first (ADR-0792, ADR-0794, ADR-0795).
+  UIA endpoint calls `oauth_session_uia_refusal` first (ADR-0792, ADR-0794, ADR-0795). Account-page sessions and
+  reset approvals live only in `AccountSessionStore` and `CrossSigningResetApprovals`; a page action calls the client
+  API's own function; a password change, reset or deactivation calls `end_account_page_access`; a taken approval is
+  spent only after the keys are stored (ADR-0796 to ADR-0798).
   `src/homeserver/AGENTS.md#OAuth 2.0 API (ADR-0760, ADR-0773)`
 - Worker frames are untrusted. Relayed PDUs are re-verified with main's resolver **before** taking
   `runtime.mutex`, and the envelope is rebuilt from the verified event (ADR-0171).

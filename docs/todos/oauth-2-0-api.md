@@ -228,12 +228,15 @@ checks `Origin` and `Sec-Fetch-Site` with `oauth::form_post_origin_is_accepted` 
 `/_merovingian/account` asks for the password, then keeps a 15-minute session in a `__Host-` cookie with
 `SameSite=Strict`. It lists devices, shows one, deletes one, changes the password, deactivates the account and
 approves a cross-signing reset. Each action calls the service function the client API already uses
-(`delete_local_device`, `change_local_user_password`, `deactivate_user_account`). Deactivation asks for the password
-again. `account_management_actions_supported` lists exactly the actions that are implemented.
+(`delete_device_and_announce`, `deactivate_user_account` with `finish_account_deactivation`); the password change is
+`change_password_on_account_page`, the email reset's core, because `change_local_user_password` keeps a calling device
+the page does not have (ADR-0798). Deactivation asks for the password again. `account_management_actions_supported`
+lists exactly the actions that are implemented: all six. Done in phase 8 (ADR-0796 to ADR-0798).
 
 A cross-signing reset approval is a per-user flag, in memory, valid for 10 minutes and spent by one upload.
 `POST /keys/device_signing/upload` from an OAuth session that would replace existing keys answers `401` with the
-`m.oauth` stage and the account page URL, and accepts the retry once the flag is set.
+`m.oauth` stage and the account page URL, and accepts the retry once the flag is set. The approval is taken by the
+retry and given back unless the keys are stored (ADR-0797).
 
 ### The legacy API beside OAuth
 

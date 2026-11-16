@@ -1072,11 +1072,22 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`, `src/database/AGENTS.md`.
 
 - **Every endpoint that asks for User-Interactive Authentication refuses an OAuth session with 403 before checking a
-  password, and revocation or a replay ends a session only through the path `POST /logout` uses.**
+  password, except a replacing cross-signing upload, which offers only the `m.oauth` stage; revocation or a replay
+  ends a session only through the path `POST /logout` uses.**
   Why: a session the user granted to an application must not be able to change the password, deactivate the account
   or delete devices with a password the application may have captured (CWE-306); a second end-of-session path forgets
   a token, the device list or the remote servers (ADR-0794, ADR-0795).
   Source: `src/homeserver/AGENTS.md`, `src/auth/AGENTS.md`.
+
+- **An account-page form is accepted only with this server's `Origin`, the `__Host-mv-account` session and that
+  session's form token (constant time); each page action calls the client API's own function; every password change,
+  reset and deactivation ends the user's account-page sessions and reset approvals; a cross-signing reset approval is
+  spent only by a stored upload and is never usable by a password session or with a password stage.**
+  Why: a forged post signs out a device or deactivates an account (CWE-352); one session's token must not act for
+  another; a copied action drifts and misses a revocation step (CWE-613); a page session or approval that outlives a
+  password change keeps a stolen credential's reach (CWE-613); a token alone must not replace a user's cross-signing
+  identity (CWE-306) (ADR-0796, ADR-0797, ADR-0798).
+  Source: `src/homeserver/AGENTS.md`.
 
 ## HTTP and network boundary
 

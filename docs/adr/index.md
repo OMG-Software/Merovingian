@@ -677,3 +677,6 @@
 * [0793 - OAuth and legacy sessions do not mix at the refresh endpoints](0793-oauth-and-legacy-sessions-do-not-mix-at-the-refresh-endpoints.md)
 * [0794 - A UIA endpoint refuses an OAuth session, and the cross-signing upload follows the spec's exemptions](0794-a-uia-endpoint-refuses-an-oauth-session-and-cross-signing-upload-follows-the-spec-exemptions.md)
 * [0795 - OAuth revocation ends the session as logout does, whoever asks](0795-oauth-revocation-ends-the-session-as-logout-does-whoever-asks.md)
+* [0796 - The account pages keep a fixed 15-minute session in memory, bound to a strict cookie and a form token](0796-the-account-pages-keep-a-fixed-15-minute-session-in-memory-bound-to-a-strict-cookie-and-a-form-token.md)
+* [0797 - An OAuth session replaces its cross-signing keys through the m.oauth stage and a one-use approval](0797-an-oauth-session-replaces-its-cross-signing-keys-through-the-m-oauth-stage-and-a-one-use-approval.md)
+* [0798 - Account-page actions share the client API's cores, and every password change ends account-page access](0798-account-page-actions-share-the-client-api-cores-and-every-password-change-ends-account-page-access.md)

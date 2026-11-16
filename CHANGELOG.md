@@ -52,11 +52,21 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   the other kind of session, before the token is spent (ADR-0792, ADR-0793).
 * Endpoints that ask for User-Interactive Authentication answer an OAuth session `403 M_FORBIDDEN` naming the
   account page; application services are not refused (ADR-0794).
+* `GET` and `POST /_merovingian/account` serve the account pages: sign-in, devices, device sign-out, password
+  change, deactivation and cross-signing reset approval, with all six spec actions advertised (ADR-0796).
+* An account-page session lives a fixed 15 minutes in memory behind a strict `__Host-` cookie and a form token; its
+  sign-in shares the `POST /login` throttle (ADR-0796).
+* An OAuth session replaces its cross-signing keys through the `m.oauth` stage: one approval on the account page,
+  valid 10 minutes, spent only by a stored upload (ADR-0797).
+* Each account-page action calls the client API's own function; a page password change logs every session out and
+  keeps the devices (ADR-0798).
 
 ## Security Fixes
 
 * The query of a `/_merovingian/oauth2/*` or `/_merovingian/account*` request is never logged, so a state, code or
   login hint cannot reach the log (ADR-0786).
+* Every password change, reset and deactivation now ends the user's account-page sessions and withdraws a
+  cross-signing reset approval (ADR-0798).
 
 * A response header that would frame the message (`Content-Length`, `Connection`, ...) or holds CR or LF now turns
   the response into a 500 instead of being written or silently dropped (ADR-0767).
@@ -73,11 +83,11 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
 ## Release notes
 
 1.1.0 is in development. A configuration that sets any `server.oidc.*` key is now refused at start-up: remove those
-keys and set `server.oauth.enabled` instead (ADR-0764). The authorisation, token and revocation endpoints are
-served; the account page is not yet, so a user signed in through OAuth cannot change a password or delete a device
-there: leave `server.oauth.enabled` off until then. 1.1.0 migrates the database: on first start it applies
-migration 002, which adds two empty tables and changes no existing one. A 1.0.x server refuses the migrated
-database, so back it up before upgrading if you may need to go back.
+keys and set `server.oauth.enabled` instead (ADR-0764). The authorisation, token and revocation endpoints and the
+account pages at `/_merovingian/account` are served; a user signed in through OAuth changes a password, signs out a
+device, deactivates the account or approves a cross-signing reset there. 1.1.0 migrates the database: on first
+start it applies migration 002, which adds two empty tables and changes no existing one. A 1.0.x server refuses the
+migrated database, so back it up before upgrading if you may need to go back.
 
 # Version 1.0.2
 

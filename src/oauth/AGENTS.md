@@ -24,6 +24,7 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `ServerMetadata.cpp`, `ServerMetadataOptions.hpp` | `server_metadata`: the `auth_metadata` document, device grant, `prompt=create` and account management fields only when their option is on |
 | `AuthorizationRedirect.cpp` | `percent_encode_redirect_value`, `authorization_redirect_address`: the answer's parameters percent-encoded (everything but the unreserved characters) into the query or the fragment of a matched redirect URI |
 | `AuthorizationPages.cpp`, `AccountFormInput.hpp`, `ConsentPageInput.hpp` | The login, registration, consent and error pages of `/_merovingian/oauth2/authorize`, and the form field and action names they post. A value `HtmlText::escape` refuses is replaced by fixed text |
+| `AccountPages.cpp`, `AccountPageFrame.hpp`, `AccountDeviceRow.hpp`, `AccountSignInInput.hpp` | The account pages of `/_merovingian/account` (ADR-0796): sign-in, overview, devices, one device, device sign-out, password, deactivation, cross-signing reset and result pages; the six spec actions (`account_management_actions`, `account_management_action`, `account_action_takes_device`), `account_action_address` (every link, the post-sign-in redirect and the `m.oauth` URL), and the form field and action names. Every signed-in form carries `form_token`; a page whose token cannot be shown holds no form |
 | `FormPostOrigin.cpp` | `form_post_origin`, `form_post_origin_is_accepted`: a page's form post must name this server's origin exactly, and `Sec-Fetch-Site`, when sent, `same-origin` (ADR-0784) |
 | `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
 | `FormContentType.cpp` | `api_form_content_type_is_accepted`: the token and revocation endpoints take `application/x-www-form-urlencoded` only, with at most a `charset=utf-8` parameter |
@@ -69,7 +70,9 @@ Pure functions and value types for the built-in OAuth 2.0 API
 `[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`),
 `test_oauth_form_post_origin.cpp` (`[oauth][form-origin]`), `test_oauth_page_response.cpp`
 (`[oauth][page-response]`), `test_oauth_authorization_redirect.cpp` (`[oauth][redirect-address]`),
-`test_oauth_authorization_pages.cpp` (`[oauth][authorize-page]`). The authorisation endpoint:
+`test_oauth_authorization_pages.cpp` (`[oauth][authorize-page]`), `test_oauth_account_pages.cpp`
+(`[oauth][account-page]`). The account pages: `tests/conformance/test_oauth_account_management_conformance.cpp` and
+`tests/integration/test_oauth_account_pages_flow.cpp` (`[oauth-account]`, `[oauth-uia]`). The authorisation endpoint:
 `tests/conformance/test_oauth_authorization_conformance.cpp` and `tests/integration/test_oauth_authorization_flow.cpp`
 (`[oauth-authorize]`). The served document:
 `tests/conformance/test_oauth_metadata_conformance.cpp` and `tests/integration/test_oauth_metadata_flow.cpp`

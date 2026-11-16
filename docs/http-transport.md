@@ -986,6 +986,14 @@ else is `400 invalid_request`. Every answer is built by `oauth_json_response`, `
 clients exist: a `client_secret` field is `400 invalid_client`, and an `Authorization: Basic` header `401
 invalid_client` with `WWW-Authenticate: Basic`. A body over `max_body_bytes` gets the general `413 M_TOO_LARGE`.
 
+`GET` and `POST /_merovingian/account` (ADR-0796) are routed the same way (`static_routes`, `auth_sensitive`, a
+`client_static_route_allow` row of `GET, POST`, so another method is `405`), before the authentication gate, and are
+`404 M_UNRECOGNIZED` with the API off. Every answer is a page or a 303 marked `LocalHttpResponse::page`, so none carries
+a CORS header. A form post is refused `403` unless `form_post_origin_is_accepted` accepts it, before the body is read;
+the body must be `application/x-www-form-urlencoded`. The session cookie `__Host-mv-account` is `Secure`, `HttpOnly`,
+`SameSite=Strict`, `Path=/` and `Max-Age=900`, and is read like `__Host-mv-oauth`: a `Cookie` header sent twice counts
+as absent. A cookie that names no live session is deleted (`Max-Age=0`).
+
 ### Admin routes
 
 `/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on

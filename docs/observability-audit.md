@@ -582,6 +582,19 @@ ID), written in the grant's own transaction; `oauth.session.revoked` and `oauth.
 reason `revoked`), written when the session ends, as `auth.logout` is. A refresh grant writes the `auth.refresh` rows of the legacy
 refresh.
 
+## OAuth 2.0 account page diagnostics and audit (ADR-0796 to ADR-0798)
+
+`/_merovingian/account` logs under the `oauth` module, with `user_id` only: `account.page.signed_in`,
+`account.page.signed_out`, `account.page.device_deleted`, `account.page.password_changed`, `account.page.deactivated`
+and `account.page.cross_signing_reset_approved` (info), and `account.page.forbidden_origin` (debug, no field). Never a
+password, the session cookie, a form token or the query.
+
+Durable audit rows (category `auth`): `cross_signing.reset_approved` (actor and target the user, reason `account
+page`) when the user approves a cross-signing reset, and `cross_signing.reset_used` (actor and target the user, reason
+`m.oauth`) when an OAuth session's replacing upload is stored with it. The page's actions write the rows of the client
+API functions they call: `device.deleted` for a device sign-out, `auth.password_changed` (reason `changed on the account
+page; revoked all devices`) and `auth.account_deactivated` (reason `deactivated on the account page`).
+
 ## Outbound client request diagnostics (F-76, ADR-0418)
 
 `http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:

@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration, authorization, token and revocation endpoints are served (see "OAuth 2.0 client registration", "OAuth 2.0 authorisation pages" and "OAuth 2.0 token and revocation endpoints" below); the device authorisation endpoint and the account page it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration, authorization, token and revocation endpoints are served (see "OAuth 2.0 client registration", "OAuth 2.0 authorisation pages" and "OAuth 2.0 token and revocation endpoints" below); the account pages are served (see "OAuth 2.0 account pages" below); the device authorisation endpoint is not served yet; it lands in a later phase of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker
@@ -1204,13 +1204,53 @@ read with `core::FormFields`; anything else is 400 `invalid_request`. Every answ
   audited `oauth.session.revoked`, then 200 with an empty body. There is no 401 case (ADR-0795).
 - **User-Interactive Authentication.** An OAuth session holds no password the client can be asked for. Every endpoint
   that asks for UIA with an access token (`POST /login/get_token`, `POST /account/password`, `POST /account/deactivate`,
-  `POST /account/3pid/add`, `DELETE /devices/{deviceId}`, `POST /delete_devices`, and a change of held cross-signing
-  keys) answers it 403 `M_FORBIDDEN` naming the account page (`oauth_session_uia_refusal`); an application service is
-  exempt. `POST /keys/device_signing/upload` needs no UIA for any session when no master key is held or when every key
-  sent matches the held one, nor for an application service (spec v1.11 and v1.17; ADR-0794).
+  `POST /account/3pid/add`, `DELETE /devices/{deviceId}`, `POST /delete_devices`) answers it 403 `M_FORBIDDEN` naming
+  the account page (`oauth_session_uia_refusal`); an application service is exempt. `POST /keys/device_signing/upload`
+  needs no UIA for any session when no master key is held or when every key sent matches the held one, nor for an
+  application service (spec v1.11 and v1.17; ADR-0794). A change of held keys from an OAuth session is the `m.oauth`
+  stage (see "OAuth 2.0 account pages").
 - **Logging.** Under `oauth`: `oauth.token.refused` (debug: grant type, error, client ID), `oauth.session.granted`,
   `oauth.session.persistence_failed`, `oauth.refresh.refused`, `oauth.code.replayed`, `oauth.revocation.refused` and
   `oauth.revocation.accepted`, with `user_id`, `device_id` and `client_id` only. Never a code, a verifier or a token.
+
+## OAuth 2.0 account pages (phase 8)
+
+`GET` and `POST /_merovingian/account` (`handle_account_page`, `AccountPage.cpp`) are the account management web UI
+the spec's "Account management" names: `account_management_uri` and all six `org.matrix.*` actions in the metadata.
+`404 M_UNRECOGNIZED` while `server.oauth.enabled` is false; another method is 405.
+
+- **Session (ADR-0796).** `AccountSessionStore` (`HomeserverRuntime::account_sessions`), in memory: 15 minutes from
+  sign-in, never extended, under `oauth_secret_hash` of a 32-byte secret sent as `__Host-mv-account` (`Secure`,
+  `HttpOnly`, `SameSite=Strict`, `Max-Age=900`). 4096 sessions, 4 per user (a fifth sign-in ends the user's oldest; at
+  the total cap a sign-in is 503). Each signed-in form carries a form token, BLAKE2b of a label and the secret,
+  compared in constant time. A session whose user no longer passes `account_sign_in_gate` ends at once.
+- **Sign-in.** `verify_password_login` with `rate_limit_client_key`, so it shares the `POST /login` throttle; a 429
+  carries `Retry-After`. A sign-in always issues a fresh session and ends the one the old cookie named, then answers 303
+  to the page asked for. `action` (one of the six) and `device_id` (only for the two device actions, only a valid
+  device ID) are carried through the form in hidden fields; anything else is ignored.
+- **Form posts.** Refused 403 unless `form_post_origin_is_accepted` accepts `Origin` and `Sec-Fetch-Site`, before the
+  body is read; then `application/x-www-form-urlencoded`, then the cookie's live session and its form token.
+- **Devices.** Read through the user's device index; a device ID the user does not hold, unknown or another user's,
+  is the same 404 page. Signing out a device is `delete_device_and_announce`, the core of `DELETE /devices/{deviceId}`
+  (ADR-0798).
+- **Password change (ADR-0798).** The current password is checked with `verify_password_login`, the new one twice.
+  `change_password_on_account_page` shares the email reset's core, `replace_password_without_device`: every access,
+  refresh and OpenID token and every pusher of the account goes, devices stay; the page also erases the user's login
+  tokens. Audited `auth.password_changed`. A suspended account cannot change its password here, as in the client API.
+- **Deactivation.** The password again, then `deactivate_user_account` and `finish_account_deactivation`, the core of
+  `POST /account/deactivate`.
+- **Ending page access.** `end_account_page_access` ends every account-page session of the user and withdraws any
+  cross-signing reset approval; `change_local_user_password`, the reset, the page change and `deactivate_user_account`
+  call it.
+- **Cross-signing reset (ADR-0797).** The reset page records `CrossSigningResetApprovals::approve` (10 minutes, one
+  per user) and audits `cross_signing.reset_approved`. A replacing upload from an OAuth session is answered 401
+  `{"flows":[{"stages":["m.oauth"]}],"params":{"m.oauth":{"url":"<account page>?action=org.matrix.cross_signing_reset"}},"session":"<id>"}`
+  with a UIA session of purpose `cross_signing_reset`. A retry with that session and `type` absent or `m.oauth` takes
+  the approval; it goes back unless the keys are stored, and a stored upload audits `cross_signing.reset_used`. A
+  password stage from an OAuth session is never checked; a legacy session keeps `m.login.password` and never touches
+  an approval.
+- **Logging.** Under `oauth`, `account.page.*` events with `user_id` only. Never a password, a cookie, a form token or
+  the query (`sanitized_http_target` drops it, ADR-0786).
 
 ## Next starting points
 

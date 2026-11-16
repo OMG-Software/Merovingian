@@ -34,6 +34,10 @@ This is the largest and most complex module — read this file carefully before 
 | `OAuthClientCredentials.cpp` | `oauth_client_credentials_refusal`: refuses a `client_secret` field or `Authorization: Basic` (only public clients exist) at the token and revocation endpoints |
 | `OAuthAuthorization.cpp` | `GET` and `POST /_merovingian/oauth2/authorize` (`handle_oauth_authorize`): the authorisation request, the browser cookie, the login, registration and consent pages, and the redirect with a code or an error (ADR-0787 to ADR-0789) |
 | `OAuthClock.cpp` | `oauth_wall_clock_ms`: the wall-clock milliseconds every OAuth store and handler passes |
+| `AccountPage.cpp` | `GET` and `POST /_merovingian/account` (`handle_account_page`): the account pages' sign-in, overview, devices, device sign-out, password change, deactivation and cross-signing reset approval (ADR-0796 to ADR-0798) |
+| `AccountSessionStore.cpp` | `AccountSessionStore` (`HomeserverRuntime::account_sessions`): account-page sessions, 15 minutes fixed, hashed secret, 4096 in all and 4 per user (the user's oldest goes), and the session's form token (ADR-0796). Guarded by `runtime.mutex` |
+| `CrossSigningResetApprovals.cpp` | `CrossSigningResetApprovals` (`HomeserverRuntime::cross_signing_reset_approvals`): one approval per user, 10 minutes, taken by a replacing upload and restored unless the keys are stored (ADR-0797). Guarded by `runtime.mutex` |
+| `OAuthPageResponse.cpp` | Module-internal helpers both page handlers share: `oauth_page_response`, `oauth_plain_page`, `oauth_error_page_response`, `request_target_query`, `single_request_header`, `request_secret_cookie`, `retry_after_seconds` |
 | `RequestHeaders.cpp` | `request_header` (first value, case-insensitive name) and `request_header_values` (every value, for a check that refuses a repeated header) |
 | `PendingAuthorisationStore.cpp` | `PendingAuthorisationStore` (`HomeserverRuntime::oauth_pending_authorisations`): OAuth 2.0 authorization requests in progress, 10 minutes, under a 32-byte identifier kept as a hash and bound to a browser token compared in constant time; 8192 in all and 16 per client address, never evicting a live entry (ADR-0782). Guarded by `runtime.mutex` |
 | `AuthorizationCodeStore.cpp` | `AuthorizationCodeStore` (`HomeserverRuntime::oauth_codes`): authorization codes, 60 s, hashed, bound to client, redirect URI, PKCE challenge, user, device and scope; 8192, never evicted; a redeemed code is remembered until its expiry so a replay is told apart (ADR-0782). Guarded by `runtime.mutex` |
@@ -162,9 +166,31 @@ gate; `ClientServerRuntime.cpp` holds only the route matches. Rules:
   revocation, a replayed code, any new path that ends a session.
 - **A UIA endpoint calls `oauth_session_uia_refusal` first** (ADR-0794): `GET`/`POST /login/get_token`,
   `POST /account/password`, `/account/deactivate`, `/account/3pid/add`, `DELETE /devices/{deviceId}`,
-  `POST /delete_devices`, and `POST /keys/device_signing/upload` when the upload is not UIA-exempt. An application
-  service's masquerade token is never refused.
+  `POST /delete_devices`, and `POST /keys/device_signing/upload` when the upload is not UIA-exempt, which then offers
+  the `m.oauth` stage instead of the 403 (ADR-0797). An application service's masquerade token is never refused.
 - Never log a code, a verifier, a token or the body; log `client_id`, `grant_type`, `error`, `user_id`, `device_id`.
+
+The account pages are `handle_account_page` (`AccountPage.cpp`); `ClientServerRuntime.cpp` holds only the route match.
+Rules (ADR-0796 to ADR-0798):
+
+- **A form post is checked in order**: `form_post_origin_is_accepted` (403, before the body is read), the content
+  type, the form; then, for anything but `sign_in`, the cookie's live session (`AccountSessionStore::find`, then
+  `account_sign_in_gate`) and the session's form token (`form_token_matches`). Never act on a post before all of these.
+- **Each action calls the client API's function, never a copy**: `delete_device_and_announce` (shared with
+  `DELETE /devices/{deviceId}`), `deactivate_user_account` then `finish_account_deactivation` (shared with
+  `POST /account/deactivate`), `change_password_on_account_page` (the email reset's core,
+  `replace_password_without_device`). A new page action finds or factors out the client API's core first.
+- **`verify_password_login` releases `runtime.mutex`**: after it, find the session again (`still_signed_in`) before
+  acting.
+- **Every password change, reset and deactivation calls `end_account_page_access`** (`AuthService.cpp`), which ends the
+  user's account-page sessions and withdraws a reset approval. A new path that changes a password or closes an account
+  does too.
+- **A device the user does not hold is the same 404 page**, whether unknown or another user's.
+- **The `m.oauth` stage** (`oauth_cross_signing_reset_stage` in `ClientServerRuntime.cpp`) is offered only to an OAuth
+  session's replacing upload; a legacy session keeps `m.login.password` and never touches an approval. The approval is
+  taken into a `TakenResetApproval`, which restores it on every way out; `spend()` only after `store_key_api_payload`
+  succeeds. A password stage from an OAuth session is answered with the challenge and never checked.
+- Log `user_id` only (`account.page.*`); never a password, the cookie, a form token or the query.
 
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
 authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
@@ -262,7 +288,8 @@ never a 200 with an etag. Do not skip a malformed entry or ignore a write result
 The upload asks for User-Interactive Authentication only when it changes a held key (spec v1.11 "Cross-signing", ADR-0794):
 `cross_signing_upload_is_uia_exempt` exempts an application service, a user with no master key, and an upload whose
 master key and every other key sent equal the held ones (canonical JSON). While a master key is held, an upload
-without one, or with any key that differs from the held one, is UIA, and an OAuth session is refused it with 403.
+without one, or with any key that differs from the held one, is UIA: `m.login.password` for a password session, the
+`m.oauth` stage and a one-use account-page approval for an OAuth session (ADR-0797; 403 with OAuth off).
 
 ## The runtime lock and blocking calls
 

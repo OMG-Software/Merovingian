@@ -835,15 +835,33 @@ registration (`POST /_merovingian/oauth2/register`), the sign-in pages
 (`/_merovingian/oauth2/authorize`, where a user signs in or creates an account
 and allows the application), the token endpoint
 (`POST /_merovingian/oauth2/token`, the authorization code and refresh grants)
-and revocation (`POST /_merovingian/oauth2/revoke`); the account page and the
-device grant follow. Every authorisation asks for the password; the server
-keeps no browser session. At most 10000 client registrations are held; once
-every held one is in use, a new client is answered `503 temporarily_unavailable`
-until one is freed. Until the account page lands, a user signed in through
-OAuth cannot change their password, deactivate the account, add an email
-address or delete a device from that session: those requests are answered
-`403 M_FORBIDDEN` naming `/_merovingian/account` (ADR-0794), so leave the API
-off unless users can do those things from a legacy login.
+revocation (`POST /_merovingian/oauth2/revoke`) and the account pages
+(`/_merovingian/account`); the device grant follows. Every authorisation asks
+for the password; the server keeps no browser session for it. At most 10000
+client registrations are held; once every held one is in use, a new client is
+answered `503 temporarily_unavailable` until one is freed.
+
+The account pages are where a user signed in through OAuth manages the account
+(spec "Account management"; ADR-0796 to ADR-0798). The metadata names them as
+`account_management_uri` and lists all six actions: the overview, the device
+list, one device, signing a device out, deactivation and approving a
+cross-signing reset. A user signs in there with the password (the same
+throttle as `POST /login`) and gets a session of 15 minutes that is never
+extended and is kept only in memory, so a restart signs every browser out of
+the pages. The pages also change the password. A password change there signs
+out every session of the account, in every application and on every device,
+and keeps the devices; every application must sign in again. A password change,
+a reset and a deactivation each end the user's account-page sessions.
+
+A client signed in through OAuth asks for User-Interactive Authentication only
+to replace its cross-signing keys. It is then sent to the account page
+(`?action=org.matrix.cross_signing_reset`, the `m.oauth` stage), where the
+user allows one reset within 10 minutes. The other User-Interactive
+Authentication endpoints (`POST /account/password`, `/account/deactivate`,
+`/account/3pid/add`, `DELETE /devices/{deviceId}`, `POST /delete_devices`,
+`/login/get_token`) still answer an OAuth session `403 M_FORBIDDEN` naming the
+account page (ADR-0794); the user does those things on the pages, except
+adding an email address and minting a login token, which have no page yet.
 
 An OAuth access token always expires: it lives
 `security.access_token_lifetime_ms`, or one hour when that is `0` (ADR-0791),
