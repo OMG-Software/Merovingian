@@ -1,5 +1,7 @@
 oauth_sources = files(
   'AsciiCase.cpp',
+  'AuthorizationPages.cpp',
+  'AuthorizationRedirect.cpp',
   'ClientMetadata.cpp',
   'ClientUri.cpp',
   'DisplayText.cpp',

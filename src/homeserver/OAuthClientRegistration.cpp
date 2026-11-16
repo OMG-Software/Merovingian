@@ -17,6 +17,7 @@
 #include "merovingian/homeserver/AuthorizationCodeStore.hpp"
 #include "merovingian/homeserver/ClientServerRuntime.hpp"
 #include "merovingian/homeserver/HomeserverRuntime.hpp"
+#include "merovingian/homeserver/OAuthClock.hpp"
 #include "merovingian/homeserver/OAuthJsonResponse.hpp"
 #include "merovingian/homeserver/PendingAuthorisationStore.hpp"
 #include "merovingian/homeserver/RetentionSweep.hpp"
@@ -27,7 +28,6 @@
 #include "merovingian/observability/SingleLog.hpp"
 #include "merovingian/observability/StructuredLogField.hpp"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -48,13 +48,6 @@ static_assert(PendingAuthorisationStore::max_entries + AuthorizationCodeStore::m
               database::max_idle_client_rows_examined);
 namespace
 {
-
-    [[nodiscard]] auto wall_clock_ms() -> std::uint64_t
-    {
-        auto const now =
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
-        return now.count() < 0 ? std::uint64_t{0U} : static_cast<std::uint64_t>(now.count());
-    }
 
     [[nodiscard]] auto refusal(std::string_view code, core::ErrorCode kind, std::string message) -> oauth::OAuthRefusal
     {
@@ -180,7 +173,7 @@ namespace
             return false;
         }
         auto const& homeserver = runtime.homeserver;
-        auto const now_ms = wall_clock_ms();
+        auto const now_ms = oauth_wall_clock_ms();
         auto const pending = [&homeserver, now_ms](std::string_view client_id) {
             return oauth_client_has_pending_authorisation(homeserver, client_id, now_ms);
         };
@@ -293,7 +286,7 @@ auto register_oauth_client(ClientServerRuntime& runtime, std::string_view conten
     }
 
     auto& store = runtime.homeserver.database.persistent_store;
-    auto const now_ms = wall_clock_ms();
+    auto const now_ms = oauth_wall_clock_ms();
     auto const log_fields = std::vector<observability::StructuredLogField>{
         {"client_id",        *client_id,                                                      false},
         {"application_type", std::string{application_type_name(metadata.application_type())}, false},

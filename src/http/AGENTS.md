@@ -27,8 +27,9 @@ implementation and no users. The listening server lives in `homeserver/HttpServe
 - **Rate limiting is applied before any auth check** — don't move it after auth, that would
   allow unauthenticated callers to exhaust server resources.
 - **Header lookup is case-insensitive.** The client-server dispatcher's `request_header(req, name)`
-  (in `homeserver/ClientServerRuntime.cpp`, over `LocalHttpRequest`) is the lookup to use; never compare
-  header names with a case-sensitive match.
+  (`homeserver/RequestHeaders.hpp`, over `LocalHttpRequest`) is the lookup to use; never compare
+  header names with a case-sensitive match. `request_header_values` returns every value, for a check that must
+  refuse a header sent twice (the OAuth 2.0 pages' `Origin`, `Sec-Fetch-Site` and `Cookie`, ADR-0788).
 - **`outbound_client` does not resolve hosts.** `perform()` requires `pinned_addresses` and binds
   them with `CURLOPT_RESOLVE`, so the SSRF policy in `federation::security` stays the single
   source of truth. Resolve server names through `federation/ServerDiscovery.cpp` first, then

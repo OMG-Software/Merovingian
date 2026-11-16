@@ -19,5 +19,13 @@ inline constexpr std::string_view error_invalid_client_metadata = "invalid_clien
 // in a way the client cannot fix.
 inline constexpr std::string_view error_temporarily_unavailable = "temporarily_unavailable";
 inline constexpr std::string_view error_server_error = "server_error";
+// RFC 6749 section 4.1.2.1, sent only in a redirect from the authorisation endpoint: a `response_type` other than
+// `code`, a client not registered for the authorization code grant, and a user who denied the request.
+inline constexpr std::string_view error_unsupported_response_type = "unsupported_response_type";
+inline constexpr std::string_view error_unauthorized_client = "unauthorized_client";
+inline constexpr std::string_view error_access_denied = "access_denied";
+// OpenID Connect Core 1.0 section 3.1.2.6: `prompt=none`, which this server cannot honour because every authorisation
+// asks for the password (ADR-0787).
+inline constexpr std::string_view error_login_required = "login_required";
 
 } // namespace merovingian::oauth

@@ -968,6 +968,15 @@ a page unchanged (ADR-0785). A page sends `Referrer-Policy: same-origin`, and a 
 when sent, is `same-origin` (`oauth::form_post_origin_is_accepted`, ADR-0784). No log line keeps the query of a target
 under `/_merovingian/oauth2` or `/_merovingian/account` (`sanitized_http_target`, ADR-0786).
 
+`GET` and `POST /_merovingian/oauth2/authorize` are routed the same way (`static_routes`, `auth_sensitive`, a
+`client_static_route_allow` row of `GET, POST`, so another method is `405`), before the authentication gate, and are
+`404 M_UNRECOGNIZED` with the API off. Every answer is a page or a redirect marked `LocalHttpResponse::page`, so none
+carries a CORS header. A redirect to the client is `302` from the `GET` and `303` from a form post, with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`; a page that starts a sign-in sets the `__Host-mv-oauth`
+cookie (ADR-0788). `Origin`, `Sec-Fetch-Site` and `Cookie` are read with `request_header_values`
+(`homeserver/RequestHeaders.hpp`) and a header sent twice counts as absent. A form body over `max_body_bytes` gets the
+general `413 M_TOO_LARGE` JSON answer, not a page.
+
 ### Admin routes
 
 `/_merovingian/admin/*` (health, metrics, audit, accounts, review, media moderation) is served on

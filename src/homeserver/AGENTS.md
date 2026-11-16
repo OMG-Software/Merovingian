@@ -29,6 +29,9 @@ This is the largest and most complex module — read this file carefully before 
 | `RetentionSweep.cpp` | `run_retention_sweep`: the sweep the `retention-sweep` `PeriodicJob` runs every hour. Deletes sessions and tokens that can no longer authenticate and `audit_log` rows past `security.audit_log_retention_days`, and OAuth 2.0 clients with no session unused for 30 days (`oauth_client_retention`, least recently used first; never a client with a session, nor one `oauth_client_has_pending_authorisation` names: a live pending authorisation or an unredeemed code, answered in O(1) from the stores; ADR-0777, ADR-0782), in transactions of at most 500 rows (`retention_batch_rows`), at most 20 batches per kind per sweep. `runtime.mutex` is taken for one batch at a time, never across the whole sweep (ADR-0488, ADR-0489) |
 | `OAuthClientRegistration.cpp` | `POST /_merovingian/oauth2/register` (`register_oauth_client`), the client ID (`oauth_client_id_of`, ADR-0779), the cap and its eviction (ADR-0780), and `find_registered_oauth_client` |
 | `OAuthJsonResponse.cpp` | `oauth_json_response` / `oauth_error_response`: every OAuth JSON answer, with `no-store` (ADR-0781) |
+| `OAuthAuthorization.cpp` | `GET` and `POST /_merovingian/oauth2/authorize` (`handle_oauth_authorize`): the authorisation request, the browser cookie, the login, registration and consent pages, and the redirect with a code or an error (ADR-0787 to ADR-0789) |
+| `OAuthClock.cpp` | `oauth_wall_clock_ms`: the wall-clock milliseconds every OAuth store and handler passes |
+| `RequestHeaders.cpp` | `request_header` (first value, case-insensitive name) and `request_header_values` (every value, for a check that refuses a repeated header) |
 | `PendingAuthorisationStore.cpp` | `PendingAuthorisationStore` (`HomeserverRuntime::oauth_pending_authorisations`): OAuth 2.0 authorization requests in progress, 10 minutes, under a 32-byte identifier kept as a hash and bound to a browser token compared in constant time; 8192 in all and 16 per client address, never evicting a live entry (ADR-0782). Guarded by `runtime.mutex` |
 | `AuthorizationCodeStore.cpp` | `AuthorizationCodeStore` (`HomeserverRuntime::oauth_codes`): authorization codes, 60 s, hashed, bound to client, redirect URI, PKCE challenge, user, device and scope; 8192, never evicted; a redeemed code is remembered until its expiry so a replay is told apart (ADR-0782). Guarded by `runtime.mutex` |
 | `OAuthSecret.cpp`, `HashedSecretTable.hpp` | `make_oauth_secret` / `oauth_secret_hash` (32 random bytes, BLAKE2b) and the digest-indexed, constant-time, expiry-ordered table both stores keep their entries in |
@@ -113,17 +116,34 @@ absolute OAuth address a handler writes comes from `oauth::OAuthBaseUrl` read fr
 constant from `oauth/OAuthPaths.hpp`; never join the base URL and a path here. The two paths stay in the generic
 rate-limit tier (ADR-0775); the other OAuth endpoints take `auth_sensitive`.
 
-The authorisation pages (phase 5b) build on four things that are in place now; use them, never a copy:
+The authorisation pages are `handle_oauth_authorize` (`OAuthAuthorization.cpp`); `ClientServerRuntime.cpp` holds only
+the route match. They build on these; use them, never a copy:
 
 - `verify_password_login` and `create_local_account` (`AuthService.cpp`, ADR-0783) are the only password check and the
   only session-less account creation. The page passes `rate_limit_client_key` as the client source and client key.
 - `PendingAuthorisationStore` and `AuthorizationCodeStore` (ADR-0782) are the only places an authorisation in progress
-  or a code is kept. Pass `wall_clock_ms()`; never evict, never keep a secret unhashed.
+  or a code is kept. Pass `oauth_wall_clock_ms()`; never evict, never keep a secret unhashed.
 - A page response sets `LocalHttpResponse::page` and carries `oauth::page_headers()`; the boundary then adds no CORS
   header and `wrap()` leaves it alone (ADR-0785). A form post is refused unless `oauth::form_post_origin_is_accepted`
   accepts its `Origin` and `Sec-Fetch-Site` (ADR-0784).
 - Never log a target's query by hand: `sanitized_http_target` drops the whole query under `/_merovingian/oauth2` and
   `/_merovingian/account` (ADR-0786).
+
+Rules for the authorisation pages:
+
+- **Nothing is redirected before the client and its redirect URI are validated.** A failure of either is a 400 page;
+  every later refusal goes to the matched URI, whose text is the one the request sent.
+- **A pending authorisation is found with the `pending` field and the `__Host-mv-oauth` cookie together** (ADR-0788).
+  Read `Origin`, `Sec-Fetch-Site` and `Cookie` with `request_header_values`; a header sent twice counts as absent.
+- **`verify_password_login` and `create_local_account` release `runtime.mutex`.** Nothing read before them is trusted
+  after: `record_user` finds the entry again, and `approve` consumes it and judges the account again with
+  `account_sign_in_gate`.
+- **No browser session is kept** (ADR-0787): every authorisation asks for the password, and `prompt=none` is
+  `login_required`.
+- **An approval leaves one authorization code and nothing else**: no device, token or `oauth_sessions` row; the token
+  endpoint creates those.
+- Log under `oauth` with `client_id`, `application_type`, `error`, `user_id` and `device_id` only. Granted, and denied
+  after a sign-in, are durable audit rows.
 `POST /_merovingian/oauth2/register` is `register_oauth_client` (`OAuthClientRegistration.cpp`), answered before the
 authentication gate, and also from the general body cap so an oversized body is an OAuth 400 (ADR-0781). Rules:
 

@@ -668,3 +668,7 @@
 * [0784 - OAuth pages use a same-origin referrer policy, and a form post must name this server's origin](0784-oauth-pages-use-a-same-origin-referrer-policy-and-a-form-post-must-name-this-server-s-origin.md)
 * [0785 - An OAuth page response is marked in its type and gets no CORS headers](0785-an-oauth-page-response-is-marked-in-its-type-and-gets-no-cors-headers.md)
 * [0786 - The query of an OAuth request is never logged](0786-the-query-of-an-oauth-request-is-never-logged.md)
+* [0787 - Every OAuth authorisation asks for the password, and no browser session is kept](0787-every-oauth-authorisation-asks-for-the-password-and-no-browser-session-is-kept.md)
+* [0788 - The OAuth browser binding is one `__Host-` cookie, and the pending identifier is the form token](0788-the-oauth-browser-binding-is-one-host-cookie-and-the-pending-identifier-is-the-form-token.md)
+* [0789 - `response_mode=query` is accepted for an `https` redirect URI](0789-response-mode-query-is-accepted-for-an-https-redirect-uri.md)
+* [0790 - An OAuth approval is judged again and audited, and its redirect sends no referrer](0790-an-oauth-approval-is-judged-again-and-audited-and-its-redirect-sends-no-referrer.md)

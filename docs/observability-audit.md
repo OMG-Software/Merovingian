@@ -557,6 +557,17 @@ validates is logged as `oauth.client.stored_metadata_refused` (warning, `client_
 Registration writes no audit row: it is unauthenticated, grants nothing, and is bounded by the `auth_sensitive` rate
 limit, whose 429s are audited as `rate_limit.exceeded`.
 
+## OAuth 2.0 authorisation diagnostics and audit (ADR-0787, ADR-0788)
+
+`GET` and `POST /_merovingian/oauth2/authorize` log under the `oauth` module: `oauth.authorization.started` (debug,
+`client_id` and `application_type`), `oauth.authorization.refused` (debug, `error` and, once the client is known,
+`client_id`; a refused form post's origin is `error=forbidden_origin`), and `oauth.authorization.granted` and
+`oauth.authorization.denied` (info, `client_id`, `user_id`, `device_id`). Never the query, the `state`, the code
+challenge, the code, the cookie, the pending identifier or a password. `oauth.authorization.granted` is also a durable
+audit row (category `auth`, actor the user, target the client ID, reason the device ID), as a successful `auth.login`
+is; `oauth.authorization.denied` is audited the same way only when a user had signed in, since a denial before the
+password is anyone's to send.
+
 ## Outbound client request diagnostics (F-76, ADR-0418)
 
 `http::OutboundClient::perform` logs one debug line per request under the `outbound_client` module:

@@ -156,7 +156,7 @@ production-gated.
   (issue #437), had no caller and was removed.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
-- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration endpoint is served (see "OAuth 2.0 client registration" below); the authorization, token and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
+- `GET /_matrix/client/v1/auth_metadata` (and its MSC2965 unstable path) returns the OAuth 2.0 server metadata while `server.oauth.enabled` is true, and `404 M_UNRECOGNIZED` while it is off. `oauth::server_metadata` builds the document and every address in it comes from `oauth::OAuthBaseUrl`: the issuer is `server.public_baseurl` with one trailing slash and the endpoints sit under `/_merovingian/oauth2/` (ADR-0773). The endpoint is unauthenticated, carries CORS headers and stays in the generic rate-limit tier (ADR-0775). The registration endpoint and the authorization endpoint are served (see "OAuth 2.0 client registration" and "OAuth 2.0 authorisation pages" below); the token and revocation endpoints it names are not served yet; they land in later phases of the [OAuth 2.0 API plan](todos/oauth-2-0-api.md). The former `server.oidc.*` keys are refused at start-up.
 - **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
   files (`appservice.registration_files`, parsed as JSON) build an in-memory
   `AppserviceRegistry` at startup in the main process only (the federation worker
@@ -1125,6 +1125,45 @@ Phase 5a adds what the authorisation pages of phase 5b call; no route serves the
   registration token is the token file's, checked with Argon2id and not counted, so no attempt spends it.
 - **Form posts** are accepted only from this server's origin (`oauth::form_post_origin_is_accepted`, ADR-0784), the
   pages send `Referrer-Policy: same-origin`, and the query of an OAuth request is never logged (ADR-0786).
+
+## OAuth 2.0 authorisation pages (phase 5b)
+
+`GET` and `POST /_merovingian/oauth2/authorize` (spec "Authorisation code grant", RFC 6749 section 4.1) are served
+while `server.oauth.enabled` is true, before the authentication gate, by `handle_oauth_authorize`
+(`homeserver/OAuthAuthorization.cpp`). The pages are pure functions in `oauth/AuthorizationPages.cpp`, and the redirect
+address is built by `oauth::authorization_redirect_address`, which percent-encodes every value except the unreserved
+characters.
+
+- **The request (`GET`).** An unreadable query, a missing or unregistered `client_id`, or a `redirect_uri` that
+  `match_redirect_uri` does not find among the client's is a `400` page: nothing is sent to an address that was not
+  validated. After that every refusal is a `302` to the requested redirect URI with `error`, a fixed
+  `error_description` and `state`, in the query or the fragment as `response_mode` says (the query when it is absent
+  or invalid). In order: a `state` over 2048 bytes (`invalid_request`, without the state); `response_type` absent
+  (`invalid_request`) or not `code` (`unsupported_response_type`); a client not registered for `authorization_code`
+  (`unauthorized_client`); `response_mode` other than `query` or `fragment`; PKCE other than `S256` with a valid
+  challenge (`invalid_request`); a scope `parse_scope` refuses (`invalid_scope`); `prompt=none` (`login_required`,
+  since every authorisation asks for the password, ADR-0787) or a `prompt` other than `consent`, `login`,
+  `select_account` or `create` (`invalid_request`). `response_mode=query` is accepted for an `https` redirect URI
+  (ADR-0789). A `login_hint` of `mxid:` and a user ID of this server, or a bare valid localpart, prefills the username.
+- **The browser binding (ADR-0788).** The request is kept as a pending authorisation bound to the cookie
+  `__Host-mv-oauth` (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=600`), whose value is 64 hex digits
+  from `make_oauth_secret`; a browser that already carries a well-formed value keeps it. The pending identifier is the
+  hidden `pending` field of every form, and works only with that cookie. At most 16 pending authorisations per client
+  address (`rate_limit_client_key`) and 8192 in all; past that the request is a `503` page.
+- **The pages (`POST`).** A form post is refused with a `403` page unless `Origin` is this server's origin and
+  `Sec-Fetch-Site`, when sent, is `same-origin`; with a `400` page unless it is `application/x-www-form-urlencoded`;
+  and with the `400` "Sign-in expired" page, with no redirect, unless the `pending` field and the cookie name a live
+  entry. A header sent twice counts as absent. `login` runs `verify_password_login` (the throttle of `POST /login`
+  is shared: failures from one address count against both), `register` runs `create_local_account` when
+  `security.registration.enabled` (the registration token is asked for only when required), and both lead to the
+  consent page, which names the client, its `client_uri` host, where the browser goes next, the account and the
+  device ID, says the application gets full access, links the client's policy and terms, and warns when the device
+  already exists. A wrong password or unknown user is one `401` message; throttled is `429` and busy `503`, both with
+  `Retry-After`. `approve` spends the entry, judges the account again (`account_sign_in_gate`) and redirects (`303`)
+  with `code` and `state`; `deny` redirects with `access_denied`. A refused code store is `temporarily_unavailable`.
+- **What it leaves.** An approval leaves one authorization code (60 s) and nothing else: no device, token or
+  `oauth_sessions` row; the token endpoint creates those. No browser session is kept: every authorisation asks for
+  the password (ADR-0787).
 
 ## Next starting points
 

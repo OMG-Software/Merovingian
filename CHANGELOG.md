@@ -38,6 +38,12 @@ Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md)
   with the coming OAuth 2.0 pages; both routes answer as before (ADR-0783).
 * OAuth 2.0 pages send `Referrer-Policy: same-origin`, get no CORS headers, and accept a form post only from this
   server's origin (ADR-0784, ADR-0785).
+* `GET` and `POST /_merovingian/oauth2/authorize` serve the sign-in, account creation and consent pages and send the
+  browser back to the client with an authorization code or an error (ADR-0787, ADR-0789).
+* Every OAuth authorisation asks for the password; a sign-in is bound to its browser by a `__Host-` cookie and the
+  form's pending identifier, at most 16 in progress per address (ADR-0787, ADR-0788).
+* An approval judges the account again, is audited, and its redirect sends no referrer; it creates no device, token
+  or OAuth session (ADR-0790).
 
 ## Security Fixes
 

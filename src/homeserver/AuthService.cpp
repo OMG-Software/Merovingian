@@ -1406,19 +1406,28 @@ auto verify_password_login(HomeserverRuntime& runtime, PasswordLoginRequest cons
         return verified;
     }
     // The lock has been held since the re-validation inside verify_login_credentials, so the user is still there.
-    auto const* user = find_user(runtime.database, verified.user_id);
-    if (user == nullptr)
+    if (auto const gate = account_sign_in_gate(runtime, verified.user_id, request.device_id);
+        gate != PasswordLoginVerification::Outcome::verified)
     {
-        return {PasswordLoginVerification::Outcome::invalid_login, {}, 0U};
-    }
-    if (auto const refusal = account_state_refusal(runtime, *user, request.device_id); refusal.has_value())
-    {
-        return {refusal->deactivated ? PasswordLoginVerification::Outcome::account_deactivated
-                                     : PasswordLoginVerification::Outcome::invalid_login,
-                {},
-                0U};
+        return {gate, {}, 0U};
     }
     return verified;
+}
+
+auto account_sign_in_gate(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> PasswordLoginVerification::Outcome
+{
+    auto const* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return PasswordLoginVerification::Outcome::invalid_login;
+    }
+    if (auto const refusal = account_state_refusal(runtime, *user, device_id); refusal.has_value())
+    {
+        return refusal->deactivated ? PasswordLoginVerification::Outcome::account_deactivated
+                                    : PasswordLoginVerification::Outcome::invalid_login;
+    }
+    return PasswordLoginVerification::Outcome::verified;
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)

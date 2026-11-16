@@ -1056,6 +1056,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   marker redaction misses (CWE-532) (ADR-0784, ADR-0785, ADR-0786).
   Source: `src/oauth/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
+- **An OAuth authorisation request is redirected only after its client and redirect URI are validated; a form post
+  finds its pending authorisation only with the `pending` field and the `__Host-mv-oauth` cookie together, and an
+  `Origin`, `Sec-Fetch-Site` or `Cookie` header sent twice counts as absent.**
+  Why: a redirect to an unvalidated address is an open redirector that can leak a code (CWE-601); a pending
+  identifier usable without the cookie lets a page another browser loaded be approved (CWE-352, login CSRF); resolving
+  a duplicated header picks the copy an attacker chose (CWE-444) (ADR-0788).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.

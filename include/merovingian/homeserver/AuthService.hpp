@@ -75,6 +75,12 @@ namespace merovingian::homeserver
 // login_local_user: the verification releases it with RuntimeLockRelease and takes it back.
 [[nodiscard]] auto verify_password_login(HomeserverRuntime& runtime, PasswordLoginRequest const& request)
     -> PasswordLoginVerification;
+// The account-state gate verify_password_login ends with, for a user whose password was verified earlier (the OAuth 2.0
+// consent page's approval, which may come minutes after the check): `verified` when the account exists and may log in,
+// `account_deactivated`, or `invalid_login` for an unknown or locked account. Audits a refusal as login.rejected, as
+// the login does. The caller holds runtime.mutex; makes no call that releases it.
+[[nodiscard]] auto account_sign_in_gate(HomeserverRuntime& runtime, std::string_view user_id,
+                                        std::string_view device_id) -> PasswordLoginVerification::Outcome;
 // Application Service API (Matrix v1.19): see the .cpp definitions for the
 // full spec citation. The caller MUST have already verified the presented
 // as_token and that the target user_id/localpart is within the appservice's

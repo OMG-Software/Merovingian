@@ -98,6 +98,7 @@
 #include "merovingian/homeserver/LocalServices.hpp"
 #include "merovingian/homeserver/LocalUser.hpp"
 #include "merovingian/homeserver/MutualRoomsToken.hpp"
+#include "merovingian/homeserver/OAuthAuthorization.hpp"
 #include "merovingian/homeserver/OAuthClientRegistration.hpp"
 #include "merovingian/homeserver/OperationResult.hpp"
 #include "merovingian/homeserver/OperatorAdmin.hpp"
@@ -113,6 +114,7 @@
 #include "merovingian/homeserver/RemoteMediaFetchScope.hpp"
 #include "merovingian/homeserver/RemoteMediaRequestContext.hpp"
 #include "merovingian/homeserver/RemoteTimestampEvent.hpp"
+#include "merovingian/homeserver/RequestHeaders.hpp"
 #include "merovingian/homeserver/RequestLockScope.hpp"
 #include "merovingian/homeserver/RoomPower.hpp"
 #include "merovingian/homeserver/RoomService.hpp"
@@ -245,39 +247,6 @@ namespace
     [[nodiscard]] auto complete(LocalHttpResponse response) -> DispatchResult
     {
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
-    }
-
-    // Convenience wrappers that build a LocalHttpResponse and wrap it in
-    // a DispatchResult in one call.
-    // Look up a single header in a parsed request. Returns the value or an
-    // empty string view when the header is missing. Match is case-insensitive
-    // because the wire spelling varies by client.
-    [[nodiscard]] auto request_header(LocalHttpRequest const& req, std::string_view name) noexcept -> std::string_view
-    {
-        for (auto const& header : req.headers)
-        {
-            if (header.name.size() == name.size())
-            {
-                auto equal = true;
-                for (std::size_t i = 0U; i < header.name.size(); ++i)
-                {
-                    auto const a = static_cast<unsigned char>(header.name[i]);
-                    auto const b = static_cast<unsigned char>(name[i]);
-                    auto const lo_a = (a >= 'A' && a <= 'Z') ? static_cast<unsigned char>(a + ('a' - 'A')) : a;
-                    auto const lo_b = (b >= 'A' && b <= 'Z') ? static_cast<unsigned char>(b + ('a' - 'A')) : b;
-                    if (lo_a != lo_b)
-                    {
-                        equal = false;
-                        break;
-                    }
-                }
-                if (equal)
-                {
-                    return header.value;
-                }
-            }
-        }
-        return {};
     }
 
     // Determine which `Access-Control-Allow-Origin` value to emit, if any.
@@ -4064,6 +4033,7 @@ namespace
             "/_matrix/client/v1/auth_metadata",
             "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",
             "/_merovingian/oauth2/register",
+            "/_merovingian/oauth2/authorize",
             "/_matrix/client/v3/account/3pid/email/requestToken",
             "/_matrix/client/v3/account/3pid/msisdn/requestToken",
             "/_matrix/client/v3/account/password/email/requestToken",
@@ -4161,6 +4131,7 @@ namespace
             {"/_matrix/client/v1/auth_metadata",                                            "GET"             },
             {"/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",                   "GET"             },
             {"/_merovingian/oauth2/register",                                               "POST"            },
+            {"/_merovingian/oauth2/authorize",                                              "GET, POST"       },
             {"/_matrix/client/v3/account/3pid/email/requestToken",                          "POST"            },
             {"/_matrix/client/v3/account/3pid/msisdn/requestToken",                         "POST"            },
             {"/_matrix/client/v3/account/password/email/requestToken",                      "POST"            },
@@ -16029,6 +16000,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return DispatchResult{DispatchResult::Status::complete,
                                   register_oauth_client(rt, request_header(req, "Content-Type"), req.body),
                                   {}};
+        }
+    }
+    // GET and POST /_merovingian/oauth2/authorize (spec "Authorisation code grant"): the browser's sign-in pages,
+    // answered before the access-token gate, 404 with the OAuth 2.0 API off. Another method falls through to the 405
+    // gate. The handler is OAuthAuthorization.cpp (ADR-0787 to ADR-0789).
+    if (request_path == oauth::authorize_path.view())
+    {
+        if (!rt.homeserver.config.server().oauth.enabled)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        if (req.method == "GET" || req.method == "POST")
+        {
+            return DispatchResult{DispatchResult::Status::complete, handle_oauth_authorize(rt, req), {}};
         }
     }
     // The rest of the MSC2965 namespace (`auth_issuer`, from an earlier draft of the MSC) is not served. It is

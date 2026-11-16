@@ -22,6 +22,8 @@ Pure functions and value types for the built-in OAuth 2.0 API
 | `OAuthPaths.hpp` | Every OAuth route path: the `PagePath` constants under `/_merovingian/oauth2/` and `/_merovingian/account`, and the two `auth_metadata` paths (ADR-0773) |
 | `OAuthBaseUrl.cpp` | `OAuthBaseUrl::read`: `server.public_baseurl` as an `https` URL with a host and no query; `issuer()` (one trailing slash) and `url(PagePath)` (ADR-0773) |
 | `ServerMetadata.cpp`, `ServerMetadataOptions.hpp` | `server_metadata`: the `auth_metadata` document, device grant, `prompt=create` and account management fields only when their option is on |
+| `AuthorizationRedirect.cpp` | `percent_encode_redirect_value`, `authorization_redirect_address`: the answer's parameters percent-encoded (everything but the unreserved characters) into the query or the fragment of a matched redirect URI |
+| `AuthorizationPages.cpp`, `AccountFormInput.hpp`, `ConsentPageInput.hpp` | The login, registration, consent and error pages of `/_merovingian/oauth2/authorize`, and the form field and action names they post. A value `HtmlText::escape` refuses is replaced by fixed text |
 | `FormPostOrigin.cpp` | `form_post_origin`, `form_post_origin_is_accepted`: a page's form post must name this server's origin exactly, and `Sec-Fetch-Site`, when sent, `same-origin` (ADR-0784) |
 | `HandOffAllowlist.cpp` | `hand_off_allowlist_entry_error`, `hand_off_allowlist_error`: an https origin or a bare private-use scheme, at most 32, each once (ADR-0774) |
 | `DisplayText.cpp`, `AsciiCase.cpp` | Module-internal: `display_text_is_safe` (no control or bidirectional formatting character) and `ascii_lower` |
@@ -64,6 +66,9 @@ Pure functions and value types for the built-in OAuth 2.0 API
 (`[oauth][metadata]`), `test_oauth_page.cpp` (`[oauth][page]`), `test_oauth_server_metadata.cpp` (`[oauth][urls]`,
 `[oauth][server_metadata]`), `test_oauth_hand_off_allowlist.cpp` (`[oauth][allowlist]`),
 `test_oauth_form_post_origin.cpp` (`[oauth][form-origin]`), `test_oauth_page_response.cpp`
-(`[oauth][page-response]`). The served document:
+(`[oauth][page-response]`), `test_oauth_authorization_redirect.cpp` (`[oauth][redirect-address]`),
+`test_oauth_authorization_pages.cpp` (`[oauth][authorize-page]`). The authorisation endpoint:
+`tests/conformance/test_oauth_authorization_conformance.cpp` and `tests/integration/test_oauth_authorization_flow.cpp`
+(`[oauth-authorize]`). The served document:
 `tests/conformance/test_oauth_metadata_conformance.cpp` and `tests/integration/test_oauth_metadata_flow.cpp`
 (`[oauth]`). Fuzz targets: `fuzz_oauth_redirect_uri.cpp`, `fuzz_oauth_scope.cpp`, `fuzz_oauth_client_metadata.cpp`.
