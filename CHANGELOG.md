@@ -3,6 +3,25 @@ Changes from 1.0.0, the first production release, onwards; the format is set out
 Changes before 1.0.0 are in [CHANGELOG-pre-release.md](CHANGELOG-pre-release.md), which is no longer added to
 ([ADR-0740](docs/adr/0740-the-changelog-starts-at-1-0-0-and-the-pre-release-entries-are-a-frozen-record.md)).
 
+# Version 1.1.1
+
+## Features
+
+* `GET /_matrix/client/v3/sync` honours `use_state_after` (Matrix v1.16): with it true each joined and left room
+  carries `state_after` and no `state` (ADR-0763, ADR-0764, ADR-0765).
+
+## Security Fixes
+
+* None.
+
+## Bug fixes
+
+* None.
+
+## Release notes
+
+1.1.1 adds `use_state_after` to `/sync`. No configuration change is needed.
+
 # Version 1.1.0
 
 ## Features
