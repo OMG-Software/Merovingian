@@ -9,7 +9,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -344,6 +346,68 @@ SCENARIO("Raised generic and media defaults still enforce their configured burst
                 REQUIRE(media_allowed);
                 REQUIRE_FALSE(engine.check("203.0.113.10|generic", generic_target, "").allowed);
                 REQUIRE_FALSE(engine.check("203.0.113.10|media", media_target, "").allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Delayed-event paths have built-in per-address and per-user refinements (ADR-0826)",
+         "[http][rate-limit][tier][delayed-events]")
+{
+    GIVEN("the default client rate-limit configuration")
+    {
+        auto clock = ManualClock{};
+        auto const engine = RateLimitEngine{merovingian::http::default_client_rate_limit_config(), clock};
+        auto const stable = std::string{"/_matrix/client/v1/delayed_events/"};
+        auto const unstable = std::string{"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/"};
+        auto const per_user = [&](std::string const& target) -> std::uint32_t {
+            auto const policy = engine.resolve_per_user_policy(target);
+            REQUIRE(policy.has_value());
+            return policy->max_requests;
+        };
+
+        WHEN("management and lookup paths of both prefixes are resolved")
+        {
+            THEN("each takes 3000 per address and 120 per user, in a 60 second window")
+            {
+                for (auto const& base : {stable, unstable})
+                {
+                    for (auto const* suffix : {"{delayId}", "{delayId}/send", "{delayId}/cancel", "{delayId}/restart"})
+                    {
+                        auto const template_path = base + suffix;
+                        REQUIRE(resolved_max(engine, template_path) == 3000U);
+                        REQUIRE(per_user(template_path) == 120U);
+                        REQUIRE(engine.resolve_per_user_policy(template_path)->window_seconds == 60U);
+                    }
+                }
+            }
+        }
+
+        WHEN("the dedicated scheduling templates of both prefixes are resolved")
+        {
+            auto const s1 = std::string{"/_matrix/client/v3/rooms/{roomId}/delayed_event/{eventType}/{txnId}"};
+            auto const s2 = std::string{
+                "/_matrix/client/unstable/org.matrix.msc4140/rooms/{roomId}/delayed_event/{eventType}/{txnId}"};
+
+            THEN("each takes 60 per user and keeps the generic per-address tier")
+            {
+                REQUIRE(per_user(s1) == 60U);
+                REQUIRE(per_user(s2) == 60U);
+                REQUIRE(resolved_max(engine, s1) == 600U);
+                REQUIRE(resolved_max(engine, s2) == 600U);
+            }
+        }
+
+        WHEN("the ordinary send and state templates are resolved")
+        {
+            THEN("they have no per-user refinement")
+            {
+                REQUIRE_FALSE(
+                    engine.resolve_per_user_policy("/_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}")
+                        .has_value());
+                REQUIRE_FALSE(
+                    engine.resolve_per_user_policy("/_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}")
+                        .has_value());
             }
         }
     }

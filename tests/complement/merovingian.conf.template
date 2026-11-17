@@ -84,6 +84,10 @@ client_rate_limits.per_user./_matrix/media/v3/preview_url=1000000000/1s
 client_rate_limits.per_user./_matrix/media/v1/create=1000000000/1s
 client_rate_limits.per_user./_matrix/client/v3/rooms/{roomId}/report/{eventId}=1000000000/1s
 client_rate_limits.per_user./_matrix/client/v3/users/{userId}/report=1000000000/1s
+client_rate_limits.per_user./_matrix/client/v1/delayed_events/=1000000000/1s
+client_rate_limits.per_user./_matrix/client/unstable/org.matrix.msc4140/delayed_events/=1000000000/1s
+client_rate_limits.per_user./_matrix/client/v3/rooms/{roomId}/delayed_event/=1000000000/1s
+client_rate_limits.per_user./_matrix/client/unstable/org.matrix.msc4140/rooms/{roomId}/delayed_event/=1000000000/1s
 # Complement logs in and registers from many parallel subtests; four concurrent
 # Argon2id hashes answered some of them 429 (ADR-0246). Each takes 64 MiB, so 32
 # bounds a homeserver container at 2 GiB of hashing.

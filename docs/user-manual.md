@@ -1888,6 +1888,7 @@ Default route-aware policies applied when no override is configured:
 |---|---|
 | Login / registration | 20/60s per IP; 5/60s per user on `/login` |
 | Device and key APIs | 120/60s per IP |
+| Delayed-event management and lookup (`/_matrix/client/v1/delayed_events/`, `/_matrix/client/unstable/org.matrix.msc4140/delayed_events/`) | 3000/60s per IP; 120/60s per user |
 | Media uploads and downloads | 120/60s per IP |
 | Media thumbnails | 240/60s per IP |
 | Search (`/_matrix/client/v3/search`) | 20/60s per IP |
@@ -1896,6 +1897,7 @@ Default route-aware policies applied when no override is configured:
 | Login token minting (`/_matrix/client/v1/login/get_token`) | 4/60s per user |
 | URL previews (`/_matrix/client/v1/media/preview_url`, `/_matrix/media/v3/preview_url`) | 30/60s per user |
 | Asynchronous upload reservations (`/_matrix/media/v1/create`) | 30/60s per user |
+| Delayed-event scheduling paths (`.../rooms/{roomId}/delayed_event/{eventType}/{txnId}`, both prefixes) | 60/60s per user |
 | Generic client APIs | 600/60s per IP fallback |
 
 Example overrides:
