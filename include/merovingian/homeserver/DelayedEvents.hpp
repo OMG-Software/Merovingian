@@ -63,11 +63,13 @@ auto wake_delayed_events(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto delayed_event_lookup(ClientServerRuntime& runtime, std::string_view user_id,
                                         std::string_view delay_id) -> OperationResult;
 
-// The "delayed-events" job's body (main.cpp; tests call it directly). Takes runtime.homeserver.mutex itself, one hold
-// per delayed event: sends each scheduled event due at `now_ms` or earlier, earliest first, at most 100 a run and none
-// once `stop` is requested, never before its due time; then deletes at most 500 finalised rows older than 7 days
-// before `now_ms`. A failed send is recorded and never retried. Returns how long to wait before the next run: 0 ms
-// when due events remain, else the time to the next deadline, at most 60 s (60 s when nothing is scheduled).
+// The "delayed-events" job's body (main.cpp; tests call it directly). Takes runtime.homeserver.mutex itself: sends the
+// earliest scheduled event due at `now_ms` or earlier, if any, in one hold, and none once `stop` is requested, never
+// before its due time; then, in another hold, deletes at most 500 finalised rows older than 7 days before `now_ms`.
+// At most ONE send a run, so the runtime lock is free between sends (the mutex is not fair; ADR-0353 paces the profile
+// job the same way). A failed send is recorded and never retried. Returns how long to wait before the next run, never
+// 0: 5 ms (`delayed_events_pace`) when another event is already due at `now_ms`; else the time to the next deadline,
+// at least 5 ms and at most 60 s; 60 s when nothing is scheduled. A caller that wants a backlog drained calls it again.
 [[nodiscard]] auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms, StopFlag const& stop)
     -> std::chrono::milliseconds;
 

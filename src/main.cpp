@@ -932,8 +932,10 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
-    // Sends the delayed events (MSC4140, ADR-0825) that have fallen due, one send per hold of the runtime lock, and
-    // ages out finalised ones. It sleeps until the earliest deadline and is woken when an earlier one is scheduled.
+    // Sends the delayed events (MSC4140, ADR-0825) that have fallen due: at most one send per run, in its own hold of
+    // the runtime lock, and a run that left another event due waits `delayed_events_pace` (5 ms) with the lock free,
+    // as the profile propagation job does (ADR-0353). It also ages out finalised rows. Otherwise it sleeps until the
+    // earliest deadline (60 s at most) and is woken when an earlier one is scheduled.
     // It only ever touches `runtime`, which outlives this function. Declared after the pools so it is stopped and
     // joined before them.
     auto delayed_events_job = merovingian::homeserver::PeriodicJob{
@@ -1255,6 +1257,14 @@ struct ListenerBinding final
 
     LOG_INFO("Listeners active; awaiting traffic. Send SIGINT or SIGTERM to stop.");
     auto runtime = std::move(runtime_result.runtime);
+    // Once per start-up: delayed-event rows hydration refused to read exactly are left in the database and never
+    // sent (ADR-0825). The count only; never a row's content, state key or any other column.
+    if (auto const skipped = runtime.homeserver.database.persistent_store.delayed_event_rows_skipped_at_load;
+        skipped != 0U)
+    {
+        LOG_WARNING("delayed_events.rows_skipped_at_load: " + std::to_string(skipped) +
+                    " delayed event rows were not read and stay in the database");
+    }
     // Wire federation callbacks and start the outbound dispatch worker now that
     // the runtime is in its final stable location (no further moves). Doing this
     // eagerly means thread-creation failure surfaces at startup with a clear log

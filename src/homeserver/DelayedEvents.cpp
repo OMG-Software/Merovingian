@@ -54,8 +54,10 @@ namespace
 
     constexpr auto log_module = std::string_view{"delayed_events"};
 
-    // At most this many events are sent in one run of the job, so other threads get the runtime lock between runs.
-    constexpr auto max_sends_per_run = std::size_t{100U};
+    // The wait after a run that sent an event while another is already due: the runtime lock is free for this long
+    // between two sends, as `profile_propagation_pace` leaves it between two rooms (ADR-0353). The mutex is not fair,
+    // so a job that retook it at once could starve request threads for a whole backlog.
+    constexpr auto delayed_events_pace = std::uint64_t{5U};
     // The age prune deletes at most this many finalised rows per run, in one transaction (ADR-0824).
     constexpr auto prune_batch_rows = std::size_t{500U};
     // A finalised row is kept at most this long: 7 days.
@@ -401,9 +403,24 @@ namespace
                       observability::LogEventSeverity::error);
             result = refusal(500U, "M_UNKNOWN", "internal server error");
         }
-        // Finalising clears the mark. A record that was refused leaves the row marked, so it is never sent again by
-        // this process (and is logged), never in a loop.
-        record_send_outcome(runtime, row, *result, now_ms);
+        // Finalising clears the mark. A record the store refused leaves the row marked, so it is never sent again by
+        // this process (and is logged), never in a loop. A record that threw is the same: the mark is kept and the
+        // next start sends the event once more (at least once, ADR-0825); clearing it would send it on every run.
+        try
+        {
+            record_send_outcome(runtime, row, *result, now_ms);
+        }
+        catch (...)
+        {
+            mark.keep_mark();
+            log_event("delayed_event.finalise_commit_failed", row,
+                      {
+                          {"outcome", "exception",                         false},
+                          {"type",    core::current_exception_type_name(), false},
+            },
+                      observability::LogEventSeverity::error);
+            return true;
+        }
         if (table.is_being_sent(row.delay_id))
         {
             mark.keep_mark();
@@ -673,11 +690,10 @@ auto delayed_event_lookup(ClientServerRuntime& runtime, std::string_view user_id
 auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms, StopFlag const& stop)
     -> std::chrono::milliseconds
 {
-    // One send per hold of the runtime lock, the stop flag read between items, at most `max_sends_per_run` a run.
-    auto sent = std::size_t{0U};
-    while (sent < max_sends_per_run && !stop.stop_requested() && send_next_due(runtime, now_ms))
+    // At most one send a run, in its own hold of the runtime lock, and the lock free between runs (ADR-0353).
+    if (!stop.stop_requested())
     {
-        ++sent;
+        std::ignore = send_next_due(runtime, now_ms);
     }
     auto const guard = RuntimeLock{runtime.homeserver.mutex};
     auto& store = runtime.homeserver.database.persistent_store;
@@ -697,8 +713,11 @@ auto send_due_delayed_events(ClientServerRuntime& runtime, std::uint64_t now_ms,
         return std::chrono::milliseconds{max_job_wait_ms};
     }
     auto const due_ms = database::delayed_event_due_ms(*next);
-    auto const wait_ms = due_ms > now_ms ? due_ms - now_ms : std::uint64_t{0U};
-    return std::chrono::milliseconds{std::min(wait_ms, max_job_wait_ms)};
+    if (due_ms <= now_ms)
+    {
+        return std::chrono::milliseconds{delayed_events_pace};
+    }
+    return std::chrono::milliseconds{std::clamp(due_ms - now_ms, delayed_events_pace, max_job_wait_ms)};
 }
 
 } // namespace merovingian::homeserver
